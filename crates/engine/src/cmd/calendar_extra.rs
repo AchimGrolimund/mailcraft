@@ -96,6 +96,7 @@ fn copy(s: &mut Session, v: &Value) -> CmdResult {
         show_as: source.show_as,
         categories: source.categories.clone(),
         private: source.private,
+        importance: source.importance,
         ..Default::default()
     };
     let made = s.mailbox.add_event(copy)?;

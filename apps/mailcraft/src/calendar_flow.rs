@@ -8,9 +8,9 @@
 //! takes its answer in: what the owner does in between is done while it is under way.
 
 use mailcraft_engine::Session;
-use mailcraft_model::remote::{CalendarsDownload, EventChangeKind, RemoteEventKind};
+use mailcraft_model::remote::{CalendarsDownload, EventChange, EventChangeKind, EventTime, RemoteEventKind};
 use mailcraft_model::sync::Tokens;
-use mailcraft_model::{Event, Id, Mailbox};
+use mailcraft_model::{Address, Event, Id, Mailbox, Response};
 use mailcraft_net::graph::standin::{Routed, StandIn, Stored, TOKEN, zone_offset};
 use mailcraft_time::{Date, DateTime, Zone};
 use mailcraft_ui_egui::{CalendarCheckRequest, GraphRequest, MailApp, Services};
@@ -564,6 +564,304 @@ fn the_connection_check_runs_on_the_account_and_reports_every_step() {
     assert_eq!(flow.server.state().events, before);
 }
 
+/// A second calendar of the account's own on the server, "Team", listed and ticked here: what
+/// the server calls it, and its id here.
+fn team(flow: &mut Flow) -> (String, Id) {
+    let team = flow.server.state().add_calendar("Team", true, false);
+    let list: CalendarsDownload = mailcraft_net::graph::calendars(TOKEN).unwrap();
+    let account = flow.app.session.mailbox.account(flow.account).cloned().unwrap();
+    flow.run("sync.applyCalendars", json!({"download": list.for_account(&account)}));
+    let here = flow.app.session.mailbox.calendars.iter().find(|c| c.name == "Team").map(|c| c.id).unwrap();
+    flow.run("calendar.showCalendar", json!({"id": here, "value": true}));
+    flow.sync();
+    (team, here)
+}
+
+#[test]
+fn an_appointment_is_moved_to_another_calendar_of_the_account_and_back() {
+    let mut flow = Flow::start();
+    let (team, team_here) = team(&mut flow);
+    let review = flow.here("Budget review");
+    let main = flow.server.state().main_calendar();
+    let (main_here, original) = (review.calendar, flow.there("Budget review").id);
+    // Into the other calendar. The service has no way of moving an event: it is made there...
+    assert_eq!(flow.run("calendar.edit", json!({"id": review.id, "calendar": team_here}))["moved"], true);
+    flow.sync();
+    // ...and seen there in what came down after it, while the original is still on the server.
+    let there: Vec<String> = flow.all_there("Budget review").iter().map(|e| e.calendar.clone()).collect();
+    assert_eq!((there.len(), flow.all_here("Budget review").len()), (2, 1));
+    assert_eq!(flow.here("Budget review").calendar, team_here);
+    // Then the original goes, out of the calendar it was in; and that is seen too.
+    flow.sync();
+    let there = flow.all_there("Budget review");
+    assert_eq!(there.iter().map(|e| e.calendar.as_str()).collect::<Vec<_>>(), [team.as_str()]);
+    let here = flow.all_here("Budget review");
+    assert_eq!(here.iter().map(|e| (e.id, e.calendar, e.origin.id.as_str())).collect::<Vec<_>>(), [(review.id, team_here, there[0].id.as_str())]);
+    // The created copy was verified, the original is gone, and nothing was put back or said.
+    assert!(flow.settled(), "{}", flow.status());
+    assert_eq!(flow.refusals(), []);
+    let copy = there[0].id.clone();
+    let paths = |flow: &Flow| -> Vec<(String, Vec<String>)> { flow.server.state().writes() };
+    let piece = |text: &str| text.to_string();
+    assert_eq!(
+        paths(&flow),
+        [
+            (piece("POST"), vec![piece("v1.0"), piece("me"), piece("calendars"), team.clone(), piece("events")]),
+            (piece("DELETE"), vec![piece("v1.0"), piece("me"), piece("events"), original.clone()]),
+        ]
+    );
+
+    // And back, with a server whose answers lag: the views that follow the copy being made are
+    // answered as the calendars were before it. The original is not deleted on the server's
+    // word that it made the copy: it stays until the copy is seen.
+    flow.server.state().stale_views = 2;
+    flow.run("calendar.edit", json!({"id": review.id, "calendar": main_here}));
+    flow.sync();
+    assert_eq!((flow.all_there("Budget review").len(), paths(&flow).len()), (2, 3));
+    assert_eq!((flow.all_here("Budget review").len(), flow.here("Budget review").calendar), (1, main_here));
+    assert_eq!((flow.app.session.mailbox.event_checks.len(), flow.app.session.mailbox.event_changes.len()), (1, 1));
+    // It is looked for again within seconds, and nothing is sent with that look.
+    flow.at += 11.0 * SECOND;
+    assert!(flow.app.calendar_tick_at(true, flow.at), "a copy that isn't seen yet is looked for again soon");
+    flow.take_in();
+    assert_eq!((flow.all_there("Budget review").len(), paths(&flow).len(), flow.app.session.mailbox.event_checks.len()), (2, 3, 0));
+    // Seen: now the one in the other calendar goes, through that calendar.
+    flow.sync();
+    let there = flow.all_there("Budget review");
+    assert_eq!(there.iter().map(|e| e.calendar.as_str()).collect::<Vec<_>>(), [main.as_str()]);
+    let here = flow.all_here("Budget review");
+    assert_eq!(here.iter().map(|e| (e.id, e.calendar, e.origin.id.as_str())).collect::<Vec<_>>(), [(review.id, main_here, there[0].id.as_str())]);
+    assert!(flow.settled(), "{}", flow.status());
+    assert_eq!(flow.refusals(), []);
+    let writes = paths(&flow);
+    assert_eq!(writes[2], (piece("POST"), vec![piece("v1.0"), piece("me"), piece("events")]));
+    assert_eq!(writes[3], (piece("DELETE"), vec![piece("v1.0"), piece("me"), piece("calendars"), team.clone(), piece("events"), copy]));
+    assert_eq!(writes.len(), 4);
+}
+
+#[test]
+fn a_move_the_server_refuses_half_of_puts_the_appointment_back_and_says_so() {
+    let mut flow = Flow::start();
+    let (team, team_here) = team(&mut flow);
+    let review = flow.here("Budget review");
+    let main = flow.server.state().main_calendar();
+    let original = flow.there("Budget review").id;
+    let as_it_was = |flow: &Flow| {
+        let there = flow.all_there("Budget review");
+        assert_eq!(there.iter().map(|e| (e.id.as_str(), e.calendar.as_str())).collect::<Vec<_>>(), [(original.as_str(), main.as_str())]);
+        let here = flow.all_here("Budget review");
+        assert_eq!(
+            here.iter().map(|e| (e.id, e.calendar, e.origin.id.as_str(), e.start)).collect::<Vec<_>>(),
+            [(review.id, review.calendar, original.as_str(), review.start)]
+        );
+        let mailbox = &flow.app.session.mailbox;
+        assert!(mailbox.event_changes.is_empty() && mailbox.event_checks.is_empty() && mailbox.clone().repair().is_empty());
+    };
+
+    // The copy is refused: the appointment is back where it was, and the owner is told.
+    flow.server.state().fail_next.push(("POST".into(), 400, "ErrorInvalidRequest".into()));
+    flow.run("calendar.edit", json!({"id": review.id, "calendar": team_here}));
+    assert_eq!(flow.here("Budget review").calendar, team_here);
+    flow.sync();
+    let status = flow.status();
+    assert!(
+        status.starts_with("The server wouldn't take \"Budget review\" into the other calendar")
+            && status.ends_with("so it wasn't moved: it is back where it was."),
+        "{status}"
+    );
+    assert!(flow.app.has_sync_problems());
+    as_it_was(&flow);
+    assert_eq!(flow.server.state().writes().len(), 1, "the original was not touched");
+
+    // The copy is made and seen, and then the original won't go: the copy is taken out again,
+    // here and on the server, and the appointment is back where it was.
+    flow.run("calendar.edit", json!({"id": review.id, "calendar": team_here}));
+    flow.sync();
+    assert_eq!(flow.all_there("Budget review").len(), 2);
+    flow.server.state().fail_next.push(("DELETE".into(), 400, "ErrorInvalidRequest".into()));
+    flow.sync();
+    let status = flow.status();
+    assert!(
+        status.starts_with("The server wouldn't take \"Budget review\" out of the calendar it was in")
+            && status.ends_with("so it wasn't moved: it is back there, and the copy in the other calendar was removed."),
+        "{status}"
+    );
+    assert_eq!((flow.all_here("Budget review").len(), flow.here("Budget review").calendar), (1, review.calendar));
+    assert_eq!(flow.all_there("Budget review").len(), 2, "the copy is still to go on the server");
+    flow.sync();
+    as_it_was(&flow);
+    // The copy went through the calendar it was in.
+    let last = flow.server.state().writes().last().cloned().unwrap();
+    assert_eq!(
+        (last.0.as_str(), last.1[..4].to_vec()),
+        ("DELETE", vec!["v1.0".to_string(), "me".to_string(), "calendars".to_string(), team.clone()])
+    );
+}
+
+#[test]
+fn a_meeting_is_forwarded_and_another_time_proposed_only_on_the_owners_word() {
+    let mut flow = Flow::start();
+    // On the server: a meeting the owner organizes, and one of Bo's that the owner is invited to.
+    {
+        let mut state = flow.server.state();
+        let main = state.main_calendar();
+        let (planning, board) = (state.add_event(&main, "Planning", utc(10, 15, 14, 0)), state.add_event(&main, "Board", utc(10, 16, 14, 0)));
+        for event in state.events.iter_mut() {
+            if event.id == planning {
+                event.attendees = vec![json!({"emailAddress": {"address": "bo@example.org", "name": "Bo"}, "type": "required"})];
+            }
+            if event.id == board {
+                (event.is_organizer, event.response) = (false, "none".into());
+                event.attendees = vec![json!({"emailAddress": {"address": "avery@mail.example", "name": "Avery"}, "type": "required"})];
+            }
+        }
+    }
+    flow.sync();
+    let (planning, board) = (flow.here("Planning"), flow.here("Board"));
+    assert!(board.origin.guest && !planning.origin.guest);
+    let written = |flow: &Flow| {
+        let state = flow.server.state();
+        (state.writes().len(), state.mail.len())
+    };
+
+    // Without the owner's yes the commands refuse, and no request reaches the server.
+    let forward = json!({"id": planning.id, "to": "Eve <eve@example.org>", "comment": "Do join us."});
+    let propose = json!({"id": board.id, "start": "2026-10-16T11:00", "end": "2026-10-16T12:00", "comment": "An hour later?"});
+    for (command, params, why) in [
+        ("calendar.forward", &forward, "Forwarding writes to 1 person. Nothing was sent."),
+        ("calendar.propose", &propose, "Proposing another time writes to the meeting's organizer. Nothing was sent."),
+    ] {
+        let refused = flow.app.execute(command, params.clone()).unwrap_err().to_string();
+        assert!(refused.contains(why), "{command}: {refused}");
+    }
+    assert!(flow.app.session.mailbox.event_changes.is_empty());
+    flow.sync();
+    assert_eq!(written(&flow), (0, 0));
+    // Nor when a mailbox file notes them without it: they are given up, with a word to the
+    // owner, and still nothing is asked of the server.
+    let note = |kind: EventChangeKind, event: &Event| EventChange {
+        account: event.origin.account,
+        kind,
+        event: event.id,
+        remote: event.origin.id.clone(),
+        token: "0f8fad5b-d9cb-469f-a165-70867728950e".into(),
+        base: Some(Box::new(event.clone())),
+        ..Default::default()
+    };
+    let time = EventTime { start: utc(10, 16, 15, 0), end: utc(10, 16, 16, 0), all_day: false };
+    flow.app.session.mailbox.event_changes = vec![
+        EventChange { to: vec![Address::new("Eve", "eve@example.org")], ..note(EventChangeKind::Forward, &planning) },
+        EventChange { response: Response::Tentative, proposed: Some(time), ..note(EventChangeKind::Respond, &board) },
+    ];
+    flow.sync();
+    assert_eq!(written(&flow), (0, 0));
+    assert!(flow.app.session.mailbox.event_changes.is_empty() && flow.app.has_sync_problems());
+
+    // With it: the meeting is forwarded by the server, and the organizer hears the answer and
+    // the other time, each asked of the service as its reference has it.
+    let with = |params: &Value| {
+        let mut params = params.clone();
+        params["send"] = json!(true);
+        params
+    };
+    flow.run("calendar.forward", with(&forward));
+    flow.run("calendar.propose", with(&propose));
+    flow.sync();
+    assert_eq!(
+        flow.server.state().mail,
+        [
+            "forward:Planning:1:Do join us.",
+            "response:Board:tentativelyAccept:An hour later?",
+            "proposal:Board:2026-10-16T15:00:00Z/2026-10-16T16:00:00Z"
+        ]
+    );
+    let asked: Vec<(String, Value)> = {
+        let state = flow.server.state();
+        state
+            .requests
+            .iter()
+            .filter(|asked| asked.method == "POST")
+            .map(|asked| (asked.path.last().cloned().unwrap_or_default(), asked.json()))
+            .collect()
+    };
+    let slot =
+        json!({"start": {"dateTime": "2026-10-16T15:00:00", "timeZone": "UTC"}, "end": {"dateTime": "2026-10-16T16:00:00", "timeZone": "UTC"}});
+    assert_eq!(
+        asked,
+        [
+            (
+                "forward".to_string(),
+                json!({"ToRecipients": [{"EmailAddress": {"Address": "eve@example.org", "Name": "Eve"}}], "Comment": "Do join us."})
+            ),
+            ("tentativelyAccept".to_string(), json!({"comment": "An hour later?", "sendResponse": true, "proposedNewTime": slot})),
+        ]
+    );
+    assert_eq!(flow.there("Board").response, "tentativelyAccepted");
+    assert_eq!(flow.refusals(), []);
+    let mailbox = &flow.app.session.mailbox;
+    assert!(mailbox.event_changes.is_empty() && mailbox.event_checks.is_empty());
+    // An organizer who takes no proposals is not proposed to, whatever is said.
+    flow.server.state().events.iter_mut().find(|event| event.subject == "Board").unwrap().no_new_times = true;
+    flow.sync();
+    let refused = flow.app.execute("calendar.propose", with(&propose)).unwrap_err().to_string();
+    assert!(refused.contains("The organizer of this meeting doesn't take proposals of another time."), "{refused}");
+    assert_eq!(written(&flow), (2, 3));
+}
+
+#[test]
+fn a_teams_meeting_its_importance_and_what_is_asked_of_the_people_invited_are_what_the_server_has() {
+    let mut flow = Flow::start();
+    // A meeting that matters, held online, to which no answers are wanted and no other times.
+    let meeting = json!({
+        "title": "Launch", "start": "2026-10-15T10:00", "end": "2026-10-15T11:00", "attendees": "Bo <bo@example.org>", "importance": "high",
+        "requestResponses": false, "allowProposals": false, "online": true, "send": true,
+    });
+    let launch = flow.run("calendar.newMeeting", meeting)["id"].as_u64().unwrap();
+    flow.sync();
+    let there = flow.there("Launch");
+    assert_eq!(
+        (there.importance.as_str(), there.no_response_requested, there.no_new_times, there.online, there.online_provider.as_str()),
+        ("high", true, true, true, "teamsForBusiness")
+    );
+    assert_eq!(flow.server.state().mail, ["invitation:Launch:1"]);
+    // The link to join by is the server's, and is here as it is there.
+    let here = flow.here("Launch");
+    assert_eq!(here.join_link(), Some(there.join_url.as_str()));
+    assert_eq!(flow.run("calendar.join", json!({"id": launch}))["url"], there.join_url.as_str());
+    assert_eq!(
+        (here.importance, here.response_options.request_responses, here.response_options.allow_proposals),
+        (mailcraft_model::Importance::High, false, false)
+    );
+    assert!(flow.settled(), "{}", flow.status());
+    assert_eq!(flow.refusals(), []);
+
+    // What it matters, and that answers are wanted after all: changes like any other, and what
+    // was verified stays as it is here when it comes down again.
+    flow.run("calendar.importance", json!({"id": launch, "value": "low", "send": true}));
+    flow.run("calendar.responseOptions", json!({"id": launch, "requestResponses": true, "send": true}));
+    flow.sync();
+    let there = flow.there("Launch");
+    assert_eq!((there.importance.as_str(), there.no_response_requested, there.online), ("low", false, true));
+    flow.sync();
+    let here = flow.here("Launch");
+    assert_eq!(
+        (here.importance, here.response_options.request_responses, here.join_link()),
+        (mailcraft_model::Importance::Low, true, Some(there.join_url.as_str()))
+    );
+    assert!(flow.settled(), "{}", flow.status());
+    assert_eq!(flow.refusals(), []);
+
+    // Whether another time may be proposed is said when a meeting is made; the reference
+    // doesn't list it among what an update may change. A service that goes by that refuses,
+    // and it is put back here with a word, not left looking as if it had been changed.
+    flow.run("calendar.responseOptions", json!({"id": launch, "allowProposals": true, "send": true}));
+    flow.sync();
+    let status = flow.status();
+    assert!(status.starts_with("The server wouldn't take the change to \"Launch\"") && status.ends_with("It was put back as it was."), "{status}");
+    assert!(!flow.here("Launch").response_options.allow_proposals && flow.there("Launch").no_new_times);
+    assert!(flow.app.session.mailbox.event_changes.is_empty() && flow.app.session.mailbox.event_checks.is_empty());
+}
+
 #[test]
 fn an_appointment_made_in_another_zone_is_the_same_moment_on_the_server_and_here() {
     let mut flow = Flow::start_in_new_york();
@@ -776,5 +1074,72 @@ fn a_mailbox_from_before_time_zones_is_opened_and_carried_abroad_and_nothing_is_
     flow.reopen(closed, new_york);
     nothing_is_sent(&mut flow, "home");
     assert_eq!((flow.here("Lunch").start, flow.here("Offsite").start), (clock(10, 15, 12, 0), clock(10, 20, 0, 0)));
+    assert_eq!(flow.refusals(), []);
+}
+
+#[test]
+fn an_appointment_with_a_zone_of_its_own_keeps_zone_and_moment_in_another_calendar() {
+    let mut flow = Flow::start_in_new_york();
+    let (team, team_here) = team(&mut flow);
+    // Half past six in the evening in Pune, typed by Pune's clock: nine in the morning here.
+    let made = flow
+        .run("calendar.new", json!({"title": "Call with Pune", "start": "2026-10-15T18:30", "end": "2026-10-15T19:30", "startZone": "Asia/Kolkata"}));
+    let call = made["id"].as_u64().unwrap();
+    flow.sync();
+    let first = flow.there("Call with Pune").id;
+    let moments = |flow: &Flow| {
+        let (here, s) = (flow.here("Call with Pune"), &flow.app.session);
+        mailcraft_engine::cmd::remote::server_time(&here, &|instant| s.offset_at(instant))
+    };
+    let was = moments(&flow);
+    assert_eq!((was.start, was.end), (utc(10, 15, 13, 0), utc(10, 15, 14, 0)));
+    // Into the account's other calendar. The copy the server makes there is at the same moment
+    // and in the same zone, and so is the appointment here: only the calendar is another.
+    flow.run("calendar.edit", json!({"id": call, "calendar": team_here}));
+    flow.sync();
+    flow.sync();
+    let there = flow.all_there("Call with Pune");
+    assert_eq!(there.len(), 1);
+    assert_eq!(
+        (there[0].calendar.as_str(), there[0].start, there[0].end, there[0].zone.as_str(), there[0].end_zone()),
+        (team.as_str(), utc(10, 15, 13, 0), utc(10, 15, 14, 0), "India Standard Time", "India Standard Time")
+    );
+    assert!(there[0].id != first);
+    let here = flow.here("Call with Pune");
+    assert_eq!(
+        (here.id, here.calendar, here.start, here.end, here.start_zone.as_str(), here.origin.id.as_str()),
+        (call, team_here, clock(10, 15, 9, 0), clock(10, 15, 10, 0), "Asia/Kolkata", there[0].id.as_str())
+    );
+    assert_eq!(moments(&flow), was);
+    assert!(flow.settled(), "{}", flow.status());
+    assert_eq!(flow.refusals(), []);
+}
+
+#[test]
+fn another_time_proposed_by_the_clock_here_is_that_moment_for_the_organizer() {
+    // New York, with its changes of the clock: the meeting is in October (four hours behind
+    // UTC), and the time that is proposed is in November, after the clocks went back (five).
+    let mut flow = Flow::start_in_new_york();
+    {
+        let mut state = flow.server.state();
+        let main = state.main_calendar();
+        let board = state.add_event(&main, "Board", utc(10, 16, 14, 0));
+        let event = state.events.iter_mut().find(|event| event.id == board).unwrap();
+        (event.is_organizer, event.response) = (false, "none".into());
+        event.attendees = vec![json!({"emailAddress": {"address": "avery@mail.example", "name": "Avery"}, "type": "required"})];
+    }
+    flow.sync();
+    let board = flow.here("Board");
+    assert_eq!(board.start, clock(10, 16, 10, 0));
+    flow.run("calendar.propose", json!({"id": board.id, "start": "2026-11-04T11:00", "end": "2026-11-04T12:30", "send": true}));
+    flow.sync();
+    let asked = {
+        let state = flow.server.state();
+        state.requests.iter().find(|asked| asked.path.last().is_some_and(|piece| piece == "tentativelyAccept")).map(|asked| asked.json()).unwrap()
+    };
+    let slot =
+        json!({"start": {"dateTime": "2026-11-04T16:00:00", "timeZone": "UTC"}, "end": {"dateTime": "2026-11-04T17:30:00", "timeZone": "UTC"}});
+    assert_eq!(asked, json!({"comment": "", "sendResponse": true, "proposedNewTime": slot}));
+    assert_eq!(flow.server.state().mail, ["response:Board:tentativelyAccept:", "proposal:Board:2026-11-04T16:00:00Z/2026-11-04T17:30:00Z"]);
     assert_eq!(flow.refusals(), []);
 }

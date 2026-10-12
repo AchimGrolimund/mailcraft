@@ -278,6 +278,14 @@ impl Event {
         let (start, end) = self.instants(&|instant| from.offset_at(instant));
         let mut out = self.clone();
         out.set_instants(start, end, &|instant| to.offset_at(instant));
+        // The other times that people proposed for it are said by the same clock: the moments
+        // stay, as the event's own do.
+        for proposal in &mut out.proposals {
+            let moment = |wall: DateTime| instant_at(wall, &|instant| from.offset_at(instant));
+            let (starts, ends) = (moment(proposal.start), moment(proposal.end));
+            proposal.start = wall_at(starts, &|instant| to.offset_at(instant));
+            proposal.end = wall_at(ends.max(starts), &|instant| to.offset_at(instant));
+        }
         let mut moved = 0;
         if self.recurrence.is_some() {
             let own = self.zone().unwrap_or(from);
@@ -523,6 +531,24 @@ mod tests {
         let series = home.event_mut(103).unwrap();
         (series.start_zone, series.end_zone) = (String::new(), String::new());
         assert_eq!(home, before);
+    }
+
+    #[test]
+    fn the_other_times_people_proposed_travel_with_their_meeting() {
+        let (chicago, london) = (zone("America/Chicago"), zone("Europe/London"));
+        let mut mailbox = Mailbox::with_local_account("Ada", "ada@example.org");
+        let proposal =
+            crate::Proposal { from: crate::Address::new("Bo", "bo@example.org"), start: at(2026, 10, 13, 9, 0), end: at(2026, 10, 13, 10, 0) };
+        let id = mailbox.add_event(Event { proposals: vec![proposal.clone()], ..timed(0, at(2026, 10, 12, 8, 0), 60) }).unwrap();
+        mailbox.rebase(chicago);
+        // Chicago to London, in October: six hours later on the clock, and the same moment.
+        mailbox.rebase(london);
+        let there = mailbox.event(id).unwrap().proposals[0].clone();
+        assert_eq!((there.start, there.end), (at(2026, 10, 13, 15, 0), at(2026, 10, 13, 16, 0)));
+        assert_eq!(london.instant(there.start), chicago.instant(proposal.start));
+        // And home again: as it was.
+        mailbox.rebase(chicago);
+        assert_eq!(mailbox.event(id).unwrap().proposals, [proposal]);
     }
 
     #[test]

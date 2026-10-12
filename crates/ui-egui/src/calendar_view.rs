@@ -18,7 +18,7 @@ use mailcraft_engine::cmd::calendar::occurrences;
 use mailcraft_engine::cmd::calendar_extra::{DEFAULT_TIME_SCALE, MAX_DAYS, TIME_SCALES, time_scale};
 use mailcraft_engine::cmd::calendar_settings::{self, MAX_PANES};
 use mailcraft_engine::cmd::view::calendar_range;
-use mailcraft_model::{Event, Freq, Id, Occurrence, Recurrence, Response as Reply, ShowAs};
+use mailcraft_model::{Event, Freq, Id, Importance, Occurrence, Recurrence, Response as Reply, ShowAs};
 use mailcraft_time::{Date, DateTime, Weekday, month_name, month_short};
 use serde_json::{Value, json};
 
@@ -1771,7 +1771,23 @@ fn paint_line(p: &Painter, pos: egui::Pos2, width: f32, text: &str, font: FontId
 /// `right`. Returns where the text beside them has to stop.
 fn paint_marks(p: &Painter, item: &Item, look: &Look, right: f32, left: f32, y: f32) -> f32 {
     let mut x = right;
-    for (on, icon) in [(item.ev.private, "private"), (item.ev.is_meeting(), "meeting"), (item.ev.recurrence.is_some(), "recurrence")] {
+    // How much it matters comes first (a red mark for high, a blue arrow down for low, in their
+    // own colours whatever the item's), then that it is held online.
+    let importance = match item.ev.importance {
+        Importance::High => Some("importanceHigh"),
+        Importance::Low => Some("importanceLow"),
+        Importance::Normal => None,
+    };
+    if let Some(icon) = importance.filter(|_| x - 13.0 > left + 28.0) {
+        icons::paint(p, Rect::from_center_size(pos2(x - 6.0, y), vec2(12.0, 12.0)), icon, look.dim, look.dim);
+        x -= 14.0;
+    }
+    for (on, icon) in [
+        (item.ev.online.is_some(), "onlineMeeting"),
+        (item.ev.private, "private"),
+        (item.ev.is_meeting(), "meeting"),
+        (item.ev.recurrence.is_some(), "recurrence"),
+    ] {
         if on && x - 13.0 > left + 28.0 {
             icons::paint(p, Rect::from_center_size(pos2(x - 6.0, y), vec2(12.0, 12.0)), icon, look.dim, look.dim);
             x -= 14.0;
@@ -1951,6 +1967,14 @@ fn tooltip(ui: &mut Ui, item: &Item, twelve: bool, own: Option<&str>) {
     if ev.private {
         state.push(tl!("Private"));
     }
+    match ev.importance {
+        Importance::High => state.push(tl!("High importance")),
+        Importance::Low => state.push(tl!("Low importance")),
+        Importance::Normal => {}
+    }
+    if let Some(online) = &ev.online {
+        state.push(if online.provider == mailcraft_model::OnlineProvider::Teams { tl!("Teams meeting") } else { tl!("Online meeting") });
+    }
     if !state.is_empty() {
         line(ui, &state.join(" · "));
     }
@@ -2004,14 +2028,21 @@ fn event_input(app: &mut MailApp, resp: Response, item: &Item, tips: bool) {
     }
     let (repeats, show_as, private) = (item.ev.recurrence.is_some(), item.ev.show_as, item.ev.private);
     // An event of the mailbox's own can be put into another calendar (into a server's too, which
-    // then has it). One that a server keeps stays where it is: taking it out would delete it there.
+    // then has it). One that a server keeps can go into another calendar of the same account
+    // (the engine says what can't, and why: a meeting, a series); out of the account it can't,
+    // as taking it out would delete it there.
     let own = mailcraft_engine::cmd::remote::keeper(&app.session.mailbox, &item.ev.origin).is_none();
-    let others: Vec<(Id, String)> = if own {
-        let calendars = app.session.mailbox.calendars.iter().take(50);
-        calendars.filter(|c| c.id != item.ev.calendar).map(|c| (c.id, calendar_label(&app.session, c))).collect()
-    } else {
-        Vec::new()
+    let account = item.ev.origin.account;
+    let others: Vec<(Id, String)> = {
+        let calendars = app.session.mailbox.calendars.iter().take(50).filter(|c| c.id != item.ev.calendar);
+        let fits = |c: &&mailcraft_model::Calendar| own || (c.origin.account == account && !c.read_only);
+        calendars.filter(fits).map(|c| (c.id, calendar_label(&app.session, c))).collect()
     };
+    let importance = item.ev.importance;
+    let proposable = !own && item.ev.origin.guest && item.ev.response_options.allow_proposals;
+    // The link to join an online meeting by, when its server gave one that is one.
+    let join = item.ev.join_link().and_then(mailcraft_model::OnlineMeeting::clean_link);
+    let online = item.ev.online.as_ref().map(|online| online.provider.label());
     // Somebody else's meeting can be answered from here; what the owner answered so far is ticked.
     let (invited, answered) = invitation(app, &item.ev);
     resp.context_menu(|ui| {
@@ -2026,7 +2057,25 @@ fn event_input(app: &mut MailApp, resp: Response, item: &Item, tips: bool) {
                 // (What the command refuses, the status bar says.)
                 mi_check(ui, app, label, answered == Some(answer), "calendar.respond", json!({"id": id, "response": code}));
             }
+            // Another time, for a meeting whose organizer takes proposals and whose server
+            // carries them (its dialog says who is written to, and sends from its own buttons).
+            if ui.add_enabled(proposable, egui::Button::new(tl!("Propose New Time…")).min_size(vec2(190.0, 0.0))).clicked() {
+                let _ = app.run("calendar.propose", json!({"id": id}));
+                ui.close();
+            }
             ui.separator();
+        }
+        // Joined in the system's browser, by the link its server gave: shown where it leads.
+        if let (Some(link), Some(with)) = (&join, online) {
+            let label = crate::i18n::fmt(tl!("Join {service} Meeting"), &[("service", tl!(with))]);
+            if ui.add(egui::Button::new(label).min_size(vec2(190.0, 0.0))).on_hover_text(link.as_str()).clicked() {
+                let _ = app.run("ui.joinMeeting", json!({"event": id}));
+                ui.close();
+            }
+        }
+        mi(ui, app, "Forward…", "calendar.forward", json!({"id": id}));
+        if repeats {
+            mi(ui, app, "Forward This Occurrence…", "calendar.forward", json!({"id": id, "scope": "occurrence", "occurrence": day}));
         }
         mi(ui, app, "Delete", "calendar.delete", json!({"id": id}));
         if repeats {
@@ -2046,6 +2095,11 @@ fn event_input(app: &mut MailApp, resp: Response, item: &Item, tips: bool) {
             }
         });
         mi_check(ui, app, "Private", private, "calendar.private", json!({"id": id}));
+        ui.menu_button(tl!("Importance"), |ui| {
+            for (label, value) in [("High", Importance::High), ("Normal", Importance::Normal), ("Low", Importance::Low)] {
+                mi_check(ui, app, label, importance == value, "calendar.importance", json!({"id": id, "value": value.code()}));
+            }
+        });
         ui.separator();
         mi(ui, app, "Save as iCalendar…", "file.exportCalendar", json!({"id": id}));
     });
@@ -6993,6 +7047,90 @@ mod tests {
         assert_eq!(rig.app.session.mailbox.event(standup.id).map(|e| (e.calendar, e.start)), Some((main, standup.start)));
     }
 
+    /// The account's server keeps two calendars, side by side: an appointment dropped from one
+    /// into the other is made there and then taken out of the first (the server has no way of
+    /// moving one); a meeting stays where it is, and is told why; Ctrl copies.
+    #[test]
+    fn an_appointment_dropped_in_another_calendar_of_its_account_moves_there() {
+        use crate::calendar_sync::testing::event as on_server;
+        use mailcraft_model::remote::{CalendarsDownload, EventChangeKind, RemoteCalendar, RemoteEvent};
+        let invited =
+            |name: &str, email: &str| mailcraft_model::Attendee { address: mailcraft_model::Address::new(name, email), ..Default::default() };
+        let meeting = RemoteEvent { attendees: vec![invited("Bo", "bo@example.org")], ..on_server("m-1", "Roadmap", NOW + 20 * 3600) };
+        let (mut rig, server, account) = Rig::served(vec![on_server("e-1", "Physio", NOW + 18 * 3600), meeting]);
+        let list = CalendarsDownload {
+            account,
+            email: "avery@mail.example".into(),
+            complete: true,
+            calendars: vec![
+                RemoteCalendar { id: "c-main".into(), name: "Calendar".into(), main: true, ..Default::default() },
+                RemoteCalendar { id: "c-side".into(), name: "Side".into(), ..Default::default() },
+            ],
+        };
+        mailcraft_engine::cmd::remote::apply_calendars(&mut rig.app.session, &list).unwrap();
+        let of = |rig: &Rig, name: &str| {
+            rig.app.session.mailbox.calendars.iter().find(|c| c.origin.account == account && c.origin.id == name).map(|c| c.id).unwrap()
+        };
+        let (main, side) = (of(&rig, ""), of(&rig, "c-side"));
+        rig.run("calendar.showCalendar", json!({"id": side, "value": true}));
+        rig.frames(6);
+        let jobs = server.lock().unwrap().jobs.len();
+
+        // The appointment, into the other calendar's block, on its own day and at its own time.
+        let physio = rig.event("Physio");
+        assert_eq!(physio.calendar, main);
+        let from = rig.at("Physio").center();
+        let to = pos2(rig.column(side, 4, 7), from.y);
+        rig.drag(from, to);
+        assert_eq!(rig.dragging().map(|drag| drag.into), Some(side));
+        rig.drop_at(to);
+        rig.frames(10);
+        // Here: the same item, in the other calendar. There: one of it, in the other calendar,
+        // and no longer in the one it was in.
+        let moved = rig.event("Physio");
+        assert_eq!((moved.id, moved.calendar, moved.start, rig.dialog()), (physio.id, side, physio.start, None));
+        assert_eq!(rig.all("Physio").len(), 1);
+        assert!(rig.app.session.mailbox.event_changes.is_empty(), "both steps are through: {:?}", rig.app.session.mailbox.event_changes);
+        {
+            let there = server.lock().unwrap();
+            let copies: Vec<&RemoteEvent> = there.events.iter().filter(|e| e.title == "Physio").collect();
+            assert_eq!(copies.len(), 1);
+            assert_eq!((copies[0].id.as_str() != "e-1", there.placed.get(&copies[0].id).map(String::as_str)), (true, Some("c-side")));
+            assert_eq!(moved.origin.id, copies[0].id);
+            // What it was told, in order: make it in the other calendar, and only then delete the original.
+            let told: Vec<(EventChangeKind, String, String)> =
+                there.jobs.iter().skip(jobs).flat_map(|job| job.ops.iter()).map(|op| (op.kind, op.calendar.clone(), op.remote.clone())).collect();
+            assert_eq!(
+                told,
+                [(EventChangeKind::Create, "c-side".to_string(), String::new()), (EventChangeKind::Delete, String::new(), "e-1".to_string())]
+            );
+            assert!(there.mail.is_empty(), "nobody is written to about an appointment");
+        }
+
+        // A meeting stays where it is: the server couldn't move it without writing to everyone.
+        let planning = rig.event("Roadmap");
+        let from = rig.at("Roadmap").center();
+        let to = pos2(rig.column(side, 4, 7), from.y);
+        rig.drag(from, to);
+        rig.drop_at(to);
+        rig.frames(6);
+        assert_eq!((rig.event("Roadmap").calendar, rig.dialog()), (main, None));
+        assert!(rig.said().starts_with("A meeting can't be moved to another calendar"), "{}", rig.said());
+        assert_eq!(*rig.event("Roadmap"), *planning);
+        // With Ctrl it is copied there: an appointment of its own, to which nobody is invited.
+        rig.drag(from, to);
+        rig.mods = CTRL;
+        rig.frames(2);
+        rig.drop_at(to);
+        rig.mods = egui::Modifiers::NONE;
+        rig.frames(8);
+        let all = rig.all("Roadmap");
+        assert_eq!(all.len(), 2, "{all:?}");
+        let copy = all.iter().find(|one| one.0 != planning.id).and_then(|one| rig.app.session.mailbox.event(one.0)).cloned().unwrap();
+        assert!(copy.calendar == side && copy.attendees.is_empty() && !copy.origin.id.is_empty(), "{copy:?}");
+        assert!(server.lock().unwrap().mail.is_empty());
+    }
+
     #[test]
     fn a_drop_between_a_servers_calendar_and_one_kept_here() {
         use crate::calendar_sync::testing::event as on_server;
@@ -7022,7 +7160,7 @@ mod tests {
         rig.drop_at(to);
         rig.frames(6);
         assert_eq!((rig.event("Physio").calendar, rig.dialog()), (of_server, None));
-        assert!(rig.said().contains("kept by the server") && rig.said().contains("can't be moved to another calendar"), "{}", rig.said());
+        assert!(rig.said().contains("kept by the server") && rig.said().contains("not out of it"), "{}", rig.said());
         assert_eq!(server.lock().unwrap().events.len(), 2);
         // A copy of it can be kept here, and nothing of that reaches the server.
         rig.drag(from, to);

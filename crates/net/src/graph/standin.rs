@@ -7,7 +7,7 @@
 //!
 //! - **Addresses.** `/v1.0/me/events`, `/me/events/{id}`, `/me/calendars/{id}/events[/{id}]`,
 //!   `/me/calendarView`, `/me/calendars/{id}/calendarView`, `/me/events/{id}/instances`, the
-//!   actions `cancel`, `accept`, `tentativelyAccept` and `decline`, `/me/calendars`,
+//!   actions `cancel`, `accept`, `tentativelyAccept`, `decline` and `forward`, `/me/calendars`,
 //!   `/me/calendarGroups`, and `/$batch`. An id is one piece of an address: ids here are long
 //!   and hold `=`, `-`, `_`, `/` and `+`, so one that isn't written as `%XX` where it must be
 //!   names nothing (404, or 400). An event of a calendar that somebody else shares is found
@@ -22,6 +22,14 @@
 //!   properties its pattern needs and a range that starts on the day the event starts;
 //!   `transactionId` only with a new event. What isn't so is answered 400 with an error as Graph
 //!   words them (`{"error": {"code", "message", "innerError"}}`).
+//! - **Meetings.** `importance`, `responseRequested`, `isOnlineMeeting` and
+//!   `onlineMeetingProvider` are taken with a new event and with a change;
+//!   `allowNewTimeProposals` with a new event only (the reference doesn't list it among what an
+//!   update may say). An event that is made an online meeting gets its `onlineMeeting.joinUrl`
+//!   and stays one: later words about it are ignored. `tentativelyAccept` and `decline` take a
+//!   `proposedNewTime` (a start and an end, each a `dateTimeTimeZone`) and answer 400 when the
+//!   event doesn't allow proposals or `sendResponse` is false; `accept` has no such parameter.
+//!   `forward` takes `ToRecipients` and `Comment` and answers 202.
 //! - **Answers.** 201 with the event for one that was made, 200 with the event for a change, 204
 //!   for a deletion, 202 for an action, lists in pages with `@odata.nextLink`. A calendar view
 //!   holds single events, the occurrences of series and their exceptions, never a series itself.
@@ -85,6 +93,9 @@ pub struct Calendar {
     pub can_edit: bool,
     /// Somebody else shares it: its events are found through it only.
     pub shared: bool,
+    /// The services a meeting in it may be held online with (`allowedOnlineMeetingProviders`),
+    /// the first of them by default.
+    pub online: Vec<String>,
 }
 
 /// An event as the stand-in keeps it.
@@ -124,6 +135,16 @@ pub struct Stored {
     /// had them.
     pub gone: Vec<Timestamp>,
     pub modified: Timestamp,
+    /// `low` or `high`; empty for `normal`.
+    pub importance: String,
+    /// The people invited are not asked to answer (`responseRequested` is false), and may not
+    /// propose another time (`allowNewTimeProposals` is false). Both are true unless said.
+    pub no_response_requested: bool,
+    pub no_new_times: bool,
+    /// It is an online meeting, held with this, and this is the link to join it by.
+    pub online: bool,
+    pub online_provider: String,
+    pub join_url: String,
 }
 
 /// One request the stand-in was sent, with the status it answered.
@@ -172,8 +193,14 @@ pub struct State {
     /// What it answers to the next requests of a method instead of doing them: the method, the
     /// status and the name of the error.
     pub fail_next: Vec<(String, u16, String)>,
+    /// An event that is to be held online with a service its calendar doesn't allow is made
+    /// without it, and nothing is said. Otherwise it is answered 400. (The reference doesn't
+    /// say which of the two the service does: a client has to live with both.)
+    pub drops_online: bool,
     /// The mail a real server would have sent to other people: `invitation:Title:people`,
-    /// `update:Title:people`, `cancellation:Title:people:note`, `response:Title:answer:note`.
+    /// `update:Title:people`, `cancellation:Title:people:note`, `response:Title:answer:note`,
+    /// `proposal:Title:start/end` (with a response that proposes another time) and
+    /// `forward:Title:people:note`.
     pub mail: Vec<String>,
     /// The owner's address, which is who organizes what is made here.
     pub owner: String,
@@ -588,8 +615,17 @@ impl State {
             "AQMkAGVmMDEzMTM4LTZmYWUtNDdkNC1hMDZiLTU1OGY5OTZhYmY4OABGAAADIkPFveuwe0ygY4Mfa1RFEQcAIiLKjG2I7E_Xvk-ys6MD0wAAAgEG{:04}/+A==",
             self.made
         );
-        self.calendars.push(Calendar { id: id.clone(), name: name.to_string(), main: false, can_edit, shared });
+        let online = vec!["teamsForBusiness".to_string()];
+        self.calendars.push(Calendar { id: id.clone(), name: name.to_string(), main: false, can_edit, shared, online });
         id
+    }
+
+    /// The link to join by, for an event that was just made an online meeting.
+    fn join_link(&mut self, event: &mut Stored) {
+        if event.online && event.join_url.is_empty() {
+            self.made += 1;
+            event.join_url = format!("https://teams.example.org/l/meetup-join/19%3ameeting_{:05}%40thread.v2/0", self.made);
+        }
     }
 
     /// An event that is in the calendar already, an hour long, the owner's own: its id.
@@ -723,18 +759,18 @@ impl State {
             "hasAttachments": false,
             "subject": event.subject,
             "bodyPreview": event.body.chars().take(255).collect::<String>(),
-            "importance": "normal",
+            "importance": if event.importance.is_empty() { "normal" } else { event.importance.as_str() },
             "sensitivity": event.sensitivity,
             "isAllDay": event.all_day,
             "isCancelled": false,
             "isOrganizer": event.is_organizer,
-            "responseRequested": true,
+            "responseRequested": !event.no_response_requested,
             "seriesMasterId": if event.series.is_empty() { Value::Null } else { json!(event.series) },
             "showAs": event.show_as,
             "type": kind,
             "webLink": "https://outlook.example/calendar/item",
             "onlineMeetingUrl": Value::Null,
-            "isOnlineMeeting": false,
+            "isOnlineMeeting": event.online,
             "responseStatus": {"response": event.response, "time": "0001-01-01T00:00:00Z"},
             "body": body,
             "start": time(event.start),
@@ -746,6 +782,9 @@ impl State {
             "organizer": person(if event.is_organizer { &self.owner } else { "bo@example.org" }),
         });
         let Some(map) = all.as_object_mut() else { return all };
+        map.insert("allowNewTimeProposals".into(), json!(!event.no_new_times));
+        map.insert("onlineMeetingProvider".into(), json!(if event.online { event.online_provider.as_str() } else { "unknown" }));
+        map.insert("onlineMeeting".into(), if event.online { json!({"joinUrl": event.join_url}) } else { Value::Null });
         // Only returned when a client set it; and when a series has it only for what is one of
         // its days.
         if !event.transaction_id.is_empty() {
@@ -896,7 +935,9 @@ impl State {
     fn write(&self, event: &mut Stored, body: &Value, making: bool) -> Result<bool, Refusal> {
         let Some(body) = body.as_object() else { return Err(refuse(400, "BadRequest", "Unable to read JSON request payload.")) };
         for name in body.keys() {
-            let writable = WRITABLE.contains(&name.as_str()) || (making && name == "transactionId");
+            // (Whether another time may be proposed is said when an event is made: it is not
+            // among what the reference says an update may change.)
+            let writable = WRITABLE.contains(&name.as_str()) || (making && matches!(name.as_str(), "transactionId" | "allowNewTimeProposals"));
             if name == "transactionId" && !making {
                 return Err(refuse(400, "ErrorInvalidPropertyUpdate", "The transactionId of an event can't be changed in an update."));
             }
@@ -920,6 +961,13 @@ impl State {
                 Some(value) if values.contains(&value.as_str()) => Ok(Some(value)),
                 Some(value) => Err(bad(format!("The value '{value}' is not one that '{name}' can have."))),
                 None => Ok(None),
+            }
+        };
+        let flag = |name: &str| -> Result<Option<bool>, Refusal> {
+            match body.get(name) {
+                None => Ok(None),
+                Some(Value::Bool(on)) => Ok(Some(*on)),
+                Some(_) => Err(bad(format!("The property '{name}' is a Boolean."))),
             }
         };
         let mut seen = false;
@@ -958,7 +1006,34 @@ impl State {
             seen |= sensitivity != event.sensitivity;
             event.sensitivity = sensitivity;
         }
-        one_of("importance", &["low", "normal", "high"])?;
+        if let Some(importance) = one_of("importance", &["low", "normal", "high"])? {
+            let importance = if importance == "normal" { String::new() } else { importance };
+            seen |= importance != event.importance;
+            event.importance = importance;
+        }
+        if let Some(asked) = flag("responseRequested")? {
+            seen |= asked == event.no_response_requested;
+            event.no_response_requested = !asked;
+        }
+        if let Some(allowed) = flag("allowNewTimeProposals")? {
+            event.no_new_times = !allowed;
+        }
+        let wants_online = flag("isOnlineMeeting")?;
+        let provider = one_of("onlineMeetingProvider", &["unknown", "teamsForBusiness", "skypeForBusiness", "skypeForConsumer"])?;
+        let named = provider.filter(|provider| provider != "unknown");
+        // Once it is an online meeting it stays one, held with what it is held with: whatever
+        // is said about that afterwards is ignored.
+        if !event.online && (wants_online == Some(true) || named.is_some()) {
+            let allowed = self.calendar(&event.calendar).map(|calendar| calendar.online.clone()).unwrap_or_default();
+            match named.or_else(|| allowed.first().cloned()).filter(|with| allowed.contains(with)) {
+                Some(with) => {
+                    (event.online, event.online_provider) = (true, with);
+                    seen = true;
+                }
+                None if self.drops_online => {}
+                None => return Err(bad("The online meeting provider is not one that this calendar allows.")),
+            }
+        }
         match body.get("isReminderOn") {
             None => {}
             Some(Value::Bool(on)) => event.reminder_on = *on,
@@ -1133,6 +1208,8 @@ impl State {
                         json!({
                             "id": calendar.id, "name": calendar.name, "color": "auto", "hexColor": "", "canEdit": calendar.can_edit,
                             "canShare": !calendar.shared, "isDefaultCalendar": calendar.main,
+                            "allowedOnlineMeetingProviders": calendar.online,
+                            "defaultOnlineMeetingProvider": calendar.online.first().map_or("unknown", String::as_str),
                             "owner": {"name": if calendar.shared { "Somebody Else" } else { "Owner" }, "address": if calendar.shared { "else@example.org" } else { self.owner.as_str() }},
                         })
                     })
@@ -1199,6 +1276,7 @@ impl State {
                 event.id = self.new_id();
                 event.uid = format!("040000008200E00074C5B7101A82E008{:032X}", self.made);
                 event.modified = self.clock;
+                self.join_link(&mut event);
                 if !event.attendees.is_empty() {
                     self.mail.push(format!("invitation:{}:{}", event.subject, event.attendees.len()));
                 }
@@ -1251,6 +1329,7 @@ impl State {
                         self.changing();
                         one.version += 1;
                         one.modified = self.clock;
+                        self.join_link(&mut one);
                         if let Some(master) = self.events.get_mut(series) {
                             master.gone.push(original);
                         }
@@ -1265,6 +1344,7 @@ impl State {
                 self.changing();
                 event.version += 1;
                 event.modified = self.clock;
+                self.join_link(&mut event);
                 if seen && event.is_organizer && !event.attendees.is_empty() {
                     self.mail.push(format!("update:{}:{}", event.subject, event.attendees.len()));
                 }
@@ -1300,10 +1380,32 @@ impl State {
             ("POST", [id, action @ ("cancel" | "accept" | "tentativelyAccept" | "decline")]) => {
                 let body = asked.json();
                 let comment = body.get("comment").and_then(Value::as_str).unwrap_or("").to_string();
-                let allowed: &[&str] = if *action == "cancel" { &["comment"] } else { &["comment", "sendResponse", "proposedNewTime"] };
+                // (Another time is proposed with a tentative answer or with a decline, never
+                // with a yes.)
+                let allowed: &[&str] = match *action {
+                    "cancel" => &["comment"],
+                    "accept" => &["comment", "sendResponse"],
+                    _ => &["comment", "sendResponse", "proposedNewTime"],
+                };
                 if let Some(other) = body.as_object().and_then(|body| body.keys().find(|key| !allowed.contains(&key.as_str()))) {
                     return Err(bad(format!("The parameter '{other}' is not one of this action's.")));
                 }
+                match body.get("sendResponse") {
+                    None | Some(Value::Bool(_)) => {}
+                    Some(_) => return Err(bad("The parameter 'sendResponse' is a Boolean.")),
+                }
+                // A timeSlot: a start and an end, each a date and a time in a zone.
+                let proposed = match body.get("proposedNewTime") {
+                    None => None,
+                    Some(slot) => {
+                        let Some(slot) = slot.as_object() else { return Err(bad("The parameter 'proposedNewTime' is a timeSlot.")) };
+                        if let Some(other) = slot.keys().find(|key| !matches!(key.as_str(), "start" | "end")) {
+                            return Err(bad(format!("The property '{other}' does not exist on type 'microsoft.graph.timeSlot'.")));
+                        }
+                        let (from, to, ..) = State::times_of(slot, None)?;
+                        Some((from, to))
+                    }
+                };
                 let at = self.find(calendar, id)?;
                 let Some(event) = self.events.get(at).cloned() else { return Err(not_found()) };
                 self.writable(&event.calendar)?;
@@ -1320,9 +1422,18 @@ impl State {
                     (_, true) => return Err(bad("Your request can't be completed. You can't respond to a meeting you organize.")),
                     (answer, false) => {
                         let send = body.get("sendResponse").and_then(Value::as_bool).unwrap_or(true);
+                        if proposed.is_some() && event.no_new_times {
+                            return Err(bad("The organizer of this event doesn't allow new time proposals."));
+                        }
+                        if proposed.is_some() && !send {
+                            return Err(bad("A new time is proposed with a response that is sent: sendResponse can't be false."));
+                        }
                         self.changing();
                         if send {
                             self.mail.push(format!("response:{}:{answer}:{comment}", event.subject));
+                        }
+                        if let Some((from, to)) = proposed {
+                            self.mail.push(format!("proposal:{}:{}/{}", event.subject, instant_text(from), instant_text(to)));
                         }
                         if answer == "decline" {
                             self.events.retain(|other| other.id != event.id);
@@ -1335,7 +1446,43 @@ impl State {
                 }
                 Ok((202, None))
             }
-            (_, [] | [_] | [_, "instances" | "cancel" | "accept" | "tentativelyAccept" | "decline"]) => {
+            // A meeting sent on to more people. (The reference writes the two parameters and
+            // what a recipient is made of with capitals here, and a recipient without them
+            // where it describes one: either spelling is taken.)
+            ("POST", [id, "forward"]) => {
+                let body = asked.json();
+                let Some(said) = body.as_object() else { return Err(refuse(400, "BadRequest", "Unable to read JSON request payload.")) };
+                let any_case = |of: &Value, name: &str| -> Option<Value> {
+                    of.as_object().and_then(|of| of.iter().find(|(key, _)| key.eq_ignore_ascii_case(name))).map(|(_, value)| value.clone())
+                };
+                if let Some(other) = said.keys().find(|key| !key.eq_ignore_ascii_case("Comment") && !key.eq_ignore_ascii_case("ToRecipients")) {
+                    return Err(bad(format!("The parameter '{other}' is not one of this action's.")));
+                }
+                let comment = match any_case(&body, "Comment") {
+                    None => String::new(),
+                    Some(Value::String(comment)) => comment,
+                    Some(_) => return Err(bad("The parameter 'Comment' is a String.")),
+                };
+                let addressed = |recipient: &Value| {
+                    let address = any_case(recipient, "EmailAddress").and_then(|address| any_case(&address, "Address"));
+                    address.as_ref().and_then(Value::as_str).is_some_and(|address| address.contains('@') && !address.contains(char::is_whitespace))
+                };
+                let to = any_case(&body, "ToRecipients");
+                let Some(to) = to.as_ref().and_then(Value::as_array).filter(|to| !to.is_empty() && to.iter().all(addressed)) else {
+                    return Err(refuse(400, "ErrorInvalidRecipients", "At least one recipient isn't valid."));
+                };
+                // The event itself, or one day of a series as the series has it.
+                let subject = match self.find(calendar, id) {
+                    Ok(at) => self.events.get(at).map(|event| event.subject.clone()),
+                    Err(why) => match self.occurrence_named(id) {
+                        Some((series, _)) => self.events.get(series).map(|series| series.subject.clone()),
+                        None => return Err(why),
+                    },
+                };
+                self.mail.push(format!("forward:{}:{}:{comment}", subject.unwrap_or_default(), to.len()));
+                Ok((202, None))
+            }
+            (_, [] | [_] | [_, "instances" | "cancel" | "accept" | "tentativelyAccept" | "decline" | "forward"]) => {
                 Err(refuse(405, "MethodNotAllowed", "The method is not allowed on this resource."))
             }
             (_, [_, other, ..]) => Err(refuse(400, "BadRequest", format!("Resource not found for the segment '{other}'."))),

@@ -218,8 +218,19 @@ fn open_message(app: &mut MailApp, id: Id) -> Result<Value, String> {
 /// (`scope`, `occurrence`: the owner was asked on opening it), its form is about that.
 fn open_event(app: &mut MailApp, id: Id, p: &Value) -> Result<Value, String> {
     let Some(uid) = app.session.mailbox.event(id).map(|e| e.uid.clone()) else { return Err(format!("no event with id {id}")) };
+    // Opened to take up another time that somebody proposed (`"proposed": {"start", "end"}`):
+    // that time goes into its fields, for the owner to send as an update or not.
+    let proposed = p.get("proposed").filter(|proposed| proposed.is_object());
     if let Some(window) = app.windows.of_event(id) {
         app.windows.raise(window);
+        let time = |key: &str| proposed.and_then(|proposed| proposed.get(key)).and_then(Value::as_str).and_then(mailcraft_time::parse_iso);
+        if let (Some((start, _)), Some((end, _))) = (time("start"), time("end")) {
+            let twelve = app.session.prefs.twelve_hour;
+            let open = app.windows.open.iter_mut().find(|w| w.id == window);
+            if let Some(form) = open.and_then(|w| w.what.form_mut()).and_then(Form::event_mut) {
+                form.take_proposal(start, end, twelve);
+            }
+        }
         return Ok(json!({"window": window, "event": id, "already": true}));
     }
     if app.windows.len() >= MAX_WINDOWS {
@@ -230,6 +241,9 @@ fn open_event(app: &mut MailApp, id: Id, p: &Value) -> Result<Value, String> {
         if let (Some(said), Some(fields)) = (p.get(key).filter(|said| said.is_string()), which.as_object_mut()) {
             fields.insert(key.to_string(), said.clone());
         }
+    }
+    if let (Some(proposed), Some(fields)) = (proposed, which.as_object_mut()) {
+        fields.insert("proposed".into(), proposed.clone());
     }
     let Some(form) = Form::open("editEvent", app, &which) else { return Err(format!("no event with id {id}")) };
     let window = app.windows.add(What::Event { event: Some((id, uid)), form: Box::new(form) });
@@ -324,6 +338,12 @@ fn event_state(window: &Open) -> Value {
         "recurrence": form.is_some_and(|f| f.modal()),
         "asking": window.asking,
     });
+    // How much it matters, whether it is (to be) a Teams meeting, and the link to join it by.
+    if let Some((importance, online, link)) = form.map(|f| f.meeting_state()) {
+        state["importance"] = json!(importance);
+        state["online"] = json!(online);
+        state["joinUrl"] = json!(link);
+    }
     // What the Scheduling Assistant last drew, while its page is the one in view.
     if let Some(form) = form.filter(|f| f.page() == crate::forms::Page::Scheduling) {
         let (drawn, meeting) = (form.scheduling(), form.meeting());
@@ -443,7 +463,7 @@ pub fn inspect(app: &MailApp) -> Value {
                         Some((event, _)) => json!({"id": w.id, "kind": "event", "event": event, "title": w.title, "embedded": w.embedded}),
                         None => json!({"id": w.id, "kind": "newEvent", "form": form.name(), "title": w.title, "embedded": w.embedded}),
                     };
-                    for key in ["page", "dirty", "asking"] {
+                    for key in ["page", "dirty", "asking", "meeting", "importance", "online", "joinUrl"] {
                         entry[key] = state[key].clone();
                     }
                     entry
@@ -1308,7 +1328,8 @@ mod tests {
         assert_eq!(
             windows(&mut harness),
             json!([{"id": window, "kind": "newEvent", "form": "event", "title": "New Appointment", "embedded": true,
-                "page": "appointment", "dirty": false, "asking": false}])
+                "page": "appointment", "dirty": false, "asking": false,
+                "meeting": false, "importance": "normal", "online": false, "joinUrl": ""}])
         );
         assert_eq!((harness.state().windows.new_events(), harness.state().dialog.is_none(), events(&harness)), (1, true, count));
         assert!(harness.state().hit.rect("window", window).is_some());

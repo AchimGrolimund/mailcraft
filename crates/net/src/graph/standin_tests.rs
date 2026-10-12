@@ -603,6 +603,145 @@ fn the_zones_of_the_stand_in_keep_the_clock() {
     assert_eq!((zone_offset("UTC", 0), zone_offset("Mars/Olympus", 0)), (Some(0), None));
 }
 
+#[test]
+fn a_meeting_is_made_online_answered_with_another_time_and_forwarded_as_the_service_takes_it() {
+    let server = StandIn::start().unwrap();
+    let people = vec![Attendee { address: Address::new("Bo", "bo@example.org"), ..Default::default() }];
+    // A meeting with everything this crate says of one: how much it matters, what the people
+    // invited are asked for, and that it is held online. The answer has the link to join by.
+    let fields = EventFields {
+        attendees: Some(people.clone()),
+        importance: Some(Importance::High),
+        request_responses: Some(false),
+        allow_proposals: Some(false),
+        online: Some(OnlineProvider::Teams),
+        ..appointment("Planning", at(2026, 10, 15, 14, 0), 60)
+    };
+    let made = done(&server, create(MARK, fields), EASTERN);
+    assert_eq!(made.online, Some(true));
+    assert!(made.join_url.starts_with("https://teams.example.org/l/meetup-join/"), "{}", made.join_url);
+    let have = server.state().event("Planning").cloned().unwrap();
+    assert_eq!(
+        (have.importance.as_str(), have.no_response_requested, have.no_new_times, have.online, have.online_provider.as_str()),
+        ("high", true, true, true, "teamsForBusiness")
+    );
+    assert_eq!(server.state().mail, ["invitation:Planning:1"]);
+    // It comes down as it went up.
+    let down = october(&server, "");
+    let event = down.events.iter().find(|event| event.id == made.remote).expect("the meeting comes down under its id");
+    assert!(down.has_options);
+    assert_eq!((event.importance, event.options), (Importance::High, ResponseOptions { request_responses: false, allow_proposals: false }));
+    assert_eq!(
+        event.online.as_ref().map(|online| (online.provider, online.join_url.as_str())),
+        Some((OnlineProvider::Teams, made.join_url.as_str()))
+    );
+    // How much it matters and whether answers are asked for are changed like anything else; and
+    // an online meeting stays one, whatever is said about that afterwards.
+    let quieter = EventFields { importance: Some(Importance::Low), request_responses: Some(true), ..Default::default() };
+    done(&server, update(&made.remote, quieter), EASTERN);
+    let have = server.state().event("Planning").cloned().unwrap();
+    assert_eq!(
+        (have.importance.as_str(), have.no_response_requested, have.online, have.join_url.as_str()),
+        ("low", false, true, made.join_url.as_str())
+    );
+    // Whether another time may be proposed is not among what the reference lets an update say:
+    // the service refuses it, and nothing is changed.
+    let outcome = push(&server, vec![update(&made.remote, EventFields { allow_proposals: Some(true), ..Default::default() })], EASTERN).remove(0);
+    assert_eq!((outcome.result, outcome.status), (EventResult::Refused, 400));
+    assert!(server.state().event("Planning").unwrap().no_new_times);
+    assert_eq!(refusals(&server).len(), 1);
+
+    // A calendar whose meetings can't be held online. The reference doesn't say what the
+    // service makes of being asked all the same. Should it refuse, the event is made without,
+    // and the outcome says so; should it make the event and leave the online meeting out
+    // without a word, the outcome says so too.
+    let plain = server.state().add_calendar("Plain", true, false);
+    server.state().calendars.iter_mut().find(|calendar| calendar.id == plain).unwrap().online.clear();
+    let offline = |title: &str, mark: &str| EventOp {
+        calendar: plain.clone(),
+        ..create(mark, EventFields { online: Some(OnlineProvider::Teams), ..appointment(title, at(2026, 10, 16, 14, 0), 60) })
+    };
+    let refused = done(&server, offline("Offline", "11111111-d9cb-469f-a165-70867728950e"), EASTERN);
+    assert_eq!((refused.online, refused.join_url.as_str(), refusals(&server).len()), (Some(false), "", 2));
+    assert_eq!(server.state().event("Offline").map(|event| (event.online, event.calendar.clone())), Some((false, plain.clone())));
+    server.state().drops_online = true;
+    let dropped = done(&server, offline("Quiet", "22222222-d9cb-469f-a165-70867728950e"), EASTERN);
+    assert_eq!((dropped.online, dropped.join_url.as_str(), refusals(&server).len()), (Some(false), "", 2));
+
+    // Somebody else's meeting is answered tentatively, with another time: the organizer hears
+    // the answer and the proposal.
+    let board = {
+        let mut state = server.state();
+        let main = state.main_calendar();
+        let id = state.add_event(&main, "Board", at(2026, 10, 20, 14, 0));
+        let event = state.events.iter_mut().find(|event| event.id == id).unwrap();
+        (event.is_organizer, event.response) = (false, "none".into());
+        id
+    };
+    let proposal = EventTime { start: at(2026, 10, 20, 15, 0), end: at(2026, 10, 20, 16, 0), all_day: false };
+    let answer = |response: Response, send: bool| EventOp {
+        kind: EventChangeKind::Respond,
+        event: 5,
+        remote: board.clone(),
+        response,
+        send,
+        comment: "Later?".into(),
+        proposed: Some(proposal),
+        ..Default::default()
+    };
+    let said = |server: &StandIn| server.state().requests.last().map(|asked| (asked.path.last().cloned().unwrap_or_default(), asked.json())).unwrap();
+    server.state().mail.clear();
+    done(&server, answer(Response::Tentative, true), EASTERN);
+    let slot =
+        json!({"start": {"dateTime": "2026-10-20T15:00:00", "timeZone": "UTC"}, "end": {"dateTime": "2026-10-20T16:00:00", "timeZone": "UTC"}});
+    assert_eq!(said(&server), ("tentativelyAccept".to_string(), json!({"comment": "Later?", "sendResponse": true, "proposedNewTime": slot})));
+    assert_eq!(server.state().mail, ["response:Board:tentativelyAccept:Later?", "proposal:Board:2026-10-20T15:00:00Z/2026-10-20T16:00:00Z"]);
+    // An answer that isn't sent proposes nothing, and neither does a yes: the service would
+    // refuse the one and has no such parameter for the other, so neither is asked of it.
+    done(&server, answer(Response::Tentative, false), EASTERN);
+    assert_eq!(said(&server), ("tentativelyAccept".to_string(), json!({"comment": "", "sendResponse": false})));
+    done(&server, answer(Response::Accepted, true), EASTERN);
+    assert_eq!(said(&server), ("accept".to_string(), json!({"comment": "Later?", "sendResponse": true})));
+    // An organizer who takes no proposals: the service refuses the answer, and the meeting is
+    // not declined away by it.
+    server.state().events.iter_mut().find(|event| event.id == board).unwrap().no_new_times = true;
+    let outcome = push(&server, vec![answer(Response::Declined, true)], EASTERN).remove(0);
+    assert_eq!((outcome.result, outcome.status), (EventResult::Refused, 400));
+    assert!(server.state().event("Board").is_some());
+
+    // Sent on to two people, with a note: the action, its two parameters, and 202.
+    let to = vec![Address::new("Eve", "eve@example.org"), Address::new("", "dan@example.org")];
+    let forward = |remote: &str, calendar: &str, send: bool| EventOp {
+        kind: EventChangeKind::Forward,
+        event: 6,
+        remote: remote.into(),
+        token: MARK.into(),
+        calendar: calendar.into(),
+        send,
+        comment: "Do come.".into(),
+        to: to.clone(),
+        ..Default::default()
+    };
+    server.state().mail.clear();
+    let sent = done(&server, forward(&made.remote, "", true), EASTERN);
+    assert_eq!(sent.status, 202);
+    let recipients = json!([
+        {"EmailAddress": {"Address": "eve@example.org", "Name": "Eve"}},
+        {"EmailAddress": {"Address": "dan@example.org", "Name": ""}},
+    ]);
+    assert_eq!(said(&server), ("forward".to_string(), json!({"ToRecipients": recipients, "Comment": "Do come."})));
+    assert_eq!(server.state().mail, ["forward:Planning:2:Do come."]);
+    // One of another calendar goes through that calendar.
+    done(&server, forward(&refused.remote, &plain, true), EASTERN);
+    let through = server.state().requests.last().map(|asked| asked.path.clone()).unwrap();
+    assert_eq!(through, ["v1.0", "me", "calendars", plain.as_str(), "events", refused.remote.as_str(), "forward"]);
+    // Without the owner's yes the service is not asked at all.
+    let asked = server.state().requests.len();
+    let outcome = push(&server, vec![forward(&made.remote, "", false)], EASTERN).remove(0);
+    assert_eq!((outcome.result, outcome.status, server.state().requests.len()), (EventResult::Refused, 0, asked));
+    assert_eq!(server.state().mail.len(), 2);
+}
+
 /// An event with zones of its own, as the mailbox sends one.
 fn in_zones(fields: EventFields, start: &str, end: &str) -> EventFields {
     EventFields { zones: Some(mailcraft_model::remote::EventZones { start: start.into(), end: end.into() }), ..fields }

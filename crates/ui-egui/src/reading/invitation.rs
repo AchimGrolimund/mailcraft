@@ -129,6 +129,25 @@ pub(crate) struct Info {
     conflicts: Vec<Slot>,
     adjacent: Vec<Slot>,
     day: Vec<Slot>,
+    /// Another time may be proposed with an answer: the organizer takes proposals, and the
+    /// answer can be sent.
+    can_propose: bool,
+    /// For a message that proposes another time: the time it proposes.
+    proposed: Option<Proposed>,
+    /// How many proposals of another time are known for the meeting, this message's among them.
+    proposals: usize,
+    /// The meeting on the calendar that the message is about, when it is there.
+    event: Option<Id>,
+    /// The owner organizes the meeting.
+    mine: bool,
+}
+
+/// The time a message proposes, as the engine writes it.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct Proposed {
+    start: String,
+    end: String,
 }
 
 impl Info {
@@ -151,6 +170,13 @@ impl Info {
         }
         let (start, end) = (time_of(&self.start)?, time_of(&self.end)?);
         Some(When { start, end: end.max(start), all_day: false })
+    }
+
+    /// The other time the message proposes, when it proposes one that can be read.
+    fn proposed_when(&self) -> Option<When> {
+        let proposed = self.proposed.as_ref()?;
+        let (start, end) = (time_of(&proposed.start)?, time_of(&proposed.end)?);
+        (end > start).then_some(When { start, end, all_day: false })
     }
 }
 
@@ -412,6 +438,11 @@ enum Part {
     Calendar,
     Remove,
     Find,
+    /// Propose New Time, on an invitation.
+    Propose,
+    /// Accept Proposal and View All Proposals, on a message that proposes another time.
+    AcceptProposal,
+    Proposals,
 }
 
 /// The name `ui.inspect` and `ui.click` know a part of the bar by, in the reading pane and in a
@@ -437,6 +468,12 @@ fn hit_kind(place: Place, part: Part) -> &'static str {
         Part::Remove => "windowInvitationRemove",
         Part::Find if pane => "invitationFind",
         Part::Find => "windowInvitationFind",
+        Part::Propose if pane => "invitationPropose",
+        Part::Propose => "windowInvitationPropose",
+        Part::AcceptProposal if pane => "invitationAcceptProposal",
+        Part::AcceptProposal => "windowInvitationAcceptProposal",
+        Part::Proposals if pane => "invitationProposals",
+        Part::Proposals => "windowInvitationProposals",
     }
 }
 
@@ -674,6 +711,48 @@ fn answers(app: &mut MailApp, ui: &mut Ui, t: &Tokens, message: Id, info: &Info,
             run(app, ui, "calendar.respond", params);
         }
     }
+    // Another time, proposed with a tentative answer or a decline: asked for in a dialog of its
+    // own, which says who is written to and sends from its own buttons.
+    if info.can_propose {
+        let (propose, _) = button(ui, t, "proposeTime", tl!("Propose New Time"), false, false);
+        let propose = propose.on_hover_text(tl!(
+            "Propose another time to the organizer, with a tentative answer or a decline. Nothing is sent until you say so there."
+        ));
+        if !native {
+            app.hit.add(hit_kind(place, Part::Propose), message, propose.rect);
+        }
+        if propose.clicked() {
+            run(app, ui, "ui.dialog", json!({"name": "proposeTime", "message": message}));
+        }
+    }
+}
+
+/// What can be done about a message that proposes another time for a meeting the owner
+/// organizes: take the proposal up (the meeting opens with that time in its fields, to be sent
+/// as an update or not), and look at all the proposals there are when there are several.
+fn proposal_buttons(app: &mut MailApp, ui: &mut Ui, t: &Tokens, message: Id, info: &Info, place: Place, native: bool) {
+    let (Some(event), Some(proposed), true) = (info.event, info.proposed_when(), info.mine) else { return };
+    let (accept, _) = button(ui, t, "accept", tl!("Accept Proposal"), false, false);
+    let accept = accept.on_hover_text(tl!("Open the meeting with the proposed time filled in. Nothing is sent until you send the update there."));
+    if !native {
+        app.hit.add(hit_kind(place, Part::AcceptProposal), message, accept.rect);
+    }
+    if accept.clicked() {
+        crate::meeting_dialogs::accept_proposal(app, event, info.occurrence.as_deref(), proposed.start, proposed.end);
+        if native {
+            ui.ctx().send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+        }
+    }
+    if info.proposals > 1 {
+        let (all, _) = button(ui, t, "proposeTime", tl!("View All Proposals"), false, false);
+        let all = all.on_hover_text(tl!("Every other time that was proposed for this meeting."));
+        if !native {
+            app.hit.add(hit_kind(place, Part::Proposals), message, all.rect);
+        }
+        if all.clicked() {
+            run(app, ui, "ui.dialog", json!({"name": "proposals", "message": message}));
+        }
+    }
 }
 
 /// A look at the stretch of the day the meeting falls in: the hours, what is on, and the
@@ -830,11 +909,14 @@ pub(super) fn bar(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, place: Place
             }
             // What can be done.
             let request = info.kind == "request";
-            if request || info.kind == "cancellation" {
+            if request || info.kind == "cancellation" || info.kind == "counter" {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                     if request && info.answerable {
                         answers(app, ui, &t, m.id, &info, place, native);
+                    }
+                    if info.kind == "counter" {
+                        proposal_buttons(app, ui, &t, m.id, &info, place, native);
                     }
                     if info.removable {
                         let (remove, _) = button(ui, &t, "remove", tl!("Remove from Calendar"), false, false);
@@ -888,6 +970,10 @@ pub(super) fn bar(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, place: Place
 /// only when.
 fn details(app: &MailApp, ui: &mut Ui, t: &Tokens, info: &Info, when: Option<&When>, width: f32, (compact, tight): (bool, bool)) {
     let twelve_hour = app.session.prefs.twelve_hour;
+    // (A message that proposes another time says the proposal first, then when the meeting is.)
+    if let Some(proposed) = info.proposed_when() {
+        row(ui, t, tl!("Proposed"), &proposed.text(twelve_hour), if tight { 1 } else { 2 }, width);
+    }
     if let Some(when) = when {
         row(ui, t, tl!("When"), &when.text(twelve_hour), if tight { 1 } else { 2 }, width);
         // When that is where the meeting was made, for one from another time zone; and what

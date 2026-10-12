@@ -532,6 +532,26 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
             pen.circle(10.0, 10.0, 6.5, c);
             pen.line_c(&[(10.0, 6.0), (10.0, 10.0), (13.0, 12.0)], a);
         }
+        // A meeting held online: a camera, its lens to the right.
+        "onlineMeeting" | "joinMeeting" => {
+            pen.frect(2.5, 6.0, 12.0, 14.0, soft);
+            pen.rect(2.5, 6.0, 12.0, 14.0, c);
+            pen.fill(&[(12.8, 9.2), (17.5, 6.3), (17.5, 13.7), (12.8, 10.8)], a);
+        }
+        // Another time for a meeting: a clock, and an arrow on to a later hour.
+        "proposeTime" => {
+            pen.circle(8.0, 9.0, 5.5, c);
+            pen.line(&[(8.0, 5.8), (8.0, 9.0), (10.3, 10.4)]);
+            pen.line_c(&[(10.5, 16.0), (17.0, 16.0)], a);
+            pen.line_c(&[(14.6, 13.7), (17.2, 16.0), (14.6, 18.3)], a);
+        }
+        // What the people invited are asked for: one line ticked, one with a question.
+        "responseOptions" => {
+            pen.check(5.5, 6.5, 0.8, green);
+            pen.line(&[(10.0, 6.5), (17.0, 6.5)]);
+            pen.text(5.5, 13.5, 9.5, "?", a, true);
+            pen.line(&[(10.0, 13.5), (17.0, 13.5)]);
+        }
         // The world with its meridians, and the hour a place on it has.
         "timeZones" | "globe" => {
             pen.circle(9.0, 10.0, 6.0, c);
@@ -735,6 +755,10 @@ pub const NAMES: &[&str] = &[
     "location",
     "clock",
     "time",
+    "onlineMeeting",
+    "joinMeeting",
+    "proposeTime",
+    "responseOptions",
     "timeZones",
     "globe",
     "notes",

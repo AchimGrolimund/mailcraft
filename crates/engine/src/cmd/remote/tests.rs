@@ -543,7 +543,8 @@ fn what_a_server_cannot_be_told_of_an_event_is_refused() {
         (
             "calendar.edit",
             json!({"id": id, "calendar": s.mailbox.default_calendar()}),
-            "This event is kept by the server of ada@example.org. It can't be moved to another calendar from here.".to_string(),
+            "This event is kept by the server of ada@example.org. It can be moved to another calendar of that account, not out of it: taking it out would delete it there."
+                .to_string(),
         ),
     ] {
         assert_eq!(refused(&mut s, command, params.clone()), why, "{command} {params}");
@@ -783,7 +784,10 @@ fn an_event_of_the_mailboxs_own_can_be_put_on_the_server() {
     assert_eq!(s.mailbox.events.values().filter(|e| e.title == "Stranded").count(), 1, "one event, not a copy and an original");
     // The other way would delete it on the server: it isn't done from here.
     let why = refused(&mut s, "calendar.edit", json!({"id": stranded, "calendar": local}));
-    assert_eq!(why, "This event is kept by the server of ada@example.org. It can't be moved to another calendar from here.");
+    assert_eq!(
+        why,
+        "This event is kept by the server of ada@example.org. It can be moved to another calendar of that account, not out of it: taking it out would delete it there."
+    );
     // A series goes too, and the days it skips here are deleted there once it is there.
     let series =
         run(&mut s, "calendar.new", json!({"title": "Gym", "start": "2026-10-15T18:00", "recurrence": {"freq": "weekly"}, "calendar": local}))["id"]

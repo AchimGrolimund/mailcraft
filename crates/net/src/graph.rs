@@ -40,6 +40,16 @@
 //! here decides to send mail**: an upload holds only what the mailbox was told to send
 //! (`mailcraft-engine` refuses to note such a change without the owner's yes).
 //!
+//! An event also says how much it matters (`importance`), what the people invited are asked for
+//! (`responseRequested`, `allowNewTimeProposals`) and whether it is held online: a new one is
+//! made a Teams meeting with `isOnlineMeeting` and `onlineMeetingProvider`, and Graph's answer
+//! carries the link to join by (`onlineMeeting.joinUrl`). An account that can't have one gets
+//! the event without ([`mailcraft_model::remote::EventOutcome::online`] says so). An answer may
+//! propose another time (`proposedNewTime` of `/tentativelyAccept` and `/decline`), and a
+//! meeting is sent on with `POST /me/events/{id}/forward`: both are mail, and are in an upload
+//! only on the owner's yes. Graph has no way of moving an event from one calendar to another:
+//! the mailbox makes it anew and deletes the original, as two ops of its own.
+//!
 //! An event of a calendar other than the main one is written through that calendar
 //! (`/me/calendars/{id}/events/{id}`): the copy of a calendar that somebody else shares with the
 //! account is reached that way and no other. An event's id goes into an address as one piece of
@@ -68,7 +78,10 @@ use mailcraft_model::remote::{
     EventsDownload, EventsUpload, EventsUploaded, FreeBusy, FreeBusyAsk, MAX_BUSY, MAX_CONTACTS, MAX_EVENT_OPS, MAX_EVENTS, MAX_REMOTE_CALENDARS,
     MAX_REMOTE_CATEGORIES, MAX_SCHEDULE_STRETCH, MAX_SCHEDULES, PersonSchedule, RemoteCalendar, RemoteContact, RemoteEvent, RemoteEventKind,
 };
-use mailcraft_model::{Address, Attendee, Category, Freq, Labeled, Message, PostalAddress, Recurrence, Response, Rgb, ShowAs};
+use mailcraft_model::{
+    Address, Attendee, Category, Freq, Importance, Labeled, Message, OnlineMeeting, OnlineProvider, PostalAddress, Recurrence, Response,
+    ResponseOptions, Rgb, ShowAs,
+};
 use mailcraft_proto::ProtoError;
 use mailcraft_time::{Date, DateTime, Timestamp, Weekday};
 use serde_json::{Map, Value, json};
@@ -110,6 +123,20 @@ const EVENT_FIELDS_FULL: &str = "id,iCalUId,changeKey,subject,bodyPreview,body,s
 const SERIES_FIELDS: &str = "id,iCalUId,changeKey,subject,bodyPreview,body,start,end,isAllDay,isCancelled,location,organizer,attendees,\
                              responseStatus,showAs,sensitivity,type,seriesMasterId,isReminderOn,reminderMinutesBeforeStart,\
                              isOrganizer,transactionId,categories,recurrence,originalStartTimeZone,originalEndTimeZone";
+/// And first of all: with how much it matters, what the people invited are asked for, whether
+/// it is held online and with what (and the link to join by), and whether files are kept with
+/// it. A proposal of another time comes with the person who made it, among `attendees`.
+const EVENT_FIELDS_OPTIONS: &str = "id,iCalUId,changeKey,subject,bodyPreview,body,start,end,isAllDay,isCancelled,location,organizer,attendees,\
+                                    responseStatus,showAs,sensitivity,type,seriesMasterId,isReminderOn,\
+                                    reminderMinutesBeforeStart,isOrganizer,transactionId,categories,originalStart,originalStartTimeZone,\
+                                    originalEndTimeZone,importance,responseRequested,allowNewTimeProposals,isOnlineMeeting,\
+                                    onlineMeetingProvider,onlineMeeting,onlineMeetingUrl,hasAttachments";
+/// The same of a series itself.
+const SERIES_FIELDS_OPTIONS: &str = "id,iCalUId,changeKey,subject,bodyPreview,body,start,end,isAllDay,isCancelled,location,organizer,attendees,\
+                                     responseStatus,showAs,sensitivity,type,seriesMasterId,isReminderOn,\
+                                     reminderMinutesBeforeStart,isOrganizer,transactionId,categories,recurrence,originalStartTimeZone,\
+                                     originalEndTimeZone,importance,responseRequested,allowNewTimeProposals,isOnlineMeeting,\
+                                     onlineMeetingProvider,onlineMeeting,onlineMeetingUrl,hasAttachments";
 const BATCH: &str = "/v1.0/$batch";
 const CALENDARS: &str = "/v1.0/me/calendars";
 /// Most questions one batch carries (Graph's own limit), most series asked about in one go, and
@@ -497,12 +524,16 @@ fn events_in_at(base: &str, token: &str, query: &EventsQuery) -> Result<EventsDo
     // were asked for, the calendar still comes.
     let mut listed = Err(nonsense("the calendar wasn't asked for"));
     let mut full = true;
-    for fields in [EVENT_FIELDS_FULL, EVENT_FIELDS, EVENT_FIELDS_PLAIN] {
+    // (The fullest question comes first: what it adds to the next is `has_options`.)
+    let mut options = true;
+    for fields in [EVENT_FIELDS_OPTIONS, EVENT_FIELDS_FULL, EVENT_FIELDS, EVENT_FIELDS_PLAIN] {
         listed = events_with(&graph, &calendar, from, to, fields);
         match &listed {
             Err(NetError::Proto(ProtoError::Rejected(why))) if why.starts_with(BAD_REQUEST) => {
                 log::debug!("calendar: asked again with fewer fields");
-                full = false;
+                // The first refusal costs the newest fields, the next one the categories too.
+                full &= options;
+                options = false;
             }
             _ => break,
         }
@@ -510,6 +541,7 @@ fn events_in_at(base: &str, token: &str, query: &EventsQuery) -> Result<EventsDo
     let mut download = listed?;
     download.calendar = calendar;
     download.has_categories = full;
+    download.has_options = options;
     // Every series that happens in the stretch, and those the mailbox expected to: as themselves.
     let mut wanted: Vec<String> = Vec::new();
     let named = download.events.iter().map(|event| &event.series).chain(&query.series);
@@ -518,7 +550,9 @@ fn events_in_at(base: &str, token: &str, query: &EventsQuery) -> Result<EventsDo
             wanted.push(series);
         }
     }
-    for (series, answer) in graph.series(&wanted) {
+    // (Asked of a series what could be asked of the events: no more, so that it comes at all.)
+    let of_series = if options { SERIES_FIELDS_OPTIONS } else { SERIES_FIELDS };
+    for (series, answer) in graph.series(&wanted, of_series) {
         match answer {
             Series::Found(event) => download.events.push(*event),
             Series::Gone => download.gone.push(series),
@@ -543,9 +577,9 @@ enum Series {
 impl Graph<'_> {
     /// Ask for the series called `ids` as themselves, [`BATCH_SIZE`] to a request. Every one
     /// gets an answer, in order.
-    fn series(&self, ids: &[String]) -> Vec<(String, Series)> {
+    fn series(&self, ids: &[String], fields: &str) -> Vec<(String, Series)> {
         let mut out: Vec<(String, Series)> = Vec::new();
-        let select = http::form(&[("$select", SERIES_FIELDS)]);
+        let select = http::form(&[("$select", fields)]);
         for some in ids.chunks(BATCH_SIZE) {
             let requests: Vec<Value> = some
                 .iter()
@@ -767,10 +801,62 @@ fn event_body(fields: &EventFields, mark: &str, zone: &str, own: bool) -> Option
             event.insert("reminderMinutesBeforeStart".into(), json!(reminder.minutes));
         }
     }
+    if let Some(importance) = fields.importance {
+        event.insert("importance".into(), json!(importance.code()));
+    }
+    if let Some(asked) = fields.request_responses {
+        event.insert("responseRequested".into(), json!(asked));
+    }
+    if let Some(allowed) = fields.allow_proposals {
+        event.insert("allowNewTimeProposals".into(), json!(allowed));
+    }
+    // Held online: Graph makes the meeting and gives the link to join by in its answer.
+    if let Some(provider) = fields.online {
+        event.insert("isOnlineMeeting".into(), json!(true));
+        event.insert("onlineMeetingProvider".into(), json!(provider.code()));
+    }
     if !mark.is_empty() {
         event.insert("transactionId".into(), json!(mark));
     }
     Some(Value::Object(event).to_string())
+}
+
+/// What an answer to an invitation is sent with: the note and whether the organizer is told,
+/// and another time when one is proposed with it (which Graph takes only with an answer that
+/// is sent, and only for a tentative one or a decline).
+fn answer_body(op: &EventOp) -> String {
+    let mut answer = Map::new();
+    answer.insert("comment".into(), json!(if op.send { op.comment.as_str() } else { "" }));
+    answer.insert("sendResponse".into(), json!(op.send));
+    if let Some(time) = op.proposed.filter(|_| op.send && matches!(op.response, Response::Tentative | Response::Declined)) {
+        let end = time.end.max(time.start);
+        answer.insert("proposedNewTime".into(), json!({"start": date_time(time.start, false, ""), "end": date_time(end, false, "")}));
+    }
+    Value::Object(answer).to_string()
+}
+
+/// What forwarding a meeting is sent with: who to (those of them with an address that is one),
+/// and the note. `None` when nobody is left to send it to.
+fn forward_body(op: &EventOp) -> Option<String> {
+    let to: Vec<Value> = op
+        .to
+        .iter()
+        .take(mailcraft_model::remote::MAX_FORWARD)
+        .filter(|who| is_address(who.email.trim()))
+        .map(|who| json!({"EmailAddress": {"Address": who.email.trim(), "Name": who.name.trim()}}))
+        .collect();
+    (!to.is_empty()).then(|| json!({"ToRecipients": to, "Comment": op.comment}).to_string())
+}
+
+/// What a Graph answer to making or changing an event says of its being held online: whether it
+/// is, and the link to join it by (`onlineMeeting.joinUrl`, or the older `onlineMeetingUrl`).
+fn online_of(entry: &Value) -> (Option<bool>, String) {
+    let link = match entry.get("onlineMeeting").map_or("", |meeting| text(meeting, "joinUrl")) {
+        "" => text(entry, "onlineMeetingUrl"),
+        link => link,
+    };
+    let link = if link.len() <= mailcraft_model::MAX_JOIN_LINK { OnlineMeeting::clean_link(link).unwrap_or_default() } else { String::new() };
+    (entry.get("isOnlineMeeting").and_then(Value::as_bool), link)
 }
 
 /// What became of one try at writing an event.
@@ -862,6 +948,11 @@ impl Graph<'_> {
             EventChangeKind::Delete if named && op.cancel => ("POST", format!("{event}/cancel")),
             EventChangeKind::Delete if named => ("DELETE", event),
             EventChangeKind::Respond if named && !answer.is_empty() => ("POST", format!("{event}/{answer}")),
+            // A meeting sent on to more people, which only the owner's yes puts into an upload.
+            EventChangeKind::Forward if named && op.send && !op.to.is_empty() => ("POST", format!("{event}/forward")),
+            EventChangeKind::Forward => {
+                return Wrote::Outcome(outcome(op, EventResult::Refused, "the forward doesn't say which meeting goes to whom".into()), false);
+            }
             // Nothing says which event: not a question Graph can be asked.
             _ => return Wrote::Outcome(outcome(op, EventResult::Refused, "the change doesn't say which event it is about".into()), false),
         };
@@ -889,22 +980,42 @@ impl Graph<'_> {
             (true, None, true) => zone.to_string(),
             (true, None, false) => "UTC".to_string(),
         };
-        // Twice at most: a second time in UTC, should Graph not know the zone a whole day is in.
-        for _ in 0..2 {
+        // The event is to be held online. Graph may not have that for this account (a personal
+        // one, a mailbox without Teams): it is then asked for the event without, and the
+        // outcome says so, with what Graph said to the first asking.
+        let asks_online = matches!(op.kind, EventChangeKind::Create | EventChangeKind::Update) && op.fields.online.is_some();
+        let (mut online, mut no_online) = (asks_online, String::new());
+        // A few times at most: again in UTC, should Graph not know the zone a whole day is in,
+        // and again without the online meeting, should it not have one.
+        for _ in 0..4 {
             let body = match op.kind {
                 EventChangeKind::Delete if op.cancel => Some(json!({"comment": op.comment}).to_string()),
                 EventChangeKind::Delete => None,
-                EventChangeKind::Respond => {
-                    Some(json!({"comment": if op.send { op.comment.as_str() } else { "" }, "sendResponse": op.send}).to_string())
-                }
-                EventChangeKind::Create | EventChangeKind::Update => match event_body(&op.fields, &op.token, zone, own) {
-                    Some(body) => Some(body),
-                    None => {
-                        let why = "it repeats in a way Microsoft 365 has no way of keeping";
-                        return Wrote::Outcome(outcome(op, EventResult::Refused, why.into()), false);
+                EventChangeKind::Respond => Some(answer_body(&op)),
+                EventChangeKind::Forward => forward_body(&op),
+                EventChangeKind::Create | EventChangeKind::Update => {
+                    let mut fields = op.fields.clone();
+                    if !online {
+                        fields.online = None;
                     }
-                },
+                    // Nothing but the online meeting was to change, and Graph won't have it.
+                    if op.kind == EventChangeKind::Update && fields.is_empty() {
+                        let mut done = outcome(op, EventResult::Done, no_online);
+                        (done.remote, done.online) = (found, Some(false));
+                        return Wrote::Outcome(done, false);
+                    }
+                    match event_body(&fields, &op.token, zone, own) {
+                        Some(body) => Some(body),
+                        None => {
+                            let why = "it repeats in a way Microsoft 365 has no way of keeping";
+                            return Wrote::Outcome(outcome(op, EventResult::Refused, why.into()), false);
+                        }
+                    }
+                }
             };
+            if op.kind == EventChangeKind::Forward && body.is_none() {
+                return Wrote::Outcome(outcome(op, EventResult::Refused, "nobody it is forwarded to has an address".into()), false);
+            }
             let headers: &[(&str, &str)] = if body.is_some() { &[("Content-Type", "application/json"), ("Prefer", EVENT_PREFERENCES)] } else { &[] };
             let reply = match self.ask(&url, method, headers, body.as_deref(), WRITE_TIMEOUT, MAX_WRITTEN) {
                 Ok(reply) => reply,
@@ -936,16 +1047,36 @@ impl Graph<'_> {
                     done.uid = text(&json, "iCalUId").to_string();
                     // When Graph says it changed it: what a later answer is told from an earlier by.
                     done.modified = instant(text(&json, "lastModifiedDateTime")).unwrap_or(0);
+                    // Whether it is held online now, for one that was to be: not, when Graph was
+                    // asked for it without; else as its answer says, with the link to join by.
+                    if asks_online {
+                        let (is_online, link) = online_of(&json);
+                        (done.online, done.join_url) = if online { (is_online, link) } else { (Some(false), String::new()) };
+                        done.error = if done.online == Some(false) { no_online } else { String::new() };
+                    }
                     done.tidy();
                     return Wrote::Outcome(done, false);
                 }
-                (EventChangeKind::Update | EventChangeKind::Delete | EventChangeKind::Respond, 404 | 410) => (EventResult::Gone, false),
+                (EventChangeKind::Update | EventChangeKind::Delete | EventChangeKind::Respond | EventChangeKind::Forward, 404 | 410) => {
+                    (EventResult::Gone, false)
+                }
                 (_, 403) => (EventResult::Denied, false),
                 (_, 429 | 503 | 504) => (EventResult::Failed, true),
                 (EventChangeKind::Create, 409) | (_, 500..=599) => (EventResult::Failed, false),
-                // A day or an hour in a zone Graph doesn't know: the same in UTC.
+                // An online meeting that Graph won't make: the same event without one.
+                (EventChangeKind::Create | EventChangeKind::Update, 400) if online => {
+                    online = false;
+                    no_online = match why() {
+                        NetError::Proto(ProtoError::Rejected(words)) => words,
+                        other => other.to_string(),
+                    };
+                    continue;
+                }
+                // A day or an hour in a zone Graph doesn't know: the same in UTC (and, as it
+                // may have been the zone that was wrong, with the online meeting once more).
                 (EventChangeKind::Create | EventChangeKind::Update, 400) if zoned && (!zone.is_empty() || (own && op.fields.zones.is_some())) => {
                     (zone, own) = ("", false);
+                    online = asks_online;
                     continue;
                 }
                 _ => (EventResult::Refused, false),
@@ -1141,6 +1272,15 @@ fn event_of(entry: &Value) -> Option<RemoteEvent> {
             .and_then(Value::as_array)
             .map(|names| names.iter().take(MAX_ENTRIES).filter_map(Value::as_str).map(str::to_string).collect())
             .unwrap_or_default(),
+        importance: Importance::parse(text(entry, "importance")).unwrap_or_default(),
+        // Both are so unless Graph says they are not.
+        options: ResponseOptions {
+            request_responses: entry.get("responseRequested").and_then(Value::as_bool) != Some(false),
+            allow_proposals: entry.get("allowNewTimeProposals").and_then(Value::as_bool) != Some(false),
+        },
+        online: online_meeting(entry),
+        proposals: attendees.iter().take(MAX_PEOPLE).filter_map(proposal_of).collect(),
+        attachments: flag("hasAttachments"),
     };
     if event.kind == RemoteEventKind::SeriesMaster
         && let Some((rule, day)) = entry.get("recurrence").and_then(rule_of)
@@ -1149,6 +1289,24 @@ fn event_of(entry: &Value) -> Option<RemoteEvent> {
     }
     event.tidy();
     (!event.id.is_empty()).then_some(event)
+}
+
+/// The online meeting an event is, when Graph says it is one: what it is held with, and the
+/// link to join it by when there is one that can be a link.
+fn online_meeting(entry: &Value) -> Option<OnlineMeeting> {
+    let (online, join_url) = online_of(entry);
+    if online != Some(true) && join_url.is_empty() {
+        return None;
+    }
+    let provider = OnlineProvider::parse(text(entry, "onlineMeetingProvider")).unwrap_or(OnlineProvider::Other);
+    Some(OnlineMeeting { provider, join_url })
+}
+
+/// Another time that one of the people invited proposes (`proposedNewTime` of an attendee).
+fn proposal_of(attendee: &Value) -> Option<mailcraft_model::remote::RemoteProposal> {
+    let proposed = attendee.get("proposedNewTime").filter(|proposed| proposed.is_object())?;
+    let (start, end) = (when(proposed.get("start"))?, when(proposed.get("end"))?);
+    Some(mailcraft_model::remote::RemoteProposal { from: person(attendee), start, end: end.max(start) })
 }
 
 /// The names Graph has for the days of the week, and for which one of a month is meant.
@@ -1306,6 +1464,8 @@ fn contact_of(entry: &Value) -> Option<RemoteContact> {
 
 const CALENDAR_GROUPS: &str = "/v1.0/me/calendarGroups";
 const CALENDAR_FIELDS: &str = "id,name,color,hexColor,canEdit,isDefaultCalendar";
+/// The same with what a calendar's meetings may be held online with, which is asked for first.
+const CALENDAR_FIELDS_ONLINE: &str = "id,name,color,hexColor,canEdit,isDefaultCalendar,allowedOnlineMeetingProviders";
 const MASTER_CATEGORIES: &str = "/v1.0/me/outlook/masterCategories";
 const GET_SCHEDULE: &str = "/v1.0/me/calendar/getSchedule";
 /// Most groups of calendars one account is taken to have.
@@ -1399,7 +1559,33 @@ fn calendar_of(entry: &Value, group: &str) -> Option<RemoteCalendar> {
         group: group.to_string(),
         read_only: entry.get("canEdit").and_then(Value::as_bool) == Some(false),
         main: entry.get("isDefaultCalendar").and_then(Value::as_bool).unwrap_or(false),
+        // What its meetings may be held online with, when the answer says (it was asked for).
+        online_providers: entry
+            .get("allowedOnlineMeetingProviders")
+            .and_then(Value::as_array)
+            .map(|allowed| allowed.iter().take(8).filter_map(Value::as_str).filter_map(OnlineProvider::parse).collect()),
     })
+}
+
+/// The calendars of one list (`path`), each in the group called `group`, into `download`: asked
+/// for with what their meetings may be held online with, and without when Graph won't have the
+/// question that way (the calendars still come, and say nothing of it). Whether the list was
+/// read to its end.
+fn calendars_of(graph: &Graph<'_>, path: &str, group: &str, download: &mut CalendarsDownload) -> Result<bool, NetError> {
+    let mut whole = Err(nonsense("the calendars weren't asked for"));
+    for fields in [CALENDAR_FIELDS_ONLINE, CALENDAR_FIELDS] {
+        let query = http::form(&[("$top", PAGE_SIZE), ("$select", fields)]);
+        let url = graph.url(&format!("{path}?{query}"));
+        whole =
+            graph.list(Doing::Calendar, url, &[], MAX_REMOTE_CALENDARS, &mut |entry: &Value| download.calendars.extend(calendar_of(entry, group)));
+        match &whole {
+            Err(NetError::Proto(ProtoError::Rejected(why))) if why.starts_with(BAD_REQUEST) => {
+                log::debug!("calendars: asked again with fewer fields")
+            }
+            _ => break,
+        }
+    }
+    whole
 }
 
 /// [`calendars`] from Graph at `base`.
@@ -1414,26 +1600,18 @@ fn calendars_at(base: &str, token: &str) -> Result<CalendarsDownload, NetError> 
             groups.push((id, text(entry, "name").to_string()));
         }
     });
-    let query = http::form(&[("$top", PAGE_SIZE), ("$select", CALENDAR_FIELDS)]);
     match grouped {
         Ok(whole) if !groups.is_empty() => {
             download.complete = whole;
             for (id, name) in &groups {
-                let url = graph.url(&format!("{CALENDAR_GROUPS}/{}/calendars?{query}", http::encode(id)));
-                let whole = graph.list(Doing::Calendar, url, &[], MAX_REMOTE_CALENDARS, &mut |entry: &Value| {
-                    download.calendars.extend(calendar_of(entry, name))
-                })?;
+                let whole = calendars_of(&graph, &format!("{CALENDAR_GROUPS}/{}/calendars", http::encode(id)), name, &mut download)?;
                 download.complete &= whole;
             }
         }
         // A sign-in that is no longer taken, or a Graph that is busy: nothing more is asked.
         Err(e) if e.is_refused_sign_in() || matches!(e, NetError::Busy { .. }) => return Err(e),
         // No groups to be had: the calendars as one list.
-        _ => {
-            let url = graph.url(&format!("{CALENDARS}?{query}"));
-            download.complete = graph
-                .list(Doing::Calendar, url, &[], MAX_REMOTE_CALENDARS, &mut |entry: &Value| download.calendars.extend(calendar_of(entry, "")))?;
-        }
+        _ => download.complete = calendars_of(&graph, CALENDARS, "", &mut download)?,
     }
     download.tidy();
     // A list with nothing in it is no reason to take every calendar away.

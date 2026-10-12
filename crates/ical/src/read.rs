@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use mailcraft_model::zoned::{instant_at, own_zones, wall_at};
-use mailcraft_model::{Address, Attendee, Event, Importance, Response, ShowAs, Task};
+use mailcraft_model::{Address, Attendee, Event, Importance, OnlineMeeting, OnlineProvider, Response, ResponseOptions, ShowAs, Task};
 use mailcraft_time::{Date, DateTime, Timestamp, Zone};
 
 use crate::IcsFile;
@@ -389,6 +389,26 @@ struct EventBuilder {
     /// `X-MICROSOFT-CDO-ALLDAYEVENT:TRUE`: midnight to midnight means all day.
     whole_days: bool,
     alarms: Vec<Trigger>,
+    /// `PRIORITY`, and what Outlook says beside it (`X-MICROSOFT-CDO-IMPORTANCE`).
+    priority: Option<Importance>,
+    cdo_importance: Option<Importance>,
+    /// `X-MICROSOFT-DISALLOW-COUNTER:TRUE`: the organizer takes no proposals of another time.
+    no_counter: bool,
+    /// How many of the people invited are asked to answer (`RSVP=TRUE`), and how many are told
+    /// they needn't (`RSVP=FALSE`).
+    rsvp: (usize, usize),
+    /// The link to join an online meeting by, with what it is held with.
+    join: Option<OnlineMeeting>,
+}
+
+/// What `PRIORITY` says of how much something matters: 1 to 4 much, 6 to 9 little.
+fn priority(value: &str) -> Option<Importance> {
+    match value.trim().parse::<u8>() {
+        Ok(1..=4) => Some(Importance::High),
+        Ok(5) => Some(Importance::Normal),
+        Ok(6..=9) => Some(Importance::Low),
+        _ => None,
+    }
 }
 
 impl EventBuilder {
@@ -448,7 +468,31 @@ impl EventBuilder {
                         _ => Response::None,
                     };
                     self.attendees.push(Attendee { address, optional: matches!(role.as_str(), "OPT-PARTICIPANT" | "NON-PARTICIPANT"), response });
+                    match line.param("RSVP").map(keyword).unwrap_or_default().as_str() {
+                        "TRUE" => self.rsvp.0 = self.rsvp.0.saturating_add(1),
+                        "FALSE" => self.rsvp.1 = self.rsvp.1.saturating_add(1),
+                        _ => {}
+                    }
                 }
+            }
+            "PRIORITY" => self.priority = self.priority.or_else(|| priority(&line.value)),
+            "X-MICROSOFT-CDO-IMPORTANCE" => {
+                self.cdo_importance = self.cdo_importance.or(match line.value.trim() {
+                    "0" => Some(Importance::Low),
+                    "1" => Some(Importance::Normal),
+                    "2" => Some(Importance::High),
+                    _ => None,
+                })
+            }
+            "X-MICROSOFT-DISALLOW-COUNTER" => self.no_counter = keyword(&line.value) == "TRUE",
+            // The link to join by: an `https` address, or it is no link. (Whatever else a file
+            // says of a meeting online, a dial-in number or a `conf:` address, is not read.)
+            "X-MICROSOFT-SKYPETEAMSMEETINGURL" => {
+                let link = OnlineMeeting::clean_link(&unescape_text(&line.value));
+                self.join = link.map(|join_url| OnlineMeeting { provider: OnlineProvider::Teams, join_url }).or(self.join.take());
+            }
+            "CONFERENCE" if self.join.is_none() => {
+                self.join = OnlineMeeting::clean_link(&line.value).map(|join_url| OnlineMeeting { provider: OnlineProvider::Other, join_url });
             }
             _ => {}
         }
@@ -533,6 +577,13 @@ impl EventBuilder {
             categories: self.categories,
             private: self.private,
             cancelled: self.cancelled,
+            importance: self.priority.or(self.cdo_importance).unwrap_or_default(),
+            response_options: ResponseOptions {
+                // Asked to answer unless everybody who is told anything is told not to.
+                request_responses: !(self.rsvp.1 > 0 && self.rsvp.0 == 0),
+                allow_proposals: !self.no_counter,
+            },
+            online: self.join,
             ..Default::default()
         };
         if let Some((begins, ends)) = instants {

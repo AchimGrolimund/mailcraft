@@ -22,7 +22,10 @@ pub mod zoned;
 use serde::{Deserialize, Serialize};
 
 pub use address::{Address, format_list};
-pub use calendar::{Attendee, Calendar, Event, Freq, Occurrence, Recurrence, Response, ShowAs};
+pub use calendar::{
+    Attendee, Calendar, Event, Freq, MAX_JOIN_LINK, Occurrence, OnlineMeeting, OnlineProvider, Proposal, Recurrence, Response, ResponseOptions,
+    ShowAs,
+};
 pub use contact::{Contact, Labeled, PostalAddress};
 pub use mailbox::{Account, AccountKind, Category, Folder, FolderKind, Mailbox, OAuth, OAuthProvider, Pending, Security, Server, Signature};
 pub use mailcraft_time as time;

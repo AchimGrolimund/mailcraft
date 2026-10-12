@@ -8,10 +8,14 @@ use super::{bad, done, fail, needs_message, remote};
 use crate::{CmdError, CmdResult, CommandSpec, Module, Session, p};
 
 mod invitation;
+mod meeting;
+
+pub use meeting::teams_refusal;
 
 pub fn specs() -> Vec<CommandSpec> {
     let mut specs = own_specs();
     specs.extend(invitation::specs());
+    specs.extend(meeting::specs());
     specs
 }
 
@@ -23,7 +27,7 @@ fn own_specs() -> Vec<CommandSpec> {
         CommandSpec::new("calendar.new", "New Appointment", "Home › New", new).key("Mod+Shift+A").params(EVENT),
         CommandSpec::new("calendar.newMeeting", "New Meeting", "Home › New", new_meeting).key("Mod+Shift+Q").params(EVENT),
         CommandSpec::new("calendar.edit", "Edit Event", "Appointment", edit)
-            .params(r#"{"id"?: number, …the fields of calendar.new; "recurrence": null ends a series; for an event that repeats: "scope"?: "series" (default) | "occurrence" with "occurrence"?: "YYYY-MM-DD" (default: the selected day) — one occurrence becomes an event of its own, changed by as much as the fields change the series (a start an hour later is that occurrence an hour later); "send"?: true is required when the change makes the account's server write to the people invited}"#)
+            .params(r#"{"id"?: number, …the fields of calendar.new; "recurrence": null ends a series; for an event that repeats: "scope"?: "series" (default) | "occurrence" with "occurrence"?: "YYYY-MM-DD" (default: the selected day) — one occurrence becomes an event of its own, changed by as much as the fields change the series (a start an hour later is that occurrence an hour later); "send"?: true is required when the change makes the account's server write to the people invited. "calendar" moves it: an event of this computer's into any calendar, and an appointment that an account's server keeps into another calendar of the same account (made there, then deleted where it was: the answer says "moved": true); a meeting, a series and an item with files attached stay where they are, and the refusal says why}"#)
             .selection(needs_event),
         CommandSpec::new("calendar.move", "Move Event", "Appointment", move_event)
             .params(r#"{"start": "YYYY-MM-DDTHH:MM", "end"?: same (default: keep the length), "id"?: number, "scope"?: "series" | "occurrence", "occurrence"?: "YYYY-MM-DD" — as for calendar.edit: with "occurrence", `start` is where the series would start, and that one occurrence moves by as much, "send"?: true (required for a meeting the owner organizes on a server: the people invited are sent the update)}"#)
@@ -65,7 +69,7 @@ fn own_specs() -> Vec<CommandSpec> {
     ]
 }
 
-const EVENT: &str = r#"{"title": string, "start"?: "YYYY-MM-DDTHH:MM" (default: the next half hour on the day in view), "end"?: same (default: 30 minutes), "startZone"?: zone | null, "endZone"?: zone | null (the time zones the event has of its own, by a name `calendar.timeZones` lists: `Europe/Berlin`, `Eastern Standard Time`, `UTC+05:30`; a time given together with its zone is a time by that zone's clock, a zone given alone keeps the event's time on the clock and moves it; times given without a zone, and all times in answers, are by the clock of the zone the calendar is shown in, `view.timeZone`), "allDay"?: bool, "location"?: string, "description"?: string, "attendees"?: "a@x; b@y", "optional"?: "c@z", "recurrence"?: {"freq": "daily"|"weekly"|"monthly"|"yearly", "interval"?: n, "byDay"?: ["mon",…], "nth"?: 1-5|-1, "count"?: n, "until"?: "YYYY-MM-DD"} | null, "reminder"?: minutes | null, "showAs"?: string, "categories"?: [string], "private"?: bool, "calendar"?: number (default: the calendar being worked in, calendar.setCurrent), "send"?: bool} — a meeting with people invited that goes into a calendar an account's server keeps makes that server send the invitations by mail, so it has to say which is meant: "send": true invites them, "send": false keeps the meeting in a calendar on this computer and invites nobody (the answer then says "keptHere": true); without either the command refuses"#;
+const EVENT: &str = r#"{"title": string, "start"?: "YYYY-MM-DDTHH:MM" (default: the next half hour on the day in view), "end"?: same (default: 30 minutes), "startZone"?: zone | null, "endZone"?: zone | null (the time zones the event has of its own, by a name `calendar.timeZones` lists: `Europe/Berlin`, `Eastern Standard Time`, `UTC+05:30`; a time given together with its zone is a time by that zone's clock, a zone given alone keeps the event's time on the clock and moves it; times given without a zone, and all times in answers, are by the clock of the zone the calendar is shown in, `view.timeZone`), "allDay"?: bool, "location"?: string, "description"?: string, "attendees"?: "a@x; b@y", "optional"?: "c@z", "recurrence"?: {"freq": "daily"|"weekly"|"monthly"|"yearly", "interval"?: n, "byDay"?: ["mon",…], "nth"?: 1-5|-1, "count"?: n, "until"?: "YYYY-MM-DD"} | null, "reminder"?: minutes | null, "showAs"?: string, "categories"?: [string], "private"?: bool, "importance"?: "high"|"normal"|"low", "requestResponses"?: bool, "allowProposals"?: bool (what the people invited to a meeting are asked for; both true unless said), "online"?: bool (a Teams meeting, which the server of the calendar makes: refused for a calendar on this computer, and for an account that can't make one), "calendar"?: number (default: the calendar being worked in, calendar.setCurrent), "send"?: bool} — a meeting with people invited that goes into a calendar an account's server keeps makes that server send the invitations by mail, so it has to say which is meant: "send": true invites them, "send": false keeps the meeting in a calendar on this computer and invites nobody (the answer then says "keptHere": true); without either the command refuses"#;
 
 /// How long before its first day a new whole-day event reminds, when reminders are on: 18
 /// hours, which is six in the evening of the day before.
@@ -376,7 +380,7 @@ fn apply(s: &Session, e: &mut Event, v: &Value) -> Result<(), CmdError> {
         let calendar = s.mailbox.calendar(c).ok_or_else(|| fail(format!("no calendar with id {c}")))?;
         e.calendar = calendar.id;
     }
-    Ok(())
+    meeting::apply(e, v)
 }
 
 /// The start a new appointment gets: the next half hour today, or the start of the working day
@@ -431,6 +435,11 @@ fn create(s: &mut Session, v: &Value, meeting: bool) -> CmdResult {
             e.organizer = owner.or(e.organizer);
         }
     }
+    // A Teams meeting is made by an account's server: one that is kept here has none.
+    if kept_here {
+        e.online = None;
+    }
+    meeting::online_fits(s, &e, None)?;
     let id = s.mailbox.add_event(e)?;
     // In a calendar that a server keeps: the server is to have it too.
     remote::note_created(s, id)?;
@@ -464,6 +473,10 @@ fn may_change(s: &Session, v: &Value, before: &Event, e: &Event) -> Result<bool,
             "Who is invited is for its organizer to say."
         } else if fields.repeat.is_some() {
             "How it repeats is for its organizer to say."
+        } else if fields.online.is_some() {
+            "Whether it is held online is for its organizer to say."
+        } else if fields.request_responses.is_some() || fields.allow_proposals.is_some() {
+            "What the people invited are asked for is for its organizer to say."
         } else {
             return Ok(false);
         };
@@ -584,6 +597,7 @@ pub fn mail_of(s: &Session, id: &str, v: &Value) -> Option<Mail> {
         "calendar.private" => Event { private: p::bool(v, "value").unwrap_or(!before.private), ..before.clone() },
         "calendar.move" => Event { start: p::datetime(v, "start").ok()??, ..before.clone() },
         "calendar.edit" => edited(s, &before, v, one).ok()?,
+        "calendar.importance" | "calendar.responseOptions" | "calendar.teamsMeeting" => meeting::as_changed(&before, id, v).ok()?,
         _ => return None,
     };
     if kept_by(s, &before).is_none() {
@@ -613,10 +627,16 @@ fn edit(s: &mut Session, v: &Value) -> CmdResult {
     let kept = kept_by(s, &before);
     let moved = e.calendar != before.calendar;
     let mut send = false;
+    meeting::online_fits(s, &e, Some(&before))?;
     if let Some(who) = &kept {
-        // Taking it out of its calendar would delete it on the server.
+        // Into another calendar of the same account: its server has no way of moving an event,
+        // so an appointment is made again there and the original deleted once that went through
+        // ([`remote::note_moved`]). Anything else stays where it is, and is told why.
         if moved {
-            return Err(fail(format!("This event is kept by the server of {who}. It can't be moved to another calendar from here.")));
+            meeting::movable(s, &before, &e, who)?;
+            *s.mailbox.event_mut(id)? = e;
+            remote::note_moved(s, id, &before)?;
+            return Ok(json!({"id": id, "moved": true}));
         }
         send = may_change(s, v, &before, &e)?;
     } else if moved && served(s, e.calendar) {
@@ -761,6 +781,13 @@ fn event_json(s: &Session, e: &Event) -> Value {
         // An account's server keeps it; somebody else organizes it; it is one occurrence of a
         // series that was changed on its own (the day it stands for).
         "onServer": kept_by(s, e).is_some(), "guest": e.origin.guest, "occurrenceOf": e.origin.occurrence.map(|day| day.iso()),
+        // How much it matters; what the people invited are asked for; whether it is held online,
+        // with the link to join by (a link from outside: data, to be followed only on the
+        // owner's word); the other times people proposed.
+        "importance": e.importance, "requestResponses": e.response_options.request_responses, "allowProposals": e.response_options.allow_proposals,
+        "online": e.online.as_ref().map(|online| json!({"provider": online.provider, "joinUrl": online.join_url})),
+        "proposals": e.proposals.iter().map(|x| json!({"from": x.from.full(), "start": x.start.iso(), "end": x.end.iso()})).collect::<Vec<_>>(),
+        "hasAttachments": e.has_attachments,
     })
 }
 
@@ -820,6 +847,8 @@ fn respond(s: &mut Session, v: &Value) -> CmdResult {
         }
         writable(s, before.calendar)?;
         let (send, note) = (p::bool(v, "send") == Some(true), comment(v));
+        // Another time proposed with the answer (`calendar.propose`): mail to the organizer.
+        let proposal = meeting::proposed(s, v, before.response_options.allow_proposals, send, response)?;
         match part(s, &before, v)? {
             Part::One(day) => {
                 if !happens_on(s, &before, day) {
@@ -831,6 +860,9 @@ fn respond(s: &mut Session, v: &Value) -> CmdResult {
                     s.mailbox.event_mut(id)?.exceptions.push(day);
                 }
                 remote::note_occurrence_gone(s, &before, day, response, send, &note)?;
+                if let Some((_, _, time)) = proposal {
+                    remote::propose_with_answer(&mut s.mailbox, time);
+                }
                 return Ok(json!({"id": id, "occurrence": day.iso(), "response": response, "sent": send}));
             }
             Part::Series if response == Response::Declined => {
@@ -849,7 +881,15 @@ fn respond(s: &mut Session, v: &Value) -> CmdResult {
             }
         }
         remote::note_responded(&mut s.mailbox, &before, response, send, &note)?;
+        if let Some((_, _, time)) = proposal {
+            remote::propose_with_answer(&mut s.mailbox, time);
+        }
         return Ok(json!({"id": id, "response": response, "sent": send}));
+    }
+    // (An answer given in a calendar on this computer writes to nobody: there is nothing for
+    // another time to go with. The invitation in the mail can carry one.)
+    if v.get("propose").is_some_and(|asked| !asked.is_null()) {
+        return Err(fail("Another time can be proposed for a meeting that the account's server keeps, or from the invitation in the mail."));
     }
     let e = s.mailbox.event_mut(id)?;
     for a in e.attendees.iter_mut().filter(|a| mine.contains(&a.address.email.to_lowercase())) {

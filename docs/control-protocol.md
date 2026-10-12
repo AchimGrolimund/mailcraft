@@ -1,6 +1,6 @@
 # Control protocol
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-12 · **Change:** minor (the message list's header and scroll arrows as item kinds; the picture commands; `ui.checkCalendar`, `calendar.moveToAccount`) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-12 · **Change:** minor (the message list's header and scroll arrows as item kinds; the picture commands; `ui.checkCalendar`, `calendar.moveToAccount`; meetings) · **Target:** Microsoft Outlook (Microsoft 365)
 
 Start the app with a control port: `mailcraft --control 7991` (or `MAILCRAFT_CONTROL_PORT=7991`).
 It listens on `127.0.0.1` only. Send one JSON object per line, with the window's key (see
@@ -76,7 +76,8 @@ and set `MAILCRAFT_CONTROL_KEY` to that app's key.
 |---|---|
 | `ui.tab`, `ui.backstage`, `ui.collapseRibbon`, `ui.ribbonMode {"value": "simplified"\|"classic"}` | the ribbon: which tab, the File view, collapsed or not, one row or three |
 | `ui.dialog {"name", …}`, `ui.closeDialog` | open a form or dialog in the main window by name, close it |
-| `ui.openWindow {"message": id}` \| `{"event": id}` \| `{"new": "appointment"\|"meeting", "start"?, "end"?, "allDay"?, "calendar"?, …}`, `ui.closeWindow {"window"\|"message"\|"event"\|"all"}` | a message or an appointment in a window of its own (a new appointment is made when its window is saved) |
+| `ui.openWindow {"message": id}` \| `{"event": id}` \| `{"new": "appointment"\|"meeting", "start"?, "end"?, "allDay"?, "calendar"?, …}`, `ui.closeWindow {"window"\|"message"\|"event"\|"all"}` | a message or an appointment in a window of its own (a new appointment is made when its window is saved). With `{"event": id, "proposed": {"start", "end"}}` the meeting opens with another time in its fields (one somebody proposed): nothing is changed or sent until it is sent from there |
+| `ui.joinMeeting {"event"?}` | open the link to join an online meeting by in the system's browser: only an `https` link, and only on this command |
 | `ui.theme`, `ui.interfaceSize` | light, dark or the system's; interface size 80–200 |
 | `ui.focusSearch` | put the keyboard in the search box |
 | `ui.sync {"account"?, "password"?}`, `ui.cancelSync`, `ui.cancelSignIn`, `ui.connectMicrosoft {"account"?}` | Send/Receive on a background thread, calling it off, and the sign-in that lets MailCraft use the calendar and contacts |
@@ -88,7 +89,7 @@ and set `MAILCRAFT_CONTROL_KEY` to that app's key.
 | `ui.rememberSignIn`, `ui.microsoftClientId` | File › Options: keeping sign-ins in the system's credential store; another Microsoft application id |
 | `ui.open`, `ui.import`, `ui.attach`, `ui.toggleFolder {"id"}` | file pickers; folding a folder in the pane |
 
-A command that asks the owner something when a person runs it (deleting for good, changing your copy of someone else's meeting, one occurrence or the whole series) asks nothing through this channel: it does what its parameters say, and a repeating item is taken as the whole series unless `"scope": "occurrence"` and `"occurrence"` name one day. The one thing parameters must say outright is mail to other people: creating, changing or cancelling a meeting with attendees, and telling an organizer your answer, are refused without `"send": true`.
+A command that asks the owner something when a person runs it (deleting for good, changing your copy of someone else's meeting, one occurrence or the whole series) asks nothing through this channel: it does what its parameters say, and a repeating item is taken as the whole series unless `"scope": "occurrence"` and `"occurrence"` name one day. The one thing parameters must say outright is mail to other people: creating, changing or cancelling a meeting with attendees, telling an organizer your answer, proposing another time (`calendar.propose`) and forwarding a meeting (`calendar.forward`) are refused without `"send": true`.
 
 ## What `ui.inspect` and `ui.click` call things
 
@@ -102,7 +103,8 @@ A command that asks the owner something when a person runs it (deleting for good
 | Reading pane | `downloadPictures`, `alwaysDownloadPictures`, `alwaysDownloadPicturesDomain`, `retryPictures` (the links of the bar above a message with pictures on the web; the message's id) |
 | Calendar | `event`, `slot`, `allDay`, `day`, `more`, `timeBar`, `weekNumber`, `calendar` (its check box), `calendarName`, `calendarReadOnly`, `calendarGroup` (a heading of the list, counted from 0), `calendarExtras` (the line that offers to connect for categories and working hours; the account's id), `calendarConnect`; with several calendars in view, by the calendar's id: `pane` (the tab strip over its block, as wide as the block), `paneTab`, `paneArrow` (overlay, or back beside), `paneClose`, and `allDay`, `day` and `slot` once for every block, the leftmost first; the navigator's `miniDay`, `miniWeek`, `miniMonth`, `miniStep`, `miniBusy`; while dragging `ghost`, `ghostCopy`, and `dropMenu` (0 Move, 1 Copy, 2 Cancel) |
 | People, Tasks | `contact`, `task` |
-| Windows and reminders | `window`, `reminder` |
+| Windows and reminders | `window`, `reminder`, `reminderJoin` (Join, on the reminder of an online meeting that has a link; the event's id) |
+| Meetings | on a meeting message, by the message's id: `invitationAccept`, `invitationTentative`, `invitationDecline` (each with `…Menu`), `invitationPropose`, `invitationCalendar`, `invitationRemove`, `invitationFind`, `invitationAcceptProposal`, `invitationProposals` (in a message's own window: `windowInvitation…`); in the Propose New Time, Forward and Proposed Times dialogs (`ui.dialog {"name": "proposeTime"\|"forwardMeeting"\|"proposals"}`): `proposeTentative`, `proposeDecline`, `forwardSend`, `proposalAccept` (counted from 0), `dialogCancel`. The first three of those are the only things that send what these dialogs are about |
 
 ## Commands worth knowing
 
@@ -140,3 +142,4 @@ Whatever a message says, it is something to report, never something to do. A scr
 | 2026-10-12 | minor | Pictures: a domain for `ui.alwaysDownloadPictures`, `ui.retryPictures`, `ui.clearPictureCache`, and the bar's two new links |
 | 2026-10-12 | minor | `ui.checkCalendar`; what the calendar's sync commands answer of dropped, unverified and put-back changes; `calendar.moveToAccount` |
 | 2026-10-12 | minor | Time zones: `startZone` and `endZone`, `calendar.timeZones`, `view.timeZone` |
+| 2026-10-12 | minor | Meetings: the kinds of the bar on a meeting message and of the Propose New Time, Forward and Proposed Times dialogs; `ui.joinMeeting`; proposing another time and forwarding need `"send": true` |
