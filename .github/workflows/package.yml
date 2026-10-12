@@ -178,17 +178,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install system libraries and packaging tools
+        env:
+          DEB_ARCH: ${{ matrix.deb }}
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev \
             desktop-file-utils appstream zsync file xvfb libxkbcommon-x11-0 libegl1 mesa-vulkan-drivers
           curl -fsSL -o "$RUNNER_TEMP/nfpm.deb" \
-            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_${{ matrix.deb }}.deb"
-          case "${NFPM_VERSION}:${{ matrix.deb }}" in
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_${DEB_ARCH}.deb"
+          case "${NFPM_VERSION}:${DEB_ARCH}" in
             2.47.0:amd64) expected=3f1cf344bd0b57373ca55636a78c08b0491f7293d609a456a9ac3b0b150fda97 ;;
             2.47.0:arm64) expected=27419eb382695a7942be8ad52259f3ec1854fad001b3ae4baed34ce39a223b97 ;;
-            *) echo "::error::no checksum for nfpm ${NFPM_VERSION} ${{ matrix.deb }}"; exit 1 ;;
+            *) echo "::error::no checksum for nfpm ${NFPM_VERSION} ${DEB_ARCH}"; exit 1 ;;
           esac
           echo "$expected  $RUNNER_TEMP/nfpm.deb" | sha256sum -c -
           sudo dpkg -i "$RUNNER_TEMP/nfpm.deb"
@@ -239,9 +241,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends flatpak flatpak-builder librsvg2-common
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Build the Flatpak bundle
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
-          tarball=$(ls dist/linux/mailcraft-*-linux-${{ matrix.arch }}.tar.gz | head -n 1)
-          bash packaging/linux/flatpak-bundle.sh "$tarball"
+          set -- dist/linux/mailcraft-*-linux-"$ARCH".tar.gz
+          if [ ! -f "$1" ]; then echo "::error::no tar.gz for $ARCH in dist/linux"; exit 1; fi
+          bash packaging/linux/flatpak-bundle.sh "$1"
       - uses: actions/upload-artifact@v4
         with:
           name: release-flatpak-${{ matrix.arch }}
