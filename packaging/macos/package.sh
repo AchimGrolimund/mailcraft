@@ -139,13 +139,26 @@ if [ -f "$HERE/dmg/background.tiff" ] && [ -f "$HERE/dmg/dmg-layout.DS_Store" ];
   cp "$HERE/dmg/background.tiff" "$STAGE/.background/background.tiff"
   cp "$HERE/dmg/dmg-layout.DS_Store" "$STAGE/.DS_Store"
 fi
-rm -f "$DMG" "$WORK/raw.dmg"
-# makehybrid + convert builds the image without attaching a device, unlike `create -srcfolder`,
-# which is flaky on CI runners ("Resource busy") and hangs in sandboxed sessions.
+rm -f "$DMG"
+# `create -srcfolder` copies the staged folder as it is. (`makehybrid -hfs`, which builds an image
+# without attaching a device, gives every file and folder Finder information on current macOS,
+# and the app's signature doesn't hold with that attached: `codesign --verify --strict` on the
+# mounted image says "detritus not allowed".) Attaching can fail with "Resource busy" on a CI
+# runner, so it is tried a few times.
 # The volume name has no version: .DS_Store finds the background through an alias that includes it.
-hdiutil makehybrid -hfs -hfs-volume-name "MailCraft" -hfs-openfolder "$STAGE" -o "$WORK/raw.dmg" "$STAGE"
-hdiutil convert "$WORK/raw.dmg" -format UDZO -imagekey zlib-level=9 -o "$DMG"
-rm -f "$WORK/raw.dmg"
+made=0
+for attempt in 1 2 3 4 5; do
+  if hdiutil create -volname "MailCraft" -srcfolder "$STAGE" -fs HFS+ -format UDZO -imagekey zlib-level=9 -ov "$DMG"; then
+    made=1
+    break
+  fi
+  echo "hdiutil create failed (attempt $attempt of 5); trying again" >&2
+  sleep $((attempt * 5))
+done
+if [ "$made" != 1 ]; then
+  echo "error: could not build $DMG" >&2
+  exit 1
+fi
 sign "$DMG"
 codesign --verify --strict --verbose=2 "$DMG"
 if [ "$NOTARIZE" = 1 ]; then
