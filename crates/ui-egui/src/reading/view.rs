@@ -480,11 +480,12 @@ pub fn paint(ui: &mut Ui, laid: &Laid, t: &Tokens, access: Access, mut state: Op
         egui::Tooltip::always_open(ctx.clone(), ui.layer_id(), response.id.with("link"), egui::PopupAnchor::Pointer).gap(12.0).show(|ui| {
             ui.set_max_width(520.0);
             if let Some(note) = &hover.note {
-                ui.label(note.as_str());
+                ui.label(clipped(note, TIP_NOTE).as_ref());
             }
-            // A link is shown with where it really leads.
+            // A link is shown with where it really leads: the start of its address, which is
+            // where the host is, not a tracking address of a thousand characters over the message.
             if let Some(url) = &link {
-                ui.label(&**url);
+                ui.label(clipped(url, TIP_ADDRESS).as_ref());
             }
         });
     }
@@ -497,6 +498,18 @@ pub fn paint(ui: &mut Ui, laid: &Laid, t: &Tokens, access: Access, mut state: Op
         ctx.open_url(egui::OpenUrl::new_tab(url.to_string()));
     }
     (area.min, asked)
+}
+
+/// The most characters of a link's address, and of a picture's description, that a tip shows.
+const TIP_ADDRESS: usize = 100;
+const TIP_NOTE: usize = 200;
+
+/// `text` cut to `max` characters, with an ellipsis when something was left out.
+fn clipped(text: &str, max: usize) -> std::borrow::Cow<'_, str> {
+    match text.char_indices().nth(max) {
+        Some((at, _)) => format!("{}…", text.get(..at).unwrap_or_default()).into(),
+        None => text.into(),
+    }
 }
 
 /// What is said of a picture that is not shown, and where it would come from.
@@ -569,5 +582,25 @@ fn stand_in(painter: &egui::Painter, rect: Rect, label: &str, paper: Paper, t: &
     }
     if !label.is_empty() && rect.width() > 40.0 && rect.height() >= 20.0 {
         paint_clipped(painter, pos2(rect.min.x + 23.0, rect.min.y + 12.0), rect.width() - 28.0, label, regular(11.5), ink);
+    }
+}
+
+#[cfg(test)]
+mod tip_tests {
+    use super::{TIP_ADDRESS, clipped};
+
+    #[test]
+    fn a_tip_shows_the_start_of_a_long_address_and_all_of_a_short_one() {
+        let short = "https://lumen.example/agenda";
+        assert_eq!(clipped(short, TIP_ADDRESS), short);
+        let long = format!("https://click.lumen.example/track?u={}", "a1b2".repeat(400));
+        let shown = clipped(&long, TIP_ADDRESS);
+        assert_eq!(shown.chars().count(), TIP_ADDRESS + 1);
+        assert!(shown.starts_with("https://click.lumen.example/track?u=") && shown.ends_with('…'));
+        // Cut between characters, never inside one.
+        let wide = "é".repeat(300);
+        assert_eq!(clipped(&wide, TIP_ADDRESS).chars().filter(|c| *c == 'é').count(), TIP_ADDRESS);
+        assert_eq!(clipped("", TIP_ADDRESS), "");
+        assert_eq!(clipped("abc", 0), "…");
     }
 }
