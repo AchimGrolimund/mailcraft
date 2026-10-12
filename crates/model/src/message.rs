@@ -185,32 +185,6 @@ impl Message {
             .filter(move |(_, a)| !(a.inline && !a.content_id.is_empty() && html.contains(&format!("cid:{}", a.content_id))))
     }
 
-    /// The first words of the body on one line, for the message list.
-    pub fn snippet(&self, max_chars: usize) -> String {
-        let mut out = String::new();
-        let mut n = 0;
-        // Quoted replies and separator lines say nothing about this message.
-        let lines = self.body.text.lines().filter(|l| !l.trim_start().starts_with('>'));
-        for word in lines.flat_map(str::split_whitespace) {
-            if word.chars().all(|c| "-_=*".contains(c)) {
-                continue;
-            }
-            if n > 0 {
-                out.push(' ');
-                n += 1;
-            }
-            for c in word.chars() {
-                if n >= max_chars {
-                    out.push('…');
-                    return out;
-                }
-                out.push(c);
-                n += 1;
-            }
-        }
-        out
-    }
-
     /// The subject without `Re:` / `Fw:` prefixes: what a conversation is about.
     pub fn topic(&self) -> String {
         normalize_subject(&self.subject)
@@ -260,17 +234,6 @@ mod tests {
         assert_eq!(normalize_subject("Reminder: dentist"), "Reminder: dentist");
         assert_eq!(normalize_subject("  re:  "), "");
         assert_eq!(normalize_subject("Agenda 10:30"), "Agenda 10:30");
-    }
-
-    #[test]
-    fn snippets_skip_quotes_and_cut_on_a_char_boundary() {
-        let mut m = Message::default();
-        m.body.text = "Hello  there,\n\n> old text\n-----\nSee you “soon” — Ada".into();
-        assert_eq!(m.snippet(200), "Hello there, See you “soon” — Ada");
-        assert_eq!(m.snippet(7), "Hello t…");
-        assert_eq!(m.snippet(0), "…");
-        m.body.text.clear();
-        assert_eq!(m.snippet(10), "");
     }
 
     #[test]

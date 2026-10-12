@@ -63,6 +63,12 @@ impl SortBy {
             SortBy::Importance => "Importance",
         }
     }
+
+    /// Whether a list arranged this way starts at the top of the scale until it is turned over:
+    /// the newest, the largest, the most important. Senders and subjects start at A.
+    pub fn starts_high(self) -> bool {
+        !matches!(self, SortBy::From | SortBy::Subject)
+    }
 }
 
 /// What the message list is narrowed to.

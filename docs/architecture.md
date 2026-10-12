@@ -1,6 +1,6 @@
 # MailCraft architecture
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-11 · **Change:** major (first version) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-12 · **Change:** patch (`html` makes the line a message list shows) · **Target:** Microsoft Outlook (Microsoft 365)
 
 How MailCraft is built today. Rules for working in the code are in [`AGENTS.md`](../AGENTS.md). The
 shape — layers, "everything is a command", the swappable egui front end, the control channel, MCP,
@@ -17,7 +17,7 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
 | L0 | `time` | Dates and times without a clock dependency: proleptic Gregorian maths, weekdays, ISO weeks, RFC 5322 and ISO 8601 text, list and group labels; `now()` and the local zone offset are the only calls that ask the system (or the browser) |
 | L0 | `control-key` | Per-window control-port key files shared by the app and the MCP bridge |
 | L1 | `model` | The mailbox: accounts, folders, messages, contacts, calendars, events with recurrence, tasks, categories, rules, signatures; edit primitives (`move_message`, `delete_folder`…), conversations, the search query language, `repair()` for whatever a file held, and the sync data types |
-| L1 | `html` | Hostile HTML mail → display blocks (`parse`) and plain text (`to_text`); plain text → blocks and HTML; entities; the safe-URL rule |
+| L1 | `html` | Hostile HTML mail → display blocks (`parse`), plain text (`to_text`) and the line a message list shows (`preview`, `text_preview`); plain text → blocks and HTML; entities; the safe-URL rule |
 | L2 | `mime` | RFC 5322 / MIME reader and writer (`.eml`), encoded words, RFC 2231 parameters, charsets, mbox |
 | L2 | `ical` | iCalendar reader and writer: events, to-dos, recurrence rules, alarms, attendees |
 | L2 | `vcard` | vCard 2.1/3.0/4.0 reader, 3.0 writer |
@@ -107,3 +107,4 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-11 | major | First architecture doc |
+| 2026-10-12 | patch | `html` also makes the line a message list shows (`preview`, `text_preview`) |

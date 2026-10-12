@@ -3,8 +3,9 @@
 //! Mail HTML is hostile: it comes from strangers, it is often broken, and it may try to run
 //! scripts or load trackers. This crate never renders it. [`parse`] turns it into display
 //! [`Block`]s (paragraphs, headings, list items, quotes, pictures, tables) that a UI draws itself,
-//! and [`to_text`] turns it into plain text for snippets, search and plain-text replies.
-//! [`text_blocks`] and [`from_text`] do the same for plain-text bodies.
+//! and [`to_text`] turns it into plain text for search and plain-text replies.
+//! [`text_blocks`] and [`from_text`] do the same for plain-text bodies. [`preview`] and
+//! [`text_preview`] give the first words of a message on one line, for a message list.
 //!
 //! There is no CSS engine here. A short whitelist of presentational facts is read from inline
 //! `style` attributes and old-style attributes (`style.rs`): text and background colour, bold,
@@ -21,6 +22,7 @@ mod blocks;
 #[doc(hidden)]
 pub mod corpus;
 mod entities;
+mod preview;
 mod style;
 mod text;
 mod tokenizer;
@@ -29,9 +31,11 @@ use serde::{Deserialize, Serialize};
 
 pub use blocks::parse;
 pub use entities::{escape, unescape};
+pub use preview::{MAX_PREVIEW_CHARS, preview, text_preview};
 pub use text::{blocks_to_text, from_text, text_blocks, to_text};
 
-/// Longest input [`parse`], [`to_text`], [`text_blocks`] and [`from_text`] read, in bytes; the rest is ignored.
+/// Longest input [`parse`], [`to_text`], [`text_blocks`], [`from_text`], [`preview`] and
+/// [`text_preview`] read, in bytes; the rest is ignored.
 pub const MAX_INPUT: usize = 2 * 1024 * 1024;
 
 /// Most blocks one document gives, counting those inside table cells; what follows is dropped.
