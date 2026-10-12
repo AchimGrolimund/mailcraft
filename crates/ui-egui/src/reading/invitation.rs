@@ -895,6 +895,9 @@ pub(super) fn bar(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, place: Place
                     };
                     ui.add(egui::Label::new(egui::RichText::new(words).font(regular(12.0)).color(t.text_dim)).wrap());
                     if !looking && findable {
+                        // The link stays whole: it goes to the next line when the words before it
+                        // leave no room, instead of being split over two (and being pressed between).
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                         let find = ui
                             .add(egui::Link::new(egui::RichText::new(tl!("Look Again")).font(regular(12.0))))
                             .on_hover_text(tl!("Ask the account's server for the calendar round this meeting now."));

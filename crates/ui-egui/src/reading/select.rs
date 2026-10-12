@@ -334,8 +334,12 @@ pub fn hit(ctx: &egui::Context, laid: &Laid, at: Pos2) -> Option<Hit> {
         ItemKind::Text(text) => {
             let galley = ctx.fonts_mut(|f| f.layout_job((*text.job).clone()));
             let from = at - egui::pos2(item.rect.min.x + text.anchor, item.rect.min.y);
-            let nearest = galley.cursor_from_pos(from).index.0.min(text.chars as usize);
-            Some(Hit { point: Point { seg, at: nearest }, under: super::view::char_at(&galley, from) })
+            // The laid-out text counts by its glyphs, and a script this system has no font for is
+            // laid out with more of them than it has characters: neither count may pass the text's.
+            let chars = text.chars as usize;
+            let nearest = galley.cursor_from_pos(from).index.0.min(chars);
+            let under = super::view::char_at(&galley, from).filter(|under| *under < chars);
+            Some(Hit { point: Point { seg, at: nearest }, under })
         }
         ItemKind::Picture(_) | ItemKind::Placeholder(_) => {
             Some(Hit { point: Point { seg, at: usize::from(at.x >= item.rect.center().x) }, under: None })
