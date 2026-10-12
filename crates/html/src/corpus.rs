@@ -18,6 +18,15 @@ pub const GMAIL_REPLY: &str = include_str!("../corpus/gmail_reply.html");
 /// hero, products, icons), a button made of a table cell, tracked links, two tracking pixels.
 pub const NEWSLETTER: &str = include_str!("../corpus/newsletter.html");
 
+/// A newsletter the way a column builder writes it for every mail program at once: each section
+/// a cell with a font size of nothing round blocks that set their own, the same thing written
+/// twice where Outlook needs it otherwise (a button and a picture drawn for Outlook in comments
+/// only it reads, the ones for everybody else hidden from it alone), a background picture given
+/// three ways over a colour, pictures whose addresses leave the scheme out, write it in
+/// capitals, have a space or a line break in them, or get their size from the style alone, a
+/// part that is nothing but slices of one picture, `srcset`, and three tracking pixels.
+pub const BUILT_NEWSLETTER: &str = include_str!("../corpus/built_newsletter.html");
+
 /// An order confirmation: a grid of order facts, and a data table with a header row, right-aligned
 /// amounts, spanning total rows and lines under the rows.
 pub const RECEIPT: &str = include_str!("../corpus/receipt.html");
@@ -73,6 +82,7 @@ pub fn messages() -> Vec<(&'static str, &'static str)> {
         ("receipt", RECEIPT),
         ("screenshots", SCREENSHOTS),
         ("calendar notice", CALENDAR),
+        ("built newsletter", BUILT_NEWSLETTER),
     ]
 }
 

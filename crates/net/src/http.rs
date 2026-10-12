@@ -228,8 +228,23 @@ fn closed() -> NetError {
     problem("the server closed the connection")
 }
 
+/// What an answer that didn't come in its time is called.
+const TOO_SLOW: &str = "the server took too long to answer";
+/// How what is said of an answer that is longer than was asked for begins.
+const TOO_LONG: &str = "the server's answer is longer than";
+
 fn too_slow() -> NetError {
-    problem("the server took too long to answer")
+    problem(TOO_SLOW)
+}
+
+/// Whether an error of [`read_reply`] says that the answer didn't come in the time it had.
+pub(crate) fn is_too_slow(error: &NetError) -> bool {
+    matches!(error, NetError::Proto(ProtoError::Io(why)) if why == TOO_SLOW)
+}
+
+/// Whether an error of [`read_reply`] says that the answer is longer than was asked for.
+pub(crate) fn is_too_long(error: &NetError) -> bool {
+    matches!(error, NetError::Proto(ProtoError::Protocol(why)) if why.starts_with(TOO_LONG))
 }
 
 fn io_problem(e: &std::io::Error) -> NetError {
@@ -416,7 +431,7 @@ impl<R: Read> Reader<'_, R> {
 }
 
 fn too_long(max: usize) -> NetError {
-    nonsense(&format!("the server's answer is longer than {} KB", max / 1024))
+    nonsense(&format!("{TOO_LONG} {} KB", max / 1024))
 }
 
 /// How the answer says its body ends, and what else is kept of its headers.

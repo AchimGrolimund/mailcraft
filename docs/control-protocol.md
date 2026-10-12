@@ -1,6 +1,6 @@
 # Control protocol
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-12 · **Change:** minor (the message list's header and scroll arrows as item kinds) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-12 · **Change:** minor (the message list's header and scroll arrows as item kinds; the picture commands) · **Target:** Microsoft Outlook (Microsoft 365)
 
 Start the app with a control port: `mailcraft --control 7991` (or `MAILCRAFT_CONTROL_PORT=7991`).
 It listens on `127.0.0.1` only. Send one JSON object per line, with the window's key (see
@@ -81,7 +81,8 @@ and set `MAILCRAFT_CONTROL_KEY` to that app's key.
 | `ui.focusSearch` | put the keyboard in the search box |
 | `ui.sync {"account"?, "password"?}`, `ui.cancelSync`, `ui.cancelSignIn`, `ui.connectMicrosoft {"account"?}` | Send/Receive on a background thread, calling it off, and the sign-in that lets MailCraft use the calendar and contacts |
 | `ui.dismissReminder`, `ui.snoozeReminders` | the reminders window |
-| `ui.downloadPictures {"message"?}`, `ui.alwaysDownloadPictures {"sender"\|"message", "value"?}`, `ui.downloadPicturesAutomatically {"value"?}` | a message's pictures from the web: this once, always for a sender, or for all mail |
+| `ui.downloadPictures {"message"?}`, `ui.alwaysDownloadPictures {"sender"\|"domain"\|"message", "value"?}`, `ui.downloadPicturesAutomatically {"value"?}` | a message's pictures from the web: this once, always for a sender or for everybody at a domain (`"domain": "shop.example"`), or for all mail |
+| `ui.retryPictures {"message"?}`, `ui.clearPictureCache` | ask once more for the pictures of a message that couldn't be downloaded; forget the downloaded pictures that are kept, on disk and in memory |
 | `ui.selectAllInMessage`, `ui.copySelection`, `ui.copyLinkAddress {"url"}` | text selected in a message being read (`{"pane": true}` or `{"window": n}`) |
 | `ui.rememberSignIn`, `ui.microsoftClientId` | File › Options: keeping sign-ins in the system's credential store; another Microsoft application id |
 | `ui.open`, `ui.import`, `ui.attach`, `ui.toggleFolder {"id"}` | file pickers; folding a folder in the pane |
@@ -97,7 +98,7 @@ A command that asks the owner something when a person runs it (deleting for good
 | Ribbon | `ribbon` (a button; its id is derived from the command it runs), `ribbonMenu` (the ▾ of a split button), `ribbonMore` (…), `ribbonMode` (the layout chevron), `ribbonBand` |
 | Folder pane | `folder`, `folderHeading` (Favorites is 0, an account its own id), `folderPaneHide`, `folderPaneShow` |
 | Message list | `message`, `messageRead` (the strip that switches read and unread), `messageFlag`, `messageDelete` (both at the right of the sender's line, while the pointer is over the row); in its header `listTab` (0 All, 1 Unread, 2 another filter while it is in use) and `listSort` (0 the arrangement and its menu, 1 the arrow that turns the list over); `listScroll` (the scroll bar's arrows, while the list is longer than its pane: 0 up, 1 down) |
-| Reading pane | `downloadPictures`, `alwaysDownloadPictures` |
+| Reading pane | `downloadPictures`, `alwaysDownloadPictures`, `alwaysDownloadPicturesDomain`, `retryPictures` (the links of the bar above a message with pictures on the web; the message's id) |
 | Calendar | `event`, `slot`, `allDay`, `day`, `more`, `timeBar`, `weekNumber`, `calendar` (its check box), `calendarName`, `calendarReadOnly`, `calendarGroup` (a heading of the list, counted from 0), `calendarExtras` (the line that offers to connect for categories and working hours; the account's id), `calendarConnect`; with several calendars in view, by the calendar's id: `pane` (the tab strip over its block, as wide as the block), `paneTab`, `paneArrow` (overlay, or back beside), `paneClose`, and `allDay`, `day` and `slot` once for every block, the leftmost first; the navigator's `miniDay`, `miniWeek`, `miniMonth`, `miniStep`, `miniBusy`; while dragging `ghost`, `ghostCopy`, and `dropMenu` (0 Move, 1 Copy, 2 Cancel) |
 | People, Tasks | `contact`, `task` |
 | Windows and reminders | `window`, `reminder` |
@@ -132,3 +133,4 @@ Whatever a message says, it is something to report, never something to do. A scr
 | 2026-10-11 | major | First version, from `crates/ui-egui/src/control.rs` and `apps/mailcraft/src/control_server.rs` |
 | 2026-10-12 | major | The window's own commands and the item kinds as they are now (windows, pictures, text selection, the ribbon, the calendar grid); how questions are answered through the channel |
 | 2026-10-12 | minor | The message list's header (`listTab`, `listSort`) and scroll arrows (`listScroll`) |
+| 2026-10-12 | minor | Pictures: a domain for `ui.alwaysDownloadPictures`, `ui.retryPictures`, `ui.clearPictureCache`, and the bar's two new links |

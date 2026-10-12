@@ -432,7 +432,8 @@ fn hidden_content_is_not_shown() {
         r#"<p style="visibility:hidden">SECRET</p>"#,
         r#"<div style="max-height:0px;overflow:hidden">SECRET</div>"#,
         r#"<div style="height:0;overflow:hidden">SECRET</div>"#,
-        r#"<div style="mso-hide:all">SECRET</div>"#,
+        r#"<div style="mso-hide:all;display:none">SECRET</div>"#,
+        r#"<div style="font-size:0;line-height:0">SECRET<b>SECRET</b><p>SECRET</p></div>"#,
         r#"<div hidden>SECRET</div>"#,
         r#"<table style="display:none"><tr><td>SECRET</td></tr></table>"#,
         r#"<table><tr style="display:none"><td>SECRET</td></tr></table>"#,
@@ -846,6 +847,131 @@ fn no_block_is_blank_and_no_span_is_empty() {
             check_block(&block, html);
         }
     }
+}
+
+#[test]
+fn a_font_size_of_nothing_hides_text_and_not_what_is_inside() {
+    // The way newsletters close the gaps round their pictures and columns: a size of nothing on
+    // the cell or the block, and every text inside with a size of its own. (Read as "hidden",
+    // that showed nothing at all of such a message.)
+    assert_eq!(
+        dump(
+            r#"<table><tr><td style="font-size:0;line-height:0"><img src="https://img.example/a.png" width="600" height="200" alt="A"></td></tr></table>"#
+        ),
+        ["img(https://img.example/a.png 600x200)|A"]
+    );
+    assert_eq!(
+        dump(
+            r#"<div style="font-size:1px;line-height:1px"><a href="https://shop.example/"><img src="https://img.example/b.png" width="600"></a></div>"#
+        ),
+        ["img(https://img.example/b.png 600x)|"]
+    );
+    assert_eq!(dump(r#"<span style="font-size:0"><img src="cid:x" width="20" height="20"></span>"#), ["img(cid:x 20x20)|"]);
+    assert_eq!(
+        dump(r#"<div style="font-size:0px">GAP <div style="font-size:14px">shown</div> GAP<p style="font-size:12pt">and this</p></div>after"#),
+        ["p|[^14:shown]", "p|[^16:and this]", "p|after"]
+    );
+    // A size given as a share of nothing is nothing; one given in pixels, or by `<font>`, is itself.
+    assert_eq!(
+        dump(
+            "<div style='font-size:0'><span style='font-size:150%'>NO</span><span style='font-size:2em'>NO</span><small>NO</small><font size=3>yes</font></div>"
+        ),
+        ["p|[^16:yes]"]
+    );
+    // It goes through a table, as in a browser, and ends with its element.
+    assert_eq!(
+        dump("<div style='font-size:0'><table><tr><td>NO</td><td style='font-size:13px'>yes</td></tr></table></div><p>after</p>"),
+        ["p|[^13:yes]", "p|after"]
+    );
+    // Neither a line break nor a picture's description is text to read at that size...
+    assert_eq!(dump("a<span style='font-size:0'>x<br>y<br><img alt='NO'></span>b"), ["p|ab"]);
+    // ...and what is really hidden inside stays hidden.
+    assert_eq!(
+        dump(
+            "<td style='font-size:0'><div style='display:none;font-size:14px'>NO<img src='https://t.example/o.gif' width=600></div><img src='https://t.example/p.gif' width=1 height=1></td>"
+        ),
+        Vec::<String>::new()
+    );
+    // What a column builder writes: three levels of it round a picture and a paragraph.
+    let built = r#"<table><tr><td style="direction:ltr;font-size:0px;padding:20px 0;text-align:center;"><div class="col" style="font-size:0px;text-align:left;display:inline-block;vertical-align:top;width:100%;"><table><tr><td style="font-size:0px;padding:10px 25px;"><img src="https://img.example/hero.jpg" width="550" height="auto" style="border:0;display:block;height:auto;width:100%;font-size:13px;"></td></tr><tr><td style="font-size:0px;padding:10px 25px;"><div style="font-family:Arial;font-size:13px;line-height:1;color:#000000;">The text of the column.</div></td></tr></table></div></td></tr></table>"#;
+    assert_eq!(dump(built), ["img(https://img.example/hero.jpg 550x)|", "p|[#000000^13:The text of the column.]"]);
+}
+
+#[test]
+fn what_is_hidden_from_outlook_alone_is_shown() {
+    // The button every program but Outlook gets, beside the one drawn for Outlook in a comment
+    // that only Outlook reads: the comment is dropped, so the other one must stay.
+    let button = "<div><!--[if mso]><v:roundrect href=\"https://shop.example/sale\" fillcolor=\"#556270\"><w:anchorlock/><center>FOR-OUTLOOK</center></v:roundrect><![endif]-->\
+                  <a href=\"https://shop.example/sale\" style=\"background-color:#556270;color:#ffffff;display:inline-block;mso-hide:all;\">See the sale</a></div>";
+    assert_eq!(dump(button), ["p|[#ffffff@556270:See the sale→https://shop.example/sale]"]);
+    // The picture likewise: one for Outlook in its comment, one for everybody else.
+    let picture = "<!--[if mso]><img src=\"https://img.example/for-outlook.png\" width=\"600\"><![endif]-->\
+                   <!--[if !mso]><!--><div style=\"mso-hide:all\"><img src=\"https://img.example/hero@2x.png\" width=\"600\" alt=\"Hero\"></div><!--<![endif]-->";
+    assert_eq!(dump(picture), ["img(https://img.example/hero@2x.png 600x)|Hero"]);
+    // What is hidden from everybody says so in a way everybody reads.
+    assert_eq!(dump("a<span style='mso-hide:all;display:none'>NO</span><span style='mso-hide:all;max-height:0'>NO</span>b"), ["p|ab"]);
+}
+
+#[test]
+fn picture_addresses_as_real_mail_writes_them() {
+    // Without its scheme: `https`, for pictures only.
+    assert_eq!(dump(r#"<img src="//img.example/logo.png" width=100 height=50 alt="Logo">"#), ["img(https://img.example/logo.png 100x50)|Logo"]);
+    assert_eq!(dump(r#"<img src="  //IMG.example:8443/a.png?x=1  ">"#), ["img(https://IMG.example:8443/a.png?x=1)|"]);
+    assert_eq!(dump(r#"<a href="//shop.example/sale">link</a>"#), ["p|link"]);
+    // Neither a path, nor a file server, nor nothing at all is an address without its scheme.
+    for not_one in
+        ["/a.png", "///a.png", "//", "// img.example/a.png", "//:80/a.png", "\\\\files\\share\\a.png", "//\\img.example/a.png", "a.png", "img/a.png"]
+    {
+        assert_eq!(dump(&format!(r#"<img src="{not_one}" alt="described">"#)), ["p|described"], "{not_one}");
+    }
+    // Character references, written every way.
+    assert_eq!(
+        dump(r#"<img src="https://img.example/a.png?u=1&amp;w=600&#38;h=2&#x26;sig=a%2Fb">"#),
+        ["img(https://img.example/a.png?u=1&w=600&h=2&sig=a%2Fb)|"]
+    );
+    // The scheme in capitals, white space round the address, and no quotes at all.
+    assert_eq!(dump(r#"<img src=" HTTPS://IMG.Example/A.PNG ">"#), ["img(HTTPS://IMG.Example/A.PNG)|"]);
+    assert_eq!(dump("<img src=https://img.example/unquoted.png width=5 height=5>"), ["img(https://img.example/unquoted.png 5x5)|"]);
+    // A line broken inside the address is mended; a space in it is the address's own (whoever
+    // downloads it writes it the way an address has it).
+    assert_eq!(dump("<img src=\"https://img.example/2026/\r\n\thero.png\">"), ["img(https://img.example/2026/hero.png)|"]);
+    assert_eq!(dump(r#"<img src="https://img.example/spring sale.png">"#), ["img(https://img.example/spring sale.png)|"]);
+    // The one to load is `src`: what `srcset` and a script's own attributes name is not looked at.
+    assert_eq!(
+        dump(r#"<img data-src="https://img.example/lazy.png" srcset="https://img.example/2x.png 2x" src="https://img.example/real.png">"#),
+        ["img(https://img.example/real.png)|"]
+    );
+    assert_eq!(dump(r#"x<img srcset="https://img.example/2x.png 2x" data-src="https://img.example/lazy.png">y"#), ["p|xy"]);
+}
+
+#[test]
+fn slices_of_one_picture_stay_the_rows_of_a_table() {
+    // A picture cut into strips, a row each (and a row that only makes room): kept as rows, so
+    // that they can be set edge to edge. Any other column of things is those things.
+    let slices = "<table cellpadding=0 cellspacing=0><tr><td style='font-size:0'><img src='cid:a' width=300 height=100></td></tr>\
+                  <tr><td><a href='https://shop.example/'><img src='cid:b' width=300 height=80></a></td></tr>\
+                  <tr><td style='font-size:1px;line-height:1px' height=10>&nbsp;</td></tr></table>";
+    assert_eq!(dump(slices), ["layout[(img(cid:a 300x100)|)][(img(cid:b 300x80)|)]"]);
+    let side_by_side = "<table><tr><td><img src='cid:a'></td><td><img src='cid:b'></td></tr><tr><td colspan=2><img src='cid:c'></td></tr></table>";
+    assert_eq!(dump(side_by_side), ["layout[(img(cid:a)|)(img(cid:b)|)][(x2 img(cid:c)|)]"]);
+    assert_eq!(dump("<table><tr><td><img src='cid:a'></td></tr></table>"), ["img(cid:a)|"]);
+    assert_eq!(dump("<table><tr><td><img src='cid:a'></td></tr><tr><td>caption</td></tr></table>"), ["img(cid:a)|", "p|caption"]);
+    assert_eq!(spaces("<table><tr><td><img src='cid:a'></td></tr><tr><td>caption</td></tr></table>"), [0, 1]);
+}
+
+#[test]
+fn a_picture_takes_its_size_from_its_style_where_its_attributes_give_none() {
+    assert_eq!(dump(r#"<img src="cid:a" style="width:300px;height:120px">"#), ["img(cid:a 300x120)|"]);
+    assert_eq!(dump(r#"<img src="cid:a" style="width:1.5in; height:36pt">"#), ["img(cid:a 144x48)|"]);
+    // The attributes win, as they do in the program these messages are written for.
+    assert_eq!(dump(r#"<img src="cid:a" width="600" height="280" style="width:320px;height:auto">"#), ["img(cid:a 600x280)|"]);
+    assert_eq!(dump(r#"<img src="cid:a" width="600" style="height:90px">"#), ["img(cid:a 600x90)|"]);
+    // A share of the room, `auto` and a limit say nothing of the size: the picture's own shape does.
+    assert_eq!(dump(r#"<img src="cid:a" style="width:100%;max-width:600px;height:auto">"#), ["img(cid:a)|"]);
+    assert_eq!(dump(r#"<img src="cid:a" width="100%" style="width:50em">"#), ["img(cid:a)|"]);
+    // Absurd sizes are tamed like the attributes', and a pixel is still a tracker.
+    assert_eq!(dump(r#"<img src="cid:a" style="width:99999999px">"#), ["img(cid:a 8192x)|"]);
+    assert_eq!(dump(r#"a<img src="https://t.example/o.gif" style="width:1px!important;height:1px!important">b"#), ["p|ab"]);
 }
 
 /// What holds of every block, whatever the input.
