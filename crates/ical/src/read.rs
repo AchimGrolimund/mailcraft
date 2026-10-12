@@ -411,7 +411,8 @@ impl EventBuilder {
             "DURATION" => self.duration = self.duration.or_else(|| parse_duration(&line.value)),
             "RECURRENCE-ID" => {
                 if self.instance.is_none() {
-                    self.instance = stamp_of(line, &line.value, zones, &mut self.notes).map(|at| (prefix(line.value.trim(), MAX_KEYWORD).to_string(), at));
+                    self.instance =
+                        stamp_of(line, &line.value, zones, &mut self.notes).map(|at| (prefix(line.value.trim(), MAX_KEYWORD).to_string(), at));
                 }
             }
             "RRULE" => {

@@ -119,7 +119,10 @@ impl Part {
         // The year of the time asked about and the years beside it; and where the rule ends.
         let last = self.until.map(|until| DateTime::from_timestamp(until, 0).date.year);
         let counted = self.count.map(|count| self.start.date.year.saturating_add(i32::try_from(count).unwrap_or(i32::MAX)).saturating_sub(1));
-        for year in [Some(year.saturating_add(1)), Some(year), Some(year.saturating_sub(1)), last, last.map(|y| y.saturating_sub(1)), counted].into_iter().flatten() {
+        for year in [Some(year.saturating_add(1)), Some(year), Some(year.saturating_sub(1)), last, last.map(|y| y.saturating_sub(1)), counted]
+            .into_iter()
+            .flatten()
+        {
             if let Some(begins) = self.in_year(year) {
                 take(begins);
             }
@@ -338,7 +341,9 @@ impl FileZones {
         if known == Some(Zone::UTC) {
             return Source::Utc;
         }
-        if let Some((_, definition, place)) = self.zones.iter().find(|(name, _, _)| name == tzid).or_else(|| self.zones.iter().find(|(name, _, _)| name.eq_ignore_ascii_case(tzid))) {
+        if let Some((_, definition, place)) =
+            self.zones.iter().find(|(name, _, _)| name == tzid).or_else(|| self.zones.iter().find(|(name, _, _)| name.eq_ignore_ascii_case(tzid)))
+        {
             return Source::File(definition, known.or_else(|| Zone::named(place)));
         }
         match (known, Zone::offset_in_name(tzid)) {
@@ -385,7 +390,8 @@ impl Source<'_> {
                 if let Some(zone) = named.filter(|zone| zone.offset_seconds_at(instant) == offset) {
                     return (Some(zone), None);
                 }
-                let contradicts = named.map(|_| note(tzid, "is defined in the file otherwise than the zone of that name: its times are read as the file defines them."));
+                let contradicts = named
+                    .map(|_| note(tzid, "is defined in the file otherwise than the zone of that name: its times are read as the file defines them."));
                 // A zone of the database that keeps the same clock around then.
                 let same = |zone: &Zone| {
                     (-WEEKS..=WEEKS).all(|week| {
@@ -398,7 +404,8 @@ impl Source<'_> {
                 }
                 let fixed = i32::try_from(offset.div_euclid(60)).ok().and_then(Zone::fixed);
                 let label = fixed.map(Zone::id).unwrap_or_default();
-                let said = contradicts.unwrap_or_else(|| note(tzid, &format!("is defined in the file and is like none that is known: its times are kept at {label}.")));
+                let said = contradicts
+                    .unwrap_or_else(|| note(tzid, &format!("is defined in the file and is like none that is known: its times are kept at {label}.")));
                 (fixed, Some(said))
             }
         }
@@ -417,7 +424,11 @@ pub(crate) fn tzid(zone: Zone) -> String {
 fn format_offset(seconds: i32) -> String {
     let sign = if seconds < 0 { '-' } else { '+' };
     let a = seconds.unsigned_abs();
-    if a % 60 == 0 { format!("{sign}{:02}{:02}", a / 3600, a / 60 % 60) } else { format!("{sign}{:02}{:02}{:02}", a / 3600, a / 60 % 60, a % 60) }
+    if a.is_multiple_of(60) {
+        format!("{sign}{:02}{:02}", a / 3600, a / 60 % 60)
+    } else {
+        format!("{sign}{:02}{:02}{:02}", a / 3600, a / 60 % 60, a % 60)
+    }
 }
 
 /// The rule a change of clocks follows when it falls on the same weekday of the same month each
@@ -427,7 +438,10 @@ fn yearly_rule(changes: &[(DateTime, i32, i32)]) -> Option<Yearly> {
     let (first, _, _) = changes.first()?;
     let alike = changes.iter().all(|(at, from, to)| {
         let (_, first_from, first_to) = changes.first().copied().unwrap_or((*at, *from, *to));
-        at.date.month == first.date.month && at.date.weekday() == first.date.weekday() && at.seconds_of_day() == first.seconds_of_day() && (*from, *to) == (first_from, first_to)
+        at.date.month == first.date.month
+            && at.date.weekday() == first.date.weekday()
+            && at.seconds_of_day() == first.seconds_of_day()
+            && (*from, *to) == (first_from, first_to)
     });
     if !alike {
         return None;
@@ -495,7 +509,14 @@ pub(crate) fn write_zone(out: &mut String, zone: Zone, from: i32, to: i32) {
         _ => {
             // What holds before the first change, then each change.
             let first = changes.first().map_or(DateTime::default(), |(at, _, _)| *at);
-            write_part(out, "STANDARD", DateTime::at_midnight(Date::new(first.date.year.saturating_sub(1).max(1), 1, 1).unwrap_or_default()), before, before, None);
+            write_part(
+                out,
+                "STANDARD",
+                DateTime::at_midnight(Date::new(first.date.year.saturating_sub(1).max(1), 1, 1).unwrap_or_default()),
+                before,
+                before,
+                None,
+            );
             for (start, from, to) in changes {
                 write_part(out, if to > from { "DAYLIGHT" } else { "STANDARD" }, start, from, to, None);
             }
@@ -608,13 +629,19 @@ END:VTIMEZONE\n";
             assert_eq!(utc_offset(bad), None, "{bad}");
         }
         // A megabyte of name, hundreds of zones, thousands of parts and dates: all bounded.
-        let long = format!("BEGIN:VTIMEZONE\nTZID:{}\nBEGIN:STANDARD\nDTSTART:19700101T000000\nTZOFFSETFROM:+0100\nTZOFFSETTO:+0100\nEND:STANDARD\nEND:VTIMEZONE\n", "Z".repeat(1 << 20));
+        let long = format!(
+            "BEGIN:VTIMEZONE\nTZID:{}\nBEGIN:STANDARD\nDTSTART:19700101T000000\nTZOFFSETFROM:+0100\nTZOFFSETTO:+0100\nEND:STANDARD\nEND:VTIMEZONE\n",
+            "Z".repeat(1 << 20)
+        );
         let zones = FileZones::collect(&long);
         assert!(zones.zones[0].0.len() <= MAX_TZID);
         assert!(matches!(zones.source(&"Z".repeat(1 << 20)), Source::File(..)));
         let many: String = (0..500).map(|n| format!("BEGIN:VTIMEZONE\nTZID:Zone{n}\nBEGIN:STANDARD\nDTSTART:19700101T000000\nTZOFFSETFROM:+0100\nTZOFFSETTO:+0100\nEND:STANDARD\nEND:VTIMEZONE\n")).collect();
         assert_eq!(FileZones::collect(&many).zones.len(), MAX_ZONES);
-        let part = format!("BEGIN:STANDARD\nDTSTART:19700101T000000\nRDATE:{}\nTZOFFSETFROM:+0100\nTZOFFSETTO:+0100\nEND:STANDARD\n", "19800101T000000,".repeat(5_000));
+        let part = format!(
+            "BEGIN:STANDARD\nDTSTART:19700101T000000\nRDATE:{}\nTZOFFSETFROM:+0100\nTZOFFSETTO:+0100\nEND:STANDARD\n",
+            "19800101T000000,".repeat(5_000)
+        );
         let crowded = only(&format!("BEGIN:VTIMEZONE\nTZID:Crowded\n{}END:VTIMEZONE\n", part.repeat(1_000)));
         assert_eq!((crowded.parts.len(), crowded.parts[0].dates.len()), (MAX_PARTS, MAX_DATES));
         let _ = crowded.offset_for_wall(at(2026, 1, 1, 0, 0));
@@ -643,7 +670,12 @@ END:VTIMEZONE\n";
         let offset = none.source("(UTC-05:00) Somewhere Else");
         let (kept, said) = offset.zone("(UTC-05:00) Somewhere Else", wall, offset.instant(wall).unwrap());
         assert_eq!((kept, offset.instant(wall)), (Zone::fixed(-300), Some(wall.to_timestamp(-300))));
-        assert_eq!(said.as_deref(), Some("The time zone \"(UTC-05:00) Somewhere Else\" isn't one that is known: its times are kept at UTC-05:00, which is all its name says."));
+        assert_eq!(
+            said.as_deref(),
+            Some(
+                "The time zone \"(UTC-05:00) Somewhere Else\" isn't one that is known: its times are kept at UTC-05:00, which is all its name says."
+            )
+        );
         let unknown = none.source("Customized Time Zone");
         assert_eq!(unknown.instant(wall), None);
         let (kept, said) = unknown.zone("Customized\r\nTime Zone", wall, 0);
@@ -704,7 +736,10 @@ END:VTIMEZONE\n"
         assert!(text.contains("RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=1SU") && text.contains("RRULE:FREQ=YEARLY;BYMONTH=4;BYDAY=1SU"), "{text}");
         // No changes: one part. An offset is a zone too.
         let (text, _) = written(zone("Asia/Kolkata"), 2026, 2026);
-        assert_eq!(text.replace("\r\n", "\n"), "BEGIN:VTIMEZONE\nTZID:Asia/Kolkata\nBEGIN:STANDARD\nDTSTART:16010101T000000\nTZOFFSETFROM:+0530\nTZOFFSETTO:+0530\nEND:STANDARD\nEND:VTIMEZONE\n");
+        assert_eq!(
+            text.replace("\r\n", "\n"),
+            "BEGIN:VTIMEZONE\nTZID:Asia/Kolkata\nBEGIN:STANDARD\nDTSTART:16010101T000000\nTZOFFSETFROM:+0530\nTZOFFSETTO:+0530\nEND:STANDARD\nEND:VTIMEZONE\n"
+        );
         let (text, _) = written(Zone::fixed(-570).unwrap(), 2026, 2026);
         assert!(text.contains("TZID:UTC-09:30") && text.contains("TZOFFSETTO:-0930"), "{text}");
         // The year the United States changed its rule: written out change by change.

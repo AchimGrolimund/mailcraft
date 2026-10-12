@@ -156,6 +156,24 @@ fn info(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     ) {
         let _ = app.run("ui.dialog", json!({"name": "account"}));
     }
+    // The calendar of an account that signs in with Microsoft is kept on its server: the owner
+    // can see for himself that what is changed here arrives there.
+    let microsoft = |a: &&mailcraft_model::Account| a.oauth.as_ref().is_some_and(|o| o.provider == mailcraft_model::OAuthProvider::Microsoft);
+    if app.services.check_calendar.is_some() && accounts.iter().any(|a| microsoft(&a)) {
+        section(ui, tl!("Calendar"), t);
+        let detail = if app.checking_calendar() {
+            tl!("Checking: the report comes in a moment…")
+        } else {
+            tl!(
+                "Makes one test appointment a year from today in your account's calendar, changes it and deletes it again, and shows what the server answered"
+            )
+        };
+        if tile(ui, "calendar", tl!("Check Calendar Connection"), detail, t)
+            && let Err(e) = app.run("ui.checkCalendar", json!({}))
+        {
+            app.status(e);
+        }
+    }
     section(ui, tl!("Mailbox"), t);
     if let Ok(v) = app.session.run("file.info", &json!({})) {
         let n = |k: &str| v.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);

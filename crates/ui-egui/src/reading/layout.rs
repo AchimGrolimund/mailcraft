@@ -1054,7 +1054,14 @@ fn padding(table: &Table, cell: &Cell) -> Vec2 {
 
 /// The gaps between the columns and between the rows.
 fn gaps(table: &Table) -> Vec2 {
-    if table.layout && !painted(table) { vec2(COLUMN_GAP, ROW_GAP) } else { Vec2::ZERO }
+    if !table.layout || painted(table) {
+        return Vec2::ZERO;
+    }
+    // Rows of pictures and nothing else are slices of one picture: each stands right on the
+    // one below, as the message has them, or the picture falls apart into stripes.
+    let picture = |block: &Block| matches!(block.kind, BlockKind::Image { .. });
+    let slices = table.rows.len() >= 2 && table.rows.iter().all(|row| row.cells.iter().all(|cell| cell.blocks.iter().all(picture)));
+    vec2(COLUMN_GAP, if slices { 0.0 } else { ROW_GAP })
 }
 
 /// What each column needs: its least and its wanted width, and whether the source fixed it.
@@ -1401,6 +1408,7 @@ fn stacked(cx: &mut Cx<'_>, table: &Table, x: f32, y: f32, room: f32, paper: Pap
     let around = table.background.map_or(paper, |bg| Paper::of(bg, &cx.t));
     let table_slot = table.background.map(|_| cx.slot());
     let line = around.line(&cx.t);
+    let between = gaps(table).y;
     let mut at = y;
     let mut first = true;
     for (n, row) in table.rows.iter().enumerate() {
@@ -1410,7 +1418,7 @@ fn stacked(cx: &mut Cx<'_>, table: &Table, x: f32, y: f32, room: f32, paper: Pap
         for cell in &row.cells {
             across.cell(cx);
             if !first {
-                at += gaps(table).y;
+                at += between;
             }
             first = false;
             let pad = padding(table, cell);

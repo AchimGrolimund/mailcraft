@@ -197,7 +197,8 @@ fn email_at(text: &str, at: usize, floor: usize) -> Hit {
     Hit::Link { start, end, url: format!("mailto:{local}@{domain}") }
 }
 
-/// Readable plain text from HTML, for snippets, search and replying in plain text.
+/// Readable plain text from HTML, for search and replying in plain text (a message list shows
+/// [`crate::preview`] instead).
 ///
 /// Paragraphs are separated by blank lines. List items start with `• ` or `1. `, quoted blocks
 /// with `> `, a rule is a row of dashes, a picture is its `[alt text]`. A link reads

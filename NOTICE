@@ -44,7 +44,10 @@ list (author, source, license) is in ATTRIBUTION.md.
   MIT OR Apache-2.0.
 
 Rust dependencies (egui, eframe, wgpu, rustls, serde, image, …) are permissively licensed
-(MIT/Apache-2.0/BSD/ISC/Zlib) and fetched through crates.io.
+(MIT/Apache-2.0/BSD/ISC/Zlib) and fetched through crates.io. Among them, for pictures in mail:
+image-webp (the WebP decoder of the image crate; MIT OR Apache-2.0) and flate2 with miniz_oxide
+(gzip and deflate, for a picture a web server sends packed; MIT OR Apache-2.0, and MIT OR Zlib OR
+Apache-2.0). Both are written in Rust throughout; no picture is decoded by anything else.
 
 No Microsoft, Google, Apple, Mozilla or other vendor's icons, images, templates, sounds or artwork
 are included.

@@ -73,7 +73,8 @@ struct Db {
 fn db() -> &'static Db {
     static DB: OnceLock<Db> = OnceLock::new();
     DB.get_or_init(|| {
-        let mut names: Vec<(String, String)> = jiff::tz::db().available().map(|name| (name.as_str().to_ascii_lowercase(), name.as_str().to_string())).collect();
+        let mut names: Vec<(String, String)> =
+            jiff::tz::db().available().map(|name| (name.as_str().to_ascii_lowercase(), name.as_str().to_string())).collect();
         names.sort();
         names.dedup_by(|a, b| a.0 == b.0);
         names.truncate(usize::from(u16::MAX));
@@ -199,7 +200,8 @@ fn signed_offset(text: &str) -> Option<i32> {
         None if digits.len() > 2 => digits.split_at_checked(digits.len().saturating_sub(2))?,
         None => (digits, "0"),
     };
-    let number = |part: &str| if !part.is_empty() && part.len() <= 2 && part.bytes().all(|b| b.is_ascii_digit()) { part.parse::<i32>().ok() } else { None };
+    let number =
+        |part: &str| if !part.is_empty() && part.len() <= 2 && part.bytes().all(|b| b.is_ascii_digit()) { part.parse::<i32>().ok() } else { None };
     let (hours, minutes) = (number(hours)?, number(minutes)?);
     let total = hours.checked_mul(60)?.checked_add(minutes)?;
     (minutes < 60 && total <= MAX_OFFSET).then_some(sign * total)
@@ -268,7 +270,10 @@ impl Zone {
         let upper = name.to_ascii_uppercase();
         let at = upper.find("UTC").or_else(|| upper.find("GMT"))?;
         let rest = name.get(at.saturating_add(3)..)?.trim_start();
-        let end = rest.char_indices().find(|(_, c)| !(c.is_ascii_digit() || matches!(c, '+' | '-' | ':' | '.' | '\u{2212}'))).map_or(rest.len(), |(at, _)| at);
+        let end = rest
+            .char_indices()
+            .find(|(_, c)| !(c.is_ascii_digit() || matches!(c, '+' | '-' | ':' | '.' | '\u{2212}')))
+            .map_or(rest.len(), |(at, _)| at);
         signed_offset(rest.get(..end)?)
     }
 
@@ -401,10 +406,11 @@ impl Zone {
     /// through the year after it. (`Europe/Berlin` and `Europe/Paris` are different zones with
     /// the same clock.)
     pub fn same_clock(self, other: Zone, instant: Timestamp) -> bool {
-        self == other || (0..12).all(|month| {
-            let at = instant.saturating_add(month * 31 * DAY);
-            self.offset_seconds_at(at) == other.offset_seconds_at(at)
-        })
+        self == other
+            || (0..12).all(|month| {
+                let at = instant.saturating_add(month * 31 * DAY);
+                self.offset_seconds_at(at) == other.offset_seconds_at(at)
+            })
     }
 
     /// The changes of the zone's offset from `from` up to `to`, in order (daylight saving
@@ -520,7 +526,14 @@ mod tests {
     fn names_of_every_kind_are_read() {
         let berlin = zone("Europe/Berlin");
         assert_eq!(berlin.id(), "Europe/Berlin");
-        for name in ["europe/berlin", " EUROPE/BERLIN ", "\"Europe/Berlin\"", "W. Europe Standard Time", "w. europe standard time", "/example.org/20070129_1/Europe/Berlin"] {
+        for name in [
+            "europe/berlin",
+            " EUROPE/BERLIN ",
+            "\"Europe/Berlin\"",
+            "W. Europe Standard Time",
+            "w. europe standard time",
+            "/example.org/20070129_1/Europe/Berlin",
+        ] {
             assert_eq!(Zone::named(name), Some(berlin), "{name}");
         }
         // A spelling of old is the zone it became.
@@ -532,7 +545,9 @@ mod tests {
             assert_eq!(Zone::named(name), Some(Zone::UTC), "{name}");
         }
         assert_eq!(Zone::UTC.id(), "UTC");
-        for (name, minutes) in [("UTC+05:30", 330), ("GMT-8", -480), ("+0200", 120), ("-03", -180), ("UTC+5", 300), ("utc-09:30", -570), ("UTC\u{2212}05:00", -300)] {
+        for (name, minutes) in
+            [("UTC+05:30", 330), ("GMT-8", -480), ("+0200", 120), ("-03", -180), ("UTC+5", 300), ("utc-09:30", -570), ("UTC\u{2212}05:00", -300)]
+        {
             let fixed = zone(name);
             assert_eq!((fixed, fixed.offset_at(0)), (Zone::fixed(minutes).unwrap(), minutes), "{name}");
             assert_eq!(Zone::named(&fixed.id()), Some(fixed), "{name}");
@@ -643,7 +658,9 @@ mod tests {
 
     #[test]
     fn zones_off_the_hour() {
-        for (name, minutes) in [("Asia/Kolkata", 330), ("Asia/Kathmandu", 345), ("Australia/Eucla", 525), ("Pacific/Marquesas", -570), ("Asia/Kabul", 270)] {
+        for (name, minutes) in
+            [("Asia/Kolkata", 330), ("Asia/Kathmandu", 345), ("Australia/Eucla", 525), ("Pacific/Marquesas", -570), ("Asia/Kabul", 270)]
+        {
             let zone = zone(name);
             let noon = utc(2026, 6, 15, 12, 0);
             assert_eq!(zone.offset_at(noon), minutes, "{name}");

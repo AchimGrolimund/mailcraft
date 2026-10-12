@@ -1411,8 +1411,11 @@ fn what_changed_of_an_event_is_all_that_is_sent() {
     let server = FakeHttp::answering(json_answer("200 OK", r#"{"id":"e-1","changeKey":"ck"}"#));
     let sent = |fields: EventFields| {
         let before = server.asked();
+        let nothing = fields.is_empty();
         let uploaded = push_events_at(&server.url(""), TOKEN, &upload(vec![update("e-1", fields)]), &EventOptions::default());
-        assert_eq!(uploaded.outcomes[0].result, EventResult::Done);
+        // A change that says nothing is never called done: nothing was done.
+        let expected = if nothing { EventResult::Refused } else { EventResult::Done };
+        assert_eq!(uploaded.outcomes[0].result, expected, "{}", uploaded.outcomes[0].error);
         (server.asked() > before).then(|| body_of(&server.request(before)))
     };
     let fields = EventFields::default;
@@ -1440,7 +1443,7 @@ fn what_changed_of_an_event_is_all_that_is_sent() {
     // Text is cut to size and to one line where it is one; nothing in it can say more than it is.
     let long = sent(EventFields { title: Some(format!("Budget\r\nreview{}", "x".repeat(5_000))), ..fields() }).unwrap();
     assert_eq!(long["subject"].as_str().map(|s| (s.chars().count(), s.starts_with("Budget  review"))), Some((500, true)));
-    // Changed and changed back: there is nothing to tell, and Graph isn't asked.
+    // A change that says nothing: Graph isn't asked, and the answer doesn't say "done".
     assert_eq!(sent(fields()), None);
 }
 
@@ -1747,7 +1750,11 @@ fn a_series_comes_as_itself_beside_its_occurrences() {
     let urls: Vec<&str> = asked["requests"].as_array().unwrap().iter().map(|one| one["url"].as_str().unwrap()).collect();
     assert_eq!(urls.len(), 3);
     for (url, id) in urls.iter().zip(["s-1", "s-2", "s-3"]) {
-        assert!(url.starts_with(&format!("/me/events/{id}?%24select=id%2C")) && url.ends_with("%2Crecurrence%2CoriginalStartTimeZone%2CoriginalEndTimeZone"), "{url}");
+        assert!(
+            url.starts_with(&format!("/me/events/{id}?%24select=id%2C"))
+                && url.ends_with("%2Crecurrence%2CoriginalStartTimeZone%2CoriginalEndTimeZone"),
+            "{url}"
+        );
     }
     assert_eq!(asked["requests"][0]["method"], "GET");
     assert_eq!(asked["requests"][0]["headers"]["Prefer"], "outlook.timezone=\"UTC\", outlook.body-content-type=\"text\"");
@@ -1842,7 +1849,7 @@ fn how_a_series_repeats_is_read_and_written() {
         ),
     ];
     for (rule, pattern, range) in cases {
-        let written = recurrence_body(&rule, first, "Pacific Standard Time").unwrap_or_else(|| panic!("{rule:?}"));
+        let written = recurrence_body(&rule, first, "Pacific Standard Time", 0).unwrap_or_else(|| panic!("{rule:?}"));
         let mut expected = range.clone();
         expected["startDate"] = json!("2026-10-12");
         expected["recurrenceTimeZone"] = json!("Pacific Standard Time");
@@ -1851,19 +1858,19 @@ fn how_a_series_repeats_is_read_and_written() {
         assert_eq!(rule_of(&written), Some((rule.clone(), first)), "{written}");
     }
     // A week without days named is one on the day it starts; no zone is UTC.
-    let written = recurrence_body(&rule(Freq::Weekly), first, "").unwrap();
+    let written = recurrence_body(&rule(Freq::Weekly), first, "", 0).unwrap();
     assert_eq!(written["pattern"]["daysOfWeek"], json!(["monday"]));
     assert_eq!(written["range"]["recurrenceTimeZone"], "UTC");
     // "Every weekday" is said as a week with those days in it.
     let weekdays = Recurrence { by_day: vec![Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri], ..rule(Freq::Daily) };
-    assert_eq!(recurrence_body(&weekdays, first, "").unwrap()["pattern"]["type"], "weekly");
+    assert_eq!(recurrence_body(&weekdays, first, "", 0).unwrap()["pattern"]["type"], "weekly");
     // What Graph has no way of saying is not said some other way.
     for odd in [
         Recurrence { interval: 2, by_day: vec![Weekday::Mon], ..rule(Freq::Daily) },
         Recurrence { by_day: vec![Weekday::Mon, Weekday::Tue], nth: Some(1), ..rule(Freq::Monthly) },
         Recurrence { by_day: vec![Weekday::Mon], nth: Some(5), ..rule(Freq::Monthly) },
     ] {
-        assert_eq!(recurrence_body(&odd, first, ""), None, "{odd:?}");
+        assert_eq!(recurrence_body(&odd, first, "", 0), None, "{odd:?}");
     }
     // And what the mailbox has no way of saying is not read as something near it.
     let read = |pattern: Value, range: Value| rule_of(&json!({"pattern": pattern, "range": range}));
@@ -2259,7 +2266,7 @@ proptest! {
         // A rule from outside is one the mailbox can say, or none; and what is written of it reads back.
         if let Some((rule, first)) = rule_of(&entry) {
             prop_assert!((1..=999).contains(&rule.interval));
-            if let Some(written) = recurrence_body(&rule, first, "UTC") {
+            if let Some(written) = recurrence_body(&rule, first, "UTC", 0) {
                 prop_assert_eq!(rule_of(&written), Some((rule, first)));
             }
         }
@@ -2311,7 +2318,9 @@ fn the_zones_an_event_was_made_in_are_read() {
     assert_eq!((master.kind, master.start_zone.as_str()), (RemoteEventKind::SeriesMaster, "Eastern Standard Time"));
     // Names that are none, and names of any length, are names all the same here: what they
     // mean is for the mailbox to say, which keeps a zone only when it is one.
-    for odd in [json!("tzone://Microsoft/Custom"), json!("Customized Time Zone"), json!(7), json!(null), json!("x".repeat(1 << 20)), json!("Line\r\nbreak")] {
+    for odd in
+        [json!("tzone://Microsoft/Custom"), json!("Customized Time Zone"), json!(7), json!(null), json!("x".repeat(1 << 20)), json!("Line\r\nbreak")]
+    {
         let event = read(json!({"originalStartTimeZone": odd}));
         assert!(event.start_zone.len() <= 64 && !event.start_zone.contains('\n'), "{:?}", event.start_zone);
         assert_eq!(event.start, at(2026, 10, 12, 13, 0));
@@ -2333,7 +2342,12 @@ fn an_event_with_zones_of_its_own_is_written_by_their_clocks() {
     let time = Some(EventTime { start: at(2026, 10, 12, 20, 0), end: at(2026, 10, 12, 21, 0), all_day: false });
     let (result, body) = sent(EventFields { time, zones: zones("America/Los_Angeles", "Asia/Tokyo"), ..Default::default() }, "America/Chicago");
     assert_eq!(result, EventResult::Done);
-    assert_eq!(body, Some(json!({"start": stamp("2026-10-12T13:00:00", "Pacific Standard Time"), "end": stamp("2026-10-13T06:00:00", "Tokyo Standard Time"), "isAllDay": false})));
+    assert_eq!(
+        body,
+        Some(
+            json!({"start": stamp("2026-10-12T13:00:00", "Pacific Standard Time"), "end": stamp("2026-10-13T06:00:00", "Tokyo Standard Time"), "isAllDay": false})
+        )
+    );
     // Half and three quarters of an hour, the south in its summer, a zone Windows has no name for.
     for (zone, name, start) in [
         ("Asia/Kolkata", "India Standard Time", "2026-10-13T01:30:00"),
@@ -2369,13 +2383,22 @@ fn an_event_with_zones_of_its_own_is_written_by_their_clocks() {
     };
     let (_, body) = sent(series.clone(), "America/Chicago");
     let body = body.unwrap();
-    assert_eq!((body["start"].clone(), body["end"].clone()), (stamp("2026-10-05T16:00:00", "W. Europe Standard Time"), stamp("2026-10-05T17:00:00", "W. Europe Standard Time")));
+    assert_eq!(
+        (body["start"].clone(), body["end"].clone()),
+        (stamp("2026-10-05T16:00:00", "W. Europe Standard Time"), stamp("2026-10-05T17:00:00", "W. Europe Standard Time"))
+    );
     assert_eq!(body["recurrence"]["range"], json!({"type": "noEnd", "startDate": "2026-10-05", "recurrenceTimeZone": "W. Europe Standard Time"}));
     // The same series without a zone of its own is by the clock of the zone the calendar is
     // shown in.
-    let (_, body) = sent(EventFields { zones: None, wall: Some(EventWall { start: clock(2026, 10, 5, 9, 0), end: clock(2026, 10, 5, 10, 0) }), ..series.clone() }, "America/Chicago");
+    let (_, body) = sent(
+        EventFields { zones: None, wall: Some(EventWall { start: clock(2026, 10, 5, 9, 0), end: clock(2026, 10, 5, 10, 0) }), ..series.clone() },
+        "America/Chicago",
+    );
     let body = body.unwrap();
-    assert_eq!((body["start"].clone(), body["recurrence"]["range"]["recurrenceTimeZone"].clone()), (stamp("2026-10-05T09:00:00", "Central Standard Time"), json!("Central Standard Time")));
+    assert_eq!(
+        (body["start"].clone(), body["recurrence"]["range"]["recurrenceTimeZone"].clone()),
+        (stamp("2026-10-05T09:00:00", "Central Standard Time"), json!("Central Standard Time"))
+    );
     // A series by the clock of a zone Graph has no name for (an offset, a name that is none) is
     // not written by another clock: it is refused, and Graph isn't asked.
     for unnamed in ["UTC+05:30", "Nowhere/At_All", "x\r\ny"] {

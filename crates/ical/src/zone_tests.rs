@@ -110,7 +110,18 @@ DTSTART;TZID=W. Europe Standard Time:20261110T100000\r\nDTEND;TZID=W. Europe Sta
     assert_eq!(series.exceptions, [d(2026, 10, 19), d(2026, 11, 9)]);
     // Nine o'clock here, but for the week when only Berlin has changed its clocks.
     let seen: Vec<String> = series.occurrences_in(d(2026, 10, 1), d(2026, 12, 31), &here).into_iter().map(|o| o.start.iso()).collect();
-    assert_eq!(seen, ["2026-10-05T09:00:00", "2026-10-12T09:00:00", "2026-10-26T10:00:00", "2026-11-02T09:00:00", "2026-11-16T09:00:00", "2026-11-23T09:00:00", "2026-11-30T09:00:00"]);
+    assert_eq!(
+        seen,
+        [
+            "2026-10-05T09:00:00",
+            "2026-10-12T09:00:00",
+            "2026-10-26T10:00:00",
+            "2026-11-02T09:00:00",
+            "2026-11-16T09:00:00",
+            "2026-11-23T09:00:00",
+            "2026-11-30T09:00:00"
+        ]
+    );
     let moved = &file.events[1];
     assert_eq!((moved.start, moved.start_zone.as_str(), moved.recurrence.is_none()), (at(2026, 11, 10, 3, 0), "Europe/Berlin", true));
 
@@ -137,7 +148,10 @@ fn zones_nobody_knows_are_said_and_nothing_is_guessed() {
     let read = |properties: &str| read_in(&format!("BEGIN:VEVENT\r\n{properties}\r\nEND:VEVENT\r\n"), chicago);
     // Nothing is known: as written, and it says so.
     let file = read("DTSTART;TZID=Customized Time Zone:20261012T160000\r\nDTEND;TZID=Customized Time Zone:20261012T170000\r\nRRULE:FREQ=DAILY");
-    assert_eq!((file.events[0].start, file.events[0].end, file.events[0].start_zone.as_str()), (at(2026, 10, 12, 16, 0), at(2026, 10, 12, 17, 0), ""));
+    assert_eq!(
+        (file.events[0].start, file.events[0].end, file.events[0].start_zone.as_str()),
+        (at(2026, 10, 12, 16, 0), at(2026, 10, 12, 17, 0), "")
+    );
     assert_eq!(file.notes, ["The time zone \"Customized Time Zone\" isn't one that is known: its times are kept as they are written."]);
     // The name gives an offset: kept at that offset, which is said.
     let file = read("DTSTART;TZID=\"(UTC+01:00) Somewhere in Europe\":20261012T160000\r\nRRULE:FREQ=DAILY");
@@ -152,7 +166,10 @@ fn zones_nobody_knows_are_said_and_nothing_is_guessed() {
     }
     // A megabyte of it is more than a line may hold: there is no start left to read, and so no
     // event; what follows is read.
-    let huge = format!("BEGIN:VEVENT\r\nDTSTART;TZID={}:20261012T160000\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nDTSTART:20261013T160000\r\nEND:VEVENT\r\n", "Z".repeat(1 << 20));
+    let huge = format!(
+        "BEGIN:VEVENT\r\nDTSTART;TZID={}:20261012T160000\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nDTSTART:20261013T160000\r\nEND:VEVENT\r\n",
+        "Z".repeat(1 << 20)
+    );
     let file = read_in(&huge, chicago);
     assert_eq!(file.events.iter().map(|e| e.start).collect::<Vec<_>>(), [at(2026, 10, 13, 16, 0)]);
     // A definition that contradicts its name: the file's own times, and a word about it.
@@ -176,9 +193,15 @@ fn whole_days_are_days_in_every_zone() {
         let e = event_in("DTSTART;VALUE=DATE:20261012\r\nDTEND;VALUE=DATE:20261014", zone(name));
         assert_eq!((e.all_day, e.start, e.end, e.start_zone.as_str()), (true, at(2026, 10, 12, 0, 0), at(2026, 10, 14, 0, 0), ""), "{name}");
         // Midnight to midnight in a zone, with the flag that says it is whole days.
-        let flagged =
-            event_in("DTSTART;TZID=Asia/Tokyo:20261012T000000\r\nDTEND;TZID=Asia/Tokyo:20261013T000000\r\nX-MICROSOFT-CDO-ALLDAYEVENT:TRUE", zone(name));
-        assert_eq!((flagged.all_day, flagged.start, flagged.end, flagged.start_zone.as_str()), (true, at(2026, 10, 12, 0, 0), at(2026, 10, 13, 0, 0), ""), "{name}");
+        let flagged = event_in(
+            "DTSTART;TZID=Asia/Tokyo:20261012T000000\r\nDTEND;TZID=Asia/Tokyo:20261013T000000\r\nX-MICROSOFT-CDO-ALLDAYEVENT:TRUE",
+            zone(name),
+        );
+        assert_eq!(
+            (flagged.all_day, flagged.start, flagged.end, flagged.start_zone.as_str()),
+            (true, at(2026, 10, 12, 0, 0), at(2026, 10, 13, 0, 0), ""),
+            "{name}"
+        );
     }
 }
 
@@ -245,12 +268,18 @@ fn what_the_clock_cannot_say_is_written_exactly() {
     // Berlin puts its clocks back on October 25, 2026 at 3:00: 2:30 comes twice. Seen from
     // Chicago those are 19:30 and 20:30 on the evening before.
     let (chicago, berlin) = (zone("America/Chicago"), zone("Europe/Berlin"));
-    let event = |start: DateTime, minutes: i64| Event { uid: "u".into(), start, end: start.add_minutes(minutes), start_zone: "Europe/Berlin".into(), ..Default::default() };
+    let event = |start: DateTime, minutes: i64| Event {
+        uid: "u".into(),
+        start,
+        end: start.add_minutes(minutes),
+        start_zone: "Europe/Berlin".into(),
+        ..Default::default()
+    };
     // It ends in the second 2:30: the end is written as how long it lasts.
     let ends = event(at(2026, 10, 24, 19, 0), 90);
     let text = write_in(&[&ends], &[], &options(), Some(chicago));
     assert!(text.contains("DTSTART;TZID=Europe/Berlin:20261025T020000\r\nDURATION:PT5400S\r\n"), "{text}");
-    assert_eq!(read_in(&text, chicago).events, [ends.clone()]);
+    assert_eq!(read_in(&text, chicago).events, std::slice::from_ref(&ends));
     // It starts in the second 2:30: in UTC, which keeps when it is (and not where).
     let starts = event(at(2026, 10, 24, 20, 30), 60);
     let text = write_in(&[&starts], &[], &options(), Some(chicago));
@@ -281,7 +310,13 @@ fn rule() -> impl Strategy<Value = Option<Recurrence>> {
     let until = proptest::option::of(0i64..800);
     proptest::option::of((freq, 1u32..4, until, proptest::option::of(1u32..30)))
         .prop_map(|rule| rule.map(|(freq, interval, until, count)| (Recurrence { freq, interval, count, ..Default::default() }, until)))
-        .prop_map(|rule| rule.map(|(rule, until)| Recurrence { until: until.map(|days| d(2026, 1, 1).add_days(days)), count: rule.count.filter(|_| until.is_none()), ..rule }))
+        .prop_map(|rule| {
+            rule.map(|(rule, until)| Recurrence {
+                until: until.map(|days| d(2026, 1, 1).add_days(days)),
+                count: rule.count.filter(|_| until.is_none()),
+                ..rule
+            })
+        })
 }
 
 proptest! {

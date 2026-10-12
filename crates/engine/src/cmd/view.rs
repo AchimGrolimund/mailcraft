@@ -89,7 +89,7 @@ fn conversations(s: &mut Session, v: &Value) -> CmdResult {
 fn sort(s: &mut Session, v: &Value) -> CmdResult {
     let by = parse_enum::<SortBy>(p::req_str(v, "by")?).ok_or_else(|| bad("`by` is date, from, subject, size or importance"))?;
     // Names start at A; dates, sizes and importance start at the top.
-    let natural = !matches!(by, SortBy::From | SortBy::Subject);
+    let natural = by.starts_high();
     s.view.sort_descending = p::bool(v, "descending").unwrap_or(if s.view.sort == by { s.view.sort_descending } else { natural });
     s.view.sort = by;
     Ok(json!({"by": by, "descending": s.view.sort_descending}))

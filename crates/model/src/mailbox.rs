@@ -314,6 +314,10 @@ pub struct Mailbox {
     /// to be told, oldest first ([`crate::remote::EventChange`]).
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::sync::lenient_list")]
     pub event_changes: Vec<crate::remote::EventChange>,
+    /// Changes to events that a server said it took and that no download has shown yet
+    /// ([`crate::remote::EventCheck`]).
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::sync::lenient_list")]
+    pub event_checks: Vec<crate::remote::EventCheck>,
     /// The time zone the wall-clock times of the events are written in ([`Event::start`]): the
     /// zone the calendar was shown in when they were written, by its name in the IANA database
     /// (`Europe/Berlin`) or as an offset (`UTC+05:30`). Empty in a mailbox written before zones
@@ -341,6 +345,7 @@ impl Default for Mailbox {
             signatures: Vec::new(),
             pending: Vec::new(),
             event_changes: Vec::new(),
+            event_checks: Vec::new(),
             zone: String::new(),
             next_id: 1,
         }
@@ -422,6 +427,7 @@ impl Mailbox {
         self.messages.retain(|_, m| m.account != id);
         self.pending.retain(|p| p.account() != id);
         self.event_changes.retain(|change| change.account != id);
+        self.event_checks.retain(|check| check.account != id);
         Ok(())
     }
 

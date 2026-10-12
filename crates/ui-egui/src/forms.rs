@@ -2712,7 +2712,9 @@ mod event {
                     self.last_start = Some(start.date);
                 }
                 // What it opened with reads by the new clock too: it is the same event.
-                let stamp_of = |text: &str| mailcraft_time::parse_iso(text).map(|(at, _)| stamp(&was.wall_in(at, now).date.iso(), &was.wall_in(at, now).time_short(twelve)));
+                let stamp_of = |text: &str| {
+                    mailcraft_time::parse_iso(text).map(|(at, _)| stamp(&was.wall_in(at, now).date.iso(), &was.wall_in(at, now).time_short(twelve)))
+                };
                 if fresh {
                     self.shown_zone = now.id();
                     self.baseline = self.fields();
@@ -2888,7 +2890,11 @@ mod event {
                 items.push(bar::Item { checked: self.repeat.freq.is_some(), ..item("recurrence", "recurrence", tl!("Recurrence"), 2, 3) });
             }
             // (Whole days have no zones.)
-            items.push(bar::Item { checked: self.zones && !self.all_day, on: !self.all_day, ..item("timeZones", "timeZones", tl!("Time Zones"), 2, 4) });
+            items.push(bar::Item {
+                checked: self.zones && !self.all_day,
+                on: !self.all_day,
+                ..item("timeZones", "timeZones", tl!("Time Zones"), 2, 4)
+            });
             items.push(bar::Item { menu: true, plain: true, ..item("categorize", "categorize", tl!("Categorize"), 3, 6) });
             items.push(bar::Item { plain: true, checked: self.private, ..item("private", "private", tl!("Private"), 3, 6) });
             if organizes {
@@ -3114,7 +3120,8 @@ mod event {
                 if !self.all_day {
                     // On the start's own day the menu lists what comes after the start.
                     // (By two clocks, any time of the day may come after the start.)
-                    let after = self.start().filter(|s| Date::parse_iso(&self.end_date) == Some(s.date) && !self.two_clocks()).map(|s| s.minutes_of_day());
+                    let after =
+                        self.start().filter(|s| Date::parse_iso(&self.end_date) == Some(s.date) && !self.two_clocks()).map(|s| s.minutes_of_day());
                     changed |= pass.time(ui, "end_time", &mut self.end_time, true, after);
                 }
                 if zoned {
@@ -3565,7 +3572,10 @@ mod event {
             assert_eq!(span(&f), ("2026-10-13", "3:00 PM", "2026-10-13", "4:00 PM"));
             let (command, params) = f.command();
             assert_eq!(command, "calendar.new");
-            assert_eq!((params["start"].as_str(), params["startZone"].as_str(), params["endZone"].is_null()), (Some("2026-10-13T15:00"), Some("America/New_York"), true));
+            assert_eq!(
+                (params["start"].as_str(), params["startZone"].as_str(), params["endZone"].is_null()),
+                (Some("2026-10-13T15:00"), Some("America/New_York"), true)
+            );
             let id = s.run(command, &params).unwrap()["id"].as_u64().unwrap();
             let made = s.mailbox.event(id).unwrap().clone();
             assert_eq!((made.start.iso(), made.start_zone.as_str()), ("2026-10-13T14:00:00".to_string(), "America/New_York"));
@@ -3574,7 +3584,10 @@ mod event {
             // Opened again, it shows its own clock and its zones, and nothing is to be sent.
             let mut f = EventForm::edit(&s, &json!({"id": id})).unwrap();
             assert!(f.zones && f.had_zones);
-            assert_eq!((span(&f), f.start_zone.as_str(), f.end_zone.as_str()), (("2026-10-13", "3:00 PM", "2026-10-13", "4:00 PM"), "America/New_York", "America/New_York"));
+            assert_eq!(
+                (span(&f), f.start_zone.as_str(), f.end_zone.as_str()),
+                (("2026-10-13", "3:00 PM", "2026-10-13", "4:00 PM"), "America/New_York", "America/New_York")
+            );
             assert_eq!(f.command(), ("calendar.edit", json!({"id": id})));
             // Another title is only that.
             f.title = "Call with Bo".into();
@@ -3607,10 +3620,16 @@ mod event {
             let mut f = EventForm::edit(&s, &json!({"id": id})).unwrap();
             f.set_zones(false);
             let params = f.command().1;
-            assert_eq!((params["start"].as_str(), params["startZone"].is_null(), params["endZone"].is_null()), (Some("2026-10-13T18:00"), true, true));
+            assert_eq!(
+                (params["start"].as_str(), params["startZone"].is_null(), params["endZone"].is_null()),
+                (Some("2026-10-13T18:00"), true, true)
+            );
             s.run("calendar.edit", &params).unwrap();
             let plain = s.mailbox.event(id).unwrap().clone();
-            assert_eq!((plain.start.iso(), plain.end.iso(), plain.start_zone.as_str()), ("2026-10-13T18:00:00".to_string(), "2026-10-14T08:00:00".to_string(), ""));
+            assert_eq!(
+                (plain.start.iso(), plain.end.iso(), plain.start_zone.as_str()),
+                ("2026-10-13T18:00:00".to_string(), "2026-10-14T08:00:00".to_string(), "")
+            );
             // Whole days have no zones: the button is off, and none are sent.
             let mut f = EventForm::edit(&s, &json!({"id": id})).unwrap();
             f.set_zones(true);
@@ -3624,8 +3643,12 @@ mod event {
             let zone = |name: &str| Zone::named(name).unwrap();
             let (chicago, london) = (zone("America/Chicago"), zone("Europe/London"));
             let mut s = Session::in_zone(mailcraft_model::Mailbox::with_local_account("", ""), NOW, chicago);
-            let id = s.run("calendar.new", &json!({"title": "Lunch", "start": "2026-10-13T12:00", "end": "2026-10-13T13:00"})).unwrap()["id"].as_u64().unwrap();
-            let abroad = s.run("calendar.new", &json!({"title": "Call", "start": "2026-10-13T15:00", "startZone": "Asia/Tokyo"})).unwrap()["id"].as_u64().unwrap();
+            let id = s.run("calendar.new", &json!({"title": "Lunch", "start": "2026-10-13T12:00", "end": "2026-10-13T13:00"})).unwrap()["id"]
+                .as_u64()
+                .unwrap();
+            let abroad = s.run("calendar.new", &json!({"title": "Call", "start": "2026-10-13T15:00", "startZone": "Asia/Tokyo"})).unwrap()["id"]
+                .as_u64()
+                .unwrap();
             let (mut lunch, mut call) = (EventForm::edit(&s, &json!({"id": id})).unwrap(), EventForm::edit(&s, &json!({"id": abroad})).unwrap());
             let mut typed = EventForm::edit(&s, &json!({"id": id})).unwrap();
             typed.title = "Long lunch".into();
@@ -3647,10 +3670,19 @@ mod event {
             // What was typed stays typed, at the instant it was typed for.
             assert_eq!(span(&typed), ("2026-10-13", "6:00 PM", "2026-10-13", "8:00 PM"));
             let params = typed.command().1;
-            assert_eq!((params["title"].as_str(), params["start"].as_str(), params["end"].as_str()), (Some("Long lunch"), Some("2026-10-13T18:00"), Some("2026-10-13T20:00")));
+            assert_eq!(
+                (params["title"].as_str(), params["start"].as_str(), params["end"].as_str()),
+                (Some("Long lunch"), Some("2026-10-13T18:00"), Some("2026-10-13T20:00"))
+            );
             s.run("calendar.edit", &params).unwrap();
             let saved = s.mailbox.event(id).unwrap();
-            assert_eq!((london.instant(saved.start), london.instant(saved.end)), (chicago.instant(DateTime::new(day(2026, 10, 13), 12, 0, 0).unwrap()), chicago.instant(DateTime::new(day(2026, 10, 13), 14, 0, 0).unwrap())));
+            assert_eq!(
+                (london.instant(saved.start), london.instant(saved.end)),
+                (
+                    chicago.instant(DateTime::new(day(2026, 10, 13), 12, 0, 0).unwrap()),
+                    chicago.instant(DateTime::new(day(2026, 10, 13), 14, 0, 0).unwrap())
+                )
+            );
         }
 
         #[test]

@@ -197,7 +197,7 @@ fn from_message(s: &mut Session, v: &Value) -> CmdResult {
     }
     let task = Task {
         title: m.topic(),
-        notes: format!("From {}: {}", m.from.display(), m.snippet(300)),
+        notes: format!("From {}: {}", m.from.display(), crate::list::preview(m, 300)),
         due,
         message: Some(mid),
         importance: m.importance,

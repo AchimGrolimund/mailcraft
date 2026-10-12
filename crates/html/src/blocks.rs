@@ -37,7 +37,9 @@ const DATA_CELL_TEXT: usize = 240;
 /// elements is kept). Character references are decoded and white space collapses as in a browser,
 /// except in `<pre>`. A `<br>` is a `\n` in the span text. What a message hides (`display:none`
 /// and the other tricks `style.rs` lists, the `hidden` attribute, one-pixel pictures) is not in
-/// the result. Links and pictures are kept only when [`is_safe_url`] accepts their address; a
+/// the result; text at a font size too small to read is not either, though what is inside it at
+/// a size of its own is. Links and pictures are kept only when [`is_safe_url`] accepts their
+/// address (a picture's that leaves its scheme out, `//host/x.png`, is read as `https`); a
 /// picture without a safe address leaves its alt text.
 ///
 /// A table becomes a [`Table`] with its cells' blocks inside, marked as data or layout; a table
@@ -71,6 +73,11 @@ struct Style {
     size: Option<u8>,
     align: Align,
     link: Option<Rc<str>>,
+    /// The font size in force is too small to be meant to be read (2 pixels or less): text
+    /// written at it is not shown. It lasts until an element inside names a size that can be
+    /// read, and it hides nothing but text: newsletters set a size of nothing around their
+    /// pictures and columns to close the gaps between them.
+    tiny: bool,
 }
 
 impl Style {
@@ -137,8 +144,8 @@ impl Delta {
         }
     }
 
-    /// The style inside the element, and whether its text is too small to be meant to be read.
-    fn apply(&self, parent: &Style) -> (Style, bool) {
+    /// The style inside the element.
+    fn apply(&self, parent: &Style) -> Style {
         let mut style = parent.clone();
         if self.cell {
             style.bold = false;
@@ -165,14 +172,18 @@ impl Delta {
         if let Some(link) = &self.link {
             style.link = link.clone();
         }
-        let mut tiny = false;
         if let Some(size) = self.size {
-            match size.resolve(parent.size) {
-                Some(px) => style.size = Some(px),
-                None => tiny = true,
+            // A share of a size that is nothing is nothing still.
+            let resolved = if parent.tiny && matches!(size, Size::Scale(_)) { None } else { size.resolve(parent.size) };
+            match resolved {
+                Some(px) => {
+                    style.size = Some(px);
+                    style.tiny = false;
+                }
+                None => style.tiny = true,
             }
         }
-        (style, tiny)
+        style
     }
 }
 
@@ -442,6 +453,9 @@ impl Builder {
             }
             return;
         }
+        if self.style().tiny {
+            return;
+        }
         let text = unescape(raw);
         if self.pre > 0 {
             let mut chars = text.chars().peekable();
@@ -512,7 +526,8 @@ impl Builder {
     }
 
     fn line_break(&mut self) {
-        if self.hidden > 0 {
+        // A line of text too small to see is as high as nothing.
+        if self.hidden > 0 || self.style().tiny {
             return;
         }
         if self.pre > 0 {
@@ -649,18 +664,22 @@ impl Builder {
         }
         let alt = tag.attr("alt").unwrap_or_default();
         let alt: String = alt.split_whitespace().collect::<Vec<_>>().join(" ").chars().filter(|c| !c.is_control()).collect();
-        match safe_url(tag.attr("src")) {
+        match picture_url(tag.attr("src")) {
             Some(src) => {
                 self.flush();
                 self.settle();
                 let style = self.style().clone();
                 let spans = if alt.is_empty() { Vec::new() } else { vec![style.span(alt)] };
+                // The size the attributes give; where they give none, the one the style gives in
+                // pixels (`width:100%` and `height:auto` say nothing here: the picture's own shape does).
                 let size = |v: Option<f32>| v.map(|v| v.round().clamp(1.0, MAX_IMAGE_PX) as u16);
-                let kind = BlockKind::Image { src, width: size(width), height: size(height), link: style.link.as_deref().map(str::to_string) };
+                let (width, height) = (size(width.or(css.width)), size(height.or(css.height)));
+                let kind = BlockKind::Image { src, width, height, link: style.link.as_deref().map(str::to_string) };
                 let block = Block { kind, spans, quote: self.quote_depth(), align: style.align, space: 0 };
                 self.emit(block, false);
             }
-            // No picture to load: its description is all there is.
+            // No picture to load: its description is all there is, where text can be read.
+            None if self.style().tiny => {}
             None => {
                 for c in alt.chars() {
                     if c == ' ' { self.space() } else { self.push(c) }
@@ -676,8 +695,7 @@ impl Builder {
         if self.nodes.len() >= MAX_DEPTH {
             return false;
         }
-        let (style, tiny) = delta.apply(self.style());
-        let hidden = hidden || tiny;
+        let style = delta.apply(self.style());
         if hidden {
             self.hidden = self.hidden.saturating_add(1);
         }
@@ -694,7 +712,7 @@ impl Builder {
                 None => self.base.clone(),
             };
             if let Some(node) = self.nodes.get_mut(i) {
-                node.style = node.delta.apply(&parent).0;
+                node.style = node.delta.apply(&parent);
             }
         }
         self.fresh = true;
@@ -1039,9 +1057,14 @@ impl Builder {
         }
         let columns =
             rows.iter().map(|r| r.cells.iter().map(|c| usize::from(c.colspan)).sum::<usize>()).max().unwrap_or(1).clamp(1, MAX_TABLE_COLUMNS);
-        // A table that only wraps a column of things is those things.
+        // A table that only wraps a column of things is those things. Unless the things are
+        // pictures and nothing else, a row each: those are slices of one picture, and stay the
+        // rows of a table, for whoever draws them to set them edge to edge.
         let plain = table.background.is_none() && !table.outline && !table.border && !matches!(table.width, Some(Length::Px(_)));
-        if layout && plain && rows.iter().all(|r| r.cells.len() == 1 && r.cells.iter().all(|c| c.background.is_none() && !c.border.any())) {
+        let picture = |cell: &Cell| !cell.blocks.is_empty() && cell.blocks.iter().all(|b| matches!(b.kind, BlockKind::Image { .. }));
+        let slices = rows.len() >= 2 && rows.iter().all(|r| r.cells.iter().all(picture));
+        if layout && plain && !slices && rows.iter().all(|r| r.cells.len() == 1 && r.cells.iter().all(|c| c.background.is_none() && !c.border.any()))
+        {
             for (i, row) in rows.into_iter().enumerate() {
                 for mut cell in row.cells {
                     if i > 0
@@ -1654,6 +1677,19 @@ fn safe_url(raw: Option<String>) -> Option<String> {
     let url: String = raw?.chars().filter(|c| !matches!(c, '\t' | '\n' | '\r')).collect();
     let url = url.trim();
     is_safe_url(url).then(|| url.to_string())
+}
+
+/// The address of a picture, when it may be used: [`safe_url`], and besides an address that
+/// leaves its scheme out (`//host/picture.png`, which a web page reads as "the way this page
+/// came") is read as `https://`. A message came no such way, and `https` is the one that tells
+/// the networks in between the least. Only for pictures: a link goes where it says, or nowhere.
+fn picture_url(raw: Option<String>) -> Option<String> {
+    let url: String = raw?.chars().filter(|c| !matches!(c, '\t' | '\n' | '\r')).collect();
+    let url = url.trim();
+    // Two slashes and then a host: not `///`, and not a path on some file server (`\\host\share`).
+    let schemeless = url.strip_prefix("//").is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_alphanumeric()));
+    let url = if schemeless { format!("https:{url}") } else { url.to_string() };
+    is_safe_url(&url).then_some(url)
 }
 
 /// Whether the rows read like a grid of short texts: at least two rows with something in two

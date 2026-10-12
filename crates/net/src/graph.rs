@@ -40,6 +40,17 @@
 //! here decides to send mail**: an upload holds only what the mailbox was told to send
 //! (`mailcraft-engine` refuses to note such a change without the owner's yes).
 //!
+//! An event of a calendar other than the main one is written through that calendar
+//! (`/me/calendars/{id}/events/{id}`): the copy of a calendar that somebody else shares with the
+//! account is reached that way and no other. An event's id goes into an address as one piece of
+//! it, with everything but letters, digits and `-._~` as `%XX` (an id may hold `=`, `/` and `+`).
+//! The ids are Graph's ordinary ones, which change when an item is moved to another calendar:
+//! a change that waits for such an item is answered "not found", and the mailbox says so.
+//!
+//! [`check_calendar`] makes, reads, changes, reads and deletes one appointment a year ahead, and
+//! says what Graph answered at each step: the one way to see for oneself that what is written
+//! here arrives. A host runs it when the owner asks, and never otherwise.
+//!
 //! Besides: every series of a stretch as itself ([`events_in`], twenty to a `$batch`), the
 //! account's calendars and their groups ([`calendars`]), the mailbox's categories
 //! ([`categories`], which takes `MailboxSettings.Read`), and when people are free and busy
@@ -67,26 +78,37 @@ use crate::http::{self, Reply, Request, Url};
 
 /// Where Graph is, and what is asked of it.
 const GRAPH: &str = "https://graph.microsoft.com";
+
+/// Where Graph is spoken to: its own address, always. (Only a test may have a stand-in on this
+/// machine answer in its place, on its own thread: `standin::route`.)
+pub(crate) fn graph_base() -> String {
+    #[cfg(any(test, feature = "stand-in"))]
+    if let Some(base) = standin::routed() {
+        return base;
+    }
+    GRAPH.to_string()
+}
 const SEND_MAIL: &str = "/v1.0/me/sendMail";
 const CALENDAR_VIEW: &str = "/v1.0/me/calendarView";
 const CONTACTS: &str = "/v1.0/me/contacts";
 const EVENTS: &str = "/v1.0/me/events";
 
 /// What is asked for of each event, and of each contact: no more comes down than is kept.
+/// (`lastModifiedDateTime` is not among them: a calendar view can't be asked for it by name.)
 const EVENT_FIELDS: &str = "id,iCalUId,changeKey,subject,bodyPreview,body,start,end,isAllDay,isCancelled,location,organizer,attendees,\
-                            responseStatus,showAs,sensitivity,type,seriesMasterId,lastModifiedDateTime,isReminderOn,reminderMinutesBeforeStart,\
+                            responseStatus,showAs,sensitivity,type,seriesMasterId,isReminderOn,reminderMinutesBeforeStart,\
                             isOrganizer,transactionId";
 /// The same without the two that were added last: asked for instead when Graph won't have the
 /// list above (the calendar is still read then, as it was before events were written back).
 const EVENT_FIELDS_PLAIN: &str = "id,iCalUId,changeKey,subject,bodyPreview,body,start,end,isAllDay,isCancelled,location,organizer,attendees,\
-                                  responseStatus,showAs,sensitivity,type,seriesMasterId,lastModifiedDateTime,isReminderOn,reminderMinutesBeforeStart";
+                                  responseStatus,showAs,sensitivity,type,seriesMasterId,isReminderOn,reminderMinutesBeforeStart";
 /// And what is asked for first: with the categories, and when a series has each occurrence.
 const EVENT_FIELDS_FULL: &str = "id,iCalUId,changeKey,subject,bodyPreview,body,start,end,isAllDay,isCancelled,location,organizer,attendees,\
-                                 responseStatus,showAs,sensitivity,type,seriesMasterId,lastModifiedDateTime,isReminderOn,reminderMinutesBeforeStart,\
+                                 responseStatus,showAs,sensitivity,type,seriesMasterId,isReminderOn,reminderMinutesBeforeStart,\
                                  isOrganizer,transactionId,categories,originalStart,originalStartTimeZone,originalEndTimeZone";
 /// What is asked for of a series itself: the same, and how it repeats.
 const SERIES_FIELDS: &str = "id,iCalUId,changeKey,subject,bodyPreview,body,start,end,isAllDay,isCancelled,location,organizer,attendees,\
-                             responseStatus,showAs,sensitivity,type,seriesMasterId,lastModifiedDateTime,isReminderOn,reminderMinutesBeforeStart,\
+                             responseStatus,showAs,sensitivity,type,seriesMasterId,isReminderOn,reminderMinutesBeforeStart,\
                              isOrganizer,transactionId,categories,recurrence,originalStartTimeZone,originalEndTimeZone";
 const BATCH: &str = "/v1.0/$batch";
 const CALENDARS: &str = "/v1.0/me/calendars";
@@ -159,7 +181,7 @@ pub struct SendOptions {
 /// A message that can't be sent (nobody to send it to, an address that isn't one) is refused
 /// before anything goes anywhere.
 pub fn send(token: &str, message: &Message, options: &SendOptions) -> Result<(), NetError> {
-    send_at(GRAPH, token, message, options)
+    send_at(&graph_base(), token, message, options)
 }
 
 /// The events of the account's main calendar that fall between `from` and `to` (Unix seconds),
@@ -174,7 +196,7 @@ pub fn send(token: &str, message: &Message, options: &SendOptions) -> Result<(),
 /// The download doesn't know whose it is: say so with [`EventsDownload::for_account`] before
 /// the mailbox takes it in.
 pub fn events(token: &str, from: Timestamp, to: Timestamp) -> Result<EventsDownload, NetError> {
-    events_at(GRAPH, token, from, to)
+    events_at(&graph_base(), token, from, to)
 }
 
 /// What [`events_in`] is asked for.
@@ -200,14 +222,14 @@ pub struct EventsQuery {
 /// A series that couldn't be asked about just now is left out, and the download is as complete
 /// as it was: its occurrences are there, and the mailbox keeps the series as it has it.
 pub fn events_in(token: &str, query: &EventsQuery) -> Result<EventsDownload, NetError> {
-    events_in_at(GRAPH, token, query)
+    events_in_at(&graph_base(), token, query)
 }
 
 /// The contacts in the account's contacts folder, for the owner of `token` (an access token for
 /// Graph). [`ContactsDownload::complete`] and [`ContactsDownload::for_account`] are as for
 /// [`events`].
 pub fn contacts(token: &str) -> Result<ContactsDownload, NetError> {
-    contacts_at(GRAPH, token)
+    contacts_at(&graph_base(), token)
 }
 
 /// How events are written ([`push_events`]).
@@ -240,7 +262,7 @@ pub struct EventOptions {
 ///
 /// Nothing of the token or of an event appears in an outcome's error.
 pub fn push_events(token: &str, upload: &EventsUpload, options: &EventOptions) -> EventsUploaded {
-    push_events_at(GRAPH, token, upload, options)
+    push_events_at(&graph_base(), token, upload, options)
 }
 
 /// What Graph was being asked for when it said no, for the words of the error.
@@ -705,8 +727,13 @@ fn event_body(fields: &EventFields, mark: &str, zone: &str, own: bool) -> Option
     if let Some(repeat) = &fields.repeat {
         // The rule counts its days in the series' own zone, when it has one.
         let own_zone = fields.zones.as_ref().filter(|_| own).and_then(|zones| graph_zone(&zones.start)).map(|(_, name)| name);
+        // Else it counts from the day the event starts on, as the event's start says it. Told
+        // in UTC (no zone is known, or Graph didn't know it), that may be the day before or
+        // after the one it is here, and every day of the rule moves with it.
+        let in_utc = |time: &EventTime| own_zone.is_none() && !time.all_day && (zone.is_empty() || fields.wall.is_none());
+        let shift = fields.time.filter(in_utc).map_or(0, |time| repeat.first.days_until(DateTime::from_timestamp(time.start, 0).date));
         let rule = match &repeat.rule {
-            Some(rule) => recurrence_body(rule, repeat.first, own_zone.as_deref().unwrap_or(zone))?,
+            Some(rule) => recurrence_body(rule, repeat.first, own_zone.as_deref().unwrap_or(zone), shift)?,
             None => Value::Null,
         };
         event.insert("recurrence".into(), rule);
@@ -790,13 +817,16 @@ impl Graph<'_> {
     /// Carry out one op, and say what Graph made of it.
     fn write_event(&self, op: EventOp, zone: &str) -> Wrote {
         let outcome = |op: EventOp, result: EventResult, error: String| Box::new(EventOutcome { op, result, error, ..Default::default() });
-        // Changed and changed back: there is nothing to tell.
+        // A change that says nothing: Graph is not asked, and nothing is called done that
+        // wasn't. (The mailbox doesn't hand such a change over: it has nothing to send.)
         if op.kind == EventChangeKind::Update && op.fields.is_empty() {
-            return Wrote::Outcome(outcome(op, EventResult::Done, String::new()), false);
+            return Wrote::Outcome(outcome(op, EventResult::Refused, "the change says nothing that could be sent".into()), false);
         }
+        // The events of the calendar it is in: the account's main one, or another by its name.
+        let events = if op.calendar.is_empty() { EVENTS.to_string() } else { format!("{CALENDARS}/{}/events", http::encode(&op.calendar)) };
         // One occurrence of a series, known by its time: Graph says what it calls it.
         let found = if op.of_occurrence() {
-            match self.occurrence(&op.series, op.occurrence) {
+            match self.occurrence(&events, &op.series, op.occurrence) {
                 Ok(Some(id)) => id,
                 Ok(None) => return Wrote::Outcome(outcome(op, EventResult::Gone, "the series no longer has that occurrence".into()), false),
                 Err(e) if e.is_refused_sign_in() => return Wrote::TokenRefused,
@@ -818,7 +848,7 @@ impl Graph<'_> {
             op.remote.clone()
         };
         let named = !found.is_empty();
-        let event = format!("{EVENTS}/{}", http::encode(&found));
+        let event = format!("{events}/{}", http::encode(&found));
         let answer = match op.response {
             Response::Accepted => "accept",
             Response::Tentative => "tentativelyAccept",
@@ -826,8 +856,7 @@ impl Graph<'_> {
             Response::None => "",
         };
         let (method, path) = match op.kind {
-            EventChangeKind::Create if !op.token.is_empty() && op.calendar.is_empty() => ("POST", EVENTS.to_string()),
-            EventChangeKind::Create if !op.token.is_empty() => ("POST", format!("{CALENDARS}/{}/events", http::encode(&op.calendar))),
+            EventChangeKind::Create if !op.token.is_empty() => ("POST", events),
             EventChangeKind::Update if named => ("PATCH", event),
             // A meeting the owner called is called off, which tells the people invited.
             EventChangeKind::Delete if named && op.cancel => ("POST", format!("{event}/cancel")),
@@ -842,6 +871,24 @@ impl Graph<'_> {
         let mut zone = zone;
         // (Its own zones go with the first try; the second is without any.)
         let mut own = true;
+        // The zone the times are said in, for whoever keeps a log: the event's own when it goes
+        // by that, the owner's for the days of a whole-day event and the hours of a series, UTC
+        // for everything else.
+        let timed = matches!(op.kind, EventChangeKind::Create | EventChangeKind::Update) && op.fields.time.is_some();
+        let by_the_clock = whole_day || op.fields.wall.is_some();
+        let own_name = op.fields.zones.as_ref().filter(|_| !whole_day).and_then(|zones| {
+            let (_, start) = graph_zone(&zones.start)?;
+            if !zones.end.is_empty() {
+                graph_zone(&zones.end)?;
+            }
+            Some(start)
+        });
+        let said_in = move |zone: &str, own: bool| match (timed, own_name.as_ref().filter(|_| own), by_the_clock && !zone.is_empty()) {
+            (false, ..) => String::new(),
+            (true, Some(name), _) => name.clone(),
+            (true, None, true) => zone.to_string(),
+            (true, None, false) => "UTC".to_string(),
+        };
         // Twice at most: a second time in UTC, should Graph not know the zone a whole day is in.
         for _ in 0..2 {
             let body = match op.kind {
@@ -875,7 +922,9 @@ impl Graph<'_> {
                     let json = serde_json::from_slice::<Value>(&reply.body).unwrap_or(Value::Null);
                     // What an occurrence is called from now on, should the answer not say.
                     let changed_one = op.kind == EventChangeKind::Update && op.of_occurrence();
+                    let zone_sent = said_in(zone, own);
                     let mut done = outcome(op, EventResult::Done, String::new());
+                    (done.status, done.zone) = (reply.status, zone_sent);
                     done.remote = text(&json, "id").to_string();
                     if done.remote.is_empty() && changed_one {
                         done.remote = found;
@@ -885,6 +934,8 @@ impl Graph<'_> {
                         key => key.to_string(),
                     };
                     done.uid = text(&json, "iCalUId").to_string();
+                    // When Graph says it changed it: what a later answer is told from an earlier by.
+                    done.modified = instant(text(&json, "lastModifiedDateTime")).unwrap_or(0);
                     done.tidy();
                     return Wrote::Outcome(done, false);
                 }
@@ -905,7 +956,9 @@ impl Graph<'_> {
                 NetError::Proto(ProtoError::Rejected(words)) => words.clone(),
                 other => other.to_string(),
             };
+            let zone_sent = said_in(zone, own);
             let mut said = outcome(op, result, words);
+            (said.status, said.zone) = (reply.status, zone_sent);
             if let NetError::Busy { retry_after, .. } = error {
                 said.retry_after = retry_after;
             }
@@ -914,10 +967,11 @@ impl Graph<'_> {
         Wrote::Outcome(outcome(op, EventResult::Refused, "Microsoft Graph wouldn't take the event".into()), false)
     }
 
-    /// What Graph calls the occurrence that the series `series` has at `when` (Unix seconds):
-    /// asked for among the occurrences of the day before and after. `None` when the series is
+    /// What Graph calls the occurrence that the series `series` (among `events`, the events of
+    /// its calendar) has at `when` (Unix seconds): asked for among the occurrences of the day
+    /// before and after. `None` when the series is
     /// gone, or has nothing then (it was deleted there, or the series was changed).
-    fn occurrence(&self, series: &str, time: Timestamp) -> Result<Option<String>, NetError> {
+    fn occurrence(&self, events: &str, series: &str, time: Timestamp) -> Result<Option<String>, NetError> {
         if series.is_empty() || time == 0 {
             return Ok(None);
         }
@@ -925,7 +979,7 @@ impl Graph<'_> {
         let (start, end) = (mailcraft_time::format_iso_utc(from), mailcraft_time::format_iso_utc(to));
         let query =
             http::form(&[("startDateTime", &start), ("endDateTime", &end), ("$top", PAGE_SIZE), ("$select", "id,start,originalStart,isAllDay")]);
-        let url = self.url(&format!("{EVENTS}/{}/instances?{query}", http::encode(series)));
+        let url = self.url(&format!("{events}/{}/instances?{query}", http::encode(series)));
         let reply = self.ask(&url, "GET", &[("Prefer", EVENT_PREFERENCES)], None, ASK_TIMEOUT, MAX_PAGE)?;
         match reply.status {
             200 => {}
@@ -1150,8 +1204,19 @@ fn rule_of(recurrence: &Value) -> Option<(Recurrence, Date)> {
 }
 
 /// How a series repeats, as Graph is told: the rule, counted from the day `first` in `zone`
-/// (UTC when that is empty). `None` for a rule Graph has no way of saying.
-fn recurrence_body(rule: &Recurrence, first: Date, zone: &str) -> Option<Value> {
+/// (UTC when that is empty). `shift` is how many days later (1) or earlier (-1) the event starts
+/// as it is told than on `first`: the rule's days are then those days. `None` for a rule Graph
+/// has no way of saying.
+fn recurrence_body(rule: &Recurrence, first: Date, zone: &str, shift: i64) -> Option<Value> {
+    let moved;
+    let (rule, first) = if shift == 1 || shift == -1 {
+        let mut by_day: Vec<Weekday> = rule.by_day.iter().map(|day| Weekday::from_index((i64::from(day.index()) + shift).rem_euclid(7))).collect();
+        by_day.sort();
+        moved = Recurrence { by_day, until: rule.until.map(|until| until.add_days(shift)), ..rule.clone() };
+        (&moved, first.add_days(shift))
+    } else {
+        (rule, first)
+    };
     let interval = rule.interval.clamp(1, 999);
     let name = |day: Weekday| DAYS.iter().find(|(_, known)| *known == day).map_or("monday", |(name, _)| *name);
     let own_day = [first.weekday()];
@@ -1254,21 +1319,21 @@ const MAX_GROUPS: usize = 30;
 /// groups, the calendars come without them. [`CalendarsDownload::complete`] and
 /// [`CalendarsDownload::for_account`] are as for [`events`].
 pub fn calendars(token: &str) -> Result<CalendarsDownload, NetError> {
-    calendars_at(GRAPH, token)
+    calendars_at(&graph_base(), token)
 }
 
 /// The mailbox's own list of categories, with a colour for each, for the owner of `token`. This
 /// takes a permission of its own (`MailboxSettings.Read`): without it the answer is
 /// [`NetError::Forbidden`], and nothing else is the worse for it.
 pub fn categories(token: &str) -> Result<CategoriesDownload, NetError> {
-    categories_at(GRAPH, token)
+    categories_at(&graph_base(), token)
 }
 
 /// When the people of `ask` are busy in its stretch, as far as the owner of `token` may know:
 /// when their time is taken and how (busy, tentative, out of office), never by what. At most
 /// [`MAX_SCHEDULES`] people and [`MAX_SCHEDULE_STRETCH`] seconds at once.
 pub fn schedule(token: &str, ask: &FreeBusyAsk) -> Result<FreeBusy, NetError> {
-    schedule_at(GRAPH, token, ask)
+    schedule_at(&graph_base(), token, ask)
 }
 
 /// Our own colours for the names Graph has for a calendar's colour, when it gives no colour as
@@ -1441,5 +1506,13 @@ fn schedule_at(base: &str, token: &str, ask: &FreeBusyAsk) -> Result<FreeBusy, N
 mod settings;
 pub use settings::{MailboxSettings, WorkingHours, mailbox_settings};
 
+mod check;
+pub use check::{CHECK_TITLE, CalendarCheck, CheckStep, STEPS as CHECK_STEPS, check_calendar, check_start, no_sign_in};
+
+#[cfg(any(test, feature = "stand-in"))]
+pub mod standin;
+
+#[cfg(test)]
+mod standin_tests;
 #[cfg(test)]
 mod tests;

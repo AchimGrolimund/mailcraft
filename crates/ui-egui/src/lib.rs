@@ -113,12 +113,24 @@ pub struct Services {
     /// there are none, arrive through the channel and the host wakes the UI. Absent in the
     /// browser and the tests: pictures on the web then stay placeholders, and nothing is offered.
     pub pictures: Option<Box<dyn Fn(String) -> Receiver<Result<Vec<u8>, String>>>>,
+    /// Desktop: the pictures the host keeps on disk between runs, so that a picture the owner
+    /// asked for once is not asked of its server again at every start ([`PictureCache`]). The
+    /// host looks there before it downloads, and what it finds comes through `pictures` like
+    /// any download; this is only for saying how much is kept and for forgetting it. Absent
+    /// where nothing is kept (the browser, the tests, the sample mailbox).
+    pub picture_cache: Option<Box<dyn PictureCache>>,
     /// Desktop: ask an account's server when people are free and busy, on a background thread,
     /// for a meeting's Scheduling Assistant ([`scheduling`]). It reads and writes nothing. The
     /// answer, or why there is none, arrives through the channel and the host wakes the UI.
     /// Absent in the browser and for accounts whose server has no calendar: the assistant then
     /// shows the owner's own calendar only, and says so.
     pub free_busy: Option<Box<dyn Fn(FreeBusyRequest) -> Receiver<FreeBusyResult>>>,
+    /// Desktop: check an account's calendar connection on a background thread, when the owner
+    /// asks for it and at no other time (File › Info › Check Calendar Connection,
+    /// [`calendar_sync`]): one appointment is made in the account's main calendar a year ahead,
+    /// read back, changed, read back again and deleted, and every step comes back with what the
+    /// server answered. Nothing else of the calendar is touched. Absent in the browser.
+    pub check_calendar: Option<Box<dyn Fn(CalendarCheckRequest) -> Receiver<CalendarCheckResult>>>,
 }
 
 /// Files delivered asynchronously.
@@ -130,6 +142,19 @@ pub trait SecretStore {
     fn get(&self, key: &str) -> Option<String>;
     fn set(&self, key: &str, secret: &str) -> Result<(), String>;
     fn delete(&self, key: &str);
+}
+
+/// The pictures from the web that the host keeps on disk between runs
+/// ([`Services::picture_cache`]). The window calls these itself, so they are quick: saying how
+/// much is kept reads nothing, and forgetting takes as long as removing the files takes.
+pub trait PictureCache {
+    /// How many pictures are kept, and how many bytes they take.
+    fn usage(&self) -> (usize, u64);
+    /// Forget what is kept for one address: what came from there turned out to be no picture,
+    /// or the owner wants it asked for afresh.
+    fn forget(&self, url: &str);
+    /// Forget them all.
+    fn clear(&self) -> Result<(), String>;
 }
 
 /// What the host needs to sign an account's owner in ([`Services::sign_in`]).
@@ -153,6 +178,50 @@ pub struct SignInRequest {
     /// Ask for mail alone, without the calendar and contacts along: the owner's way out when the
     /// provider's page won't have the fuller request.
     pub mail_only: bool,
+}
+
+/// What the host needs to check an account's calendar connection ([`Services::check_calendar`]).
+pub struct CalendarCheckRequest {
+    pub account: mailcraft_model::Account,
+    /// The account's sign-in settings, with the application id filled in.
+    pub oauth: mailcraft_model::OAuth,
+    /// The account's refresh token, to get a Graph token with when `access` is empty.
+    pub refresh: String,
+    /// A Graph access token from earlier in this session that is still good; else empty.
+    pub access: String,
+}
+
+/// One step of a calendar connection check, as the host reports it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CalendarCheckStep {
+    /// What was done ("Make an appointment", "Read it back"…).
+    pub what: String,
+    /// The server did it, and what it has is what was sent.
+    pub ok: bool,
+    /// The status of the server's answer; 0 when there was none.
+    pub status: u16,
+    /// What was sent and what the server has, or the server's own words for its refusal.
+    pub said: String,
+}
+
+/// What a [`CalendarCheckRequest`] came to.
+#[derive(Default)]
+pub struct CalendarCheckResult {
+    pub account: Id,
+    /// A Graph token that was obtained for this (kept for the session).
+    pub tokens: Option<Tokens>,
+    /// The owner hasn't allowed this program to use the calendar.
+    pub consent_needed: bool,
+    /// The token that was handed in is no longer taken.
+    pub token_refused: bool,
+    /// The steps that were taken, in order.
+    pub steps: Vec<CalendarCheckStep>,
+    /// Every step went through, and every reading was what was sent.
+    pub ok: bool,
+    /// The appointment the check made is gone again (or none was made).
+    pub cleaned_up: bool,
+    /// Why the check couldn't start, when it couldn't.
+    pub error: String,
 }
 
 /// What the host is asked to do with Microsoft Graph for one account ([`Services::graph`]).
@@ -265,6 +334,9 @@ pub struct UiState {
     pub download_pictures: bool,
     /// Senders whose pictures are downloaded without asking (addresses, in lower case).
     pub picture_senders: Vec<String>,
+    /// Domains whose senders' pictures are downloaded without asking (`shop.example`: what
+    /// follows the `@` of an address, in lower case, and that domain only).
+    pub picture_domains: Vec<String>,
     /// The groups of the calendar list that are folded away under their headings.
     pub collapsed_calendar_groups: Vec<String>,
 }
@@ -292,6 +364,7 @@ impl Default for UiState {
             dismissed_reminders: Vec::new(),
             download_pictures: false,
             picture_senders: Vec::new(),
+            picture_domains: Vec::new(),
             collapsed_calendar_groups: Vec::new(),
         }
     }
@@ -322,6 +395,12 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "Connect Calendar and Contacts",
         "File › Info",
         r#"{"account"?: number} — signs in for sending, calendar and contacts through Microsoft"#,
+    ),
+    (
+        "ui.checkCalendar",
+        "Check Calendar Connection",
+        "File › Info",
+        r#"{"account"?: number, "confirmed": true} — on the account's real server: makes one appointment called "MailCraft connection check" a year from today in its main calendar, reads it back, changes its time (once as an instant, once said in this computer's time zone), reads it back each time, and deletes it; nothing else is read or changed and nobody is written to. Every step is reported with the server's status and words, in a report dialog ("calendarCheck") and in the log. It asks first; a script says "confirmed": true. Answers {"pending": "calendarCheck", "account"}"#,
     ),
     ("ui.dismissReminder", "Dismiss Reminder", "Reminders", r#"{"event": number, "occurrence": "YYYY-MM-DDTHH:MM"} | {"all": true}"#),
     (
@@ -364,9 +443,21 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "ui.alwaysDownloadPictures",
         "Always Download Pictures from Sender",
         "File › Options",
-        r#"{"sender": address} | {"message"?: number} (its sender), "value"?: bool (default: true; false forgets the sender)"#,
+        r#"{"sender": address} | {"domain": name (what follows the @; everybody at that domain)} | {"message"?: number} (its sender), "value"?: bool (default: true; false forgets the sender or the domain)"#,
     ),
     ("ui.downloadPicturesAutomatically", "Download Pictures in Mail Automatically", "File › Options", r#"{"value"?: bool (default: toggle)}"#),
+    (
+        "ui.retryPictures",
+        "Try Downloading Pictures Again",
+        "Message",
+        r#"{"message"?: number (default: the selected message)} — asks once more for those of its pictures that couldn't be downloaded"#,
+    ),
+    (
+        "ui.clearPictureCache",
+        "Clear Downloaded Pictures",
+        "File › Options",
+        "{} — forgets the pictures from the web that are kept, on this computer's disk and in memory; they are downloaded again when a message that may show them is read",
+    ),
     (
         "ui.copySelection",
         "Copy Selected Text",
@@ -658,7 +749,7 @@ impl MailApp {
         match &r {
             Err(e) => self.status(e.clone()),
             Ok(v) => {
-                if let Some(msg) = feedback(id, v) {
+                if let Some(msg) = feedback(id, v).or_else(|| self.stays_here_note(id, v)) {
                     self.status(msg);
                 }
             }
@@ -779,6 +870,7 @@ impl MailApp {
                 Ok(json!({}))
             }
             "ui.sync" => self.start_sync(p),
+            "ui.checkCalendar" => self.check_calendar(p),
             "ui.microsoftClientId" => {
                 let id = s("value").unwrap_or_default().trim();
                 if id.len() > 200 || !id.chars().all(|c| c.is_ascii_alphanumeric() || "-._".contains(c)) {
@@ -1346,6 +1438,16 @@ impl MailApp {
         for e in errors {
             log::warn!("send/receive, account {account}: {e}");
         }
+        self.keep_sync_problems(account, errors);
+    }
+
+    /// Keep lines for the Send/Receive problems report without putting them in the log: what
+    /// names an item (a line about an appointment, with its title) is for the owner to read,
+    /// and whoever wrote it has logged what kind of thing happened.
+    pub(crate) fn keep_sync_problems(&mut self, account: Id, errors: &[String]) {
+        if errors.is_empty() {
+            return;
+        }
         let name = self.session.mailbox.account(account).map(|a| a.name.clone()).unwrap_or_default();
         let at = self.session.local_now().time_short(self.session.prefs.twelve_hour);
         let clip = |e: &String| e.chars().take(600).collect::<String>();
@@ -1501,6 +1603,7 @@ impl MailApp {
         }
         self.poll_graph();
         self.poll_calendar();
+        self.poll_calendar_check();
         self.poll_free_busy();
         self.poll_sync();
         self.auto_sync();
@@ -1820,6 +1923,19 @@ fn feedback(id: &str, v: &Value) -> Option<String> {
         }
         "people.fromMessage" if v.get("existing").and_then(Value::as_bool) == Some(true) => Some(tl!("Already in your contacts").to_string()),
         "folder.empty" => n("removed").map(|c| plural(c, tl!("message removed"), tl!("messages removed"))),
+        // What went into the account's calendar, what was there already, and what stayed.
+        "calendar.moveToAccount" => {
+            let mut parts =
+                vec![format!("{} {}", plural(n("moved").unwrap_or(0), tl!("item"), tl!("items")), tl!("moved to your account's calendar"))];
+            if let Some(c) = n("already").filter(|c| *c > 0) {
+                parts.push(format!("{} {}", plural(c, tl!("was"), tl!("were")), tl!("there already")));
+            }
+            let kept = v.get("kept").and_then(Value::as_array).map_or(0, Vec::len);
+            if kept > 0 {
+                parts.push(format!("{} {}", plural(kept as u64, tl!("stays"), tl!("stay")), tl!("on this computer")));
+            }
+            Some(parts.join("; "))
+        }
         _ => None,
     }
 }

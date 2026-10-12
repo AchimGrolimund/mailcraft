@@ -8,8 +8,9 @@
 //! and shown where they belong ([`images`]).
 //!
 //! Pictures a message refers to on the web are placeholders, so that opening a message tells its
-//! sender nothing, unless the owner asks for them: for the message, for its sender, or for all
-//! mail ([`remote`]). Then the host downloads them; nothing in this crate goes anywhere.
+//! sender nothing, unless the owner asks for them: for the message, for its sender or its
+//! sender's domain, or for all mail ([`remote`]). Then the host downloads them (or has them
+//! from the last time); nothing in this crate goes anywhere, and nothing in it keeps a file.
 //!
 //! The body is laid out once per message, place, width and theme ([`layout`]) and painted from
 //! that every frame ([`view`]).
@@ -94,7 +95,7 @@ pub fn show_message(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, place: Pla
     let ctx = ui.ctx().clone();
     remote::tick(app, &ctx);
     select::begin(app, ui, m, place);
-    let doc = view::doc(&ctx, m, place);
+    let doc = view::doc_where(&ctx, m, place, remote::available(app));
     let access = if doc.remote.is_empty() { Access::Blocked } else { remote::access(app, m) };
     // Asked for: what has not come yet is sent for, while the message is on screen.
     let progress = if access == Access::Allowed { remote::want(app, &ctx, m, &doc) } else { remote::Progress::default() };

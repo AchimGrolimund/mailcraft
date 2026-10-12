@@ -106,7 +106,11 @@ impl Zoned {
 
 /// `NAME;TZID=Europe/Berlin:20261012T090000`, or `NAME:20261012T070000Z` for UTC.
 fn zoned_time(name: &str, instant: Timestamp, zone: Zone) -> String {
-    if zone == Zone::UTC { format!("{name}:{}", format_utc(instant)) } else { format!("{name};TZID={}:{}", param_value(&tzid(zone)), format_local(zone.wall(instant))) }
+    if zone == Zone::UTC {
+        format!("{name}:{}", format_utc(instant))
+    } else {
+        format!("{name};TZID={}:{}", param_value(&tzid(zone)), format_local(zone.wall(instant)))
+    }
 }
 
 /// `NAME:escaped text`.

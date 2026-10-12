@@ -44,9 +44,13 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 webpki-roots = "1"
 # SHA-256 and random bytes for the OAuth sign-in (already in the tree: rustls runs on it).
 ring = "0.17"
+# gzip and deflate, for a picture a web server sends packed (already in the tree: the PNG decoder
+# runs on it); the backend written in Rust.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
-# images (screenshots, inline pictures)
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+# images (screenshots, inline pictures). WebP for the pictures of mail that are kept as nothing
+# else on the web; its decoder (image-webp) is Rust all the way down, like the others here.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 # ui
 egui = "0.36"

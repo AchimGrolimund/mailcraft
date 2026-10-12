@@ -288,7 +288,10 @@ mod tests {
         let zones = all["zones"].as_array().unwrap();
         assert!(zones.len() > 130);
         // The computer's own first, with where it is now.
-        assert_eq!(zones[0], json!({"id": "America/Chicago", "label": "Central Time", "place": "Chicago", "offset": "UTC-05:00", "minutes": -300, "windows": "Central Standard Time"}));
+        assert_eq!(
+            zones[0],
+            json!({"id": "America/Chicago", "label": "Central Time", "place": "Chicago", "offset": "UTC-05:00", "minutes": -300, "windows": "Central Standard Time"})
+        );
         assert_eq!((all["system"].as_str(), all["shown"].as_str()), (Some("America/Chicago"), Some("America/Chicago")));
         // Then west to east.
         let minutes: Vec<i64> = zones.iter().skip(1).map(|zone| zone["minutes"].as_i64().unwrap()).collect();
@@ -319,11 +322,24 @@ mod tests {
     fn an_event_in_a_zone_of_its_own() {
         let mut s = session("America/Chicago");
         // Three in the afternoon in New York is two here.
-        let id = s.run("calendar.new", &json!({"title": "Call", "start": "2026-10-13T15:00", "end": "2026-10-13T16:00", "startZone": "Eastern Standard Time"})).unwrap()["id"].as_u64().unwrap();
+        let id = s
+            .run(
+                "calendar.new",
+                &json!({"title": "Call", "start": "2026-10-13T15:00", "end": "2026-10-13T16:00", "startZone": "Eastern Standard Time"}),
+            )
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
         let e = event(&s, id);
-        assert_eq!((e.start, e.end, e.start_zone.as_str(), e.end_zone.as_str()), (at(2026, 10, 13, 14, 0), at(2026, 10, 13, 15, 0), "America/New_York", ""));
+        assert_eq!(
+            (e.start, e.end, e.start_zone.as_str(), e.end_zone.as_str()),
+            (at(2026, 10, 13, 14, 0), at(2026, 10, 13, 15, 0), "America/New_York", "")
+        );
         let got = s.run("calendar.get", &json!({"id": id})).unwrap();
-        assert_eq!((got["start"].as_str(), got["startZone"].as_str(), got["ownTime"].as_str()), (Some("2026-10-13T14:00:00"), Some("America/New_York"), Some("3:00 PM – 4:00 PM (Eastern Time)")));
+        assert_eq!(
+            (got["start"].as_str(), got["startZone"].as_str(), got["ownTime"].as_str()),
+            (Some("2026-10-13T14:00:00"), Some("America/New_York"), Some("3:00 PM – 4:00 PM (Eastern Time)"))
+        );
         // Another zone, and nothing else said: the clock time stays, the instant moves.
         s.run("calendar.edit", &json!({"id": id, "startZone": "Europe/Berlin"})).unwrap();
         let e = event(&s, id);
@@ -333,14 +349,21 @@ mod tests {
         let e = event(&s, id);
         assert_eq!((e.start, e.end, e.start_zone.as_str()), (at(2026, 10, 13, 9, 0), at(2026, 10, 13, 10, 0), "Europe/Berlin"));
         // The end in a zone of its own: a flight that lands at half past seven in Tokyo.
-        s.run("calendar.edit", &json!({"id": id, "start": "2026-10-13T11:00", "startZone": "America/Chicago", "end": "2026-10-14T19:30", "endZone": "Asia/Tokyo"})).unwrap();
+        s.run(
+            "calendar.edit",
+            &json!({"id": id, "start": "2026-10-13T11:00", "startZone": "America/Chicago", "end": "2026-10-14T19:30", "endZone": "Asia/Tokyo"}),
+        )
+        .unwrap();
         let e = event(&s, id);
         assert_eq!((e.start, e.end), (at(2026, 10, 13, 11, 0), at(2026, 10, 14, 5, 30)));
         assert_eq!((e.start_zone.as_str(), e.end_zone.as_str()), ("America/Chicago", "Asia/Tokyo"));
         // Its start's zone changed: the end keeps its own.
         s.run("calendar.edit", &json!({"id": id, "startZone": "America/Denver"})).unwrap();
         let e = event(&s, id);
-        assert_eq!((e.start, e.end, e.start_zone.as_str(), e.end_zone.as_str()), (at(2026, 10, 13, 12, 0), at(2026, 10, 14, 5, 30), "America/Denver", "Asia/Tokyo"));
+        assert_eq!(
+            (e.start, e.end, e.start_zone.as_str(), e.end_zone.as_str()),
+            (at(2026, 10, 13, 12, 0), at(2026, 10, 14, 5, 30), "America/Denver", "Asia/Tokyo")
+        );
         // No zone again: by the calendar's clock, at the same time on the clock.
         s.run("calendar.edit", &json!({"id": id, "startZone": null, "endZone": null, "end": "2026-10-13T13:00"})).unwrap();
         let e = event(&s, id);
@@ -355,14 +378,21 @@ mod tests {
         assert!(s.run("calendar.new", &json!({"title": "Day", "allDay": true, "startZone": "Asia/Tokyo"})).is_ok());
         // What is no zone is refused, and nothing changes.
         let before = s.mailbox.clone();
-        for params in [json!({"startZone": "Nowhere/At_All"}), json!({"endZone": 5}), json!({"startZone": "x".repeat(1 << 20)}), json!({"startZone": "Europe/Berlin", "endZone": "UTC+99"})] {
+        for params in [
+            json!({"startZone": "Nowhere/At_All"}),
+            json!({"endZone": 5}),
+            json!({"startZone": "x".repeat(1 << 20)}),
+            json!({"startZone": "Europe/Berlin", "endZone": "UTC+99"}),
+        ] {
             let mut params = params;
             params["id"] = json!(id);
             assert!(s.run("calendar.edit", &params).is_err(), "{}", params.to_string().chars().take(80).collect::<String>());
         }
         assert_eq!(s.mailbox, before);
         // An end that would be before the start in its zone is refused.
-        let id = s.run("calendar.new", &json!({"title": "Short", "start": "2026-10-13T15:00", "end": "2026-10-13T15:30"})).unwrap()["id"].as_u64().unwrap();
+        let id = s.run("calendar.new", &json!({"title": "Short", "start": "2026-10-13T15:00", "end": "2026-10-13T15:30"})).unwrap()["id"]
+            .as_u64()
+            .unwrap();
         assert!(s.run("calendar.edit", &json!({"id": id, "endZone": "Asia/Tokyo"})).is_err());
     }
 
@@ -374,19 +404,32 @@ mod tests {
         let made = s.run("calendar.new", &json!({"title": "Stand-up", "start": "2026-10-20T09:00", "end": "2026-10-20T09:15", "startZone": "Europe/Berlin", "recurrence": {"freq": "daily"}}));
         let id = made.unwrap()["id"].as_u64().unwrap();
         let e = event(&s, id);
-        assert_eq!((e.start, e.start_zone.as_str(), e.recurrence.clone()), (at(2026, 10, 20, 2, 0), "Europe/Berlin", Some(Recurrence::every(Freq::Daily))));
+        assert_eq!(
+            (e.start, e.start_zone.as_str(), e.recurrence.clone()),
+            (at(2026, 10, 20, 2, 0), "Europe/Berlin", Some(Recurrence::every(Freq::Daily)))
+        );
         let listed = s.run("calendar.list", &json!({"from": "2026-10-23", "to": "2026-11-02"})).unwrap();
         let starts: Vec<&str> = listed["events"].as_array().unwrap().iter().map(|e| e["start"].as_str().unwrap()).collect();
         assert_eq!(
             starts,
             [
-                "2026-10-23T02:00:00", "2026-10-24T02:00:00", "2026-10-25T03:00:00", "2026-10-26T03:00:00", "2026-10-27T03:00:00", "2026-10-28T03:00:00",
-                "2026-10-29T03:00:00", "2026-10-30T03:00:00", "2026-10-31T03:00:00", "2026-11-01T02:00:00", "2026-11-02T02:00:00"
+                "2026-10-23T02:00:00",
+                "2026-10-24T02:00:00",
+                "2026-10-25T03:00:00",
+                "2026-10-26T03:00:00",
+                "2026-10-27T03:00:00",
+                "2026-10-28T03:00:00",
+                "2026-10-29T03:00:00",
+                "2026-10-30T03:00:00",
+                "2026-10-31T03:00:00",
+                "2026-11-01T02:00:00",
+                "2026-11-02T02:00:00"
             ]
         );
         // One occurrence deleted, one moved an hour: each on its own day, at its own time.
         s.run("calendar.delete", &json!({"id": id, "occurrence": "2026-10-26"})).unwrap();
-        let moved = s.run("calendar.edit", &json!({"id": id, "scope": "occurrence", "occurrence": "2026-10-27", "start": "2026-10-20T03:00"})).unwrap();
+        let moved =
+            s.run("calendar.edit", &json!({"id": id, "scope": "occurrence", "occurrence": "2026-10-27", "start": "2026-10-20T03:00"})).unwrap();
         let one = event(&s, moved["id"].as_u64().unwrap());
         assert_eq!((one.start, one.end, one.recurrence.is_none()), (at(2026, 10, 27, 4, 0), at(2026, 10, 27, 4, 15), true));
         assert_eq!(event(&s, id).exceptions, [Date::new(2026, 10, 26).unwrap(), Date::new(2026, 10, 27).unwrap()]);
@@ -398,15 +441,26 @@ mod tests {
     #[test]
     fn the_calendar_is_shown_in_the_zone_the_options_name() {
         let mut s = session("America/Chicago");
-        let id = s.run("calendar.new", &json!({"title": "Lunch", "start": "2026-10-13T12:00", "end": "2026-10-13T13:00"})).unwrap()["id"].as_u64().unwrap();
+        let id = s.run("calendar.new", &json!({"title": "Lunch", "start": "2026-10-13T12:00", "end": "2026-10-13T13:00"})).unwrap()["id"]
+            .as_u64()
+            .unwrap();
         let day = s.run("calendar.new", &json!({"title": "Holiday", "start": "2026-10-14", "allDay": true})).unwrap()["id"].as_u64().unwrap();
         assert_eq!(s.mailbox.zone, "America/Chicago");
         let shown = s.run("view.timeZone", &json!({})).unwrap();
-        assert_eq!(shown, json!({"zone": "America/Chicago", "label": "Central Time", "follows": true, "offset": "UTC-05:00", "second": null, "secondLabel": null, "system": "America/Chicago"}));
+        assert_eq!(
+            shown,
+            json!({"zone": "America/Chicago", "label": "Central Time", "follows": true, "offset": "UTC-05:00", "second": null, "secondLabel": null, "system": "America/Chicago"})
+        );
         // Shown in Berlin: lunch is at seven in the evening there, the holiday is on its day.
         let shown = s.run("view.timeZone", &json!({"zone": "W. Europe Standard Time", "label": "Office", "second": "Asia/Tokyo"})).unwrap();
-        assert_eq!((shown["zone"].as_str(), shown["label"].as_str(), shown["follows"].as_bool()), (Some("Europe/Berlin"), Some("Office"), Some(false)));
-        assert_eq!((shown["second"].as_str(), shown["secondLabel"].as_str(), shown["system"].as_str()), (Some("Asia/Tokyo"), Some("Tokyo Time"), Some("America/Chicago")));
+        assert_eq!(
+            (shown["zone"].as_str(), shown["label"].as_str(), shown["follows"].as_bool()),
+            (Some("Europe/Berlin"), Some("Office"), Some(false))
+        );
+        assert_eq!(
+            (shown["second"].as_str(), shown["secondLabel"].as_str(), shown["system"].as_str()),
+            (Some("Asia/Tokyo"), Some("Tokyo Time"), Some("America/Chicago"))
+        );
         assert_eq!((s.zone(), s.mailbox.zone.as_str()), (zone("Europe/Berlin"), "Europe/Berlin"));
         assert_eq!((event(&s, id).start, event(&s, id).end), (at(2026, 10, 13, 19, 0), at(2026, 10, 13, 20, 0)));
         assert_eq!((event(&s, day).start, event(&s, day).all_day), (at(2026, 10, 14, 0, 0), true));

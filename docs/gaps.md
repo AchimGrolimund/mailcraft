@@ -1,6 +1,6 @@
 # Where MailCraft falls short of Outlook
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-12 · **Change:** major (first use against a real Microsoft 365 mailbox; calendar write-back; pictures on request; first installer builds) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-12 · **Change:** minor (calendar changes are checked against the server; items only on this computer say so) · **Target:** Microsoft Outlook (Microsoft 365)
 
 The work list. One entry per shortfall, ranked by how much it stops an Outlook user from switching
 (**B** = blocks beta). Each says what's missing, the evidence, who it hurts, a rough estimate of
@@ -41,11 +41,13 @@ done similar work in this code base.
 - Conversations are grouped by subject, so two unrelated threads with the same subject merge.
 - `vcard` drops name prefixes/suffixes, photos and anniversaries; `ical` ignores `RDATE`, `BYMONTHDAY` lists and recurring to-dos.
 - Undo covers the mailbox, not the message being written.
+- A calendar change the server says it took is checked against what comes down next, and put back with a word when the server doesn't show it; whether the real Microsoft 365 service takes every kind of change as it is sent is known only for what the owner's Check Calendar Connection (File › Info) exercises: an appointment's time, as an instant and said in a time zone.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-11 | major | First version |
+| 2026-10-12 | minor | Rough edges: what is and isn't proven of calendar changes reaching the server |
 | 2026-10-12 | major | Gap 9 rewritten after the calendar's second and third waves (meetings, invitations in mail, the Scheduling Assistant); rough edges updated |
 | 2026-10-12 | major | Gaps 1, 5, 6, 9 and 18 rewritten after a day on a real Microsoft 365 mailbox, calendar write-back, pictures on request and the first installer builds; rough edges updated |

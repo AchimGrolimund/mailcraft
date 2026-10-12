@@ -45,7 +45,10 @@ fn run(s: &mut Session, id: &str, params: Value) -> Value {
 fn old_mailbox() -> (Mailbox, Id) {
     let chicago = zone("America/Chicago");
     let mut s = Session::in_zone(Mailbox::with_local_account("", ""), NOW, chicago);
-    let account = run(&mut s, "account.add", json!({"email": "ada@example.org", "incoming": {"host": "outlook.example.org"}, "auth": "oauth2"}))["id"].as_u64().unwrap();
+    let account =
+        run(&mut s, "account.add", json!({"email": "ada@example.org", "incoming": {"host": "outlook.example.org"}, "auth": "oauth2"}))["id"]
+            .as_u64()
+            .unwrap();
     apply_events(&mut s, &october(account, as_the_server_has_it(false))).unwrap();
     let meeting = s.mailbox.events.values().find(|e| e.origin.id == "meeting").unwrap().id;
     run(&mut s, "calendar.move", json!({"id": meeting, "start": "2026-10-13T10:00"}));
@@ -71,21 +74,82 @@ fn as_the_server_has_it(zones: bool) -> Vec<RemoteEvent> {
     let rule = Recurrence { by_day: vec![Weekday::Mon], ..Recurrence::every(Freq::Weekly) };
     vec![
         // Tuesday at nine in Chicago.
-        RemoteEvent { id: "meeting".into(), change_key: "ck-1".into(), title: "Review".into(), start: at(2026, 10, 13, 14, 0), end: at(2026, 10, 13, 15, 0), start_zone: named("Central Standard Time"), end_zone: named("Central Standard Time"), reminder_minutes: Some(15), ..Default::default() },
-        RemoteEvent { id: "day".into(), change_key: "ck-1".into(), title: "Holiday".into(), start: at(2026, 10, 14, 0, 0), end: at(2026, 10, 15, 0, 0), all_day: true, ..Default::default() },
+        RemoteEvent {
+            id: "meeting".into(),
+            change_key: "ck-1".into(),
+            title: "Review".into(),
+            start: at(2026, 10, 13, 14, 0),
+            end: at(2026, 10, 13, 15, 0),
+            start_zone: named("Central Standard Time"),
+            end_zone: named("Central Standard Time"),
+            reminder_minutes: Some(15),
+            ..Default::default()
+        },
+        RemoteEvent {
+            id: "day".into(),
+            change_key: "ck-1".into(),
+            title: "Holiday".into(),
+            start: at(2026, 10, 14, 0, 0),
+            end: at(2026, 10, 15, 0, 0),
+            all_day: true,
+            ..Default::default()
+        },
         // Mondays at half past ten at night in Chicago, which is Tuesday in UTC; the 19th is skipped.
         RemoteEvent {
-            id: "series".into(), change_key: "ck-1".into(), title: "Late call".into(), start: at(2026, 10, 6, 3, 30), end: at(2026, 10, 6, 4, 0),
-            kind: RemoteEventKind::SeriesMaster, recurrence: Some(rule), series_day: Date::new(2026, 10, 5), start_zone: named("Central Standard Time"), ..Default::default()
+            id: "series".into(),
+            change_key: "ck-1".into(),
+            title: "Late call".into(),
+            start: at(2026, 10, 6, 3, 30),
+            end: at(2026, 10, 6, 4, 0),
+            kind: RemoteEventKind::SeriesMaster,
+            recurrence: Some(rule),
+            series_day: Date::new(2026, 10, 5),
+            start_zone: named("Central Standard Time"),
+            ..Default::default()
         },
-        RemoteEvent { id: "o-1".into(), series: "series".into(), kind: RemoteEventKind::Occurrence, title: "Late call".into(), start: at(2026, 10, 6, 3, 30), end: at(2026, 10, 6, 4, 0), start_zone: named("Central Standard Time"), ..Default::default() },
-        RemoteEvent { id: "o-2".into(), series: "series".into(), kind: RemoteEventKind::Occurrence, title: "Late call".into(), start: at(2026, 10, 13, 3, 30), end: at(2026, 10, 13, 4, 0), start_zone: named("Central Standard Time"), ..Default::default() },
-        RemoteEvent { id: "o-4".into(), series: "series".into(), kind: RemoteEventKind::Occurrence, title: "Late call".into(), start: at(2026, 10, 27, 3, 30), end: at(2026, 10, 27, 4, 0), start_zone: named("Central Standard Time"), ..Default::default() },
+        RemoteEvent {
+            id: "o-1".into(),
+            series: "series".into(),
+            kind: RemoteEventKind::Occurrence,
+            title: "Late call".into(),
+            start: at(2026, 10, 6, 3, 30),
+            end: at(2026, 10, 6, 4, 0),
+            start_zone: named("Central Standard Time"),
+            ..Default::default()
+        },
+        RemoteEvent {
+            id: "o-2".into(),
+            series: "series".into(),
+            kind: RemoteEventKind::Occurrence,
+            title: "Late call".into(),
+            start: at(2026, 10, 13, 3, 30),
+            end: at(2026, 10, 13, 4, 0),
+            start_zone: named("Central Standard Time"),
+            ..Default::default()
+        },
+        RemoteEvent {
+            id: "o-4".into(),
+            series: "series".into(),
+            kind: RemoteEventKind::Occurrence,
+            title: "Late call".into(),
+            start: at(2026, 10, 27, 3, 30),
+            end: at(2026, 10, 27, 4, 0),
+            start_zone: named("Central Standard Time"),
+            ..Default::default()
+        },
     ]
 }
 
 fn october(account: Id, events: Vec<RemoteEvent>) -> EventsDownload {
-    EventsDownload { account, email: "ada@example.org".into(), from: at(2026, 10, 1, 0, 0), to: at(2026, 11, 1, 0, 0), complete: true, events, ..Default::default() }
+    EventsDownload {
+        account,
+        email: "ada@example.org".into(),
+        from: at(2026, 10, 1, 0, 0),
+        to: at(2026, 11, 1, 0, 0),
+        complete: true,
+        events,
+        ..Default::default()
+    }
 }
 
 /// When every timed event of the mailbox is, by its id.
@@ -116,9 +180,18 @@ fn a_mailbox_from_before_zones_opens_as_it_was_and_sends_nothing() {
     let upload = event_upload(&s, account).unwrap();
     assert_eq!(upload.ops.len(), 1);
     assert_eq!((upload.ops[0].kind, upload.ops[0].remote.as_str()), (EventChangeKind::Update, "meeting"));
-    assert_eq!(serde_json::to_value(&upload.ops[0].fields).unwrap(), json!({"time": {"start": at(2026, 10, 13, 15, 0), "end": at(2026, 10, 13, 16, 0), "allDay": false}}));
+    assert_eq!(
+        serde_json::to_value(&upload.ops[0].fields).unwrap(),
+        json!({"time": {"start": at(2026, 10, 13, 15, 0), "end": at(2026, 10, 13, 16, 0), "allDay": false}})
+    );
     // Reading, looking around and listing change nothing.
-    for (id, params) in [("calendar.list", json!({})), ("calendar.calendars", json!({})), ("view.reminders", json!({})), ("calendar.timeZones", json!({})), ("view.timeZone", json!({}))] {
+    for (id, params) in [
+        ("calendar.list", json!({})),
+        ("calendar.calendars", json!({})),
+        ("view.reminders", json!({})),
+        ("calendar.timeZones", json!({})),
+        ("view.timeZone", json!({})),
+    ] {
         run(&mut s, id, params);
     }
     assert_eq!(event_upload(&s, account).unwrap(), upload);
@@ -163,9 +236,13 @@ fn a_computer_carried_to_another_zone_keeps_every_meeting_at_its_instant() {
     // The series goes on by Chicago's clock: Monday night there is Tuesday morning here, and
     // the Monday it skips is named by its Tuesday.
     let series = by_remote(&s, "series");
-    assert_eq!((series.start, series.start_zone.as_str(), series.exceptions.clone()), (clock(2026, 10, 6, 4, 30), "America/Chicago", vec![Date::new(2026, 10, 20).unwrap()]));
+    assert_eq!(
+        (series.start, series.start_zone.as_str(), series.exceptions.clone()),
+        (clock(2026, 10, 6, 4, 30), "America/Chicago", vec![Date::new(2026, 10, 20).unwrap()])
+    );
     let listed = run(&mut s, "calendar.list", json!({"from": "2026-10-20", "to": "2026-11-11"}));
-    let late: Vec<&str> = listed["events"].as_array().unwrap().iter().filter(|e| e["title"] == "Late call").map(|e| e["start"].as_str().unwrap()).collect();
+    let late: Vec<&str> =
+        listed["events"].as_array().unwrap().iter().filter(|e| e["title"] == "Late call").map(|e| e["start"].as_str().unwrap()).collect();
     // London puts its clocks back on October 25, Chicago on November 1: half past three for a
     // week, then half past four again.
     assert_eq!(late, ["2026-10-27T03:30:00", "2026-11-03T04:30:00", "2026-11-10T04:30:00"]);
@@ -202,7 +279,10 @@ fn a_computer_carried_to_another_zone_keeps_every_meeting_at_its_instant() {
     assert_eq!(by_remote(&s, "meeting").start, clock(2026, 10, 13, 10, 0));
     // Home again, the series is where it was, and still says where it was made.
     let home = by_remote(&s, "series");
-    assert_eq!((home.start, home.exceptions.clone(), home.start_zone.as_str()), (clock(2026, 10, 5, 22, 30), vec![Date::new(2026, 10, 19).unwrap()], "America/Chicago"));
+    assert_eq!(
+        (home.start, home.exceptions.clone(), home.start_zone.as_str()),
+        (clock(2026, 10, 5, 22, 30), vec![Date::new(2026, 10, 19).unwrap()], "America/Chicago")
+    );
     assert_eq!(event_upload(&s, account).unwrap().ops, upload.ops);
 }
 
@@ -263,28 +343,44 @@ fn an_invitation_from_another_zone_is_at_the_right_time_here() {
 ORGANIZER;CN=Bo Marsh:mailto:bo@example.org\r\nATTENDEE;PARTSTAT=NEEDS-ACTION;CN=Ada:mailto:ada@example.org\r\n{more}END:VEVENT\r\nEND:VCALENDAR\r\n"
         )
     };
-    let once = invitation(&mut s, &request("DTSTART;TZID=W. Europe Standard Time:20261015T160000\r\nDTEND;TZID=W. Europe Standard Time:20261015T170000\r\n"));
+    let once = invitation(
+        &mut s,
+        &request("DTSTART;TZID=W. Europe Standard Time:20261015T160000\r\nDTEND;TZID=W. Europe Standard Time:20261015T170000\r\n"),
+    );
     let said = run(&mut s, "calendar.invitation", json!({"message": once}));
     assert_eq!((said["start"].as_str(), said["end"].as_str()), (Some("2026-10-15T09:00:00"), Some("2026-10-15T10:00:00")));
-    assert_eq!((said["startZone"].as_str(), said["ownTime"].as_str(), said["notes"].clone()), (Some("Europe/Berlin"), Some("4:00 PM – 5:00 PM (W. Europe Time)"), json!([])));
+    assert_eq!(
+        (said["startZone"].as_str(), said["ownTime"].as_str(), said["notes"].clone()),
+        (Some("Europe/Berlin"), Some("4:00 PM – 5:00 PM (W. Europe Time)"), json!([]))
+    );
     // Accepted, it is on the calendar at nine, and says where it is at home.
     let accepted = run(&mut s, "calendar.respond", json!({"message": once, "response": "accept"}));
     let event = s.mailbox.event(accepted["event"].as_u64().unwrap()).unwrap().clone();
     assert_eq!((event.start, event.end, event.start_zone.as_str()), (clock(2026, 10, 15, 9, 0), clock(2026, 10, 15, 10, 0), "Europe/Berlin"));
     // The series: nine here, ten in the week when only Berlin has put its clocks back.
-    let weekly = invitation(&mut s, &request("DTSTART;TZID=Europe/Berlin:20261015T160000\r\nDTEND;TZID=Europe/Berlin:20261015T170000\r\nRRULE:FREQ=WEEKLY\r\n").replace("review-1", "review-2"));
+    let weekly = invitation(
+        &mut s,
+        &request("DTSTART;TZID=Europe/Berlin:20261015T160000\r\nDTEND;TZID=Europe/Berlin:20261015T170000\r\nRRULE:FREQ=WEEKLY\r\n")
+            .replace("review-1", "review-2"),
+    );
     let accepted = run(&mut s, "calendar.respond", json!({"message": weekly, "response": "accept"}));
     let series = accepted["event"].as_u64().unwrap();
     let listed = run(&mut s, "calendar.list", json!({"from": "2026-10-16", "to": "2026-11-06"}));
     let starts: Vec<&str> = listed["events"].as_array().unwrap().iter().filter(|e| e["id"] == series).map(|e| e["start"].as_str().unwrap()).collect();
     assert_eq!(starts, ["2026-10-22T09:00:00", "2026-10-29T10:00:00", "2026-11-05T09:00:00"]);
     // A zone nobody knows: as it is written, and the message says so.
-    let odd = invitation(&mut s, &request("DTSTART;TZID=Customized Time Zone:20261016T160000\r\nDTEND;TZID=Customized Time Zone:20261016T170000\r\n").replace("review-1", "review-3"));
+    let odd = invitation(
+        &mut s,
+        &request("DTSTART;TZID=Customized Time Zone:20261016T160000\r\nDTEND;TZID=Customized Time Zone:20261016T170000\r\n")
+            .replace("review-1", "review-3"),
+    );
     let said = run(&mut s, "calendar.invitation", json!({"message": odd}));
     assert_eq!((said["start"].as_str(), said["startZone"].is_null()), (Some("2026-10-16T16:00:00"), true));
     assert_eq!(said["notes"], json!(["The time zone \"Customized Time Zone\" isn't one that is known: its times are kept as they are written."]));
     // A file of events is read the same way, and written back with its zones.
-    let file = request("DTSTART;TZID=Asia/Kolkata:20261020T193000\r\nDTEND;TZID=Asia/Kolkata:20261020T203000\r\n").replace("review-1", "review-4").replace("METHOD:REQUEST\r\n", "");
+    let file = request("DTSTART;TZID=Asia/Kolkata:20261020T193000\r\nDTEND;TZID=Asia/Kolkata:20261020T203000\r\n")
+        .replace("review-1", "review-4")
+        .replace("METHOD:REQUEST\r\n", "");
     let read = crate::io::import(&mut s, "meeting.ics", file.as_bytes(), None).unwrap();
     let id = read["events"].as_u64().map(|_| s.sel.event.unwrap()).unwrap();
     assert_eq!((s.mailbox.event(id).unwrap().start, read["notes"].clone()), (clock(2026, 10, 20, 9, 0), json!([])));
@@ -296,8 +392,11 @@ ORGANIZER;CN=Bo Marsh:mailto:bo@example.org\r\nATTENDEE;PARTSTAT=NEEDS-ACTION;CN
 #[test]
 fn the_mailboxs_working_hours_are_the_hours_of_its_own_zone() {
     let mut s = Session::in_zone(Mailbox::with_local_account("", ""), NOW, zone("America/Chicago"));
-    let account = run(&mut s, "account.add", json!({"email": "ada@example.org", "name": "Ada", "incoming": {"host": "imap.example.org"}}))["id"].as_u64().unwrap();
-    let hours = |zone: &str| json!({"account": account, "workingHours": {"days": ["monday", "tuesday"], "start": "09:00", "end": "17:00", "zone": zone}});
+    let account = run(&mut s, "account.add", json!({"email": "ada@example.org", "name": "Ada", "incoming": {"host": "imap.example.org"}}))["id"]
+        .as_u64()
+        .unwrap();
+    let hours =
+        |zone: &str| json!({"account": account, "workingHours": {"days": ["monday", "tuesday"], "start": "09:00", "end": "17:00", "zone": zone}});
     // Nine to five in Berlin is two to ten in the morning in Chicago (seven hours behind in
     // October), whatever the server calls the zone.
     for name in ["W. Europe Standard Time", "Europe/Berlin"] {
@@ -320,4 +419,116 @@ fn the_mailboxs_working_hours_are_the_hours_of_its_own_zone() {
     run(&mut s, "sync.applyMailboxSettings", hours("Europe/Berlin"));
     run(&mut s, "view.timeZone", json!({"zone": "Asia/Kolkata"}));
     assert_eq!(run(&mut s, "view.workHours", json!({}))["start"], "12:30");
+}
+
+#[test]
+fn a_whole_day_made_far_away_is_the_day_it_is_there() {
+    // A holiday and a weekly day off, made in New York: the server tells them as New York's
+    // midnights, which is one in the afternoon in Tokyo. They are the 20th all the same.
+    let eastern = |instant: Timestamp, id: &str, kind: RemoteEventKind| RemoteEvent {
+        id: id.into(),
+        change_key: "ck-1".into(),
+        title: if kind == RemoteEventKind::Single { "Holiday".into() } else { "Day off".into() },
+        start: instant,
+        end: instant + 86_400,
+        all_day: true,
+        kind,
+        series: if kind == RemoteEventKind::Occurrence { "off".into() } else { String::new() },
+        start_zone: "Eastern Standard Time".into(),
+        end_zone: "Eastern Standard Time".into(),
+        ..Default::default()
+    };
+    let rule = Recurrence { by_day: vec![Weekday::Tue], ..Recurrence::every(Freq::Weekly) };
+    let server = vec![
+        eastern(at(2026, 10, 20, 4, 0), "day", RemoteEventKind::Single),
+        RemoteEvent {
+            recurrence: Some(rule),
+            series_day: Date::new(2026, 10, 20),
+            ..eastern(at(2026, 10, 20, 4, 0), "off", RemoteEventKind::SeriesMaster)
+        },
+        eastern(at(2026, 10, 20, 4, 0), "o-1", RemoteEventKind::Occurrence),
+        eastern(at(2026, 10, 27, 4, 0), "o-2", RemoteEventKind::Occurrence),
+    ];
+    for there in ["Asia/Tokyo", "America/New_York", "Pacific/Honolulu", "Pacific/Kiritimati", "Asia/Kathmandu"] {
+        let mut s = Session::in_zone(Mailbox::with_local_account("", ""), NOW, zone(there));
+        let account = run(&mut s, "account.add", json!({"email": "ada@example.org", "incoming": {"host": "outlook.example.org"}, "auth": "oauth2"}))
+            ["id"]
+            .as_u64()
+            .unwrap();
+        apply_events(&mut s, &october(account, server.clone())).unwrap();
+        let day = by_remote(&s, "day");
+        assert_eq!((day.start, day.end, day.all_day), (clock(2026, 10, 20, 0, 0), clock(2026, 10, 21, 0, 0), true), "{there}");
+        // The series is one event that skips nothing: each of its days is the server's day.
+        let off = by_remote(&s, "off");
+        assert_eq!((off.start, off.exceptions.len(), s.mailbox.events.len()), (clock(2026, 10, 20, 0, 0), 0, 2), "{there}");
+        // The same again changes nothing, and nothing is to be sent.
+        let merged = apply_events(&mut s, &october(account, server.clone())).unwrap();
+        assert_eq!((merged["added"].as_u64(), merged["updated"].as_u64(), merged["removed"].as_u64()), (Some(0), Some(0), Some(0)), "{there}");
+        assert!(event_upload(&s, account).unwrap().ops.is_empty());
+    }
+    // A server that doesn't say where a day was made, or names a zone nobody knows: the
+    // midnight nearest here, as before.
+    let mut s = Session::in_zone(Mailbox::with_local_account("", ""), NOW, zone("Europe/Berlin"));
+    let account =
+        run(&mut s, "account.add", json!({"email": "ada@example.org", "incoming": {"host": "outlook.example.org"}, "auth": "oauth2"}))["id"]
+            .as_u64()
+            .unwrap();
+    let unsaid: Vec<RemoteEvent> = ["", "Customized Time Zone"]
+        .iter()
+        .map(|name| RemoteEvent {
+            id: format!("day{}", name.len()),
+            start_zone: (*name).into(),
+            end_zone: (*name).into(),
+            ..eastern(at(2026, 10, 20, 4, 0), "", RemoteEventKind::Single)
+        })
+        .collect();
+    apply_events(&mut s, &october(account, unsaid)).unwrap();
+    assert!(s.mailbox.events.values().all(|e| (e.start, e.end) == (clock(2026, 10, 20, 0, 0), clock(2026, 10, 21, 0, 0))));
+}
+
+#[test]
+fn what_was_sent_before_a_journey_is_found_on_the_server_after_it() {
+    use mailcraft_model::remote::{EventOutcome, EventResult, EventsUploaded};
+    let (old, account) = old_mailbox();
+    let mut s = Session::in_zone(old, NOW, zone("America/Chicago"));
+    // The move of the meeting goes to the server, and the holiday is deleted there: the server
+    // says yes to both, and no download has shown either yet.
+    let day = by_remote(&s, "day").id;
+    run(&mut s, "calendar.delete", json!({"id": day}));
+    let upload = event_upload(&s, account).unwrap();
+    assert_eq!(upload.ops.len(), 2);
+    let said = |op: &mailcraft_model::remote::EventOp| EventOutcome {
+        op: op.clone(),
+        result: EventResult::Done,
+        remote: op.remote.clone(),
+        change_key: "ck-2".into(),
+        ..Default::default()
+    };
+    let answer = EventsUploaded { account, email: "ada@example.org".into(), outcomes: upload.ops.iter().map(said).collect(), ..Default::default() };
+    super::remote::apply_event_outcomes(&mut s, &answer).unwrap();
+    assert_eq!((s.mailbox.event_changes.len(), s.mailbox.event_checks.len()), (0, 2));
+    let noted = s.mailbox.event_checks.clone();
+
+    // The computer is in Tokyo before the next download. What is looked for is the same
+    // moments; the day that was deleted is the same day.
+    s.clock.zone = Some(zone("Asia/Tokyo"));
+    assert!(s.settle_zone());
+    let times = |checks: &[mailcraft_model::remote::EventCheck]| checks.iter().map(|c| (c.kind, c.remote.clone(), c.fields.time)).collect::<Vec<_>>();
+    assert_eq!(times(&s.mailbox.event_checks), times(&noted));
+    let gone = s.mailbox.event_checks.iter().find_map(|check| check.base.clone()).unwrap();
+    assert_eq!((gone.all_day, gone.start, gone.end), (true, clock(2026, 10, 14, 0, 0), clock(2026, 10, 15, 0, 0)));
+
+    // The server's calendar as it is now: the meeting at ten in Chicago, and no holiday. Both
+    // are seen to have arrived: nothing is put back, nothing is said, and nothing waits.
+    let mut server = as_the_server_has_it(true);
+    server.retain(|event| event.id != "day");
+    for event in server.iter_mut().filter(|event| event.id == "meeting") {
+        (event.start, event.end, event.change_key) = (at(2026, 10, 13, 15, 0), at(2026, 10, 13, 16, 0), "ck-2".into());
+    }
+    let merged = apply_events(&mut s, &october(account, server)).unwrap();
+    assert_eq!((merged["verified"].as_u64(), merged["putBack"].as_u64(), merged["unverified"].as_u64()), (Some(2), Some(0), Some(0)), "{merged}");
+    assert!(s.mailbox.event_checks.is_empty() && event_upload(&s, account).unwrap().ops.is_empty());
+    // Ten in the morning in Chicago is midnight in Tokyo.
+    assert_eq!(by_remote(&s, "meeting").start, clock(2026, 10, 14, 0, 0));
+    assert!(s.mailbox.events.values().all(|event| event.origin.id != "day"));
 }

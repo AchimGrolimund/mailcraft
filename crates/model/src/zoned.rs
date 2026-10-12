@@ -176,9 +176,7 @@ impl Event {
     }
 
     fn anchor(&self, here: OffsetAt) -> Option<Anchor> {
-        if self.recurrence.is_none() {
-            return None;
-        }
+        self.recurrence.as_ref()?;
         let zone = self.zone()?;
         let (start, end) = self.instants(here);
         let first = zone.wall(start);
@@ -306,7 +304,7 @@ impl Mailbox {
 
     /// Whether anything in the mailbox is at a time that a zone gives a meaning to.
     pub fn has_times(&self) -> bool {
-        !self.events.is_empty() || !self.event_changes.is_empty()
+        !self.events.is_empty() || !self.event_changes.is_empty() || !self.event_checks.is_empty()
     }
 
     /// Have the wall-clock times of the events written by the clock of `to`, the zone the
@@ -317,7 +315,8 @@ impl Mailbox {
     /// - A mailbox that names another zone has every timed event moved to the clock of `to`: the
     ///   instants stay. Whole-day events keep their days. A series keeps repeating by the clock
     ///   of the zone it was written in ([`Event::start_zone`]). What waits to be sent to a server
-    ///   ([`Mailbox::event_changes`]) is moved the same way, so that nothing differs from what
+    ///   ([`Mailbox::event_changes`]) and what was sent and is still looked for there
+    ///   ([`Mailbox::event_checks`]) is moved the same way, so that nothing differs from what
     ///   the server has that didn't differ before.
     /// - A zone without a name ([`Zone::LOCAL`]), on either side, changes nothing: there is no
     ///   telling what to convert from or to.
@@ -357,8 +356,11 @@ impl Mailbox {
                 Arc::make_mut(event).origin.occurrence = Some(day);
             }
         }
-        for change in &mut self.event_changes {
-            let Some(base) = change.base.as_deref_mut() else { continue };
+        // What waits to be sent, and what was sent and is yet to be seen on the server (the
+        // event a deletion took away): the same moments as before.
+        let waiting = self.event_changes.iter_mut().filter_map(|change| change.base.as_deref_mut());
+        let sent = self.event_checks.iter_mut().filter_map(|check| check.base.as_deref_mut());
+        for base in waiting.chain(sent) {
             if let Some((fresh, _)) = base.rebased(from, to) {
                 *base = fresh;
             }
@@ -398,7 +400,7 @@ mod tests {
     use mailcraft_time::Weekday;
 
     use super::*;
-    use crate::remote::{EventChange, EventChangeKind};
+    use crate::remote::{EventChange, EventChangeKind, EventCheck};
     use crate::{Freq, Origin, Recurrence};
 
     fn d(y: i32, m: u8, day: u8) -> Date {
@@ -442,6 +444,16 @@ mod tests {
             event: 101,
             remote: "meeting-1".into(),
             base: Some(Box::new(base)),
+            ..Default::default()
+        });
+        // And a deletion the server said it took, which no download has shown yet.
+        let gone = Event { origin: Origin { account: 1, id: "gone-1".into(), ..Default::default() }, ..timed(105, at(2026, 10, 13, 12, 0), 30) };
+        mailbox.event_checks.push(EventCheck {
+            account: 1,
+            kind: EventChangeKind::Delete,
+            event: 105,
+            remote: "gone-1".into(),
+            base: Some(Box::new(gone)),
             ..Default::default()
         });
         mailbox
@@ -502,13 +514,14 @@ mod tests {
         let base = mailbox.event_changes[0].base.as_deref().unwrap();
         assert_eq!((base.start, base.end), (at(2026, 10, 12, 14, 0), at(2026, 10, 12, 15, 0)));
         assert_eq!(london.instant(base.start), chicago.instant(before.event_changes[0].base.as_deref().unwrap().start));
+        // So did what was sent and is still looked for on the server: noon in Chicago.
+        let gone = mailbox.event_checks[0].base.as_deref().unwrap();
+        assert_eq!((gone.start, london.instant(gone.start)), (at(2026, 10, 13, 18, 0), chicago.instant(at(2026, 10, 13, 12, 0))));
         // And home again: everything as it was, but that the series now says where it was made.
         assert_eq!(mailbox.rebase(chicago), 3);
         let mut home = mailbox.clone();
-        for id in [103] {
-            let series = home.event_mut(id).unwrap();
-            (series.start_zone, series.end_zone) = (String::new(), String::new());
-        }
+        let series = home.event_mut(103).unwrap();
+        (series.start_zone, series.end_zone) = (String::new(), String::new());
         assert_eq!(home, before);
     }
 
@@ -518,18 +531,22 @@ mod tests {
         let here = |zone: Zone| move |instant: Timestamp| zone.offset_at(instant);
         // Every Monday at nine in Chicago, made there.
         let mut mailbox = Mailbox::with_local_account("Ada", "ada@example.org");
-        let id = mailbox
-            .add_event(Event { recurrence: Some(Recurrence::every(Freq::Weekly)), ..timed(0, at(2026, 10, 5, 9, 0), 30) })
-            .unwrap();
+        let id = mailbox.add_event(Event { recurrence: Some(Recurrence::every(Freq::Weekly)), ..timed(0, at(2026, 10, 5, 9, 0), 30) }).unwrap();
         mailbox.rebase(chicago);
         let starts = |mailbox: &Mailbox, zone: Zone, from: Date, to: Date| -> Vec<String> {
             mailbox.event(id).unwrap().occurrences_in(from, to, &here(zone)).into_iter().map(|o| o.start.iso()).collect()
         };
-        assert_eq!(starts(&mailbox, chicago, d(2026, 10, 19), d(2026, 11, 9)), ["2026-10-19T09:00:00", "2026-10-26T09:00:00", "2026-11-02T09:00:00", "2026-11-09T09:00:00"]);
+        assert_eq!(
+            starts(&mailbox, chicago, d(2026, 10, 19), d(2026, 11, 9)),
+            ["2026-10-19T09:00:00", "2026-10-26T09:00:00", "2026-11-02T09:00:00", "2026-11-09T09:00:00"]
+        );
         // Seen from London: three in the afternoon, but for the week when London has already
         // put its clocks back (October 25) and Chicago has not yet (November 1).
         mailbox.rebase(london);
-        assert_eq!(starts(&mailbox, london, d(2026, 10, 19), d(2026, 11, 9)), ["2026-10-19T15:00:00", "2026-10-26T14:00:00", "2026-11-02T15:00:00", "2026-11-09T15:00:00"]);
+        assert_eq!(
+            starts(&mailbox, london, d(2026, 10, 19), d(2026, 11, 9)),
+            ["2026-10-19T15:00:00", "2026-10-26T14:00:00", "2026-11-02T15:00:00", "2026-11-09T15:00:00"]
+        );
         // Each of them is nine o'clock in Chicago.
         for o in mailbox.event(id).unwrap().occurrences_in(d(2026, 1, 1), d(2027, 12, 31), &here(london)) {
             assert_eq!(chicago.wall(london.instant(o.start)).time_short(false), "09:00", "{}", o.start.iso());
@@ -561,7 +578,10 @@ mod tests {
         mailbox.rebase(chicago);
         let home = mailbox.event(id).unwrap();
         assert_eq!(home.exceptions, [d(2026, 10, 5)]);
-        assert_eq!(home.occurrences_in(d(2026, 10, 1), d(2026, 10, 20), &here(chicago)).iter().map(|o| o.start.iso()).collect::<Vec<_>>(), ["2026-10-12T09:00:00", "2026-10-19T09:00:00"]);
+        assert_eq!(
+            home.occurrences_in(d(2026, 10, 1), d(2026, 10, 20), &here(chicago)).iter().map(|o| o.start.iso()).collect::<Vec<_>>(),
+            ["2026-10-12T09:00:00", "2026-10-19T09:00:00"]
+        );
         assert_eq!(home.series_days(d(2026, 10, 1), d(2026, 10, 20), &here(chicago)), [d(2026, 10, 5), d(2026, 10, 12), d(2026, 10, 19)]);
     }
 
@@ -584,7 +604,14 @@ mod tests {
         // further from Tokyo.
         assert_eq!(
             seen.iter().map(|o| o.start.iso()).collect::<Vec<_>>(),
-            ["2026-10-04T20:00:00", "2026-11-01T19:00:00", "2026-12-06T19:00:00", "2027-01-03T19:00:00", "2027-01-31T19:00:00", "2027-02-28T19:00:00"]
+            [
+                "2026-10-04T20:00:00",
+                "2026-11-01T19:00:00",
+                "2026-12-06T19:00:00",
+                "2027-01-03T19:00:00",
+                "2027-01-31T19:00:00",
+                "2027-02-28T19:00:00"
+            ]
         );
         assert!(seen.iter().all(|o| o.day == o.start.date));
         // Without its zone it would be taken for the first Monday here, a day late.
