@@ -1,6 +1,6 @@
 # Calendar: matching Outlook
 
-Status: working list, 2026-10-12 (sixth revision: time zones; fifth: a change that doesn't reach the server can't go unnoticed). The owner's bar for the
+Status: working list, 2026-10-12 (seventh revision: the fourth wave is in; sixth: time zones; fifth: a change that doesn't reach the server can't go unnoticed). The owner's bar for the
 calendar is "behaves exactly like Outlook"; this is the list that bar is checked against.
 Behaviour is written down from using Outlook for Windows (classic) as a black box; nothing of it
 is copied but how it behaves.
@@ -116,9 +116,10 @@ server; what has met the real Microsoft 365 service is only what the owner has u
    calendar list by group, side by side and overlaid; the Scheduling Assistant; the appointment
    window's own command bar, its unsaved-changes question and the recurrence dialog; working hours
    from the mailbox.
-4. **Next**: Teams meetings and response options (items need a place for them first); Propose New
-   Time; forwarding a meeting; the Scheduling Assistant over several days; moving items between
-   server calendars.
+4. **Done 2026-10-12** (M3.4): Teams meetings, importance and response options; Propose New
+   Time and, for the organizer, the proposals with Accept Proposal; forwarding a meeting; moving
+   appointments between the calendars of an account. **Next** of this wave: the Scheduling
+   Assistant over several days.
 5. **Later**: rich bodies and attachments in items, rooms, shared calendars,
    Schedule view, notifications in the background.
 6. **Done 2026-10-12** (M3.5, ahead of its wave): time zones. A zone database for every build;
@@ -172,6 +173,21 @@ server; what has met the real Microsoft 365 service is only what the owner has u
   hours that cross midnight that way are shown to the end of the day. Working days that are not
   next to one another (Monday,
   Wednesday, Friday) make a Work Week from the first of them to the last.
+- An appointment is moved to another calendar of the account by making it there and deleting
+  it where it was (the service has no move): the original goes only once the copy has been seen
+  on the server, and the move is taken back and said if either half is refused. A meeting, a
+  guest's item, a series, one day of a series and an item with attachments are not moved; each
+  says why.
+- A Teams meeting the server has made can't be turned back into a plain one (the service doesn't
+  allow it); an account that can't make Teams meetings says so, and the meeting is made without.
+- Whether proposals of another time are allowed is told the server when a meeting is made; the
+  documented service doesn't take a change of it afterwards.
+- Propose New Time shows the owner's own day beside the new time, not the other attendees' free
+  and busy times.
+- Forwarding a meeting takes the people and a note; there is no message to write beyond it.
+- Turning Request Responses off doesn't change what Accept, Tentative and Decline offer the guest.
+- The join link is named by the provider the server names, not by where the link leads; the
+  link's real destination is shown beside it, and only an `https` link is opened.
 - A calendar's tab has our own arrow and cross; the Overlay and Side-by-Side buttons borrow
   icons the ribbon had already. Outlook opens a calendar in a window of its own on request;
   that is not offered.
@@ -207,4 +223,5 @@ item's original zone when another program made the item.
 | 2026-10-12 | The third wave is in: meeting requests in the reading pane, the appointment window's command bar, unsaved-changes question and recurrence dialog, the Scheduling Assistant, calendars by group, side by side and overlaid, working hours from the mailbox |
 | 2026-10-12 | The second wave is in: the grid (resize, copy, keys, navigator, time scales), series as series with the question, meetings and answers through Microsoft 365, every calendar, categories, several appointment windows; a list of known differences |
 | 2026-10-12 | Of the third wave: the calendar list by group, calendars side by side and overlaid, working hours from the mailbox, a reminder opening its occurrence; calendars other than the account's own arrive unticked |
+| 2026-10-12 | The fourth wave is in (M3.4): Teams meetings, importance, response options, Propose New Time, forwarding, moving appointments between calendars; the known differences that came with them |
 | 2026-10-12 | Time zones (M3.5): the calendar's zone and a second one, zones of an item's own in its window, on Microsoft 365 and in `.ics`, working hours in the mailbox's zone, a computer that travels; the known differences that came with them |
