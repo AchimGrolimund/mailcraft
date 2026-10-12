@@ -2,36 +2,41 @@
 //! the owner is told and can do about it.
 //!
 //! A picture on the web tells whoever serves it that the message was opened, when, and from
-//! what address. So none is asked for unless the owner said so, in one of three ways: "Download
+//! what address. So none is asked for unless the owner said so, in one of four ways: "Download
 //! pictures" for the message at hand (it holds until the program closes), "Always download
-//! pictures from" its sender (remembered in the settings), or the switch in File › Options that
-//! downloads them for all mail (off unless the owner turns it on). The last two do not hold for
-//! what is in Junk E-mail.
+//! pictures from" its sender or from everybody at its sender's domain (remembered in the
+//! settings), or the switch in File › Options that downloads them for all mail (off unless the
+//! owner turns it on). The last three do not hold for what is in Junk E-mail.
 //!
-//! This crate opens no connections. It hands an address to the host ([`Services::pictures`])
-//! and takes back bytes or a refusal; the host is the one that checks where an address leads
-//! before it goes there. Where there is no such host (the browser, the tests) nothing is offered.
+//! This crate opens no connections and keeps no files. It hands an address to the host
+//! ([`Services::pictures`]) and takes back bytes or a refusal; the host is the one that checks
+//! where an address leads before it goes there, and the one that may keep what it brought on
+//! disk so as not to ask the same server again at the next start ([`Services::picture_cache`]).
+//! Where there is no such host (the browser, the tests) nothing is offered.
 //!
 //! What is asked of the host is bounded here: a few pictures at a time, so many for one message
-//! and so many bytes, each address once (a picture that failed is not tried again), and nothing
-//! for a message that is not on screen. The bytes that come are kept in memory with the other
-//! pictures ([`Pictures`]), never on disk, and are looked at as warily as an attachment's.
+//! and so many bytes, each address once, and nothing for a message that is not on screen. A
+//! picture that failed is not tried again unless the owner says "Try again"; why it failed is
+//! kept with it and shown where it would have been. The bytes that come are kept in memory with
+//! the other pictures ([`Pictures`]) and are looked at as warily as an attachment's, whether the
+//! host downloaded them just now or kept them from before.
 //!
 //! [`Services::pictures`]: crate::Services::pictures
+//! [`Services::picture_cache`]: crate::Services::picture_cache
 
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-use egui::{Sense, Ui, vec2};
+use egui::{Color32, Sense, Stroke, Ui, vec2};
 use mailcraft_model::{FolderKind, Id, Message};
 use serde_json::{Value, json};
 
 use super::Place;
 use super::images::{self, Pictures, Remote};
 use super::view::Doc;
-use crate::theme::{Tokens, regular};
+use crate::theme::{Tokens, regular, semibold};
 use crate::{MailApp, UiState, icons};
 
 /// Most pictures asked for on behalf of one message while the program runs; the rest stay
@@ -44,17 +49,21 @@ pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 /// How many pictures are on their way at a time.
 pub const AT_A_TIME: usize = 4;
 /// How long the host is waited on for one picture, in milliseconds (it gives up sooner by itself).
-const PATIENCE_MS: f64 = 45_000.0;
-/// Most senders whose pictures are always downloaded.
+const PATIENCE_MS: f64 = 60_000.0;
+/// Most senders whose pictures are always downloaded, and most domains.
 pub const MAX_SENDERS: usize = 500;
-/// Longest address of a sender that is remembered.
+pub const MAX_DOMAINS: usize = 500;
+/// Longest address of a sender that is remembered, and the longest domain.
 const MAX_SENDER_LEN: usize = 320;
+const MAX_DOMAIN_LEN: usize = 253;
 /// Most messages the owner asked pictures for that are kept track of.
 const MAX_ASKED: usize = 500;
 /// Most messages whose share of the downloading is kept track of.
 const MAX_SPENT: usize = 200;
 /// Most addresses waiting for a turn.
 const MAX_WAITING: usize = 4 * MAX_PER_MESSAGE;
+/// Most messages waiting to have their failed pictures tried again.
+const MAX_RETRIES: usize = 32;
 
 /// Whether the pictures a message refers to on the web may be shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,7 +72,7 @@ pub enum Access {
     Unavailable,
     /// It could, and the owner has not asked.
     Blocked,
-    /// The owner asked: for this message, for its sender, or for all mail.
+    /// The owner asked: for this message, for its sender or its sender's domain, or for all mail.
     Allowed,
 }
 
@@ -101,6 +110,10 @@ impl Spent {
 /// How a message's pictures are coming along.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Progress {
+    /// How many pictures on the web the message may ask for.
+    pub total: usize,
+    /// Downloaded, and pictures.
+    pub ready: usize,
     /// Asked for or about to be.
     pub waiting: usize,
     pub failed: usize,
@@ -120,6 +133,11 @@ pub struct RemotePictures {
     spent: VecDeque<(Id, Spent)>,
     /// The frame arrivals were last looked for in.
     ticked: Option<u64>,
+    /// Messages whose failed pictures the owner wants tried again: seen to when they are next
+    /// laid out.
+    retry: Vec<Id>,
+    /// The owner cleared what is kept of pictures: what is in memory goes at the next frame.
+    forget_all: bool,
 }
 
 impl RemotePictures {
@@ -139,6 +157,13 @@ impl RemotePictures {
                 }
                 self.spent.push_back((message, Spent { asked, bytes }));
             }
+        }
+    }
+
+    /// Give `message` back what `asked` of its pictures cost: they are to be asked for again.
+    fn refund(&mut self, message: Id, asked: usize) {
+        if let Some((_, spent)) = self.spent.iter_mut().find(|(id, _)| *id == message) {
+            spent.asked = spent.asked.saturating_sub(asked);
         }
     }
 
@@ -163,9 +188,29 @@ fn sender(text: &str) -> Option<String> {
     (plain && text.len() >= 3).then(|| text.to_lowercase())
 }
 
+/// A domain as it is remembered: what follows the `@` of an address (or the whole of `text`,
+/// with or without an `@` in front), in lower case; `None` for what is no domain.
+fn domain(text: &str) -> Option<String> {
+    let text = text.trim();
+    let name = text.rsplit_once('@').map_or(text, |(_, name)| name).trim_end_matches('.');
+    let plain = !name.is_empty()
+        && name.len() <= MAX_DOMAIN_LEN
+        && name.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '.'))
+        && !name.starts_with(['.', '-'])
+        && !name.contains("..");
+    plain.then(|| name.to_lowercase())
+}
+
 /// Whether pictures from `address` are always downloaded.
 pub fn sender_remembered(ui: &UiState, address: &str) -> bool {
     sender(address).is_some_and(|address| ui.picture_senders.iter().take(MAX_SENDERS).any(|kept| kept.trim().eq_ignore_ascii_case(&address)))
+}
+
+/// Whether pictures from everybody at the domain of `address` are always downloaded: that
+/// domain itself, not the ones under it or above it.
+pub fn domain_remembered(ui: &UiState, address: &str) -> bool {
+    let Some(of_sender) = sender(address).and_then(|address| domain(&address)) else { return false };
+    ui.picture_domains.iter().take(MAX_DOMAINS).any(|kept| domain(kept).is_some_and(|kept| kept == of_sender))
 }
 
 /// Whether `m` is in an account's Junk E-mail folder.
@@ -173,13 +218,19 @@ fn in_junk(app: &MailApp, m: &Message) -> bool {
     app.session.mailbox.folder(m.folder).is_some_and(|f| f.kind == FolderKind::Junk)
 }
 
+/// Whether this build can download pictures at all.
+pub fn available(app: &MailApp) -> bool {
+    app.services.pictures.is_some()
+}
+
 /// Whether `m` may show the pictures it refers to on the web.
 pub fn access(app: &MailApp, m: &Message) -> Access {
-    if app.services.pictures.is_none() {
+    if !available(app) {
         return Access::Unavailable;
     }
     // What lands in Junk E-mail is trusted by nobody's say-so but the owner's, message by message.
-    let trusted = !in_junk(app, m) && (app.ui.download_pictures || sender_remembered(&app.ui, &m.from.email));
+    let trusted =
+        !in_junk(app, m) && (app.ui.download_pictures || sender_remembered(&app.ui, &m.from.email) || domain_remembered(&app.ui, &m.from.email));
     if trusted || app.remote_pictures.asked.contains(&mark(m)) { Access::Allowed } else { Access::Blocked }
 }
 
@@ -192,14 +243,26 @@ pub fn tick(app: &mut MailApp, ctx: &egui::Context) {
         return;
     }
     state.ticked = Some(frame);
+    if std::mem::take(&mut state.forget_all) {
+        // What is on its way was asked for before: it is not waited for, and not kept.
+        state.flying.clear();
+        state.waiting.clear();
+        state.spent.clear();
+        Pictures::of(ctx).lock().unwrap_or_else(|e| e.into_inner()).forget_remote();
+        ctx.request_repaint();
+    }
     let now = crate::now_ms();
-    let mut landed: Vec<(Id, Arc<str>, Option<Vec<u8>>)> = Vec::new();
+    let mut landed: Vec<(Id, Arc<str>, Result<Vec<u8>, Arc<str>>)> = Vec::new();
     state.flying.retain(|flight| {
         let answer = match flight.answer.try_recv() {
-            Ok(answer) => answer.map_err(|why| log::debug!("a picture was not downloaded: {}", why.chars().take(200).collect::<String>())).ok(),
+            Ok(Ok(bytes)) => Ok(bytes),
+            Ok(Err(why)) => {
+                log::debug!("a picture was not downloaded: {}", why.chars().take(200).collect::<String>());
+                Err(images::reason(&why))
+            }
             // The host went away, or is taking longer than anything should.
-            Err(TryRecvError::Disconnected) => None,
-            Err(TryRecvError::Empty) if now - flight.since > PATIENCE_MS => None,
+            Err(TryRecvError::Disconnected) => Err(Arc::from(tl!("the download stopped before it was done"))),
+            Err(TryRecvError::Empty) if now - flight.since > PATIENCE_MS => Err(Arc::from(tl!("it took too long"))),
             Err(TryRecvError::Empty) => return true,
         };
         landed.push((flight.message, flight.url.clone(), answer));
@@ -208,11 +271,20 @@ pub fn tick(app: &mut MailApp, ctx: &egui::Context) {
     if !landed.is_empty() {
         let pictures = Pictures::of(ctx);
         let mut pictures = pictures.lock().unwrap_or_else(|e| e.into_inner());
-        for (message, url, bytes) in landed {
-            state.spend(message, 0, bytes.as_ref().map_or(0, Vec::len));
+        for (message, url, answer) in landed {
+            state.spend(message, 0, answer.as_ref().map_or(0, Vec::len));
             // Whatever came is a stranger's bytes: a picture within the limits, or nothing.
-            let picture = bytes.filter(|bytes| bytes.len() <= MAX_BYTES && images::probe(bytes).is_some());
-            pictures.set_remote(url, picture.map_or(Remote::Failed, |bytes| Remote::Ready(Arc::new(bytes))), frame);
+            let outcome = match answer {
+                Ok(bytes) if bytes.len() > MAX_BYTES => Err(Arc::from(tl!("it is too large to show"))),
+                Ok(bytes) if images::probe(&bytes).is_some() => Ok(bytes),
+                Ok(bytes) => Err(Arc::from(images::not_a_picture(&bytes))),
+                Err(why) => Err(why),
+            };
+            if let (Err(_), Some(kept)) = (&outcome, &app.services.picture_cache) {
+                // Whatever the host may have kept from there is no use: it is not kept on.
+                kept.forget(&url);
+            }
+            pictures.set_remote(url, outcome.map_or_else(Remote::Failed, |bytes| Remote::Ready(Arc::new(bytes))), frame);
         }
         ctx.request_repaint();
     }
@@ -249,19 +321,34 @@ pub fn tick(app: &mut MailApp, ctx: &egui::Context) {
 /// `m` is on screen and may show its pictures: note which of them are still to come, so that
 /// they are asked for, and say how they are coming along.
 pub fn want(app: &mut MailApp, ctx: &egui::Context, m: &Message, doc: &Doc) -> Progress {
-    let mut progress = Progress { left_out: doc.remote_left_out, ..Progress::default() };
+    let mut progress = Progress { total: doc.remote.len().saturating_add(doc.remote_left_out), left_out: doc.remote_left_out, ..Progress::default() };
     if doc.remote.is_empty() {
         return progress;
     }
     let frame = images::frame(ctx);
-    let state = &mut app.remote_pictures;
-    let out = state.spent(m.id).out();
     let pictures = Pictures::of(ctx);
     let mut pictures = pictures.lock().unwrap_or_else(|e| e.into_inner());
+    // "Try again": what failed of this message's pictures is forgotten, here and by the host,
+    // and so asked for once more, below.
+    if let Some(at) = app.remote_pictures.retry.iter().position(|id| *id == m.id) {
+        app.remote_pictures.retry.swap_remove(at);
+        let mut again = 0;
+        for url in &doc.remote {
+            if pictures.forget_failure(url) {
+                again += 1;
+                if let Some(kept) = &app.services.picture_cache {
+                    kept.forget(url);
+                }
+            }
+        }
+        app.remote_pictures.refund(m.id, again);
+    }
+    let state = &mut app.remote_pictures;
+    let out = state.spent(m.id).out();
     for url in &doc.remote {
         match pictures.remote(url, frame) {
-            Some(Remote::Ready(_)) => {}
-            Some(Remote::Failed) => progress.failed += 1,
+            Some(Remote::Ready(_)) => progress.ready += 1,
+            Some(Remote::Failed(_)) => progress.failed += 1,
             None if state.flying.iter().any(|flight| flight.url == *url) => progress.waiting += 1,
             None if out => progress.left_out += 1,
             None => {
@@ -278,76 +365,143 @@ pub fn want(app: &mut MailApp, ctx: &egui::Context, m: &Message, doc: &Doc) -> P
     progress
 }
 
-/// The line above a message that has pictures on the web: that they are not shown and why, with
-/// what the owner can do about it; or how downloading them is going.
+/// `text`, cut to `max` characters with an ellipsis when it is longer.
+fn short(text: &str, max: usize) -> String {
+    if text.chars().count() > max { text.chars().take(max.saturating_sub(1)).chain(['…']).collect() } else { text.to_string() }
+}
+
+/// The bar above a message that has pictures on the web: that they are not shown and what the
+/// owner can do about it, how downloading them is going, or how many could not be had. One
+/// glance says which: a tinted strip the width of the header, a mark, a few words in bold, the
+/// rest after them.
 pub fn line(app: &mut MailApp, ui: &mut Ui, m: &Message, doc: &Doc, access: Access, progress: Progress, place: Place, t: &Tokens) {
     if doc.remote.is_empty() {
         return;
     }
-    let text = match access {
-        Access::Unavailable => tl!("This message has pictures on the web. This build can't download them.").to_string(),
-        Access::Blocked => tl!("Pictures in this message aren't downloaded, to protect your privacy.").to_string(),
-        Access::Allowed if progress.waiting > 0 => tl!("Downloading pictures…").to_string(),
-        Access::Allowed => match progress.failed + progress.left_out {
+    let missing = progress.failed + progress.left_out;
+    let count = |template: &str, n: usize| crate::i18n::fmt(template, &[("n", &n.to_string()), ("total", &progress.total.to_string())]);
+    let (lead, rest, trouble) = match access {
+        Access::Unavailable => {
+            (tl!("Pictures not shown.").to_string(), tl!("This message has pictures on the web. This build can't download them.").to_string(), false)
+        }
+        Access::Blocked => (
+            tl!("Pictures not downloaded.").to_string(),
+            tl!("They are on the web, and fetching them would tell the sender that you opened this message.").to_string(),
+            false,
+        ),
+        Access::Allowed if progress.waiting > 0 => {
+            (tl!("Downloading pictures…").to_string(), count(tl!("{n} of {total} so far."), progress.ready), false)
+        }
+        Access::Allowed => match missing {
             0 => return,
-            1 => tl!("A picture couldn't be downloaded.").to_string(),
-            n => crate::i18n::fmt(tl!("{n} pictures couldn't be downloaded."), &[("n", &n.to_string())]),
+            1 => (tl!("A picture couldn't be downloaded.").to_string(), tl!("Point at it to see why.").to_string(), true),
+            n => (count(tl!("{n} pictures couldn't be downloaded."), n), tl!("Point at one to see why.").to_string(), true),
         },
     };
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
-        let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
-        icons::paint(ui.painter(), r.shrink(1.0), "private", t.text_dim, t.accent);
-        ui.add(egui::Label::new(egui::RichText::new(text).font(regular(11.5)).color(t.text_dim)).wrap());
-        if access != Access::Blocked {
-            return;
-        }
-        // What can be done about it: each a few words that stay together, on the next line when
-        // this one is full.
-        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-        let action =
-            |ui: &mut Ui, label: String, tip: &str| ui.add(egui::Link::new(egui::RichText::new(label).font(regular(11.5)))).on_hover_text(tip);
-        let download =
-            action(ui, tl!("Download pictures").to_string(), tl!("Show this message's pictures. Whoever sent it can then tell that you opened it."));
-        if place == Place::Pane {
-            app.hit.add("downloadPictures", m.id, download.rect);
-        }
-        if download.clicked() {
-            let _ = app.run("ui.downloadPictures", json!({"message": m.id}));
-        }
-        // Remembering a sender does nothing for what is in Junk E-mail, so it is not offered there.
-        let Some(from) = sender(&m.from.email).filter(|_| !in_junk(app, m)) else { return };
-        let shown: String = if from.chars().count() > 60 { from.chars().take(59).chain(['…']).collect() } else { from.clone() };
-        let label = crate::i18n::fmt(tl!("Always download pictures from {sender}"), &[("sender", &shown)]);
-        let always = action(ui, label, tl!("Remembered in the settings; File › Options lists the senders and takes them off again."));
-        if place == Place::Pane {
-            app.hit.add("alwaysDownloadPictures", m.id, always.rect);
-        }
-        if always.clicked() {
-            let _ = app.run("ui.alwaysDownloadPictures", json!({"sender": from}));
-        }
+    // A wash of the notice's colour over whatever the header is painted on, in light and dark alike.
+    let hue = if trouble { t.orange } else { t.blue };
+    let wash = Color32::from_rgba_unmultiplied(hue.r(), hue.g(), hue.b(), if t.dark { 46 } else { 30 });
+    let edge = Color32::from_rgba_unmultiplied(hue.r(), hue.g(), hue.b(), if t.dark { 110 } else { 90 });
+    let bar = egui::Frame::NONE.fill(wash).stroke(Stroke::new(1.0, edge)).corner_radius(4.0).inner_margin(egui::Margin {
+        left: 8,
+        right: 8,
+        top: 4,
+        bottom: 4,
+    });
+    bar.show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
+            let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+            icons::paint(ui.painter(), r.shrink(1.0), if trouble { "highImportance" } else { "info" }, t.text, hue);
+            ui.add(egui::Label::new(egui::RichText::new(lead).font(semibold(11.5)).color(t.text)).wrap());
+            ui.add(egui::Label::new(egui::RichText::new(rest).font(regular(11.5)).color(t.text_dim)).wrap());
+            // What can be done about it: each a few words that stay together, on the next line
+            // when this one is full.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            let action =
+                |ui: &mut Ui, label: String, tip: &str| ui.add(egui::Link::new(egui::RichText::new(label).font(semibold(11.5)))).on_hover_text(tip);
+            match access {
+                Access::Blocked => {}
+                // Only what failed can be tried again; what was left out for its number or its weight can't.
+                Access::Allowed if trouble && progress.failed > 0 => {
+                    let again = action(ui, tl!("Try again").to_string(), tl!("Ask once more for the pictures that couldn't be downloaded."));
+                    if place == Place::Pane {
+                        app.hit.add("retryPictures", m.id, again.rect);
+                    }
+                    if again.clicked() {
+                        let _ = app.run("ui.retryPictures", json!({"message": m.id}));
+                    }
+                    return;
+                }
+                _ => return,
+            }
+            let download = action(
+                ui,
+                tl!("Download pictures").to_string(),
+                tl!("Show this message's pictures, this once. Whoever sent it can then tell that you opened it."),
+            );
+            if place == Place::Pane {
+                app.hit.add("downloadPictures", m.id, download.rect);
+            }
+            if download.clicked() {
+                let _ = app.run("ui.downloadPictures", json!({"message": m.id}));
+            }
+            // Remembering a sender does nothing for what is in Junk E-mail, so it is not offered there.
+            let Some(from) = sender(&m.from.email).filter(|_| !in_junk(app, m)) else { return };
+            let label = crate::i18n::fmt(tl!("Always download pictures from {sender}"), &[("sender", &short(&from, 60))]);
+            let always = action(ui, label, tl!("Remembered in the settings; File › Options lists the senders and takes them off again."));
+            if place == Place::Pane {
+                app.hit.add("alwaysDownloadPictures", m.id, always.rect);
+            }
+            if always.clicked() {
+                let _ = app.run("ui.alwaysDownloadPictures", json!({"sender": from}));
+            }
+            let Some(of_sender) = domain(&from) else { return };
+            let label = crate::i18n::fmt(tl!("Always from @{domain}"), &[("domain", &short(&of_sender, 48))]);
+            let everybody = action(
+                ui,
+                label,
+                tl!("Always download pictures from everybody whose address ends this way. Remembered in the settings; File › Options lists the domains and takes them off again."),
+            );
+            if place == Place::Pane {
+                app.hit.add("alwaysDownloadPicturesDomain", m.id, everybody.rect);
+            }
+            if everybody.clicked() {
+                let _ = app.run("ui.alwaysDownloadPictures", json!({"domain": of_sender}));
+            }
+        });
     });
 }
 
-/// The rows of File › Options: the switch for all mail, and the senders that are remembered.
+/// A number of bytes for the owner to read: `340 KB`, `12.4 MB`.
+fn size_label(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    let bytes = bytes as f64;
+    if bytes < KB * KB { format!("{:.0} KB", (bytes / KB).ceil()) } else { format!("{:.1} MB", bytes / (KB * KB)) }
+}
+
+/// The rows of File › Options: the switch for all mail, the senders and the domains that are
+/// remembered, and what is kept of downloaded pictures on this computer.
 pub fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     let mut all = app.ui.download_pictures;
     let tip = tl!(
-        "A picture on the web tells its sender that you opened the message, and when. Left off, pictures are downloaded only for the messages and senders you say."
+        "A picture on the web tells its sender that you opened the message, and when. Left off, pictures are downloaded only for the messages, senders and domains you say."
     );
     if ui.checkbox(&mut all, tl!("Download pictures in mail automatically")).on_hover_text(tip).changed() {
         let _ = app.run("ui.downloadPicturesAutomatically", json!({"value": all}));
     }
-    if app.services.pictures.is_none() {
+    if !available(app) {
         ui.label(egui::RichText::new(tl!("This build can't download pictures: they stay placeholders.")).color(t.text_dim));
     }
     let senders: Vec<String> = app.ui.picture_senders.iter().take(MAX_SENDERS).map(|s| s.chars().take(MAX_SENDER_LEN).collect()).collect();
-    if senders.is_empty() {
-        let none = tl!("No senders are remembered. \"Always download pictures from\" above a message adds its sender here.");
+    let domains: Vec<String> = app.ui.picture_domains.iter().take(MAX_DOMAINS).filter_map(|d| domain(d)).collect();
+    if senders.is_empty() && domains.is_empty() {
+        let none = tl!("No senders are remembered. \"Always download pictures from\" above a message adds its sender or its sender's domain here.");
         ui.label(egui::RichText::new(none).color(t.text_dim));
-        return;
+    } else {
+        ui.label(tl!("Pictures are always downloaded from:"));
     }
-    ui.label(tl!("Pictures are always downloaded from:"));
     for address in senders {
         ui.horizontal(|ui| {
             if ui.small_button(tl!("Remove")).on_hover_text(tl!("Ask before downloading this sender's pictures again")).clicked() {
@@ -356,6 +510,31 @@ pub fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
             ui.add(egui::Label::new(address.as_str()).truncate());
         });
     }
+    for name in domains {
+        ui.horizontal(|ui| {
+            if ui.small_button(tl!("Remove")).on_hover_text(tl!("Ask before downloading pictures from this domain's senders again")).clicked() {
+                let _ = app.run("ui.alwaysDownloadPictures", json!({"domain": name, "value": false}));
+            }
+            let everybody = crate::i18n::fmt(tl!("everybody at @{domain}"), &[("domain", &name)]);
+            ui.add(egui::Label::new(everybody).truncate());
+        });
+    }
+    // What the host keeps of them between runs, when it keeps anything.
+    let Some((count, bytes)) = app.services.picture_cache.as_ref().map(|kept| kept.usage()) else { return };
+    ui.horizontal(|ui| {
+        let kept = match count {
+            0 => tl!("No downloaded pictures are kept on this computer.").to_string(),
+            1 => crate::i18n::fmt(tl!("One downloaded picture is kept on this computer ({size})."), &[("size", &size_label(bytes))]),
+            n => crate::i18n::fmt(tl!("{n} downloaded pictures are kept on this computer ({size})."), &[("n", &n.to_string()), ("size", &size_label(bytes))]),
+        };
+        let tip = tl!(
+            "A picture you asked for is kept for a month, so that reading the message again doesn't ask its sender's server again. Nothing kept is ever run, and it is checked like a new download before it is shown."
+        );
+        ui.label(kept).on_hover_text(tip);
+        if ui.add_enabled(count > 0, egui::Button::new(tl!("Clear")).small()).on_hover_text(tl!("Forget the pictures that are kept; they are downloaded again when you ask.")).clicked() {
+            let _ = app.run("ui.clearPictureCache", json!({}));
+        }
+    });
 }
 
 /// The message a command is about: the one it names, else the one being read.
@@ -377,6 +556,8 @@ pub(crate) fn ui_command(app: &mut MailApp, id: &str, p: &Value) -> Option<Resul
             app.ui.download_pictures = on;
             Ok(json!({"value": on}))
         }
+        "ui.retryPictures" => retry(app, p),
+        "ui.clearPictureCache" => clear(app),
         // The other commands of a message that is being read: its selected text, and the
         // meeting it carries.
         _ => return super::select::ui_command(app, id, p).or_else(|| super::invitation::ui_command(app, id, p)),
@@ -386,7 +567,7 @@ pub(crate) fn ui_command(app: &mut MailApp, id: &str, p: &Value) -> Option<Resul
 /// "Download pictures": this message's, from now until the program closes.
 fn download(app: &mut MailApp, p: &Value) -> Result<Value, String> {
     let m = subject(app, p)?;
-    if app.services.pictures.is_none() {
+    if !available(app) {
         return Err(tl!("This build can't download pictures").to_string());
     }
     let mark = mark(&m);
@@ -400,14 +581,58 @@ fn download(app: &mut MailApp, p: &Value) -> Result<Value, String> {
     Ok(json!({"message": m.id}))
 }
 
-/// "Always download pictures from": remember a sender, or forget one.
+/// "Try again": the pictures of this message that couldn't be downloaded are asked for once more.
+fn retry(app: &mut MailApp, p: &Value) -> Result<Value, String> {
+    let m = subject(app, p)?;
+    if !available(app) {
+        return Err(tl!("This build can't download pictures").to_string());
+    }
+    let waiting = &mut app.remote_pictures.retry;
+    if !waiting.contains(&m.id) {
+        if waiting.len() >= MAX_RETRIES {
+            waiting.remove(0);
+        }
+        waiting.push(m.id);
+    }
+    Ok(json!({"message": m.id}))
+}
+
+/// "Clear": what is kept of downloaded pictures goes, on disk and in memory.
+fn clear(app: &mut MailApp) -> Result<Value, String> {
+    let on_disk = match &app.services.picture_cache {
+        Some(kept) => {
+            let (count, _) = kept.usage();
+            kept.clear()?;
+            count
+        }
+        None => 0,
+    };
+    app.remote_pictures.forget_all = true;
+    Ok(json!({"cleared": on_disk}))
+}
+
+/// "Always download pictures from": remember a sender or a domain, or forget one.
 fn always(app: &mut MailApp, p: &Value) -> Result<Value, String> {
+    let on = p.get("value").and_then(Value::as_bool).unwrap_or(true);
+    if let Some(named) = p.get("domain").filter(|named| !named.is_null()) {
+        let named = named.as_str().ok_or_else(|| "`domain` is what follows the @ of an address".to_string())?;
+        let Some(name) = domain(named) else { return Err(tl!("That is not a domain").to_string()) };
+        let kept = &mut app.ui.picture_domains;
+        kept.retain(|other| domain(other).is_some_and(|other| other != name));
+        kept.truncate(MAX_DOMAINS);
+        if on {
+            if kept.len() >= MAX_DOMAINS {
+                return Err(tl!("The list of domains is full: remove some in File › Options").to_string());
+            }
+            kept.push(name.clone());
+        }
+        return Ok(json!({"domain": name, "value": on, "domains": kept.len()}));
+    }
     let named = match p.get("sender") {
         None | Some(Value::Null) => subject(app, p)?.from.email.clone(),
         Some(text) => text.as_str().ok_or_else(|| "`sender` is an address".to_string())?.to_string(),
     };
     let Some(address) = sender(&named) else { return Err(tl!("That is not a sender's address").to_string()) };
-    let on = p.get("value").and_then(Value::as_bool).unwrap_or(true);
     let kept = &mut app.ui.picture_senders;
     kept.retain(|other| !other.trim().eq_ignore_ascii_case(&address));
     kept.truncate(MAX_SENDERS);

@@ -79,6 +79,10 @@ pub(crate) fn gif(w: u32, h: u32) -> Vec<u8> {
     encode(image::DynamicImage::ImageRgba8(mark(w, h, [0x2e, 0x8b, 0x57])), image::ImageFormat::Gif)
 }
 
+pub(crate) fn webp(w: u32, h: u32) -> Vec<u8> {
+    encode(image::DynamicImage::ImageRgba8(drawing(w, h)), image::ImageFormat::WebP)
+}
+
 /// The bytes of a picture the corpus refers to.
 fn picture(id: &str, kind: PictureKind, w: u32, h: u32) -> (Vec<u8>, &'static str, &'static str) {
     match kind {
@@ -171,6 +175,15 @@ pub(crate) fn corpus_messages() -> Vec<(&'static str, Message)> {
             html_message(5, ("Samira Okonkwo", "calendar@lumen-works.example"), "Invitation: Design review: onboarding flow v3", corpus::CALENDAR),
         ),
         ("plain thread", message(6, ("Jorge Salas", "jorge@orchard-tools.example"), "Re: [dev] 4.8.1 rc2", None, corpus::PLAIN_THREAD.to_string())),
+        (
+            "built newsletter",
+            html_message(
+                30,
+                ("Tallow & Wick Candle Works", "lamplight@letters.tallowwick.example"),
+                "Lamplight: the evenings are drawing in",
+                corpus::BUILT_NEWSLETTER,
+            ),
+        ),
     ];
     // A file that is really attached, next to the pictures shown in place.
     if let Some((_, m)) = out.get_mut(4) {
@@ -378,7 +391,7 @@ fn bars_beside(laid: &Laid, item: &Item) -> usize {
 fn remote_pictures_are_stand_ins_and_nothing_is_looked_at_for_them() {
     for dark in [false, true] {
         in_frame(dark, |ctx| {
-            for name in ["newsletter", "remote", "many pictures", "calendar notice", "receipt"] {
+            for name in ["newsletter", "built newsletter", "remote", "many pictures", "calendar notice", "receipt"] {
                 let m = corpus_message(name);
                 assert!(m.attachments.is_empty(), "{name}");
                 let laid = lay_out(ctx, &m, 820.0);
@@ -388,9 +401,15 @@ fn remote_pictures_are_stand_ins_and_nothing_is_looked_at_for_them() {
             let newsletter = lay_out(ctx, &corpus_message("newsletter"), 820.0);
             assert_eq!((newsletter.stats.placeholders, newsletter.stats.remote), (8, 8));
             assert!(stand_ins(&newsletter).contains(&("Two walkers on a ridge at first light", true)));
-            // Seven pictures survive the parser; one of them is `cid:` with nothing attached.
+            // The one a column builder wrote: all nine of its pictures have their stand-in, and
+            // its text is there around them.
+            let built = lay_out(ctx, &corpus_message("built newsletter"), 820.0);
+            assert_eq!((built.stats.placeholders, built.stats.remote), (9, 9));
+            assert!(stand_ins(&built).contains(&("A table by a window at dusk, three candles lit", true)));
+            assert!(built.stats.texts >= 8, "{:?}", built.stats);
+            // Eight pictures survive the parser; one of them is `cid:` with nothing attached.
             let remote = lay_out(ctx, &corpus_message("remote"), 820.0);
-            assert_eq!((remote.stats.placeholders, remote.stats.remote), (7, 6));
+            assert_eq!((remote.stats.placeholders, remote.stats.remote), (8, 7));
             assert!(stand_ins(&remote).contains(&("missing part", false)));
             // No picture was kept, because no bytes were ever looked at: there were none to look at.
             assert_eq!(Pictures::of(ctx).lock().unwrap().counts(), (0, 0));
@@ -668,6 +687,19 @@ fn html_that_shows_nothing_falls_back_to_the_text() {
     );
     let doc = Doc::of(&hollow);
     assert_eq!((text(&doc).as_str(), doc.remote_pictures), ("The text part.", 0));
+    // Unless the picture can be had for the asking: then the message is its pictures (a
+    // newsletter that is all slices of one picture), shown as stand-ins with the offer above.
+    let doc = Doc::of_where(&hollow, true);
+    assert_eq!((text(&doc).as_str(), doc.remote_pictures, doc.remote.len()), ("", 1, 1));
+    // Not for the sake of a pixel, of what is hidden, or of what is no address on the web.
+    for html in [
+        "<img src=\"https://example.org/o.gif\" width=1 height=1>",
+        "<div style=\"display:none\"><img src=\"https://example.org/a.png\"></div>",
+        "<img src=\"cid:never-attached\"><img src=\"/a.png\"><script>alert(1)</script>",
+    ] {
+        let hollow = message(0, ("A", "a@example.org"), "x", Some(html.into()), "The text part.".into());
+        assert_eq!(text(&Doc::of_where(&hollow, true)), "The text part.", "{html}");
+    }
     // A picture of the message's own is worth showing.
     let mut own = message(0, ("A", "a@example.org"), "x", Some("<img src=\"cid:a@x\">".into()), "The text part.".into());
     own.attachments = vec![Attachment { content_id: "a@x".into(), inline: true, ..Attachment::new("a.png", "image/png", png(8, 8)) }];
@@ -1107,7 +1139,7 @@ fn pictures_on_the_web_are_placeholders_until_the_owner_asks() {
         // Opened, read, scrolled: nothing was asked for. Eight stand-ins, and a line that says why.
         assert!(host.asked().is_empty());
         assert_eq!(shown(&harness, id), (0, 8, 8));
-        assert!(says(&harness, "aren't downloaded, to protect your privacy"));
+        assert!(says(&harness, "Pictures not downloaded."));
         assert!(says(&harness, "Always download pictures from hello@news.fernhollow.example"));
         let download = harness.state().hit.rect("downloadPictures", id).expect("no way to ask for the pictures");
         assert!(harness.state().hit.rect("alwaysDownloadPictures", id).is_some());
@@ -1117,7 +1149,7 @@ fn pictures_on_the_web_are_placeholders_until_the_owner_asks() {
         harness.run_steps(14);
         assert_eq!(host.asked(), NEWSLETTER_PICTURES);
         assert_eq!(shown(&harness, id), (8, 0, 0));
-        assert!(!says(&harness, "aren't downloaded") && !says(&harness, "couldn't be downloaded"));
+        assert!(!says(&harness, "Pictures not downloaded") && !says(&harness, "couldn't be downloaded"));
         assert!(harness.state().hit.rect("downloadPictures", id).is_none());
         // At the sizes the message gives them, or in that shape where the pane is narrower.
         let sizes =
@@ -1133,7 +1165,7 @@ fn pictures_on_the_web_are_placeholders_until_the_owner_asks() {
         // It was asked for this message: the next one with pictures is not downloaded with it,
         // and coming back asks for nothing again.
         select(&mut harness, id_of(&ids, "remote"));
-        assert_eq!(shown(&harness, id_of(&ids, "remote")), (0, 7, 6));
+        assert_eq!(shown(&harness, id_of(&ids, "remote")), (0, 8, 7));
         select(&mut harness, id);
         harness.run_steps(10);
         assert_eq!(shown(&harness, id), (8, 0, 0));
@@ -1234,7 +1266,7 @@ fn a_remembered_sender_and_the_switch_for_all_mail() {
     let before = host.asked().len();
     select(&mut harness, second);
     assert_eq!((shown(&harness, second), host.asked().len()), ((0, 2, 2), before));
-    assert!(says(&harness, "aren't downloaded"));
+    assert!(says(&harness, "Pictures not downloaded"));
 
     // The switch for all mail, off until the owner turns it on: then everybody's, but not Junk's.
     assert!(!harness.state().ui.download_pictures);
@@ -1271,6 +1303,8 @@ fn only_what_is_shown_as_a_picture_is_asked_for() {
         [
             "https://evil.example/plain.gif",
             "http://evil.example/insecure.gif",
+            // The one written without its scheme, read as `https`.
+            "https://evil.example/schemeless.gif",
             "https://evil.example/lazy.gif",
             "https://evil.example/picture-fallback.jpg",
             "https://evil.example/noscript.gif",
@@ -1282,13 +1316,16 @@ fn only_what_is_shown_as_a_picture_is_asked_for() {
     select(&mut harness, id_of(&ids, "newsletter"));
     harness.run_steps(10);
     let asked = host.asked();
-    assert_eq!(asked.get(6..), Some(&NEWSLETTER_PICTURES.map(String::from)[..]));
+    assert_eq!(asked.get(7..), Some(&NEWSLETTER_PICTURES.map(String::from)[..]));
     assert!(!asked.iter().any(|url| url.contains("/o/v1/") || url.contains("pixel.") || url.contains("fonts.") || url.contains("bg/leaves")));
     // Every other message of the corpus: nothing but `http` and `https` is ever handed to the host.
     for (_, id) in &ids {
         select(&mut harness, *id);
     }
-    assert!(host.asked().iter().all(|url| url.starts_with("https://") || url.starts_with("http://")), "{:?}", host.asked());
+    // (The scheme as the message wrote it: one of them shouts.)
+    let on_the_web = |url: &String| ["https://", "http://"].iter().any(|scheme| url.to_ascii_lowercase().starts_with(scheme));
+    assert!(host.asked().iter().all(on_the_web), "{:?}", host.asked());
+    assert!(host.asked().iter().any(|url| url.starts_with("HTTPS://img.tallowwick.example/")), "{:?}", host.asked());
 
     // The second look, on blocks the parser would not have let through.
     let picture = |src: &str, width: Option<u16>, height: Option<u16>| {
@@ -1417,6 +1454,375 @@ fn what_the_host_brings_is_checked_and_nothing_is_asked_for_twice() {
     assert_eq!(host.asked().len(), 6);
 }
 
+/// A stand-in for what the host keeps of pictures on disk: it notes what it is told to forget.
+#[derive(Clone, Default)]
+struct KeptStub {
+    usage: Arc<Mutex<(usize, u64)>>,
+    forgotten: Arc<Mutex<Vec<String>>>,
+    cleared: Arc<Mutex<usize>>,
+}
+
+impl crate::PictureCache for KeptStub {
+    fn usage(&self) -> (usize, u64) {
+        *self.usage.lock().unwrap()
+    }
+
+    fn forget(&self, url: &str) {
+        self.forgotten.lock().unwrap().push(url.to_string());
+    }
+
+    fn clear(&self) -> Result<(), String> {
+        *self.cleared.lock().unwrap() += 1;
+        *self.usage.lock().unwrap() = (0, 0);
+        Ok(())
+    }
+}
+
+/// Where the stand-in for the picture whose address ends in `end` is on screen.
+fn stand_in_at(harness: &Window, id: u64, end: &str) -> egui::Pos2 {
+    super::view::kept(&harness.ctx, id, |laid, origin| {
+        laid.items.iter().find_map(|item| match &item.kind {
+            ItemKind::Placeholder(stand_in) if stand_in.src.ends_with(end) => Some(item.rect.translate(origin.to_vec2()).center()),
+            _ => None,
+        })
+    })
+    .flatten()
+    .unwrap_or_else(|| panic!("no stand-in for {end}"))
+}
+
+fn point_at(harness: &mut Window, pos: egui::Pos2) {
+    harness.event(egui::Event::PointerMoved(pos));
+    harness.run_steps(4);
+}
+
+#[test]
+fn a_picture_that_fails_says_why_and_can_be_tried_again() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let pictures = web_pictures("flaky.example", 5);
+    let (mut app, ids) = app_with(vec![web_message(0, "a@flaky.example", "Flaky", &pictures)]);
+    let round = Arc::new(AtomicUsize::new(0));
+    let turn = round.clone();
+    let host = Host::answering(&mut app, move |url| {
+        let first = turn.load(Ordering::Relaxed) == 0;
+        match url.rsplit('/').next().unwrap_or("") {
+            "0.png" => Ok(png(40, 30)),
+            "1.png" if first => Err("it is no longer there (404)".into()),
+            "1.png" => Ok(png(40, 30)),
+            "2.png" if first => Err("the server took too long".into()),
+            // The words are the host's, and through it a server's: whatever is in them.
+            "2.png" => Err("couldn't reach flaky.example:\r\n the server refused\u{7} the connection.".into()),
+            "3.png" => Ok(b"<!DOCTYPE html><html><body>Sign in to see this picture</body></html>".to_vec()),
+            // A kind of picture nobody asked for by name, shown all the same.
+            _ => Ok(webp(40, 30)),
+        }
+    });
+    let kept = KeptStub::default();
+    app.services.picture_cache = Some(Box::new(kept.clone()));
+    let id = ids[0];
+    let mut harness = window(app, (1280.0, 900.0));
+    select(&mut harness, id);
+    harness.state_mut().execute("ui.downloadPictures", json!({})).unwrap();
+    harness.run_steps(12);
+    // Two came (one of them WebP); three have a stand-in where they would be, and the bar says so.
+    assert_eq!((host.asked(), shown(&harness, id)), (pictures.clone(), (2, 3, 3)));
+    assert!(says(&harness, "3 pictures couldn't be downloaded.") && says(&harness, "Point at one to see why."));
+    assert!(!says(&harness, "Download pictures") && !says(&harness, "Downloading"));
+    // Each says why when it is pointed at, and where it would have come from.
+    for (n, why) in [(1, "it is no longer there (404)"), (2, "the server took too long"), (3, "the server sent a web page instead of a picture")] {
+        let at = stand_in_at(&harness, id, &format!("/{n}.png"));
+        point_at(&mut harness, at);
+        assert!(says(&harness, &format!("This picture couldn't be downloaded: {why}.")), "{n}: {why}");
+        assert!(says(&harness, &format!("https://flaky.example/p/{n}.png")), "{n}");
+    }
+    point_at(&mut harness, egui::pos2(4.0, 4.0));
+    // What turned out to be no picture is not kept on by the host either.
+    assert_eq!(*kept.forgotten.lock().unwrap(), pictures[1..4]);
+
+    // "Try again": the three that failed are asked for once more, and only those.
+    kept.forgotten.lock().unwrap().clear();
+    round.store(1, Ordering::Relaxed);
+    let again = harness.state().hit.rect("retryPictures", id).expect("no way to try again");
+    click_at(&mut harness, again.center());
+    harness.run_steps(12);
+    assert_eq!(host.asked().get(5..), Some(&pictures[1..4]));
+    assert_eq!(shown(&harness, id), (3, 2, 2));
+    assert!(says(&harness, "2 pictures couldn't be downloaded."));
+    // The host was told to forget what it might have kept for them before it was asked again.
+    assert_eq!(kept.forgotten.lock().unwrap().get(..3), Some(&pictures[1..4]));
+    // The reason is the new one, made one line of.
+    let at = stand_in_at(&harness, id, "/2.png");
+    point_at(&mut harness, at);
+    assert!(says(&harness, "This picture couldn't be downloaded: couldn't reach flaky.example: the server refused the connection."));
+    point_at(&mut harness, egui::pos2(4.0, 4.0));
+    // Nothing is tried again by itself, however long the message is read.
+    harness.run_steps(60);
+    assert_eq!(host.asked().len(), 8);
+    // By its command, as often as the owner likes; a message with nothing failed asks nothing.
+    harness.state_mut().execute("ui.retryPictures", json!({"message": id})).unwrap();
+    harness.run_steps(12);
+    assert_eq!(host.asked().len(), 10);
+    round.store(0, Ordering::Relaxed);
+    let (mut app, ids) = app_with(vec![web_message(0, "a@fine.example", "Fine", &web_pictures("fine.example", 3))]);
+    let host = Host::answering(&mut app, |_| Ok(png(40, 30)));
+    app.execute("ui.downloadPicturesAutomatically", json!({"value": true})).unwrap();
+    let mut harness = window(app, (1280.0, 900.0));
+    select(&mut harness, ids[0]);
+    harness.run_steps(8);
+    assert!(harness.state().hit.rect("retryPictures", ids[0]).is_none() && !says(&harness, "Try again"));
+    harness.state_mut().execute("ui.retryPictures", json!({})).unwrap();
+    harness.run_steps(12);
+    assert_eq!((host.asked().len(), shown(&harness, ids[0])), (3, (3, 0, 0)));
+}
+
+#[test]
+fn everybody_at_a_domain_can_be_trusted_with_pictures() {
+    let (mut app, ids) = app_with(vec![
+        web_message(0, "news@shop.example", "From the shop", &web_pictures("a.shop.example", 2)),
+        web_message(1, "Orders@SHOP.Example", "From its orders desk", &web_pictures("b.shop.example", 2)),
+        web_message(2, "news@mail.shop.example", "From a domain under it", &web_pictures("c.shop.example", 2)),
+        web_message(3, "news@notshop.example", "From a look-alike", &web_pictures("d.shop.example", 2)),
+        web_message(4, "billing@shop.example", "In the junk", &web_pictures("e.shop.example", 2)),
+        web_message(5, "shop.example@elsewhere.example", "With the domain for a name", &web_pictures("f.shop.example", 2)),
+    ]);
+    let (first, second, under, alike, junk, named) = (ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]);
+    app.execute("mail.junk", json!({"ids": [junk]})).unwrap();
+    let host = Host::answering(&mut app, |_| Ok(png(40, 30)));
+    let mut harness = window(app, (1280.0, 800.0));
+    let from = |host: &Host, part: &str| host.asked().iter().filter(|url| url.contains(part)).count();
+
+    // Beside the sender, the bar offers everybody at the sender's domain.
+    select(&mut harness, first);
+    assert!(says(&harness, "Always download pictures from news@shop.example") && says(&harness, "Always from @shop.example"));
+    let everybody = harness.state().hit.rect("alwaysDownloadPicturesDomain", first).expect("no way to trust the domain");
+    click_at(&mut harness, everybody.center());
+    harness.run_steps(8);
+    assert_eq!(harness.state().ui.picture_domains, ["shop.example"]);
+    assert!(harness.state().ui.picture_senders.is_empty());
+    assert_eq!((from(&host, "a.shop"), shown(&harness, first)), (2, (2, 0, 0)));
+    // Somebody else at that domain, however the address is written: without asking.
+    select(&mut harness, second);
+    harness.run_steps(6);
+    assert_eq!((from(&host, "b.shop"), shown(&harness, second)), (2, (2, 0, 0)));
+    // That domain, not the ones under it, not one that ends alike, not a name that reads like it.
+    for (id, part) in [(under, "c.shop"), (alike, "d.shop"), (named, "f.shop")] {
+        select(&mut harness, id);
+        harness.run_steps(6);
+        assert_eq!((from(&host, part), shown(&harness, id)), (0, (0, 2, 2)), "{part}");
+    }
+    // And nothing that landed in Junk E-mail, where the domain isn't offered either.
+    select(&mut harness, junk);
+    harness.run_steps(6);
+    assert_eq!((from(&host, "e.shop"), shown(&harness, junk)), (0, (0, 2, 2)));
+    assert!(harness.state().hit.rect("alwaysDownloadPicturesDomain", junk).is_none() && harness.state().hit.rect("downloadPictures", junk).is_some());
+
+    // It is kept with the settings, and comes back with them.
+    let saved = serde_json::to_value(harness.state().prefs()).unwrap();
+    assert_eq!(saved["pictureDomains"], json!(["shop.example"]));
+    let restored: crate::UiState = serde_json::from_value(saved).unwrap();
+    assert_eq!(restored.picture_domains, ["shop.example"]);
+    let old: crate::UiState = serde_json::from_value(json!({"tab": "Home", "pictureSenders": ["a@b.example"]})).unwrap();
+    assert!(old.picture_domains.is_empty());
+
+    // File › Options lists it, and takes it off again: its senders' pictures wait to be asked for.
+    harness.state_mut().execute("ui.backstage", json!({"value": true, "page": "options"})).unwrap();
+    harness.run_steps(3);
+    assert!(says(&harness, "everybody at @shop.example") && says(&harness, "Pictures are always downloaded from:"));
+    let removed = harness.state_mut().execute("ui.alwaysDownloadPictures", json!({"domain": " @Shop.Example. ", "value": false})).unwrap();
+    assert_eq!((&removed["domain"], &removed["value"], &removed["domains"]), (&json!("shop.example"), &json!(false), &json!(0)));
+    harness.run_steps(3);
+    assert!(!says(&harness, "everybody at @shop.example") && says(&harness, "No senders are remembered."));
+    harness.state_mut().execute("ui.backstage", json!({"value": false})).unwrap();
+    let before = host.asked().len();
+    select(&mut harness, second);
+    harness.run_steps(6);
+    assert_eq!((shown(&harness, second), host.asked().len()), ((0, 2, 2), before));
+
+    // The command: a domain as it is written after an @, kept once, in lower case.
+    let app = harness.state_mut();
+    for written in ["Shop.Example", "@shop.example", "someone@SHOP.example", " shop.example. "] {
+        assert_eq!(app.execute("ui.alwaysDownloadPictures", json!({"domain": written})).unwrap()["domains"], 1, "{written}");
+    }
+    assert_eq!(app.ui.picture_domains, ["shop.example"]);
+    for bad in [
+        json!(""),
+        json!("@"),
+        json!("not a domain"),
+        json!("shop..example"),
+        json!(".example"),
+        json!("-shop.example"),
+        json!("a@b@"),
+        json!("shop.example/x"),
+        json!("x\r\ny.example"),
+        json!(7),
+        json!(["shop.example"]),
+        json!({"name": "shop.example"}),
+        json!("a".repeat(300)),
+    ] {
+        assert!(app.execute("ui.alwaysDownloadPictures", json!({"domain": bad})).is_err(), "{bad}");
+    }
+    assert_eq!(app.ui.picture_domains, ["shop.example"]);
+    // Only so many of them, and a settings file somebody wrote by hand does no harm.
+    for n in 0..super::remote::MAX_DOMAINS + 20 {
+        let _ = app.execute("ui.alwaysDownloadPictures", json!({"domain": format!("d{n}.example")}));
+    }
+    assert_eq!(app.ui.picture_domains.len(), super::remote::MAX_DOMAINS);
+    assert!(app.execute("ui.alwaysDownloadPictures", json!({"domain": "one-more.example"})).unwrap_err().contains("full"));
+    let mut hostile = app.prefs();
+    hostile.picture_domains = (0..40_000).map(|n| if n % 2 == 0 { format!("X{n}.Example") } else { "\u{0}@\n ".repeat(n % 5) }).collect();
+    app.apply_prefs(hostile);
+    assert!(super::remote::domain_remembered(&app.ui, "anyone@x0.example"));
+    assert!(!super::remote::domain_remembered(&app.ui, "anyone@x39998.example"), "past what is looked at");
+    assert!(!super::remote::domain_remembered(&app.ui, "") && !super::remote::domain_remembered(&app.ui, "x0.example"));
+    harness.state_mut().execute("ui.backstage", json!({"value": true, "page": "options"})).unwrap();
+    harness.run_steps(3);
+}
+
+#[test]
+fn a_message_that_is_all_pictures_offers_them_instead_of_its_text_part() {
+    // A sale that is two slices of one picture, each in a cell with no font size, the second
+    // with an address that leaves its scheme out; a line of text beside it for programs that
+    // show no HTML; and a pixel that counts openings.
+    let html = "<table cellpadding=0 cellspacing=0><tr><td style=\"font-size:0;line-height:0\"><a href=\"https://shop.example/sale\">\
+                <img src=\"https://img.shop.example/sale/slice-1.png\" width=\"300\" height=\"100\" alt=\"Everything a third off\"></a></td></tr>\
+                <tr><td style=\"font-size:0px\"><img src=\"//img.shop.example/sale/slice-2.png\" width=\"300\" height=\"80\"></td></tr></table>\
+                <img src=\"https://t.shop.example/o.gif?u=1\" width=1 height=1>";
+    let sale = || message(0, ("The Shop", "news@shop.example"), "Sale", Some(html.into()), "Everything a third off. See it in your browser.".into());
+    let texts = |harness: &Window, id: u64| super::view::kept(&harness.ctx, id, |laid, _| laid.stats.texts).unwrap();
+    // Where pictures can't be downloaded, the text part says more than stand-ins would.
+    let (app, ids) = app_with(vec![sale()]);
+    let mut harness = window(app, (1280.0, 800.0));
+    select(&mut harness, ids[0]);
+    assert_eq!((shown(&harness, ids[0]), texts(&harness, ids[0])), ((0, 0, 0), 1));
+    assert!(!says(&harness, "Pictures not"));
+    // Where they can: the message as it is, stand-ins first, and the offer above it.
+    let (mut app, ids) = app_with(vec![sale()]);
+    let host = Host::answering(&mut app, |url| Ok(png(300, if url.contains("slice-1") { 100 } else { 80 })));
+    let id = ids[0];
+    let mut harness = window(app, (1280.0, 800.0));
+    select(&mut harness, id);
+    assert_eq!((shown(&harness, id), texts(&harness, id)), ((0, 2, 2), 0));
+    assert!(says(&harness, "Pictures not downloaded.") && host.asked().is_empty());
+    let download = harness.state().hit.rect("downloadPictures", id).expect("no way to ask for the pictures");
+    click_at(&mut harness, download.center());
+    harness.run_steps(12);
+    // Its two pictures, and not its pixel.
+    assert_eq!(host.asked(), ["https://img.shop.example/sale/slice-1.png", "https://img.shop.example/sale/slice-2.png"]);
+    assert_eq!(shown(&harness, id), (2, 0, 0));
+    let rects = super::view::kept(&harness.ctx, id, |laid, _| shown_pictures(laid).iter().map(|i| i.rect).collect::<Vec<_>>()).unwrap();
+    assert_eq!(rects.iter().map(|r| (r.width(), r.height())).collect::<Vec<_>>(), [(300.0, 100.0), (300.0, 80.0)]);
+    // Slices of one picture: the second stands right on the first, edge to edge, no stripe between.
+    assert_eq!((rects[1].min.y, rects[1].min.x), (rects[0].max.y, rects[0].min.x));
+}
+
+#[test]
+fn a_newsletter_from_a_column_builder_shows_its_pictures_when_asked() {
+    for theme in ["light", "dark"] {
+        let (mut app, ids) = corpus_app(false);
+        app.execute("ui.theme", json!({"value": theme})).unwrap();
+        let host = Host::answering(&mut app, |url| {
+            let (w, h) = match url {
+                u if u.contains("wordmark") => (360, 80),
+                u if u.contains("hero") => (1200, 500),
+                u if u.contains("/products/") => (524, 524),
+                u if u.contains("slice-1") => (600, 96),
+                u if u.contains("slice-2") => (600, 120),
+                u if u.contains("signature") => (264, 96),
+                _ => (56, 56),
+            };
+            Ok(if url.contains(".jpg") { jpeg(w, h) } else { png(w, h) })
+        });
+        let id = id_of(&ids, "built newsletter");
+        let mut harness = window(app, (1280.0, 1000.0));
+        select(&mut harness, id);
+        // Everything in it is in cells with a font size of nothing: it is all there all the same,
+        // nine stand-ins among its text, and the bar that offers the pictures.
+        assert_eq!(shown(&harness, id), (0, 9, 9));
+        assert!(super::view::kept(&harness.ctx, id, |laid, _| laid.stats.texts).unwrap() >= 8);
+        assert!(says(&harness, "Pictures not downloaded.") && says(&harness, "Always from @letters.tallowwick.example"));
+        assert!(host.asked().is_empty());
+        harness.state_mut().execute("ui.downloadPictures", json!({"message": id})).unwrap();
+        harness.run_steps(20);
+        // Asked for as the message wrote them (whoever downloads writes them the way the wire
+        // has them): the one without its scheme as `https`, the one in capitals as it shouts,
+        // the one with spaces with its spaces, the broken line mended.
+        assert_eq!(
+            host.asked(),
+            [
+                "https://img.tallowwick.example/brand/wordmark-ink.png",
+                "HTTPS://img.tallowwick.example/2026/11/hero-dusk-table.jpg?w=1200&q=72&sig=9c1e_f0a7",
+                "https://img.tallowwick.example/2026/11/products/amber glow jar.jpg",
+                "https://img.tallowwick.example/2026/11/products/winter-tapers-six.jpg",
+                "https://img.tallowwick.example/2026/11/open-day/slice-1.png",
+                "https://img.tallowwick.example/2026/11/open-day/slice-2.png",
+                "https://img.tallowwick.example/people/signature-maud@2x.png",
+                "https://img.tallowwick.example/icons/round-photos.png",
+                "https://img.tallowwick.example/icons/round-letters.png",
+            ]
+        );
+        assert_eq!(shown(&harness, id), (9, 0, 0));
+        assert!(!says(&harness, "Pictures not downloaded") && !says(&harness, "couldn't be downloaded"));
+        // At the sizes the message gives them: from its style where the attributes give none,
+        // and in the picture's own shape where it gives a width alone.
+        let sizes = super::view::kept(&harness.ctx, id, |laid, _| {
+            shown_pictures(laid).iter().map(|i| (i.rect.width().round(), i.rect.height().round())).collect::<Vec<_>>()
+        });
+        let sizes = sizes.unwrap();
+        assert_eq!((sizes[0], sizes[6], sizes[7], sizes[8]), ((180.0, 40.0), (132.0, 48.0), (28.0, 28.0), (28.0, 28.0)));
+        assert!(sizes[1].0 > 300.0 && sizes[1].0 <= 600.0 && (sizes[1].0 / sizes[1].1 - 2.4).abs() < 0.02, "{:?}", sizes[1]);
+        assert!(sizes[2].0 == sizes[2].1 && sizes[2] == sizes[3] && sizes[2].0 <= 262.0, "{:?}", sizes[2]);
+    }
+}
+
+#[test]
+fn what_is_kept_of_pictures_is_said_and_cleared_in_the_options() {
+    let pictures = web_pictures("kept.example", 2);
+    let (mut app, ids) = app_with(vec![web_message(0, "a@kept.example", "Kept", &pictures)]);
+    let host = Host::answering(&mut app, |_| Ok(png(40, 30)));
+    let kept = KeptStub::default();
+    *kept.usage.lock().unwrap() = (12, 3_400_000);
+    app.services.picture_cache = Some(Box::new(kept.clone()));
+    app.execute("ui.downloadPicturesAutomatically", json!({"value": true})).unwrap();
+    let id = ids[0];
+    let mut harness = window(app, (1280.0, 900.0));
+    select(&mut harness, id);
+    harness.run_steps(10);
+    assert_eq!((host.asked().len(), shown(&harness, id)), (2, (2, 0, 0)));
+    // File › Options says how much the host keeps, and has the way to be rid of it.
+    harness.state_mut().execute("ui.backstage", json!({"value": true, "page": "options"})).unwrap();
+    harness.run_steps(3);
+    assert!(says(&harness, "12 downloaded pictures are kept on this computer (3.2 MB)."));
+    harness.get_by_label("Clear").click();
+    harness.run_steps(4);
+    assert_eq!(*kept.cleared.lock().unwrap(), 1);
+    assert!(says(&harness, "No downloaded pictures are kept on this computer."));
+    // What was in memory went with it: the message's pictures are asked for anew.
+    harness.state_mut().execute("ui.backstage", json!({"value": false})).unwrap();
+    harness.run_steps(12);
+    assert_eq!((host.asked().len(), shown(&harness, id)), (4, (2, 0, 0)));
+    // One kept, in the singular and in kilobytes; and the command says how many went.
+    *kept.usage.lock().unwrap() = (1, 2_100);
+    harness.state_mut().execute("ui.backstage", json!({"value": true, "page": "options"})).unwrap();
+    harness.run_steps(3);
+    assert!(says(&harness, "One downloaded picture is kept on this computer (3 KB)."));
+    assert_eq!(harness.state_mut().execute("ui.clearPictureCache", json!({})).unwrap()["cleared"], 1);
+    assert_eq!(*kept.cleared.lock().unwrap(), 2);
+
+    // A host that keeps nothing: no such row, and the command still empties the memory.
+    let (mut app, ids) = app_with(vec![web_message(0, "a@kept.example", "Kept", &pictures)]);
+    let host = Host::answering(&mut app, |_| Ok(png(40, 30)));
+    app.execute("ui.downloadPicturesAutomatically", json!({"value": true})).unwrap();
+    let mut harness = window(app, (1280.0, 900.0));
+    select(&mut harness, ids[0]);
+    harness.run_steps(10);
+    harness.state_mut().execute("ui.backstage", json!({"value": true, "page": "options"})).unwrap();
+    harness.run_steps(3);
+    assert!(!says(&harness, "kept on this computer"));
+    assert_eq!(harness.state_mut().execute("ui.clearPictureCache", json!({"junk": [1, 2]})).unwrap()["cleared"], 0);
+    harness.state_mut().execute("ui.backstage", json!({"value": false})).unwrap();
+    harness.run_steps(12);
+    assert_eq!(host.asked().len(), 4);
+}
+
 #[test]
 fn a_message_gets_only_so_many_pictures_and_so_many_bytes() {
     use super::remote::{MAX_MESSAGE_BYTES, MAX_PER_MESSAGE};
@@ -1456,7 +1862,7 @@ fn what_is_kept_of_pictures_from_the_web_is_bounded() {
     let mut pictures = Pictures::default();
     let megabyte = Arc::new(vec![0u8; 1024 * 1024]);
     for n in 0..(REMOTE_PICTURES as u64 + 200) {
-        let state = if n % 3 == 0 { Remote::Failed } else { Remote::Ready(megabyte.clone()) };
+        let state = if n % 3 == 0 { Remote::Failed(Arc::from("it took too long")) } else { Remote::Ready(megabyte.clone()) };
         pictures.set_remote(Arc::from(format!("https://p.example/{n}")), state, n);
         let (count, bytes) = pictures.remote_counts();
         assert!(count <= REMOTE_PICTURES && bytes <= REMOTE_BYTES, "{count} pictures, {bytes} bytes");
@@ -1467,10 +1873,10 @@ fn what_is_kept_of_pictures_from_the_web_is_bounded() {
     // What is on screen in this very frame is never dropped, though that passes the bounds for a moment.
     let mut pictures = Pictures::default();
     for n in 0..REMOTE_PICTURES + 5 {
-        pictures.set_remote(Arc::from(format!("https://q.example/{n}")), Remote::Failed, 7);
+        pictures.set_remote(Arc::from(format!("https://q.example/{n}")), Remote::Failed(Arc::from("it took too long")), 7);
     }
     assert_eq!(pictures.remote_counts().0, REMOTE_PICTURES + 5);
-    pictures.set_remote(Arc::from("https://q.example/next"), Remote::Failed, 8);
+    pictures.set_remote(Arc::from("https://q.example/next"), Remote::Failed(Arc::from("it took too long")), 8);
     assert_eq!(pictures.remote_counts().0, REMOTE_PICTURES);
 }
 
@@ -1519,7 +1925,7 @@ fn a_build_that_cannot_download_says_so_and_offers_nothing() {
     let mut harness = window(app, (1280.0, 900.0));
     select(&mut harness, id);
     assert!(says(&harness, "This build can't download them"));
-    assert!(!says(&harness, "Always download pictures") && !says(&harness, "aren't downloaded, to protect"));
+    assert!(!says(&harness, "Always download pictures") && !says(&harness, "Pictures not downloaded"));
     assert!(harness.state().hit.rect("downloadPictures", id).is_none() && harness.state().hit.rect("alwaysDownloadPictures", id).is_none());
     // The command says why not; the settings can still be set, and change nothing here.
     assert!(harness.state_mut().execute("ui.downloadPictures", json!({"message": id})).unwrap_err().contains("can't download"));
@@ -1563,16 +1969,35 @@ fn the_picture_commands_take_anything_and_never_panic() {
         json!({"sender": "a@b\r\nX-Injected: 1"}),
         json!({"sender": format!("{}@example.org", "a".repeat(5_000))}),
         json!({"sender": "ok@example.org", "value": "yes"}),
+        json!({"domain": null}),
+        json!({"domain": 5}),
+        json!({"domain": ""}),
+        json!({"domain": "a b"}),
+        json!({"domain": "x.example\r\nX-Injected: 1"}),
+        json!({"domain": format!("{}.example", "a".repeat(5_000))}),
+        json!({"domain": {"name": "x.example"}, "sender": "ok@example.org"}),
+        json!({"domain": "ok.example", "value": "yes"}),
         json!({"value": []}),
         json!({"all": "yes"}),
     ];
-    for command in ["ui.downloadPictures", "ui.alwaysDownloadPictures", "ui.downloadPicturesAutomatically", "ui.openWindow", "ui.closeWindow"] {
+    for command in [
+        "ui.downloadPictures",
+        "ui.alwaysDownloadPictures",
+        "ui.downloadPicturesAutomatically",
+        "ui.retryPictures",
+        "ui.clearPictureCache",
+        "ui.openWindow",
+        "ui.closeWindow",
+    ] {
         for params in &junk {
             let _ = app.execute(command, params.clone());
             let _ = app.run(command, params.clone());
         }
     }
     assert!(app.ui.picture_senders.iter().all(|s| s == "ok@example.org"), "{:?}", app.ui.picture_senders);
+    assert!(app.ui.picture_domains.iter().all(|d| d == "ok.example"), "{:?}", app.ui.picture_domains);
+    app.execute("mail.select", json!({"ids": []})).unwrap();
+    assert!(app.execute("ui.retryPictures", json!({})).is_err(), "nothing is selected");
     // A sender is an address, kept once, in lower case, and only so many of them.
     app.ui.picture_senders.clear();
     for written in ["Ada@Example.org", " ada@example.ORG ", "ada@example.org"] {
@@ -1615,8 +2040,23 @@ fn shots_of_pictures_from_the_web_and_of_a_message_window() {
     for theme in ["light", "dark"] {
         let (mut app, ids) = corpus_app(false);
         app.execute("ui.theme", json!({"value": theme})).unwrap();
-        let _host = Host::answering(&mut app, newsletter_picture);
+        // The newsletter's pictures all come; of the built one's, two don't, and say why.
+        let _host = Host::answering(&mut app, |url| match url {
+            u if u.contains("fernhollow") => newsletter_picture(u),
+            u if u.contains("amber") => Err("it is no longer there (404)".into()),
+            u if u.contains("slice-2") => Err("the server took too long".into()),
+            u if u.contains("hero") => Ok(jpeg(1200, 500)),
+            u if u.contains("wordmark") => Ok(png(360, 80)),
+            u if u.contains("/products/") => Ok(jpeg(524, 524)),
+            u if u.contains("slice-1") => Ok(png(600, 96)),
+            u if u.contains("signature") => Ok(webp(264, 96)),
+            _ => Ok(png(56, 56)),
+        });
+        let kept = KeptStub::default();
+        *kept.usage.lock().unwrap() = (37, 9_800_000);
+        app.services.picture_cache = Some(Box::new(kept));
         let news = id_of(&ids, "newsletter");
+        let built = id_of(&ids, "built newsletter");
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(1440.0, 900.0))
             .with_pixels_per_point(2.0)
@@ -1647,7 +2087,25 @@ fn shots_of_pictures_from_the_web_and_of_a_message_window() {
         harness.state_mut().execute("ui.openWindow", json!({"message": id_of(&ids, "outlook reply")})).unwrap();
         shot(&mut harness, "window-2-two-messages");
         harness.state_mut().execute("ui.closeWindow", json!({"all": true})).unwrap();
+        select(&mut harness, built);
+        shot(&mut harness, "pictures-3-built-not-asked-for");
+        harness.state_mut().execute("ui.downloadPictures", json!({"message": built})).unwrap();
+        shot(&mut harness, "pictures-4-built-two-failed");
+        // Further down, where the two that failed would be: one of them pointed at.
+        harness.event(egui::Event::PointerMoved(egui::pos2(1000.0, 600.0)));
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -560.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.run_steps(20);
+        let at = stand_in_at(&harness, built, "amber glow jar.jpg");
+        point_at(&mut harness, at);
+        shot(&mut harness, "pictures-5-built-why");
+        point_at(&mut harness, egui::pos2(4.0, 4.0));
         harness.state_mut().execute("ui.alwaysDownloadPictures", json!({"message": news})).unwrap();
+        harness.state_mut().execute("ui.alwaysDownloadPictures", json!({"domain": "letters.tallowwick.example"})).unwrap();
         harness.state_mut().execute("ui.backstage", json!({"value": true, "page": "options"})).unwrap();
         shot(&mut harness, "options-pictures");
     }
@@ -2566,9 +3024,14 @@ fn every_message_of_the_corpus_is_selected_and_copied_as_it_is_laid_out() {
             // when there is more.
             harness.key_press(egui::Key::Escape);
             harness.run_steps(2);
-            harness.event(egui::Event::PointerMoved(origin + egui::vec2(-12.0, 2.0)));
+            // (From just beside the first thing in it: text begins at the left edge, a picture
+            // that leads a message may stand in the middle of its line.)
+            let first =
+                super::view::kept(&harness.ctx, *id, |laid, _| laid.segment(0).map(|item| item.rect.min.to_vec2())).flatten().unwrap_or_default();
+            let beside = origin + first + egui::vec2(-12.0, 2.0);
+            harness.event(egui::Event::PointerMoved(beside));
             harness.step();
-            harness.event(button(origin + egui::vec2(-12.0, 2.0), egui::PointerButton::Primary, true, egui::Modifiers::NONE));
+            harness.event(button(beside, egui::PointerButton::Primary, true, egui::Modifiers::NONE));
             harness.step();
             let below = egui::pos2(origin.x + 500.0, 4_000.0);
             harness.event(egui::Event::PointerMoved(below));

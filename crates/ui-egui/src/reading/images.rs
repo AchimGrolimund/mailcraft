@@ -7,7 +7,7 @@
 //! Either way the bytes are hostile, so everything is capped: how large a file is looked at, how
 //! large a picture is decoded, how much memory decoding may take, how large a texture is made,
 //! how many are kept. A picture that is too large, damaged or of a kind that isn't decoded (PNG,
-//! JPEG and GIF are; a GIF shows its first frame) is a placeholder, not an error.
+//! JPEG, GIF and WebP are; one that moves shows its first frame) is a placeholder, not an error.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -41,7 +41,8 @@ pub const CACHE_BYTES: usize = 160 * 1024 * 1024;
 pub const MAX_PICTURES_PER_MESSAGE: usize = 200;
 
 /// Most pictures from the web that are kept, and the most their bytes (as they came) may take.
-/// The least recently shown go first. Nothing of them is ever written to disk.
+/// The least recently shown go first. Nothing of them is written to disk from here (the host
+/// may keep what it downloaded, for the next start: `Services::picture_cache`).
 pub const REMOTE_PICTURES: usize = 300;
 pub const REMOTE_BYTES: usize = 96 * 1024 * 1024;
 
@@ -102,7 +103,8 @@ fn reader(data: &[u8]) -> Option<image::ImageReader<std::io::Cursor<&[u8]>>> {
         return None;
     }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format().ok()?;
-    if !matches!(reader.format()?, image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif) {
+    // By what the bytes are, never by what their name or their server says they are.
+    if !matches!(reader.format()?, image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif | image::ImageFormat::WebP) {
         return None;
     }
     let mut limits = image::Limits::default();
@@ -177,8 +179,10 @@ pub enum Picture {
 pub enum Remote {
     /// Its bytes, as the host brought them.
     Ready(Arc<Vec<u8>>),
-    /// It could not be had, or what came was not a picture. It is not asked for again.
-    Failed,
+    /// It could not be had, or what came was not a picture: why, in words that read on after
+    /// "couldn't be downloaded:" ([`reason`] makes them fit to show). It is not asked for again
+    /// unless the owner says "Try again".
+    Failed(Arc<str>),
 }
 
 struct RemoteEntry {
@@ -191,7 +195,50 @@ impl RemoteEntry {
     fn bytes(&self) -> usize {
         match &self.state {
             Remote::Ready(data) => data.len(),
-            Remote::Failed => 0,
+            Remote::Failed(why) => why.len(),
+        }
+    }
+}
+
+/// Longest reason kept for a picture that failed, in characters.
+const MAX_REASON: usize = 160;
+
+/// A reason for a failure as it is kept and shown: one line, no control characters, not long.
+/// The words may be a server's (the host hands on what it was told), so they are as hostile as
+/// anything else that comes from outside.
+pub fn reason(text: &str) -> Arc<str> {
+    let words: Vec<&str> = text.split(|c: char| c.is_whitespace() || c.is_control()).filter(|w| !w.is_empty()).collect();
+    let line = words.join(" ");
+    let line = line.trim_end_matches(['.', ':', ' ']);
+    if line.is_empty() {
+        return Arc::from(tl!("the download failed"));
+    }
+    if line.chars().count() <= MAX_REASON { Arc::from(line) } else { line.chars().take(MAX_REASON).chain(['…']).collect::<String>().into() }
+}
+
+/// Why bytes that came are not shown as a picture: what they look like instead. For the owner,
+/// who asked for a picture and sees a stand-in.
+pub fn not_a_picture(data: &[u8]) -> &'static str {
+    let starts = |magic: &[u8]| data.starts_with(magic);
+    let text = || {
+        let head = String::from_utf8_lossy(data.get(..data.len().min(600)).unwrap_or(&[])).to_ascii_lowercase();
+        (head.trim_start().starts_with('<') || head.contains("<html"), head.contains("<svg"))
+    };
+    if data.is_empty() {
+        tl!("the server sent nothing")
+    } else if data.len() > MAX_PICTURE_BYTES {
+        tl!("it is too large to show")
+    } else if data.get(4..8) == Some(&b"ftyp"[..]) {
+        tl!("it is a kind of picture that can't be shown here (AVIF or HEIC)")
+    } else if starts(b"\x89PNG") || starts(b"\xff\xd8\xff") || starts(b"GIF8") || (starts(b"RIFF") && data.get(8..12) == Some(&b"WEBP"[..])) {
+        tl!("it is damaged, or larger than can be shown")
+    } else if starts(b"BM") || starts(b"\0\0\x01\0") || starts(b"II*\0") || starts(b"MM\0*") {
+        tl!("it is a kind of picture that can't be shown here")
+    } else {
+        match text() {
+            (_, true) => tl!("it is a drawing of a kind that isn't shown (SVG)"),
+            (true, false) => tl!("the server sent a web page instead of a picture"),
+            _ => tl!("what the server sent is not a picture"),
         }
     }
 }
@@ -242,6 +289,21 @@ impl Pictures {
     /// The same, for the curious: it does not count as being shown.
     pub fn remote_peek(&self, url: &str) -> Option<&Remote> {
         self.remote.get(url).map(|entry| &entry.state)
+    }
+
+    /// Forget what became of the picture at `url` when it failed, so that it is asked for
+    /// again; whether there was such a failure to forget.
+    pub fn forget_failure(&mut self, url: &str) -> bool {
+        let failed = matches!(self.remote.get(url), Some(RemoteEntry { state: Remote::Failed(_), .. }));
+        if failed {
+            self.remote.remove(url);
+        }
+        failed
+    }
+
+    /// Forget every picture from the web that is kept: they are asked for again when wanted.
+    pub fn forget_remote(&mut self) {
+        self.remote.clear();
     }
 
     /// Keep what became of the picture at `url`.
@@ -327,7 +389,7 @@ impl Pictures {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reading::tests::{gif, jpeg, png};
+    use crate::reading::tests::{gif, jpeg, png, webp};
 
     #[test]
     fn pictures_are_found_by_their_content_id() {
@@ -355,12 +417,43 @@ mod tests {
     }
 
     #[test]
-    fn png_jpeg_and_gif_are_decoded() {
-        for (name, bytes) in [("png", png(64, 40)), ("jpeg", jpeg(64, 40)), ("gif", gif(64, 40))] {
+    fn png_jpeg_gif_and_webp_are_decoded() {
+        for (name, bytes) in [("png", png(64, 40)), ("jpeg", jpeg(64, 40)), ("gif", gif(64, 40)), ("webp", webp(64, 40))] {
             assert_eq!(probe(&bytes), Some([64, 40]), "{name}");
             let image = decode(&bytes, 2048, 2048).unwrap_or_else(|| panic!("{name} was not decoded"));
             assert_eq!(image.size, [64, 40], "{name}");
+            // The colours are the picture's own (a point in the drawing's title bar), for the
+            // kinds that keep every pixel as it was.
+            if matches!(name, "png" | "webp") {
+                assert_eq!(image.pixels.get(3 * 64 + 20).map(|c| c.to_array()), Some([0x1f, 0x5f, 0x8b, 0xff]), "{name}");
+            }
         }
+        // A picture is told by what its bytes are, whatever it was called on the way.
+        assert!(webp(8, 8).starts_with(b"RIFF") && webp(8, 8).get(8..12) == Some(&b"WEBP"[..]));
+    }
+
+    #[test]
+    fn what_is_said_of_bytes_that_are_no_picture() {
+        let said = |bytes: &[u8]| not_a_picture(bytes);
+        assert_eq!(said(b""), "the server sent nothing");
+        assert_eq!(said(b"<!DOCTYPE html><html><body>Not found</body></html>"), "the server sent a web page instead of a picture");
+        assert_eq!(said(b"\r\n  <HTML><head>"), "the server sent a web page instead of a picture");
+        assert_eq!(said(b"<?xml version='1.0'?><svg xmlns='http://www.w3.org/2000/svg'/>"), "it is a drawing of a kind that isn't shown (SVG)");
+        assert_eq!(said(b"<svg viewBox='0 0 1 1'></svg>"), "it is a drawing of a kind that isn't shown (SVG)");
+        assert_eq!(said(b"\0\0\0\x1cftypavif\0\0\0\0avifmif1miaf"), "it is a kind of picture that can't be shown here (AVIF or HEIC)");
+        assert_eq!(said(b"BM\x46\0\0\0\0\0\0\0\x36\0\0\0"), "it is a kind of picture that can't be shown here");
+        assert_eq!(said(b"\0\0\x01\0\x01\0\x10\x10"), "it is a kind of picture that can't be shown here");
+        assert_eq!(said(b"\x89PNG\r\n\x1a\n"), "it is damaged, or larger than can be shown");
+        assert_eq!(said(b"RIFF\x04\0\0\0WEBP"), "it is damaged, or larger than can be shown");
+        assert_eq!(said(b"{\"error\":\"not found\"}"), "what the server sent is not a picture");
+        assert_eq!(said(&[0xff; 9]), "what the server sent is not a picture");
+        // A reason is kept as one line of no great length, whoever wrote it.
+        assert_eq!(&*reason("the server answered 404 instead of a picture"), "the server answered 404 instead of a picture");
+        assert_eq!(&*reason("  it is\r\n no longer\tthere (404). \u{7}"), "it is no longer there (404)");
+        assert_eq!(&*reason(" \n\u{0} "), "the download failed");
+        let long = reason(&"é ".repeat(500));
+        assert_eq!(long.chars().count(), MAX_REASON + 1);
+        assert!(long.ends_with('…') && !long.contains('\n'));
     }
 
     #[test]
@@ -388,7 +481,9 @@ mod tests {
             ("svg", b"<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>"),
             ("html", b"<html><img src=https://example.org/x.png></html>"),
             ("bmp", b"BM\x46\0\0\0\0\0\0\0\x36\0\0\0\x28\0\0\0\x02\0\0\0\x02\0\0\0\x01\0\x18\0\0\0\0\0\x10\0\0\0"),
-            ("webp", b"RIFF\x1a\0\0\0WEBPVP8L\x0d\0\0\0\x2f\0\0\0\x10\x07\x10\x11\x11\x88\x88\xfe\x07\0"),
+            ("avif", b"\0\0\0\x1cftypavif\0\0\0\0avifmif1miaf\0\0\0\xeameta"),
+            ("ico", b"\0\0\x01\0\x01\0\x10\x10\0\0\x01\0\x20\0\x68\x04\0\0\x16\0\0\0"),
+            ("a webp signature and nothing else", b"RIFF\x04\0\0\0WEBP"),
         ] {
             assert!(decode(bytes, 2048, 2048).is_none(), "{what} was decoded");
         }
@@ -462,10 +557,12 @@ mod tests {
         let mut junk = Junk(0x9e37_79b9_7f4a_7c15);
         for round in 0..400 {
             // Junk behind each kind's signature gets furthest into its decoder.
-            let mut data = match round % 4 {
+            let mut data = match round % 6 {
                 0 => b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec(),
                 1 => b"\xff\xd8\xff\xe0\0\x10JFIF\0".to_vec(),
                 2 => b"GIF89a".to_vec(),
+                3 => b"RIFF\xf0\x03\0\0WEBPVP8L".to_vec(),
+                4 => b"RIFF\xf0\x03\0\0WEBPVP8 ".to_vec(),
                 _ => Vec::new(),
             };
             let len = junk.below(600);
@@ -480,9 +577,9 @@ mod tests {
     #[test]
     fn damaged_pictures_never_panic() {
         let mut junk = Junk(0x2545_f491_4f6c_dd1d);
-        let originals = [png(24, 16), jpeg(24, 16), gif(24, 16)];
-        for round in 0..600 {
-            let mut data = originals[round % 3].clone();
+        let originals = [png(24, 16), jpeg(24, 16), gif(24, 16), webp(24, 16)];
+        for round in 0..800 {
+            let mut data = originals[round % 4].clone();
             // A few bytes changed, and sometimes the end cut off.
             for _ in 0..1 + junk.below(4) {
                 let at = junk.below(data.len());

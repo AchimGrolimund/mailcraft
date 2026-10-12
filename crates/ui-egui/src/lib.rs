@@ -112,6 +112,12 @@ pub struct Services {
     /// there are none, arrive through the channel and the host wakes the UI. Absent in the
     /// browser and the tests: pictures on the web then stay placeholders, and nothing is offered.
     pub pictures: Option<Box<dyn Fn(String) -> Receiver<Result<Vec<u8>, String>>>>,
+    /// Desktop: the pictures the host keeps on disk between runs, so that a picture the owner
+    /// asked for once is not asked of its server again at every start ([`PictureCache`]). The
+    /// host looks there before it downloads, and what it finds comes through `pictures` like
+    /// any download; this is only for saying how much is kept and for forgetting it. Absent
+    /// where nothing is kept (the browser, the tests, the sample mailbox).
+    pub picture_cache: Option<Box<dyn PictureCache>>,
     /// Desktop: ask an account's server when people are free and busy, on a background thread,
     /// for a meeting's Scheduling Assistant ([`scheduling`]). It reads and writes nothing. The
     /// answer, or why there is none, arrives through the channel and the host wakes the UI.
@@ -129,6 +135,19 @@ pub trait SecretStore {
     fn get(&self, key: &str) -> Option<String>;
     fn set(&self, key: &str, secret: &str) -> Result<(), String>;
     fn delete(&self, key: &str);
+}
+
+/// The pictures from the web that the host keeps on disk between runs
+/// ([`Services::picture_cache`]). The window calls these itself, so they are quick: saying how
+/// much is kept reads nothing, and forgetting takes as long as removing the files takes.
+pub trait PictureCache {
+    /// How many pictures are kept, and how many bytes they take.
+    fn usage(&self) -> (usize, u64);
+    /// Forget what is kept for one address: what came from there turned out to be no picture,
+    /// or the owner wants it asked for afresh.
+    fn forget(&self, url: &str);
+    /// Forget them all.
+    fn clear(&self) -> Result<(), String>;
 }
 
 /// What the host needs to sign an account's owner in ([`Services::sign_in`]).
@@ -264,6 +283,9 @@ pub struct UiState {
     pub download_pictures: bool,
     /// Senders whose pictures are downloaded without asking (addresses, in lower case).
     pub picture_senders: Vec<String>,
+    /// Domains whose senders' pictures are downloaded without asking (`shop.example`: what
+    /// follows the `@` of an address, in lower case, and that domain only).
+    pub picture_domains: Vec<String>,
     /// The groups of the calendar list that are folded away under their headings.
     pub collapsed_calendar_groups: Vec<String>,
 }
@@ -291,6 +313,7 @@ impl Default for UiState {
             dismissed_reminders: Vec::new(),
             download_pictures: false,
             picture_senders: Vec::new(),
+            picture_domains: Vec::new(),
             collapsed_calendar_groups: Vec::new(),
         }
     }
@@ -363,9 +386,21 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "ui.alwaysDownloadPictures",
         "Always Download Pictures from Sender",
         "File › Options",
-        r#"{"sender": address} | {"message"?: number} (its sender), "value"?: bool (default: true; false forgets the sender)"#,
+        r#"{"sender": address} | {"domain": name (what follows the @; everybody at that domain)} | {"message"?: number} (its sender), "value"?: bool (default: true; false forgets the sender or the domain)"#,
     ),
     ("ui.downloadPicturesAutomatically", "Download Pictures in Mail Automatically", "File › Options", r#"{"value"?: bool (default: toggle)}"#),
+    (
+        "ui.retryPictures",
+        "Try Downloading Pictures Again",
+        "Message",
+        r#"{"message"?: number (default: the selected message)} — asks once more for those of its pictures that couldn't be downloaded"#,
+    ),
+    (
+        "ui.clearPictureCache",
+        "Clear Downloaded Pictures",
+        "File › Options",
+        "{} — forgets the pictures from the web that are kept, on this computer's disk and in memory; they are downloaded again when a message that may show them is read",
+    ),
     (
         "ui.copySelection",
         "Copy Selected Text",

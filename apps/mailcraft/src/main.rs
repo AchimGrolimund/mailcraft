@@ -22,6 +22,7 @@ mod file_dialogs;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
 mod logging;
+mod picture_cache;
 mod secrets;
 mod single_instance;
 
@@ -90,6 +91,10 @@ impl eframe::App for App {
         if let Err(e) = self.0.save_on_exit() {
             log::error!("saving the mailbox on exit failed: {e}");
         }
+        // What is still to be noted of the pictures kept on disk.
+        if let Some(pictures) = PICTURES.get() {
+            pictures.flush();
+        }
         if let Some(key_file) = &self.2 {
             key_file.remove();
         }
@@ -107,6 +112,27 @@ fn prefs_path() -> Option<PathBuf> {
 /// Where the mailbox is kept unless `--mailbox` says otherwise.
 fn default_mailbox_path() -> Option<PathBuf> {
     mailcraft_control_key::settings_dir().map(|b| b.join(format!("mailbox.{}", mailcraft_engine::io::MAILBOX_EXT)))
+}
+
+/// The pictures from the web that are kept between runs (`picture_cache`): in the settings
+/// folder, beside the mailbox's own content folder. None for the sample mailbox or a run
+/// without preferences, which keep nothing; and none is made until a picture is kept.
+static PICTURES: std::sync::OnceLock<std::sync::Arc<picture_cache::Cache>> = std::sync::OnceLock::new();
+
+/// Start keeping downloaded pictures in the settings folder, and tidy up there a moment later,
+/// off the window's thread.
+fn keep_pictures() -> Option<std::sync::Arc<picture_cache::Cache>> {
+    let dir = mailcraft_control_key::settings_dir()?.join(picture_cache::FOLDER);
+    let cache = PICTURES.get_or_init(|| picture_cache::Cache::at(dir)).clone();
+    let tidying = cache.clone();
+    let tidy = move || {
+        std::thread::sleep(std::time::Duration::from_secs(20));
+        tidying.tidy();
+    };
+    if let Err(e) = std::thread::Builder::new().name("picture tidying".into()).spawn(tidy) {
+        log::debug!("the downloaded pictures were not tidied: {e}");
+    }
+    Some(cache)
 }
 
 /// Where the log files live: `logs` in the preferences folder (see `logging`).
@@ -454,8 +480,10 @@ fn free_busy(request: FreeBusyRequest) -> FreeBusyResult {
 /// What the app needs from the system: native file dialogs, shown without blocking the window
 /// (`file_dialogs`); everything that opens a socket (Send/Receive, signing in, finding a domain's
 /// mail servers, checking an account), each on a background thread; and the credential store.
-fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context) -> Services {
+/// `kept_pictures` is where downloaded pictures are kept between runs, when they are.
+fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: Option<std::sync::Arc<picture_cache::Cache>>) -> Services {
     let pictures_ctx = ctx.clone();
+    let pictures_kept = kept_pictures.clone();
     let busy_ctx = ctx.clone();
     let (sync_ctx, sign_in_ctx, graph_ctx, mx_ctx, test_ctx) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone(), ctx);
     let sync_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -499,9 +527,13 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context) -> Services {
         // A picture a message keeps on the web, once the owner asked for that message's pictures.
         // The address is the message's choice, so `fetch` checks where it leads before it goes
         // there (never to this machine or a private network), and takes and waits only so much.
+        // One that was downloaded before and is still kept comes from the disk instead: nobody
+        // is asked, and so nobody is told again. Either way the window gets bytes to check.
         pictures: Some(Box::new(move |url| {
-            background(&pictures_ctx, "picture", move || mailcraft_net::pictures::fetch(&url).map_err(|e| e.to_string()))
+            let kept = pictures_kept.clone();
+            background(&pictures_ctx, "picture", move || picture_cache::picture(&url, kept.as_ref()))
         })),
+        picture_cache: kept_pictures.map(|kept| Box::new(picture_cache::Kept(kept)) as Box<dyn mailcraft_ui_egui::PictureCache>),
         // When the people of a meeting are free and busy, while its Scheduling Assistant is open.
         free_busy: Some(Box::new(move |request| background(&busy_ctx, "free and busy times", move || free_busy(request)))),
         secrets: secrets::store(),
@@ -669,7 +701,9 @@ fn main() -> eframe::Result {
             let mut session = Session::new(mailbox);
             let kept = path.is_some();
             session.path = path;
-            let mut app = MailApp::new(session, services(file_dialog, cc.egui_ctx.clone()));
+            // A run that keeps its mailbox and its settings keeps downloaded pictures too.
+            let kept_pictures = if kept && !sample && prefs_enabled() { keep_pictures() } else { None };
+            let mut app = MailApp::new(session, services(file_dialog, cc.egui_ctx.clone(), kept_pictures));
             // Nowhere to keep the mailbox (the sample, a run without preferences): don't try.
             app.autosave = kept;
             if let Some(path) = &app.session.path {

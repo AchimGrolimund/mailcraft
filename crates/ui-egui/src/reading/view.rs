@@ -56,10 +56,26 @@ pub struct Doc {
 impl Doc {
     /// The message's display blocks: from its HTML when it has some, else from its text.
     pub fn of(message: &Message) -> Doc {
+        Doc::of_where(message, false)
+    }
+
+    /// The same, where pictures on the web can be downloaded when the owner asks
+    /// (`can_download`). A message that is nothing but such pictures (a newsletter made of
+    /// slices of one picture, with a line of text beside it for programs that show none) is
+    /// then shown as what it is, stand-ins first and the offer to download them above: its text
+    /// part would say less, and offer nothing.
+    pub fn of_where(message: &Message, can_download: bool) -> Doc {
         let parsed = message.body.html.as_deref().map(mailcraft_html::parse);
         let blocks = match parsed {
             // HTML that came to nothing (only scripts, only pictures that can't be shown) falls back to the text.
             Some(blocks) if mailcraft_html::has_text(&blocks) || shows_a_picture(&blocks, message) || message.body.text.trim().is_empty() => blocks,
+            Some(blocks) if can_download => {
+                let doc = Doc::from_blocks(blocks);
+                if !doc.remote.is_empty() {
+                    return doc;
+                }
+                mailcraft_html::text_blocks(&message.body.text)
+            }
             _ => mailcraft_html::text_blocks(&message.body.text),
         };
         Doc::from_blocks(blocks)
@@ -183,8 +199,9 @@ impl Store {
         ctx.data_mut(|d| d.get_temp_mut_or_default::<Arc<Mutex<Store>>>(egui::Id::new("mailcraft-reading-bodies")).clone())
     }
 
-    /// The entry for `message` shown at `place`, parsing its body when it is not known yet.
-    fn entry(&mut self, message: &Arc<Message>, place: Place, frame: u64) -> Option<&mut Entry> {
+    /// The entry for `message` shown at `place`, parsing its body when it is not known yet
+    /// (`can_download`: for a window that can download pictures, see [`Doc::of_where`]).
+    fn entry(&mut self, message: &Arc<Message>, place: Place, frame: u64, can_download: bool) -> Option<&mut Entry> {
         let shows = |e: &Entry| {
             // Flagging or filing a message makes a new one of it; its body is still the same.
             Arc::ptr_eq(&e.message, message) || (e.message.id == message.id && same_body(&e.message, message))
@@ -213,7 +230,7 @@ impl Store {
                 self.entries.push(Entry {
                     message: message.clone(),
                     place,
-                    doc: doc.unwrap_or_else(|| Arc::new(Doc::of(message))),
+                    doc: doc.unwrap_or_else(|| Arc::new(Doc::of_where(message, can_download))),
                     key: None,
                     laid: Laid::default(),
                     next: None,
@@ -232,12 +249,18 @@ impl Store {
 }
 
 /// The message's display blocks, kept from one frame to the next.
+#[cfg(test)]
 pub fn doc(ctx: &egui::Context, message: &Arc<Message>, place: Place) -> Arc<Doc> {
+    doc_where(ctx, message, place, false)
+}
+
+/// The same, for a window that can download pictures or not ([`Doc::of_where`]).
+pub fn doc_where(ctx: &egui::Context, message: &Arc<Message>, place: Place, can_download: bool) -> Arc<Doc> {
     let store = Store::of(ctx);
     let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
-    match store.entry(message, place, images::frame(ctx)) {
+    match store.entry(message, place, images::frame(ctx), can_download) {
         Some(entry) => entry.doc.clone(),
-        None => Arc::new(Doc::of(message)),
+        None => Arc::new(Doc::of_where(message, can_download)),
     }
 }
 
@@ -255,7 +278,7 @@ pub fn show(app: &mut MailApp, ui: &mut Ui, message: &Arc<Message>, place: Place
     let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
     #[cfg(test)]
     let mut begun = 0;
-    let Some(entry) = store.entry(message, place, images::frame(&ctx)) else { return };
+    let Some(entry) = store.entry(message, place, images::frame(&ctx), super::remote::available(app)) else { return };
     if entry.doc.blocks.is_empty() {
         ui.label(egui::RichText::new(tl!("This message has no text.")).color(t.text_dim));
         if let Some(state) = app.text_selection.state(place) {
@@ -428,7 +451,7 @@ pub fn paint(ui: &mut Ui, laid: &Laid, t: &Tokens, access: Access, mut state: Op
                         painter.rect_stroke(rect, 2.0, Stroke::new(1.0, picture.paper.line(t)), egui::StrokeKind::Inside);
                         ctx.request_repaint();
                     }
-                    Picture::Failed => stand_in(&painter, rect, &picture.alt, picture.paper, t),
+                    Picture::Failed => stand_in(&painter, rect, &picture.alt, picture.paper, t, false),
                 }
                 if let (Some(marks), Some(_)) = (&marks, part(1)) {
                     painter.rect_filled(rect, 0.0, marks.veil);
@@ -439,14 +462,19 @@ pub fn paint(ui: &mut Ui, laid: &Laid, t: &Tokens, access: Access, mut state: Op
                 }
             }
             ItemKind::Placeholder(placeholder) => {
-                stand_in(&painter, rect, &placeholder.label, placeholder.paper, t);
+                // What became of it, when it is one that was asked for: a picture that could not
+                // be had is marked as such where it would have been, and says why when pointed at.
+                let came = (access == Access::Allowed && placeholder.remote).then(|| {
+                    let store = pictures.get_or_insert_with(|| Pictures::of(&ctx));
+                    store.lock().unwrap_or_else(|e| e.into_inner()).remote_peek(placeholder.src.trim()).cloned()
+                });
+                let came = came.flatten();
+                stand_in(&painter, rect, &placeholder.label, placeholder.paper, t, matches!(came, Some(Remote::Failed(_))));
                 if let (Some(marks), Some(_)) = (&marks, part(1)) {
                     painter.rect_filled(rect, 4.0, marks.veil);
                 }
                 on_picture |= over.is_some();
                 if over.is_some() {
-                    let store = pictures.get_or_insert_with(|| Pictures::of(&ctx));
-                    let came = store.lock().unwrap_or_else(|e| e.into_inner()).remote_peek(placeholder.src.trim()).cloned();
                     hover = Some(Hover { link: placeholder.link.clone(), note: Some(placeholder_note(placeholder, access, came.as_ref())) });
                 }
             }
@@ -502,14 +530,14 @@ pub fn paint(ui: &mut Ui, laid: &Laid, t: &Tokens, access: Access, mut state: Op
 /// What is said of a picture that is not shown, and where it would come from.
 fn placeholder_note(placeholder: &PlaceholderItem, access: Access, came: Option<&Remote>) -> String {
     let why = if !placeholder.remote || !images::is_remote(&placeholder.src) {
-        tl!("This picture is missing from the message, or can't be shown.")
+        tl!("This picture is missing from the message, or can't be shown.").to_string()
     } else {
         match (access, came) {
-            (Access::Unavailable, _) => tl!("This picture is on the web. This build can't download pictures."),
-            (Access::Blocked, _) => tl!("This picture is on the web. It is not downloaded unless you ask."),
-            (Access::Allowed, Some(Remote::Failed)) => tl!("This picture couldn't be downloaded."),
-            (Access::Allowed, Some(Remote::Ready(_))) => tl!("This picture was downloaded, but can't be shown."),
-            (Access::Allowed, None) => tl!("This picture has not been downloaded."),
+            (Access::Unavailable, _) => tl!("This picture is on the web. This build can't download pictures.").to_string(),
+            (Access::Blocked, _) => tl!("This picture is on the web. It is not downloaded unless you ask.").to_string(),
+            (Access::Allowed, Some(Remote::Failed(why))) => crate::i18n::fmt(tl!("This picture couldn't be downloaded: {why}."), &[("why", why)]),
+            (Access::Allowed, Some(Remote::Ready(_))) => tl!("This picture was downloaded, but can't be shown.").to_string(),
+            (Access::Allowed, None) => tl!("This picture is on its way, or was left out: a message gets only so many.").to_string(),
         }
     };
     let src: String = placeholder.src.chars().take(200).collect();
@@ -554,8 +582,9 @@ fn bullet(painter: &egui::Painter, rect: Rect, depth: u8, color: Color32) {
 }
 
 /// What stands where a picture is not shown: a quiet frame with a small picture mark and the
-/// picture's description, when it has one.
-fn stand_in(painter: &egui::Painter, rect: Rect, label: &str, paper: Paper, t: &Tokens) {
+/// picture's description, when it has one. For one that was asked for and could not be had
+/// (`failed`) the mark is struck through, in the colour of a warning.
+fn stand_in(painter: &egui::Painter, rect: Rect, label: &str, paper: Paper, t: &Tokens, failed: bool) {
     let ink = Paper { fill: paper.shade(t), own: paper.own }.text(t, true);
     let line = paper.line(t);
     painter.rect(rect, 4.0, paper.shade(t), Stroke::new(1.0, line), egui::StrokeKind::Inside);
@@ -566,6 +595,13 @@ fn stand_in(painter: &egui::Painter, rect: Rect, label: &str, paper: Paper, t: &
         painter.circle_filled(pos2(mark.max.x - 3.5, mark.min.y + 3.5), 1.2, ink);
         let hill = vec![pos2(mark.min.x + 1.5, mark.max.y - 1.5), pos2(mark.min.x + 4.5, mark.min.y + 4.5), pos2(mark.min.x + 8.0, mark.max.y - 1.5)];
         painter.add(egui::Shape::line(hill, Stroke::new(1.0, ink)));
+        if failed {
+            // Corner to corner and a little past, over a gap in the paper's own colour so that
+            // the stroke is told from the frame it crosses.
+            let (from, to) = (pos2(mark.min.x - 1.5, mark.max.y + 1.5), pos2(mark.max.x + 1.5, mark.min.y - 1.5));
+            painter.line_segment([from, to], Stroke::new(3.5, paper.shade(t)));
+            painter.line_segment([from, to], Stroke::new(1.6, t.orange));
+        }
     }
     if !label.is_empty() && rect.width() > 40.0 && rect.height() >= 20.0 {
         paint_clipped(painter, pos2(rect.min.x + 23.0, rect.min.y + 12.0), rect.width() - 28.0, label, regular(11.5), ink);
