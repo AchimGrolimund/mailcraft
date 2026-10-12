@@ -1,0 +1,75 @@
+# .deb and .rpm packages (nfpm: https://nfpm.goreleaser.com). Run by package.sh, which stages
+# the file tree, substitutes its path for ${STAGE} (nfpm doesn't expand env vars in `src`) and
+# exports VERSION and NFPM_ARCH.
+#
+#   nfpm package -f packaging/linux/nfpm.yaml -p deb -t dist/release/
+name: mailcraft
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${VERSION}
+# semver: 0.2.0-rc.1 becomes 0.2.0~rc.1 in deb/rpm, so pre-releases sort before the release.
+version_schema: semver
+release: 1
+section: mail
+priority: optional
+maintainer: ${MAILCRAFT_MAINTAINER}
+vendor: MailCraft contributors
+homepage: https://getartcraft.com/apps/mailcraft
+license: MIT OR Apache-2.0
+description: |-
+  Open-source, native mail, calendar, contacts and tasks program that works the way Outlook users expect.
+  Mail with folders, rules, flags and categories; a calendar with recurring
+  events; contacts and tasks. Talks to IMAP and SMTP servers and reads and writes
+  .eml, .mbox, .ics and .vcf. Includes mailcraft-cli, a headless importer,
+  exporter and command runner.
+
+# The binaries link only glibc and libgcc_s directly. Windowing (X11/Wayland, xkbcommon) and the
+# GPU (Vulkan, EGL/GL) are loaded at runtime, so they are dependencies/recommendations here
+# rather than ELF NEEDED entries. libxkbcommon-x11 is a dependency, not a recommendation: on an
+# X11 session the window can't start without it (found by installing the package on a bare
+# Ubuntu 22.04 and starting it under Xvfb).
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.35)
+      - libgcc-s1
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+      - libvulkan1 | libegl1
+    recommends:
+      - libwayland-client0
+      - libx11-6
+      - libx11-xcb1
+      - libxcursor1
+      - libxi6
+      - libxrandr2
+      - mesa-vulkan-drivers
+      - xdg-desktop-portal
+  rpm:
+    depends:
+      - libxkbcommon
+      - libxkbcommon-x11
+      - (vulkan-loader or libglvnd-egl)
+    recommends:
+      - libwayland-client
+      - libX11
+      - libXcursor
+      - libXi
+      - libXrandr
+      - mesa-vulkan-drivers
+      - xdg-desktop-portal
+
+contents:
+  - src: ${STAGE}/usr/bin/mailcraft
+    dst: /usr/bin/mailcraft
+    file_info: { mode: 0755 }
+  - src: ${STAGE}/usr/bin/mailcraft-cli
+    dst: /usr/bin/mailcraft-cli
+    file_info: { mode: 0755 }
+  - src: ${STAGE}/usr/share/
+    dst: /usr/share/
+    type: tree
+
+scripts:
+  postinstall: packaging/linux/postinst.sh
+  postremove: packaging/linux/postinst.sh

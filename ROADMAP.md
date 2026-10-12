@@ -1,0 +1,57 @@
+# MailCraft roadmap
+
+**Stage: early alpha** · next: alpha that works with a real account
+
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-11 · **Change:** major (first version) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+
+MailCraft aims for complete parity with Microsoft Outlook, then goes further on speed, openness,
+privacy and agent control. This page is the summary; the assessment is
+[`docs/target-app-parity.md`](docs/target-app-parity.md), the work list is
+[`docs/gaps.md`](docs/gaps.md), and milestones and the current focus are in
+[`docs/roadmap.md`](docs/roadmap.md).
+
+## Headline numbers (2026-10-12)
+
+| Number | Value | Kind |
+|---|---|---|
+| Ribbon/menu catalog coverage | **162 / 310 (52.3%)** | measured (`cargo xtask parity` → [`docs/parity-checklist.md`](docs/parity-checklist.md)) |
+| Ready for real work with a real account | **~25%** | estimated ([how](docs/target-app-parity.md#methodology)); two-way sync and Microsoft sign-in exist now, but nothing has run against a real server yet |
+| Ready as a local viewer and organiser of exported mail | **~55%** | estimated |
+| Commands / crates | 172 commands · 13 crates, 3 apps, `xtask` | measured (source) |
+| Tests | see `cargo xtask stats` (every crate; property tests on every reader) | measured |
+| Builds verified | Windows x64 (native) and the browser build (wasm) | measured |
+| Releases | none published; Windows x64 and Linux x86_64 packages built and installed locally ([releasing.md](docs/releasing.md)) | measured (local builds) |
+
+The gap between the two readiness numbers is the story of this release: the mailbox, the
+commands, the interface and the file formats are in good shape, and the connection to real mail
+servers is the thinnest part: two-way and with Microsoft sign-in since 2026-10-12, but still never
+run against a real server.
+
+## Where it is strong
+
+- The engine: every action a command, undoable, with a failed command leaving nothing behind and
+  every command fuzzed with junk parameters.
+- The readers: messages, calendars, contacts and server responses are treated as hostile and
+  property-tested with arbitrary bytes.
+- Privacy by default: nothing in a message runs or is fetched; passwords and sign-ins are kept only
+  by the operating system's credential store, never in MailCraft's own files.
+- One code base for desktop and browser.
+- Agent control: CLI, control channel, MCP.
+
+## What stands between here and beta
+
+In order (details and estimates in [`docs/gaps.md`](docs/gaps.md)): run against real servers;
+publisher verification for the Microsoft registration, and sign-in for Google;
+calendar and contacts with a server (Microsoft Graph, CalDAV/CardDAV); inline pictures and basic
+layout in HTML mail; rich-text replies; meeting invitations by mail; reminders that fire; a store
+that scales.
+
+## Progress log
+
+| Date | What landed |
+|---|---|
+| 2026-10-12 (afternoon) | The calendar, second and third waves ([calendar-parity.md](docs/calendar-parity.md)): the grid worked like Outlook's (resize by the edges, Ctrl+drag to copy, the keyboard, Month and all-day dragging, a navigator of several months, time scales, week numbers); repeating items as series both ways with "just this one or the entire series"; meetings for real through Microsoft 365 (invitations, updates, cancellations and answers, each only on the owner's yes); every calendar of the account by group, side by side or overlaid; categories; working hours from the mailbox; meeting requests answered in the reading pane with a look at the day; appointment and meeting windows with their own command bar, recurrence dialog, unsaved-changes question and a Scheduling Assistant. Mail: text in a message can be selected and copied. 110,000 lines, 1,300 tests, 172 commands, `cargo xtask ci` green; in use on one real Microsoft 365 mailbox, everything else against stand-ins |
+| 2026-10-12 (day) | On a real Microsoft 365 mailbox, and looking like Outlook: the folder tree as the server has it (nested, in Outlook's order, names kept whole); Outlook's palette, the system font on Windows, the rail, the folder pane and a one-row Simplified ribbon (Classic kept as a choice), measured against a reference shot; pictures on the web downloaded only when asked, through a fetcher that tells the server nothing but the address; messages and appointments in windows of their own; a reminders window that is its own window; changes pushed to the server without waiting for a long download. Calendar, first wave ([calendar-parity.md](docs/calendar-parity.md)): click or drag over empty time and type, the current calendar, appointments written to Microsoft 365 at once, a question before changing someone else's meeting, a calendar that keeps itself current. Installing: `mailto:` links and file types, one window per mailbox, the Windows installer and the Linux packages built and installed for the first time (the installer had WordCraft's product identity; X11 needed a library the packages did not ask for), a release workflow of MailCraft's own, and the icon tool ready for Craft-style artwork. 88,000 lines, 1,160 tests, `cargo xtask ci` green |
+| 2026-10-12 (night) | Getting ready for a real mailbox: message content out of the rewritten mailbox file and saving in the background (a save after a read mark went from about 1.7 s on the window's thread to about 20 ms off it); Send/Receive in pieces with progress and Cancel, Exchange's non-mail folders skipped, messages over 25 MB kept as a note, every command bounded in time; Microsoft Graph for sending and for the calendar and contacts (read-only); HTML mail with inline pictures, tables and a whitelist of formatting; reminders that fire; recipients suggested as they are typed; messages dragged onto folders; flag and delete on the row under the pointer; a question before anything that can't be taken back; the last Send/Receive's problems kept to read and copy |
+| 2026-10-12 | A real account, end to end on paper: account setup as a wizard that recognises the provider (domain table, and mail exchangers looked up over DNS-over-HTTPS for a company's own domain); Microsoft sign-in (OAuth 2.0 authorization code with PKCE in the system browser, XOAUTH2 for IMAP and SMTP); sign-ins remembered in Windows Credential Manager and the macOS keychain; two-way sync (read marks, flags, moves, deletes, folders created by a move, a copy of sent mail; MOVE and UIDPLUS used when offered, never a plain EXPUNGE); Send/Receive by itself on start, every few minutes and soon after a change; the interface follows the system's light or dark appearance; a message's left edge switches read and unread. Calendar, People and Tasks views and every dialog form landed the same day. Tested against in-process fake servers only |
+| 2026-10-11 | First version: workspace, layering and gates in the WordCraft mould; `time`, `model`, `html`, `mime`, `ical`, `vcard`, `proto`, `net`, `engine` (143 commands, catalog, sample), `mcp`, `ui-egui` (mail, composer, calendar, people, tasks, Backstage, dialogs, light and dark), desktop app, CLI, browser build; packaging and workflows adapted, not yet run |

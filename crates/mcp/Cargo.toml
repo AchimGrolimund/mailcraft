@@ -1,0 +1,15 @@
+[package]
+name = "mailcraft-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MailCraft MCP server: every command as a tool, headless or bridged to the running app"
+
+[lints]
+workspace = true
+
+[dependencies]
+mailcraft-engine = { workspace = true }
+mailcraft-control-key = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }

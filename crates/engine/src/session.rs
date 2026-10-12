@@ -1,0 +1,647 @@
+//! The session: the mailbox, what is selected, how it is viewed, the message being written, and
+//! undo/redo.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use mailcraft_model::{Attachment, Id, Importance, Mailbox, Message};
+use mailcraft_time::{Date, DateTime, Timestamp, Weekday};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::list::Row;
+use crate::{CmdError, Registry};
+
+/// Undo steps kept.
+const MAX_HISTORY: usize = 100;
+
+/// The part of the app in front: mail, calendar, people or tasks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Module {
+    #[default]
+    Mail,
+    Calendar,
+    People,
+    Tasks,
+}
+
+impl Module {
+    pub const ALL: [Module; 4] = [Module::Mail, Module::Calendar, Module::People, Module::Tasks];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Module::Mail => "Mail",
+            Module::Calendar => "Calendar",
+            Module::People => "People",
+            Module::Tasks => "Tasks",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SortBy {
+    #[default]
+    Date,
+    From,
+    Subject,
+    Size,
+    Importance,
+}
+
+impl SortBy {
+    pub const ALL: [SortBy; 5] = [SortBy::Date, SortBy::From, SortBy::Subject, SortBy::Size, SortBy::Importance];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SortBy::Date => "Date",
+            SortBy::From => "From",
+            SortBy::Subject => "Subject",
+            SortBy::Size => "Size",
+            SortBy::Importance => "Importance",
+        }
+    }
+}
+
+/// What the message list is narrowed to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Filter {
+    #[default]
+    All,
+    Unread,
+    Flagged,
+    Attachments,
+    ToMe,
+}
+
+impl Filter {
+    pub const ALL: [Filter; 5] = [Filter::All, Filter::Unread, Filter::Flagged, Filter::Attachments, Filter::ToMe];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Filter::All => "All",
+            Filter::Unread => "Unread",
+            Filter::Flagged => "Flagged",
+            Filter::Attachments => "Has Attachments",
+            Filter::ToMe => "To Me",
+        }
+    }
+}
+
+/// Where a search looks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Scope {
+    /// The folder in view.
+    #[default]
+    Folder,
+    /// Every folder of every account, except Deleted Items and Junk.
+    Everywhere,
+}
+
+/// Where the reading pane sits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Pane {
+    #[default]
+    Right,
+    Bottom,
+    Off,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CalView {
+    Day,
+    WorkWeek,
+    #[default]
+    Week,
+    Month,
+}
+
+impl CalView {
+    pub const ALL: [CalView; 4] = [CalView::Day, CalView::WorkWeek, CalView::Week, CalView::Month];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CalView::Day => "Day",
+            CalView::WorkWeek => "Work Week",
+            CalView::Week => "Week",
+            CalView::Month => "Month",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskFilter {
+    #[default]
+    Active,
+    Today,
+    Overdue,
+    Completed,
+    All,
+}
+
+impl TaskFilter {
+    pub const ALL: [TaskFilter; 5] = [TaskFilter::Active, TaskFilter::Today, TaskFilter::Overdue, TaskFilter::Completed, TaskFilter::All];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TaskFilter::Active => "Active",
+            TaskFilter::Today => "Today",
+            TaskFilter::Overdue => "Overdue",
+            TaskFilter::Completed => "Completed",
+            TaskFilter::All => "All",
+        }
+    }
+}
+
+/// An enum from the code commands and JSON use (`workWeek`); the first letter's case doesn't matter.
+pub fn parse_enum<T: DeserializeOwned>(s: &str) -> Option<T> {
+    let s = s.trim();
+    let try_one = |s: String| serde_json::from_value::<T>(Value::String(s)).ok();
+    try_one(s.to_string()).or_else(|| {
+        let mut c = s.chars();
+        let first = c.next()?;
+        try_one(first.to_lowercase().chain(c).collect())
+    })
+}
+
+/// The code of an enum value (`workWeek`).
+pub fn enum_code<T: Serialize>(v: &T) -> String {
+    serde_json::to_value(v).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
+}
+
+/// View state that commands change (the View tab, the navigation bar, the search box).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ViewState {
+    pub module: Module,
+    /// The mail folder in view.
+    pub folder: Id,
+    pub sort: SortBy,
+    /// Newest (largest, Z) first.
+    pub sort_descending: bool,
+    /// Show messages grouped into conversations.
+    pub conversations: bool,
+    pub filter: Filter,
+    pub search: String,
+    pub scope: Scope,
+    pub reading_pane: Pane,
+    pub folder_pane: bool,
+    pub calendar: CalView,
+    /// The day the calendar shows (its week or month, depending on the view).
+    pub date: Date,
+    /// How many days the Day view shows from `date` on (`view.days`: Alt+1…0, a drag over the
+    /// date navigator); 0 and 1 are the one day.
+    pub days: u8,
+    /// The calendar the owner works in: where new events go (`calendar.setCurrent`). 0 for
+    /// none chosen, which is the account's server calendar when there is one.
+    pub in_calendar: Id,
+    /// The calendars that lie over one another instead of standing side by side (`view.overlay`):
+    /// those of them that are shown share one block, when there are two at least.
+    pub overlay: Vec<Id>,
+    /// Of the calendars that lie over one another, the one in front (`view.frontCalendar`); 0
+    /// for the first of them.
+    pub overlay_front: Id,
+    pub people_search: String,
+    pub task_filter: TaskFilter,
+}
+
+impl Default for ViewState {
+    fn default() -> Self {
+        ViewState {
+            module: Module::Mail,
+            folder: 0,
+            sort: SortBy::Date,
+            sort_descending: true,
+            conversations: false,
+            filter: Filter::All,
+            search: String::new(),
+            scope: Scope::Folder,
+            reading_pane: Pane::Right,
+            folder_pane: true,
+            calendar: CalView::Week,
+            date: Date::default(),
+            days: 0,
+            in_calendar: 0,
+            overlay: Vec::new(),
+            overlay_front: 0,
+            people_search: String::new(),
+            task_filter: TaskFilter::Active,
+        }
+    }
+}
+
+/// What is selected in each module.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Selection {
+    /// Selected messages; the last one is the one the reading pane shows.
+    pub messages: Vec<Id>,
+    pub contact: Option<Id>,
+    pub event: Option<Id>,
+    /// The day of the selected occurrence, for an event that repeats.
+    pub event_day: Option<Date>,
+    pub task: Option<Id>,
+}
+
+impl Selection {
+    /// The message in the reading pane.
+    pub fn focus(&self) -> Option<Id> {
+        self.messages.last().copied()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ComposeMode {
+    #[default]
+    New,
+    Reply,
+    ReplyAll,
+    Forward,
+    /// Continuing a saved draft.
+    Draft,
+}
+
+/// The message being written. Recipient lines are text, as typed (`Ada <ada@example.org>; bob@…`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Compose {
+    pub mode: ComposeMode,
+    /// The message replied to or forwarded.
+    pub source: Option<Id>,
+    /// The saved draft this message continues.
+    pub draft: Option<Id>,
+    /// The account it is sent from.
+    pub account: Id,
+    pub to: String,
+    pub cc: String,
+    pub bcc: String,
+    pub subject: String,
+    pub body: String,
+    pub attachments: Vec<Attachment>,
+    pub importance: Importance,
+    pub in_reply_to: String,
+    pub references: Vec<String>,
+    /// Changed since it was opened or last saved.
+    pub dirty: bool,
+}
+
+/// Preferences the engine acts on (File › Options); the front end saves them between runs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Prefs {
+    /// `3:05 PM` rather than `15:05`.
+    pub twelve_hour: bool,
+    pub week_start: Weekday,
+    pub work_days: Vec<Weekday>,
+    /// Working hours, for the calendar's shading (0–24).
+    pub work_start: u8,
+    pub work_end: u8,
+    /// Opening a message in the reading pane marks it read.
+    pub mark_read_on_open: bool,
+    /// Reminder a new appointment gets, in minutes before it starts.
+    pub default_reminder: Option<u32>,
+    /// Put the original message under a reply.
+    pub quote_on_reply: bool,
+    /// Lines of body text under each message in the list (0–3).
+    pub preview_lines: u8,
+    /// Most messages one synchronisation downloads per folder (0: all).
+    pub sync_limit: u32,
+    /// Minutes between automatic Send/Receive runs (0: only when asked).
+    pub sync_minutes: u32,
+    /// The calendar's time scale: the minutes one row of its hours stands for (60, 30, 15, 10,
+    /// 6 or 5; `view.timeScale`).
+    pub time_scale: u8,
+    /// The date navigator and the Month view say which week of the year a week is
+    /// (`view.weekNumbers`).
+    pub week_numbers: bool,
+    /// A meeting request (or a cancellation) that was answered from the mail goes to Deleted
+    /// Items (`calendar.deleteAnsweredRequests`). Off unless the owner turns it on.
+    pub delete_answered_requests: bool,
+    /// The working hours above are used even when the account's mailbox has its own
+    /// (`view.workHours`).
+    pub own_work_hours: bool,
+    /// The working hours the account's mailbox has, as a host brought them from its server
+    /// (`sync.applyMailboxSettings`); they are the ones in effect unless `own_work_hours`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mailbox_hours: Option<crate::cmd::calendar_settings::MailboxHours>,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Prefs {
+            twelve_hour: true,
+            week_start: Weekday::Sun,
+            work_days: vec![Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri],
+            work_start: 8,
+            work_end: 17,
+            mark_read_on_open: true,
+            default_reminder: Some(15),
+            quote_on_reply: true,
+            preview_lines: 1,
+            sync_limit: 500,
+            sync_minutes: 5,
+            time_scale: 30,
+            week_numbers: false,
+            delete_answered_requests: false,
+            own_work_hours: false,
+            mailbox_hours: None,
+        }
+    }
+}
+
+/// The clock commands read; tests and scripts pin it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Clock {
+    /// A fixed "now" instead of the system clock.
+    pub now: Option<Timestamp>,
+    /// A fixed zone offset (minutes east of UTC) instead of the system's zone.
+    pub offset: Option<i32>,
+}
+
+struct Undo {
+    label: &'static str,
+    mailbox: Mailbox,
+    sel: Selection,
+    folder: Id,
+}
+
+pub struct Session {
+    pub mailbox: Mailbox,
+    pub view: ViewState,
+    pub sel: Selection,
+    /// The message being written, if one is open.
+    pub compose: Option<Compose>,
+    pub prefs: Prefs,
+    pub registry: Arc<Registry>,
+    /// The mailbox file, once opened from or saved to one.
+    pub path: Option<PathBuf>,
+    /// The mailbox changed since it was opened or saved.
+    pub dirty: bool,
+    pub clock: Clock,
+    /// What the last synchronisation reported, for the status bar.
+    pub sync_status: String,
+    history: Vec<Undo>,
+    redo: Vec<Undo>,
+    rev: u64,
+    list_cache: Option<(String, Arc<Vec<Row>>)>,
+}
+
+impl Session {
+    pub fn new(mailbox: Mailbox) -> Self {
+        let mut s = Session {
+            mailbox,
+            view: ViewState::default(),
+            sel: Selection::default(),
+            compose: None,
+            prefs: Prefs::default(),
+            registry: Arc::new(crate::cmd::registry()),
+            path: None,
+            dirty: false,
+            clock: Clock::default(),
+            sync_status: String::new(),
+            history: Vec::new(),
+            redo: Vec::new(),
+            rev: 0,
+            list_cache: None,
+        };
+        s.view.date = s.today();
+        s.normalize();
+        s
+    }
+
+    /// A session on an empty mailbox with one local account.
+    pub fn empty() -> Self {
+        Session::new(Mailbox::with_local_account("", ""))
+    }
+
+    /// A session whose clock stands still at `now`, in a zone `offset` minutes east of UTC.
+    pub fn at(mailbox: Mailbox, now: Timestamp, offset: i32) -> Self {
+        let mut s = Session::new(mailbox);
+        s.clock = Clock { now: Some(now), offset: Some(offset) };
+        s.view.date = s.today();
+        s
+    }
+
+    // ---- time ----
+
+    pub fn now(&self) -> Timestamp {
+        self.clock.now.unwrap_or_else(mailcraft_time::now)
+    }
+
+    /// The local zone's offset at `ts`, in minutes east of UTC.
+    pub fn offset_at(&self, ts: Timestamp) -> i32 {
+        self.clock.offset.unwrap_or_else(|| mailcraft_time::local_offset_minutes(ts))
+    }
+
+    pub fn local(&self, ts: Timestamp) -> DateTime {
+        DateTime::from_timestamp(ts, self.offset_at(ts))
+    }
+
+    pub fn local_now(&self) -> DateTime {
+        self.local(self.now())
+    }
+
+    pub fn today(&self) -> Date {
+        self.local_now().date
+    }
+
+    // ---- state ----
+
+    /// Counts every change to the mailbox (caches key on it).
+    pub fn rev(&self) -> u64 {
+        self.rev
+    }
+
+    /// The message the reading pane shows.
+    pub fn focused_message(&self) -> Option<&Message> {
+        self.sel.focus().and_then(|id| self.mailbox.message(id))
+    }
+
+    /// The rows of the message list for the folder, filter, search and sort in view.
+    pub fn rows(&mut self) -> Arc<Vec<Row>> {
+        let key = format!("{}|{}|{}", self.rev, self.today().to_days(), serde_json::to_string(&self.view).unwrap_or_default());
+        if let Some((k, rows)) = &self.list_cache
+            && *k == key
+        {
+            return rows.clone();
+        }
+        let rows = Arc::new(crate::list::rows(self));
+        self.list_cache = Some((key, rows.clone()));
+        rows
+    }
+
+    /// Keep the view and the selection pointing at things that exist.
+    pub fn normalize(&mut self) {
+        if self.mailbox.folder(self.view.folder).is_none() {
+            self.view.folder = self.mailbox.inbox().unwrap_or(0);
+        }
+        let mb = &self.mailbox;
+        self.sel.messages.retain(|id| mb.message(*id).is_some());
+        self.sel.messages.dedup();
+        if self.sel.contact.is_some_and(|c| mb.contact(c).is_none()) {
+            self.sel.contact = None;
+        }
+        if self.sel.event.is_some_and(|e| mb.event(e).is_none()) {
+            self.sel.event = None;
+            self.sel.event_day = None;
+        }
+        if self.sel.task.is_some_and(|t| mb.task(t).is_none()) {
+            self.sel.task = None;
+        }
+        if let Some(c) = &mut self.compose
+            && mb.account(c.account).is_none()
+        {
+            c.account = mb.default_account().map_or(0, |a| a.id);
+        }
+    }
+
+    /// The mailbox was changed outside a command (mail arriving from a server): everything worked
+    /// out from it (the message list, what is saved) is due again.
+    pub fn mailbox_changed(&mut self) {
+        self.rev += 1;
+        self.dirty = true;
+        self.normalize();
+    }
+
+    /// Replace the mailbox (File › New, File › Open): history and selection start over.
+    pub fn replace_mailbox(&mut self, mailbox: Mailbox) {
+        self.mailbox = mailbox;
+        self.history.clear();
+        self.redo.clear();
+        self.sel = Selection::default();
+        self.compose = None;
+        self.view.folder = 0;
+        self.view.search.clear();
+        self.dirty = false;
+        self.rev += 1;
+        self.normalize();
+    }
+
+    // ---- undo ----
+
+    fn snapshot(&self, label: &'static str) -> Undo {
+        Undo { label, mailbox: self.mailbox.clone(), sel: self.sel.clone(), folder: self.view.folder }
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.history.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    /// What Undo would undo (`Delete`, `Move to Folder`).
+    pub fn undo_label(&self) -> Option<&'static str> {
+        self.history.last().map(|u| u.label)
+    }
+
+    pub fn redo_label(&self) -> Option<&'static str> {
+        self.redo.last().map(|u| u.label)
+    }
+
+    /// Forget every undo and redo step: the mailbox as it was then is not what the mail server
+    /// has any more (changes were pushed, mail was sent), and going back to it would undo here
+    /// what can't be undone there.
+    pub fn forget_history(&mut self) {
+        self.history.clear();
+        self.redo.clear();
+    }
+
+    fn swap(&mut self, u: Undo) -> Undo {
+        let cur = Undo {
+            label: u.label,
+            mailbox: std::mem::replace(&mut self.mailbox, u.mailbox),
+            sel: std::mem::replace(&mut self.sel, u.sel),
+            folder: self.view.folder,
+        };
+        self.view.folder = u.folder;
+        self.rev += 1;
+        self.dirty = true;
+        self.normalize();
+        cur
+    }
+
+    pub fn undo(&mut self) -> bool {
+        let Some(u) = self.history.pop() else { return false };
+        let cur = self.swap(u);
+        self.redo.push(cur);
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        let Some(u) = self.redo.pop() else { return false };
+        let cur = self.swap(u);
+        self.history.push(cur);
+        true
+    }
+
+    // ---- commands ----
+
+    /// Whether a command exists and is enabled now.
+    pub fn enabled(&self, id: &str) -> bool {
+        self.registry.get(id).is_some_and(|s| (s.enabled)(self).is_none())
+    }
+
+    /// Run a command by id. A command that fails, or panics, leaves the mailbox as it was.
+    pub fn run(&mut self, id: &str, params: &Value) -> Result<Value, CmdError> {
+        let reg = self.registry.clone();
+        let Some(spec) = reg.get(id) else { return Err(CmdError::Unknown(id.to_string())) };
+        if let Some(reason) = (spec.enabled)(self) {
+            // A command that only lacks a selection still runs on what the caller names.
+            let named = spec.selection && ["id", "ids", "message"].iter().any(|k| params.get(*k).is_some_and(|v| !v.is_null()));
+            if !named {
+                return Err(CmdError::Disabled(reason.to_string()));
+            }
+        }
+        // Undo and redo manage the history themselves.
+        let history = spec.mutates && !matches!(id, "edit.undo" | "edit.redo");
+        let before = self.snapshot(spec.label);
+        let compose = self.compose.clone();
+        let view = self.view.clone();
+        let run = spec.run;
+        // Last-resort guard (never-crash): a panic in a command becomes an error and the state is restored.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(self, params)));
+        let result = match result {
+            Ok(r) => r,
+            Err(_) => {
+                log::error!("command `{id}` panicked; the mailbox was restored");
+                Err(CmdError::Failed(format!("{} failed unexpectedly; nothing was changed", spec.label)))
+            }
+        };
+        match &result {
+            Ok(_) => {
+                if self.mailbox != before.mailbox {
+                    self.rev += 1;
+                    if history {
+                        self.dirty = true;
+                        self.history.push(before);
+                        if self.history.len() > MAX_HISTORY {
+                            self.history.remove(0);
+                        }
+                        self.redo.clear();
+                    }
+                }
+                self.normalize();
+            }
+            Err(_) => {
+                if self.mailbox != before.mailbox {
+                    self.rev += 1;
+                }
+                self.mailbox = before.mailbox;
+                self.sel = before.sel;
+                self.compose = compose;
+                self.view = view;
+            }
+        }
+        result
+    }
+}

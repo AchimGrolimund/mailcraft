@@ -1,0 +1,36 @@
+# Asset attribution
+
+Every non-code asset in this repository (fonts, icons, images, example files) is listed here with its author, source and licence. `cargo xtask assets` (part of `cargo xtask ci`) fails if an asset file is missing from this table.
+
+**Policy (mandatory):** MailCraft contains **no Microsoft, Google, Apple, Mozilla or other vendor's iconography, images, templates, themes, sounds, fonts or other assets**. Every asset is original work by MailCraft contributors or third-party material under an open licence (OSI open source, public domain / CC0, or a Creative Commons licence that allows redistribution). Screenshots of other vendors' software are never committed.
+
+Generated-in-code art is original and has no file to list: the UI icon set (`crates/ui-egui/src/icons.rs`), the sample mailbox (`crates/engine/src/sample.rs`), the category colours (`crates/model/src/mailbox.rs`) and the theme colours (`crates/ui-egui/src/theme.rs`). The app icon files below are written by `cargo xtask icon` from the drawing in `xtask/src/icon.rs`.
+
+| Asset | Author | Source | Licence | Notes |
+|---|---|---|---|---|
+| `docs/images/mail-dark.png` | MailCraft contributors | screenshot of MailCraft itself showing its sample mailbox (invented people and text), made with `crates/ui-egui/examples/ui_shot.rs` | MIT OR Apache-2.0 | README: the Inbox and reading pane, dark theme |
+| `docs/images/html-mail.png` | MailCraft contributors | screenshot of MailCraft itself showing its sample mailbox (invented people and text), made with `crates/ui-egui/examples/ui_shot.rs` | MIT OR Apache-2.0 | README: an HTML message with a table and a quoted thread |
+| `docs/images/calendar-week.png` | MailCraft contributors | screenshot of MailCraft itself showing its sample mailbox (invented people and text), made with `crates/ui-egui/examples/ui_shot.rs` | MIT OR Apache-2.0 | README: the calendar's week view |
+| `docs/images/add-account.png` | MailCraft contributors | screenshot of MailCraft itself showing its sample mailbox (invented people and text), made with `crates/ui-egui/examples/ui_shot.rs` | MIT OR Apache-2.0 | README: the Add Account window |
+| `assets/app-icon/mailcraft.svg` | MailCraft contributors | original artwork, written by `cargo xtask icon` (`xtask/src/icon.rs`) | MIT OR Apache-2.0 | Placeholder app icon: an envelope and a spark on a rounded square |
+| `assets/app-icon/mailcraft-1024.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon |
+| `assets/app-icon/mailcraft-macos-512.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon, with the margin macOS icons keep |
+| `assets/app-icon/mailcraft.icns` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (macOS) |
+| `assets/app-icon/mailcraft.ico` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Windows) |
+| `assets/app-icon/hicolor/16x16/apps/ai.storyteller.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/24x24/apps/ai.storyteller.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/32x32/apps/ai.storyteller.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/48x48/apps/ai.storyteller.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/64x64/apps/ai.storyteller.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/128x128/apps/ai.storyteller.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/256x256/apps/ai.storyteller.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/512x512/apps/ai.storyteller.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/scalable/apps/ai.storyteller.mailcraft.svg` | MailCraft contributors | original artwork, written by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/fonts/Inter-Regular.ttf` | Rasmus Andersson / The Inter Project Authors | https://github.com/rsms/inter | OFL-1.1 (`assets/fonts/OFL-Inter.txt`) | Interface font (carried over from WordCraft) |
+| `assets/fonts/Inter-Medium.ttf` | Rasmus Andersson / The Inter Project Authors | https://github.com/rsms/inter | OFL-1.1 (`assets/fonts/OFL-Inter.txt`) | Interface font (carried over from WordCraft) |
+| `assets/fonts/Inter-SemiBold.ttf` | Rasmus Andersson / The Inter Project Authors | https://github.com/rsms/inter | OFL-1.1 (`assets/fonts/OFL-Inter.txt`) | Interface font (carried over from WordCraft) |
+| `assets/fonts/SourceSans3-Regular.ttf` | Paul D. Hunt, Adobe (released as open source) | https://github.com/adobe-fonts/source-sans | OFL-1.1 (`assets/fonts/OFL-SourceSans3.txt`) | Interface fallback font (carried over from WordCraft) |
+| `assets/fonts/JetBrainsMono-Regular.ttf` | The JetBrains Mono Project Authors | https://github.com/JetBrains/JetBrainsMono | OFL-1.1 (`assets/fonts/OFL-JetBrainsMono.txt`) | Monospace font for code and preformatted text (carried over from WordCraft) |
+| `assets/fonts/OFL-Inter.txt` | (licence text) | upstream project | — |  |
+| `assets/fonts/OFL-SourceSans3.txt` | (licence text) | upstream project | — |  |
+| `assets/fonts/OFL-JetBrainsMono.txt` | (licence text) | upstream project | — |  |

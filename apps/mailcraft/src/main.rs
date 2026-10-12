@@ -1,0 +1,710 @@
+//! MailCraft desktop app.
+//!
+//! Usage: `mailcraft [--control <port>] [--sample] [--mailbox <file>] [files or mailto: links…]`
+//!
+//! The mailbox lives in `<settings>/mailbox.mailcraft` (or the file `--mailbox` names) and is saved
+//! as you go. `--sample` opens the sample mailbox instead and keeps nothing. Files on the command
+//! line (`.eml`, `.mbox`, `.ics`, `.vcf`) are imported, and a `mailto:` link starts a new message.
+//! A mailbox is open in one window only: started again, MailCraft hands its files and links to
+//! the window that is already open and exits (`single_instance`).
+//!
+//! `--control <port>` (or `MAILCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server:
+//! `{"id":1,"key":"…","method":"engine.execute","params":{"command":"mail.markAllRead","params":{}}}`.
+//! Every request needs the key the app writes to `<settings>/control-key.<instance>` (mode 0600,
+//! removed on exit). See `docs/control-protocol.md`.
+#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
+#[cfg(target_os = "macos")]
+mod apple_events;
+mod control_server;
+mod file_dialogs;
+#[cfg(any(target_os = "windows", test))]
+mod graphics;
+mod logging;
+mod secrets;
+mod single_instance;
+
+use std::path::PathBuf;
+
+use mailcraft_engine::Session;
+use mailcraft_model::Mailbox;
+use mailcraft_model::sync::Tokens;
+use mailcraft_ui_egui::{
+    FreeBusyRequest, FreeBusyResult, GraphRequest, GraphResult, MailApp, Services, SignInRequest, UiState,
+    window_geometry::{WindowGeometry, take_rescue},
+};
+
+/// The app, the restored window geometry until the first frame has checked it, the control
+/// server's key file (removed on exit), the file dialogs the app asked for, the hold on the
+/// mailbox that later starts hand their files and links to and, on macOS, the files opened from
+/// Finder.
+struct App(
+    MailApp,
+    Option<WindowGeometry>,
+    Option<control_server::KeyFile>,
+    file_dialogs::Launcher,
+    Option<single_instance::Guard>,
+    #[cfg(target_os = "macos")] fmv_macos_events::Inbox,
+);
+
+impl eframe::App for App {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        #[cfg(target_os = "macos")]
+        apple_events::poll(&self.5, &mut self.0, ctx);
+        // MailCraft was started again (the shortcut, a `mailto:` link, a file opened from the
+        // file manager): what it was started with opens here, and the window comes forward.
+        if let Some(asked) = self.4.as_ref().and_then(single_instance::Guard::handed_over) {
+            for what in &asked {
+                self.0.open_path(what);
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        self.0.logic(ctx);
+        self.3.show(frame);
+        let prev = self.0.ui.window;
+        self.0.ui.window = ctx.input(|i| WindowGeometry::track(prev, i.viewport(), i.viewport_rect().size()));
+        if let Some(pos) = ctx.input(|i| take_rescue(&mut self.1, i.viewport())) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+        }
+        // The window's close button: a message being written asks first (`MailApp::close_requested`).
+        if ctx.input(|i| i.viewport().close_requested()) && !self.0.close_requested() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+        if self.0.quit_requested {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.0.raw_input_hook(raw);
+    }
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.0.ui(ui);
+        self.3.show(frame);
+    }
+    fn on_exit(&mut self) {
+        save_prefs(&self.0);
+        // The last changes, if the timer hadn't got to them yet, and whatever the background
+        // saver is still writing.
+        if let Err(e) = self.0.save_on_exit() {
+            log::error!("saving the mailbox on exit failed: {e}");
+        }
+        if let Some(key_file) = &self.2 {
+            key_file.remove();
+        }
+        if let Some(guard) = &self.4 {
+            guard.close();
+        }
+    }
+}
+
+/// `ui.json` in the settings folder, which the MCP bridge also uses to find the control key.
+fn prefs_path() -> Option<PathBuf> {
+    mailcraft_control_key::settings_dir().map(|b| b.join("ui.json"))
+}
+
+/// Where the mailbox is kept unless `--mailbox` says otherwise.
+fn default_mailbox_path() -> Option<PathBuf> {
+    mailcraft_control_key::settings_dir().map(|b| b.join(format!("mailbox.{}", mailcraft_engine::io::MAILBOX_EXT)))
+}
+
+/// Where the log files live: `logs` in the preferences folder (see `logging`).
+fn log_dir() -> Option<PathBuf> {
+    Some(prefs_path()?.parent()?.join("logs"))
+}
+
+/// Runs without preferences (`MAILCRAFT_NO_PREFS`, agents' test runs) neither read nor write them,
+/// and keep their mailbox in memory only.
+fn prefs_enabled() -> bool {
+    std::env::var_os("MAILCRAFT_NO_PREFS").is_none()
+}
+
+fn load_prefs(app: &mut MailApp) {
+    if !prefs_enabled() {
+        return;
+    }
+    if let Some(p) = prefs_path()
+        && let Ok(bytes) = std::fs::read(&p)
+        && let Ok(ui) = serde_json::from_slice::<UiState>(&bytes)
+    {
+        app.apply_prefs(ui);
+    }
+}
+
+/// The saved window geometry, read before the window opens (`load_prefs` runs after).
+fn saved_window() -> Option<WindowGeometry> {
+    if !prefs_enabled() {
+        return None;
+    }
+    let bytes = std::fs::read(prefs_path()?).ok()?;
+    serde_json::from_slice::<UiState>(&bytes).ok()?.window?.sanitized()
+}
+
+fn save_prefs(app: &MailApp) {
+    if !prefs_enabled() {
+        return;
+    }
+    if let Some(p) = prefs_path() {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(bytes) = serde_json::to_vec_pretty(&app.prefs()) {
+            let _ = std::fs::write(&p, bytes);
+        }
+    }
+}
+
+/// Run `work` on a background thread of its own; the answer comes back through the channel and
+/// wakes the window. A dropped sender (the thread couldn't start) reads as "stopped unexpectedly".
+fn background<T: Send + 'static>(ctx: &egui::Context, name: &str, work: impl FnOnce() -> T + Send + 'static) -> std::sync::mpsc::Receiver<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let wake = ctx.clone();
+    let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
+        let _ = tx.send(work());
+        wake.request_repaint();
+    });
+    if let Err(e) = spawned {
+        log::error!("couldn't start {name}: {e}");
+    }
+    rx
+}
+
+/// The application (client) id this build presents to Microsoft's sign-in page: the
+/// `MAILCRAFT_MS_CLIENT_ID` environment variable when the app starts, else the one the build was
+/// given under the same name. An identifier, not a secret; empty when there is none.
+fn microsoft_client_id() -> String {
+    let built_in = option_env!("MAILCRAFT_MS_CLIENT_ID").unwrap_or_default().to_string();
+    let id = std::env::var("MAILCRAFT_MS_CLIENT_ID").unwrap_or(built_in);
+    let id = id.trim();
+    if id.len() <= 200 && id.chars().all(|c| c.is_ascii_alphanumeric() || "-._".contains(c)) { id.to_string() } else { String::new() }
+}
+
+/// Sign an account's owner in: quietly with what was kept from last time when there is any, on
+/// the provider's page in the system's browser otherwise.
+fn sign_in(ctx: &egui::Context, request: SignInRequest) -> Result<Tokens, String> {
+    let open = |url: &str| {
+        ctx.open_url(egui::OpenUrl::new_tab(url));
+        ctx.request_repaint();
+    };
+    // "Connect calendar and contacts": the owner asked, so the page comes up, for what Microsoft
+    // Graph needs rather than for mail.
+    if request.graph {
+        let graph = mailcraft_net::oauth::Resource::Graph;
+        return mailcraft_net::oauth::sign_in_for(&request.oauth, &request.email, &open, &request.cancel, graph).map_err(|e| e.to_string());
+    }
+    if !request.refresh.is_empty() {
+        match mailcraft_net::oauth::refresh(&request.oauth, &request.refresh) {
+            Ok(tokens) => return Ok(tokens),
+            // The provider no longer takes what was kept: the owner signs in again (below).
+            Err(e) if e.is_refused_sign_in() => {}
+            // Trouble reaching the provider: what was kept is still good, so try again later.
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    // Nobody asked for this run: no page is put in front of the owner.
+    if request.quiet {
+        return Err(format!("The sign-in for {} has run out. Use Send/Receive to sign in again.", request.email));
+    }
+    if request.mail_only {
+        // Without the calendar and contacts along: for when the provider's page won't have both.
+        let mail = mailcraft_net::oauth::Endpoints { consent: String::new(), ..mailcraft_net::oauth::Endpoints::of(&request.oauth) };
+        return mailcraft_net::oauth::sign_in_at(&mail, &request.oauth, &request.email, &open, &request.cancel).map_err(|e| e.to_string());
+    }
+    mailcraft_net::oauth::sign_in(&request.oauth, &request.email, &open, &request.cancel).map_err(|e| e.to_string())
+}
+
+/// How far back and ahead of today the calendar is brought down (seconds).
+const CALENDAR_BEHIND: i64 = 31 * 86_400;
+const CALENDAR_AHEAD: i64 = 366 * 86_400;
+
+/// This machine's time zone by a name Microsoft Graph knows, for the days of whole-day events
+/// made here (a day is a day in the owner's zone, not in UTC); empty when the system doesn't say.
+/// Windows has its own name for the zone (`Pacific Standard Time`), which is the one Graph
+/// prefers; elsewhere it is the one `TZ` or `/etc/localtime` gives (`Europe/Berlin`).
+fn local_zone() -> &'static str {
+    static ZONE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ZONE.get_or_init(|| {
+        let name = system_zone().unwrap_or_default();
+        // Windows marks a zone whose daylight saving is switched off; the zone is the same.
+        let name = name.trim().trim_end_matches("_dstoff");
+        let fits = !name.is_empty() && name.len() <= 64 && name.chars().all(|c| c.is_ascii_alphanumeric() || " /_+-().".contains(c));
+        if fits { name.to_string() } else { String::new() }
+    })
+}
+
+#[cfg(windows)]
+fn system_zone() -> Option<String> {
+    use std::os::windows::process::CommandExt as _;
+    // The system's own tool, by its full path, and without a console window flashing up.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let tool = PathBuf::from(std::env::var_os("SystemRoot")?).join("System32").join("tzutil.exe");
+    let out = std::process::Command::new(tool).arg("/g").creation_flags(CREATE_NO_WINDOW).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(not(windows))]
+fn system_zone() -> Option<String> {
+    if let Ok(zone) = std::env::var("TZ") {
+        let zone = zone.trim_start_matches(':');
+        if zone.contains('/') {
+            return Some(zone.to_string());
+        }
+    }
+    let link = std::fs::read_link("/etc/localtime").ok()?;
+    link.to_string_lossy().split_once("zoneinfo/").map(|(_, zone)| zone.to_string())
+}
+
+/// What Microsoft Graph does for an account before its mail is synchronised: send what waits in
+/// the Outbox, and bring the calendar and the contacts down. Nothing here stops the mail: every
+/// trouble is a line in the answer.
+fn graph(request: GraphRequest) -> GraphResult {
+    use mailcraft_net::{NetError, graph, oauth};
+    let mut out = GraphResult { account: request.account.id, ..Default::default() };
+    let mut access = request.access.clone();
+    if access.is_empty() {
+        // For everything Graph is asked for; a sign-in from before the newest of it was asked
+        // for gets its tokens for what it covers, and says what is missing.
+        match oauth::refresh_graph(&request.oauth, &request.refresh) {
+            Ok(got) => {
+                access = got.tokens.access.clone();
+                out.extras_missing = got.extras_missing;
+                out.tokens = Some(got.tokens);
+            }
+            Err(e) if e.is_consent_needed() => {
+                out.consent_needed = true;
+                return out;
+            }
+            // A sign-in that has run out is the mail's to notice and ask about, once.
+            Err(e) if e.is_refused_sign_in() => return out,
+            Err(e) => {
+                out.errors.push(format!("Couldn't reach Microsoft for sending, the calendar and the contacts: {e}"));
+                return out;
+            }
+        }
+    }
+    let mut refused = false;
+    for message in &request.outbox {
+        if refused {
+            // The token stopped working part-way: the rest waits for the next run and a new one.
+            out.held.push(message.id);
+            continue;
+        }
+        match graph::send(&access, message, &graph::SendOptions::default()) {
+            Ok(()) => out.sent.push(message.id),
+            // Not allowed to send this way: the mail server gets its turn in this run.
+            Err(NetError::Forbidden(_)) => {}
+            Err(e) if e.is_refused_sign_in() => {
+                refused = true;
+                out.held.push(message.id);
+            }
+            // Whether it went is not known, or Microsoft said later: not sent a second way now.
+            Err(e) => {
+                out.held.push(message.id);
+                out.errors.push(format!("Couldn't send \"{}\" through Microsoft: {e}", message.subject.trim()));
+            }
+        }
+    }
+    // What was made, moved, changed or deleted in the calendar here goes up before the calendar
+    // comes down: what comes down then is what the server has after it.
+    if let Some(changes) = request.changes.as_ref().filter(|changes| !changes.ops.is_empty() && !refused) {
+        let uploaded = graph::push_events(&access, changes, &graph::EventOptions { zone: local_zone().to_string() });
+        // What the server made of each change, for the log: the kind of change and the answer,
+        // never what the event says.
+        for outcome in &uploaded.outcomes {
+            let what = format!("{:?}{}", outcome.op.kind, if outcome.op.of_occurrence() { " of one occurrence" } else { "" });
+            match outcome.result {
+                mailcraft_model::remote::EventResult::Done => log::info!("calendar: {what} taken by the server"),
+                result => log::warn!("calendar: {what} not taken by the server ({result:?}): {}", outcome.error),
+            }
+        }
+        if uploaded.outcomes.len() < changes.ops.len() {
+            log::warn!("calendar: {} of {} changes were answered; the rest wait", uploaded.outcomes.len(), changes.ops.len());
+        }
+        refused = uploaded.token_refused;
+        out.uploaded = Some(uploaded);
+    }
+    // The wide stretch with the contacts, every quarter of an hour; otherwise the days on screen.
+    let now = mailcraft_time::now();
+    let stretch = if request.directory { Some((now - CALENDAR_BEHIND, now + CALENDAR_AHEAD)) } else { request.calendar };
+    // The series the mailbox expects in each calendar's stretch: asked about by name when the
+    // stretch brings nothing of them.
+    let expected = |calendar: &str| request.asks.iter().find(|ask| ask.calendar == calendar).map(|ask| ask.series.clone()).unwrap_or_default();
+    // Which calendars the account has, and in which groups: with the wide stretch.
+    let mut others: Vec<String> = request.asks.iter().map(|ask| ask.calendar.clone()).filter(|calendar| !calendar.is_empty()).collect();
+    if request.directory && !refused {
+        match graph::calendars(&access) {
+            Ok(list) => {
+                // Every calendar there is comes with the wide stretch, known here already or not.
+                // (Not from a list that doesn't say which one is the main calendar: that one
+                // comes anyway, and would then come twice.)
+                let told_apart = list.calendars.iter().any(|calendar| calendar.main);
+                for calendar in list.calendars.iter().filter(|calendar| told_apart && !calendar.main) {
+                    if !others.contains(&calendar.id) {
+                        others.push(calendar.id.clone());
+                    }
+                }
+                out.calendars = Some(list.for_account(&request.account));
+            }
+            Err(e) if e.is_refused_sign_in() => refused = true,
+            Err(e) => out.errors.push(format!("Couldn't bring the list of calendars down: {e}")),
+        }
+    }
+    if let Some((from, to)) = stretch.filter(|_| !refused) {
+        let main = graph::EventsQuery { calendar: String::new(), from, to, series: expected("") };
+        match graph::events_in(&access, &main) {
+            Ok(events) => {
+                log::debug!("calendar: the main calendar came down for the stretch asked for");
+                out.events = Some(events.for_account(&request.account));
+            }
+            Err(e) if e.is_refused_sign_in() => refused = true,
+            Err(e) => out.errors.push(format!("Couldn't bring the calendar down: {e}")),
+        }
+        for calendar in others.iter().take(MAX_OTHER_CALENDARS) {
+            if refused {
+                break;
+            }
+            let query = graph::EventsQuery { calendar: calendar.clone(), from, to, series: expected(calendar) };
+            match graph::events_in(&access, &query) {
+                Ok(events) => out.more_events.push(events.for_account(&request.account)),
+                Err(e) if e.is_refused_sign_in() => refused = true,
+                // A calendar that is gone, or may not be read: the list says so the next time.
+                Err(e) => log::debug!("one of the account's other calendars didn't come down: {e}"),
+            }
+        }
+    }
+    if request.directory && !refused {
+        match graph::contacts(&access) {
+            Ok(contacts) => out.contacts = Some(contacts.for_account(&request.account)),
+            Err(e) if e.is_refused_sign_in() => refused = true,
+            Err(e) => out.errors.push(format!("Couldn't bring the contacts down: {e}")),
+        }
+    }
+    // The mailbox's own categories and their colours: an extra that an older sign-in doesn't
+    // cover, and nothing to trouble the owner with when it can't be had.
+    if request.directory && !refused {
+        match graph::categories(&access) {
+            Ok(categories) => out.categories = Some(categories.for_account(&request.account)),
+            Err(NetError::Forbidden(_)) => out.extras_missing = true,
+            Err(e) if e.is_refused_sign_in() => refused = true,
+            Err(e) => log::debug!("the list of categories didn't come down: {e}"),
+        }
+    }
+    // The working hours the mailbox has set: an extra of the same kind, and only ever read.
+    if request.settings && !refused {
+        match graph::mailbox_settings(&access) {
+            Ok(settings) => out.mailbox_hours = settings.working_hours.map(|hours| mailbox_hours(&request.account.email, hours)),
+            Err(NetError::Forbidden(_)) => out.extras_missing = true,
+            Err(e) if e.is_refused_sign_in() => refused = true,
+            Err(e) => log::debug!("the mailbox's working hours didn't come down: {e}"),
+        }
+    }
+    out.token_refused = refused;
+    out
+}
+
+/// A mailbox's working hours as the engine keeps them, for the account with the address `email`.
+/// The times are taken as this computer's, whatever zone the mailbox names: no zone is looked up
+/// (the engine would shift them by an offset, were one given), and the mailbox's zone is as a
+/// rule the one its owner's computer is in. The zone's name goes along, to be shown.
+fn mailbox_hours(email: &str, hours: mailcraft_net::graph::WorkingHours) -> mailcraft_engine::cmd::calendar_settings::MailboxHours {
+    mailcraft_engine::cmd::calendar_settings::MailboxHours {
+        email: email.trim().to_string(),
+        days: hours.days,
+        start: hours.start,
+        end: hours.end,
+        zone: hours.zone,
+        offset: None,
+    }
+}
+
+/// Most calendars of an account, beside its main one, that are brought down in one go.
+const MAX_OTHER_CALENDARS: usize = 20;
+
+/// When the people a meeting is for are free and busy, for its Scheduling Assistant: one
+/// question to Microsoft Graph, about when their time is taken and how, never by what. It
+/// reads; nothing is written, and nobody is told that it was asked.
+fn free_busy(request: FreeBusyRequest) -> FreeBusyResult {
+    use mailcraft_net::{graph, oauth};
+    let mut out = FreeBusyResult { account: request.account.id, ..Default::default() };
+    let mut access = request.access.clone();
+    if access.is_empty() {
+        match oauth::refresh_graph(&request.oauth, &request.refresh) {
+            Ok(got) => {
+                access = got.tokens.access.clone();
+                out.tokens = Some(got.tokens);
+            }
+            Err(e) => {
+                out.consent_needed = e.is_consent_needed();
+                out.error = format!("Couldn't reach Microsoft to see when people are free: {e}");
+                return out;
+            }
+        }
+    }
+    match graph::schedule(&access, &request.ask) {
+        Ok(schedule) => out.schedule = Some(schedule),
+        Err(e) => {
+            out.token_refused = e.is_refused_sign_in();
+            out.error = format!("Couldn't see when people are free: {e}");
+        }
+    }
+    out
+}
+
+/// What the app needs from the system: native file dialogs, shown without blocking the window
+/// (`file_dialogs`); everything that opens a socket (Send/Receive, signing in, finding a domain's
+/// mail servers, checking an account), each on a background thread; and the credential store.
+fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context) -> Services {
+    let pictures_ctx = ctx.clone();
+    let busy_ctx = ctx.clone();
+    let (sync_ctx, sign_in_ctx, graph_ctx, mx_ctx, test_ctx) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone(), ctx);
+    let sync_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel = sync_cancel.clone();
+    Services {
+        file_dialog: Some(file_dialog),
+        // Mail arrives in pieces as the run goes (what was sent, then folder by folder), through a
+        // channel short enough that a busy window holds the run back instead of piling pieces up.
+        sync: Some(Box::new(move |request| {
+            use std::sync::atomic::Ordering;
+            let (tx, rx) = std::sync::mpsc::sync_channel(8);
+            let (wake, cancel) = (sync_ctx.clone(), cancel.clone());
+            cancel.store(false, Ordering::Relaxed);
+            let spawned = std::thread::Builder::new().name("send/receive".into()).spawn(move || {
+                mailcraft_net::sync_with(&request, &cancel, &mut |piece| {
+                    // Nobody is listening any more (the window closed): stop.
+                    if tx.send(piece).is_err() {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                    wake.request_repaint();
+                });
+            });
+            // A dropped sender reads as "stopped unexpectedly" in the app.
+            if let Err(e) = spawned {
+                log::error!("couldn't start Send/Receive: {e}");
+            }
+            rx
+        })),
+        sync_cancel,
+        sign_in: Some(Box::new(move |request| {
+            let ctx = sign_in_ctx.clone();
+            background(&sign_in_ctx, "sign-in", move || sign_in(&ctx, request))
+        })),
+        graph: Some(Box::new(move |request| background(&graph_ctx, "microsoft graph", move || graph(request)))),
+        lookup_mx: Some(Box::new(move |domain| {
+            background(&mx_ctx, "mail exchangers", move || mailcraft_net::lookup_mx(&domain).map_err(|e| e.to_string()))
+        })),
+        test_account: Some(Box::new(move |account, secret| {
+            background(&test_ctx, "account check", move || mailcraft_net::test_account(&account, &secret).map_err(|e| e.to_string()))
+        })),
+        // A picture a message keeps on the web, once the owner asked for that message's pictures.
+        // The address is the message's choice, so `fetch` checks where it leads before it goes
+        // there (never to this machine or a private network), and takes and waits only so much.
+        pictures: Some(Box::new(move |url| {
+            background(&pictures_ctx, "picture", move || mailcraft_net::pictures::fetch(&url).map_err(|e| e.to_string()))
+        })),
+        // When the people of a meeting are free and busy, while its Scheduling Assistant is open.
+        free_busy: Some(Box::new(move |request| background(&busy_ctx, "free and busy times", move || free_busy(request)))),
+        secrets: secrets::store(),
+        microsoft_client_id: microsoft_client_id(),
+        ..Default::default()
+    }
+}
+
+/// Window, Dock and taskbar icon.
+fn app_icon() -> Option<egui::IconData> {
+    #[cfg(target_os = "macos")]
+    let png: &[u8] = include_bytes!("../../../assets/app-icon/mailcraft-macos-512.png");
+    #[cfg(not(target_os = "macos"))]
+    let png: &[u8] = include_bytes!("../../../assets/app-icon/hicolor/256x256/apps/ai.storyteller.mailcraft.png");
+    eframe::icon_data::from_png_bytes(png).map_err(|e| log::warn!("app icon: {e}")).ok()
+}
+
+/// The commit the build came from (short), or `dev`.
+fn build_sha() -> &'static str {
+    option_env!("MAILCRAFT_BUILD_SHA").map(|s| s.get(..8).unwrap_or(s)).unwrap_or("dev")
+}
+
+/// The mailbox to start with, the file it is kept in (none for the sample, or without prefs) and
+/// how many bodies and attachments couldn't be read back from the content folder beside it.
+fn first_mailbox(sample: bool, chosen: Option<PathBuf>) -> (Mailbox, Option<PathBuf>, usize) {
+    let now = mailcraft_time::now();
+    if sample {
+        return (mailcraft_engine::sample::mailbox(now, mailcraft_time::local_offset_minutes(now)), None, 0);
+    }
+    let ours = chosen.is_none();
+    let path = chosen.or_else(|| default_mailbox_path().filter(|_| prefs_enabled()));
+    let Some(path) = path else { return (Mailbox::with_local_account("", ""), None, 0) };
+    if !path.exists() {
+        // A first start: the settings folder has to be there for the mailbox to be saved in it.
+        if ours && let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        return (Mailbox::with_local_account("", ""), Some(path), 0);
+    }
+    match mailcraft_engine::store::open(&path) {
+        Ok(opened) => (opened.mailbox, Some(path), opened.unavailable),
+        Err(e) => {
+            // Never write over a mailbox that couldn't be read: start empty, keep nothing, say why.
+            log::error!("{e}");
+            (Mailbox::with_local_account("", ""), None, 0)
+        }
+    }
+}
+
+/// The thread that writes the mailbox file, so the window never waits for the disk; it wakes the
+/// window when a state has been written, or couldn't be. It also clears out content no message
+/// uses any more, a first time once the mailbox is open.
+fn background_saver(ctx: &egui::Context, path: &std::path::Path) -> Option<Box<dyn mailcraft_engine::io::BackgroundSave>> {
+    use mailcraft_engine::io::BackgroundSave as _;
+    let wake = ctx.clone();
+    match mailcraft_engine::store::Saver::spawn(move || wake.request_repaint()) {
+        Ok(saver) => {
+            saver.follow(path);
+            if path.exists() {
+                saver.sweep_later(path);
+            }
+            Some(Box::new(saver))
+        }
+        // Without it the mailbox is saved in place.
+        Err(e) => {
+            log::error!("couldn't start the mailbox saver: {e}");
+            None
+        }
+    }
+}
+
+/// Said when the mailbox is open in a MailCraft that doesn't answer: opening it a second time
+/// would let two windows save over each other, so this start ends here.
+fn already_open() {
+    let _ = rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title("MailCraft")
+        .set_description("MailCraft already has this mailbox open, but it isn't answering. Close that window (or end MailCraft in the system's task list) and start MailCraft again.")
+        .show();
+}
+
+fn main() -> eframe::Result {
+    // First, so the panic hook and every start-up warning are recorded (`logging`).
+    let logger = logging::install();
+    logging::install_panic_hook();
+    let mut control_port: Option<u16> = std::env::var("MAILCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
+    let mut files = Vec::new();
+    let mut sample = false;
+    let mut mailbox_path: Option<PathBuf> = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--control" => control_port = args.next().and_then(|p| p.parse().ok()),
+            "--sample" => sample = true,
+            "--mailbox" => mailbox_path = args.next().map(PathBuf::from),
+            "--version" => {
+                println!("mailcraft {} ({})", env!("CARGO_PKG_VERSION"), build_sha());
+                return Ok(());
+            }
+            _ => files.push(a),
+        }
+    }
+    // One window per mailbox file: started again, MailCraft hands what it was started with to
+    // the window that has the mailbox and exits. The sample keeps no file, so it isn't guarded.
+    let kept = if sample { None } else { mailbox_path.clone().or_else(|| default_mailbox_path().filter(|_| prefs_enabled())) };
+    let guard = match kept {
+        Some(path) => match single_instance::start(&path, &files) {
+            single_instance::Start::First(guard) => Some(guard),
+            single_instance::Start::Handed => return Ok(()),
+            single_instance::Start::Unreachable(why) => {
+                log::error!("MailCraft already has {} open and can't be reached: {why}", path.display());
+                already_open();
+                return Ok(());
+            }
+        },
+        None => None,
+    };
+    // The log file lives in the settings directory, next to the preferences; opened after the
+    // arguments, so `--version` leaves no file behind. Runs without preferences (agents' test
+    // runs) log to standard error only, so they don't rotate away the user's own logs.
+    if let Some(logger) = logger {
+        match log_dir().filter(|_| prefs_enabled()) {
+            Some(dir) => match logger.attach_dir(&dir) {
+                Ok(path) => log::info!("MailCraft {} ({}), log file {}", env!("CARGO_PKG_VERSION"), build_sha(), path.display()),
+                Err(e) => log::warn!("no log file: {e}"),
+            },
+            None => logger.no_file(),
+        }
+    }
+    let mut options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("MailCraft")
+            .with_app_id("ai.storyteller.mailcraft")
+            .with_inner_size([1440.0, 920.0])
+            .with_min_inner_size([760.0, 480.0])
+            .with_drag_and_drop(true)
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false),
+        ..Default::default()
+    };
+    if let Some(icon) = app_icon() {
+        options.viewport = options.viewport.with_icon(icon);
+    }
+    // Before eframe creates the wgpu instance: default Windows to DirectX 12 only, or OpenGL when
+    // DirectX 12 has no GPU driver (see graphics.rs).
+    #[cfg(target_os = "windows")]
+    graphics::configure(&mut options, eframe::wgpu::Backends::from_env());
+    let restored = saved_window();
+    if let Some(window) = restored {
+        options.viewport = window.apply(options.viewport);
+    }
+    // Registered before the event loop starts, so it catches the Finder event that launched us as
+    // well as later ones. Lives until the event loop returns; the app creator only borrows it.
+    #[cfg(target_os = "macos")]
+    let apple_events = apple_events::AppleEvents::install();
+    #[cfg(target_os = "macos")]
+    let apple_events = &apple_events;
+    eframe::run_native(
+        "MailCraft",
+        options,
+        Box::new(move |cc| {
+            let (mailbox, path, unavailable) = first_mailbox(sample, mailbox_path);
+            let (file_dialog, dialogs) = file_dialogs::hook(&cc.egui_ctx);
+            let mut session = Session::new(mailbox);
+            let kept = path.is_some();
+            session.path = path;
+            let mut app = MailApp::new(session, services(file_dialog, cc.egui_ctx.clone()));
+            // Nowhere to keep the mailbox (the sample, a run without preferences): don't try.
+            app.autosave = kept;
+            if let Some(path) = &app.session.path {
+                app.services.saver = background_saver(&cc.egui_ctx, path);
+            }
+            if unavailable > 0 {
+                app.status(format!("{unavailable} bodies or attachments are missing from the mailbox's content folder, or damaged."));
+            }
+            // An ordinary start on a mailbox nobody has set up yet begins with adding an account.
+            app.offer_setup = kept && !sample;
+            load_prefs(&mut app);
+            app.ui.window = restored;
+            app.integrated_titlebar = cfg!(target_os = "macos");
+            let mut key_file = None;
+            if let Some(port) = control_port
+                && let Some((rx, file)) = control_server::start(port, cc.egui_ctx.clone(), mailcraft_control_key::settings_dir().as_deref())
+            {
+                app = app.with_control(rx);
+                key_file = file;
+            }
+            for f in files {
+                app.open_path(&f);
+            }
+            if let Some(guard) = &guard {
+                guard.wake(&cc.egui_ctx);
+            }
+            Ok(Box::new(App(
+                app,
+                restored,
+                key_file,
+                dialogs,
+                guard,
+                #[cfg(target_os = "macos")]
+                apple_events.connect(&cc.egui_ctx),
+            )))
+        }),
+    )
+}

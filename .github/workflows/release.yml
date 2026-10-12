@@ -1,0 +1,109 @@
+name: Release
+
+# A pushed version tag vX.Y.Z builds every platform (package.yml) and publishes ONE GitHub
+# release, "MailCraft vX.Y.Z" on that tag, holding all the files plus SHA256SUMS.txt (`sha256sum`
+# format): the layout of the Craft apps' releases, so ArtCraft Launcher and anything else that
+# reads those releases finds MailCraft's files by the same names. See docs/releasing.md.
+#
+# Run by hand (workflow_dispatch) it builds everything and keeps the files as workflow artifacts
+# without publishing: a dry run, on any branch.
+#
+# This workflow is self-contained on purpose. The Craft apps inside the storytold organisation
+# call a shared one (storytold/craft-common-actions) that needs that organisation's runners and
+# release environment; if MailCraft's repository ever moves there, call that one instead.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+  workflow_dispatch:
+    inputs:
+      freebsd:
+        description: "Also build the FreeBSD tarball (in a VM; slow)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: The tag is the version in Cargo.toml
+        run: |
+          . packaging/env.sh
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, but Cargo.toml says version $VERSION: run 'cargo xtask version set', commit, and tag that commit"
+            exit 1
+          fi
+          case "$VERSION" in *-*) pre=true ;; *) pre=false ;; esac
+          { echo "version=$VERSION"; echo "prerelease=$pre"; } >>"$GITHUB_OUTPUT"
+
+  package:
+    name: Package
+    needs: [version]
+    uses: ./.github/workflows/package.yml
+    with:
+      freebsd: ${{ github.ref_type == 'tag' || inputs.freebsd == true }}
+    secrets: inherit
+
+  publish:
+    name: Publish the release
+    needs: [version, package]
+    # Tags only; a run by hand stops at the artifacts.
+    if: "!cancelled() && needs.package.result == 'success' && github.ref_type == 'tag'"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums
+        working-directory: artifacts
+        run: |
+          rm -f SHA256SUMS.txt
+          sha256sum -- * | tee SHA256SUMS.txt
+      - name: Create the release, or replace the files of the one a re-run made
+        working-directory: artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          tag="v$VERSION"
+          title="MailCraft v$VERSION"
+          pre=()
+          if [ "$PRERELEASE" = "true" ]; then pre=(--prerelease); fi
+          # The notes name the repository they are published in (a fork's point at the fork).
+          sed "s|GITHUB_REPOSITORY|$GITHUB_REPOSITORY|g" "$GITHUB_WORKSPACE/packaging/release-notes.md" >"$RUNNER_TEMP/notes.md"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release view "$tag" --json assets --jq '.assets[].name' | while read -r asset; do
+              gh release delete-asset "$tag" "$asset" --yes
+            done
+            gh release upload "$tag" --clobber -- *
+          else
+            gh release create "$tag" --title "$title" --target "$GITHUB_SHA" \
+              --notes-file "$RUNNER_TEMP/notes.md" "${pre[@]}" -- *
+          fi
+          {
+            echo "Release **$title** at \`${GITHUB_SHA::9}\`:"
+            echo
+            sed 's/^/    /' SHA256SUMS.txt
+          } >>"$GITHUB_STEP_SUMMARY"

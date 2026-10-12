@@ -1,0 +1,16 @@
+[package]
+name = "mailcraft-ical"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MailCraft iCalendar (RFC 5545) reader and writer: events, to-dos, recurrence rules"
+
+[lints]
+workspace = true
+
+[dependencies]
+mailcraft-time = { workspace = true }
+mailcraft-model = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

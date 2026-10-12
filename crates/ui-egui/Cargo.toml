@@ -1,0 +1,28 @@
+[package]
+name = "mailcraft-ui-egui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MailCraft egui front end (Outlook-style ribbon UI); swappable: nothing below depends on it"
+
+[lints]
+workspace = true
+
+[dependencies]
+mailcraft-time = { workspace = true }
+mailcraft-model = { workspace = true }
+mailcraft-html = { workspace = true }
+mailcraft-engine = { workspace = true }
+egui = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+# Window screenshots for the control channel are saved as PNG.
+image = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The browser clock (the std clocks panic on wasm32).
+js-sys = "0.3"
+
+[dev-dependencies]
+egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }

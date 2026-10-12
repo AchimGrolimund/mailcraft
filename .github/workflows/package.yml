@@ -1,0 +1,308 @@
+name: Package
+
+# Builds every release file with the scripts in packaging/ and uploads them as workflow artifacts
+# named release-* (release.yml gathers them into one GitHub release). Called by release.yml; it
+# doesn't run on its own. Everything here runs on GitHub's standard runners, so it works in any
+# public repository, a fork included.
+#
+# File names follow the Craft apps' releases, which is what lets ArtCraft Launcher find them:
+#   mailcraft-<ver>-windows-{x64,x86,arm64}.msi, mailcraft-<ver>-windows-{x64,x86,arm64}-portable.zip
+#   mailcraft-<ver>-macos-universal.dmg, mailcraft-cli-<ver>-macos-universal.zip
+#   mailcraft-<ver>-linux-{x86_64,aarch64}.{AppImage,AppImage.zsync,deb,rpm,tar.gz,flatpak}
+#   mailcraft-<ver>-freebsd-x86_64.tar.gz, mailcraft-web-<ver>.zip
+
+on:
+  workflow_call:
+    inputs:
+      freebsd:
+        description: "Also build the FreeBSD tarball (in a VM; slow)"
+        type: boolean
+        required: false
+        default: true
+    secrets:
+      APPLE_CERTIFICATE:
+        required: false
+      APPLE_CERTIFICATE_PASSWORD:
+        required: false
+      KEYCHAIN_PASSWORD:
+        required: false
+      APPLE_ID:
+        required: false
+      APPLE_PASSWORD:
+        required: false
+      APPLE_TEAM_ID:
+        required: false
+      WINDOWS_CERTIFICATE:
+        required: false
+      WINDOWS_CERTIFICATE_PASSWORD:
+        required: false
+      AZURE_TENANT_ID:
+        required: false
+      AZURE_CLIENT_ID:
+        required: false
+      AZURE_CLIENT_SECRET:
+        required: false
+      AZURE_SIGNING_ENDPOINT:
+        required: false
+      AZURE_SIGNING_ACCOUNT:
+        required: false
+      AZURE_CERT_PROFILE:
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+  WIX_VERSION: "5.0.2"
+  NFPM_VERSION: "2.47.0"
+
+jobs:
+  windows:
+    name: Windows ${{ matrix.arch }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, target: x86_64-pc-windows-msvc }
+          - { arch: x86, target: i686-pc-windows-msvc }
+          - { arch: arm64, target: aarch64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: package-windows-${{ matrix.arch }}
+      - name: Install WiX and its dialog and shell extensions
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version $env:WIX_VERSION
+          wix extension add -g "WixToolset.UI.wixext/$env:WIX_VERSION" "WixToolset.Util.wixext/$env:WIX_VERSION"
+      - name: Build, sign and package (MSI and portable zip)
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}
+        run: ./packaging/windows/package.ps1 -Arch ${{ matrix.arch }}
+      # The installer for real, on the one architecture this runner is: files in place, the
+      # program listed, the command-line program answering, and nothing left after uninstalling.
+      - name: Install, check and uninstall the MSI (x64 only)
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          $msi = (Get-Item dist/release/*.msi).FullName
+          $p = Start-Process msiexec.exe -ArgumentList @('/i', "`"$msi`"", '/qn', '/norestart', '/l*v', "$env:RUNNER_TEMP\install.log") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\install.log" -Tail 60; throw "install failed ($($p.ExitCode))" }
+          $dir = Join-Path $env:ProgramFiles 'MailCraft'
+          foreach ($f in 'mailcraft.exe', 'mailcraft-cli.exe') { if (-not (Test-Path (Join-Path $dir $f))) { throw "$f missing in $dir" } }
+          & (Join-Path $dir 'mailcraft-cli.exe') --version
+          $entry = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object { $_.DisplayName -eq 'MailCraft' }
+          if (-not $entry) { throw 'no installed-programs entry named MailCraft' }
+          $entry | Format-List DisplayName, DisplayVersion, Publisher, PSChildName
+          if (-not (Get-ItemProperty 'HKLM:\SOFTWARE\RegisteredApplications').MailCraft) { throw 'MailCraft is not offered as a mail program' }
+          $p = Start-Process msiexec.exe -ArgumentList @('/x', $entry.PSChildName, '/qn', '/norestart') -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "uninstall failed ($($p.ExitCode))" }
+          if (Test-Path (Join-Path $dir 'mailcraft.exe')) { throw 'uninstall left mailcraft.exe behind' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-${{ matrix.arch }}
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 30
+
+  macos:
+    name: macOS universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: package-macos-universal
+      # With the signing secrets set, the app is signed with the Developer ID and notarized;
+      # without them it is ad-hoc signed and the script says so.
+      - name: Import the signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          if [ -n "${APPLE_CERTIFICATE:-}" ]; then bash packaging/macos/import-cert.sh; else echo "no signing certificate: ad-hoc signing"; fi
+      - name: Build, sign and package (.app in a .dmg, CLI zip)
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash packaging/macos/package.sh --arch universal
+      - name: Check the .dmg
+        run: |
+          dmg=$(ls dist/release/*-macos-universal.dmg)
+          mnt=$(mktemp -d)
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt"
+          app="$mnt/MailCraft.app"
+          codesign --verify --deep --strict "$app"
+          plutil -p "$app/Contents/Info.plist" | grep -E "CFBundleIdentifier|CFBundleIconFile|CFBundleShortVersionString"
+          lipo -info "$app/Contents/MacOS/MailCraft"
+          "$app/Contents/MacOS/MailCraft" --version
+          hdiutil detach "$mnt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 30
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    # The oldest supported Ubuntu image: binaries built against its glibc (2.35) run on newer ones.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-22.04, deb: amd64 }
+          - { arch: aarch64, runner: ubuntu-22.04-arm, deb: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system libraries and packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev \
+            desktop-file-utils appstream zsync file xvfb libxkbcommon-x11-0 libegl1 mesa-vulkan-drivers
+          curl -fsSL -o "$RUNNER_TEMP/nfpm.deb" \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_${{ matrix.deb }}.deb"
+          case "${NFPM_VERSION}:${{ matrix.deb }}" in
+            2.47.0:amd64) expected=3f1cf344bd0b57373ca55636a78c08b0491f7293d609a456a9ac3b0b150fda97 ;;
+            2.47.0:arm64) expected=27419eb382695a7942be8ad52259f3ec1854fad001b3ae4baed34ce39a223b97 ;;
+            *) echo "::error::no checksum for nfpm ${NFPM_VERSION} ${{ matrix.deb }}"; exit 1 ;;
+          esac
+          echo "$expected  $RUNNER_TEMP/nfpm.deb" | sha256sum -c -
+          sudo dpkg -i "$RUNNER_TEMP/nfpm.deb"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: package-linux-${{ matrix.arch }}
+      - name: Build and package (AppImage, deb, rpm, tar.gz)
+        run: bash packaging/linux/package.sh
+      # The .deb for real: installed with its dependencies, the window started on a virtual
+      # display, and removed again.
+      - name: Install, start and remove the .deb
+        run: |
+          dpkg-deb --info dist/release/*.deb
+          sudo apt-get install -y ./dist/release/*.deb
+          mailcraft-cli --version
+          desktop-file-validate /usr/share/applications/*mailcraft.desktop
+          MAILCRAFT_NO_PREFS=1 timeout 20 xvfb-run -a mailcraft --sample >"$RUNNER_TEMP/window.log" 2>&1 || code=$?
+          # Still running when the time was up (124) is what a window that started looks like.
+          if [ "${code:-0}" != 124 ]; then cat "$RUNNER_TEMP/window.log"; echo "::error::the window did not stay up (exit ${code:-0})"; exit 1; fi
+          sudo apt-get remove -y mailcraft
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 30
+
+  flatpak:
+    name: Flatpak ${{ matrix.arch }}
+    needs: [linux]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/linux
+      - name: Install flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder librsvg2-common
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Build the Flatpak bundle
+        run: |
+          tarball=$(ls dist/linux/mailcraft-*-linux-${{ matrix.arch }}.tar.gz | head -n 1)
+          bash packaging/linux/flatpak-bundle.sh "$tarball"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-flatpak-${{ matrix.arch }}
+          path: dist/release/*.flatpak
+          if-no-files-found: error
+          retention-days: 30
+
+  freebsd:
+    name: FreeBSD x86_64
+    if: inputs.freebsd
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and package in a FreeBSD VM
+        # A FreeBSD build that fails doesn't hold back the other platforms: the release then has
+        # no FreeBSD tarball, and this step shows as failed.
+        continue-on-error: true
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        with:
+          release: "15.1"
+          usesh: true
+          cpu: 4
+          mem: 12288
+          prepare: |
+            pkg install -y bash git curl pkgconf cmake python3 libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader fontconfig freetype2
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          run: |
+            set -e
+            . "$HOME/.cargo/env"
+            git config --global --add safe.directory "*"
+            export CARGO_TARGET_DIR=/var/tmp/mailcraft-target CARGO_BUILD_JOBS=4
+            bash packaging/freebsd/package.sh
+            rm -rf /var/tmp/mailcraft-target
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-freebsd-x86_64
+          path: dist/release/*
+          if-no-files-found: warn
+          retention-days: 30
+
+  web:
+    name: Web (wasm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: package-web
+      # A pinned trunk release (prebuilt); trunk fetches the matching wasm-bindgen itself.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk@0.21.14
+      - name: Build and zip the web app
+        run: bash packaging/web/package.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-web
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 30

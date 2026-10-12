@@ -1,0 +1,179 @@
+//! Folders: choosing the one in view, making, renaming, moving, emptying.
+
+use mailcraft_model::{FolderKind, Id};
+use serde_json::{Value, json};
+
+use super::{bad, fail};
+use crate::{CmdError, CmdResult, CommandSpec, Module, Session, p};
+
+pub fn specs() -> Vec<CommandSpec> {
+    vec![
+        CommandSpec::new("folder.select", "Go to Folder", "Folder", select)
+            .pure()
+            .key("Mod+Y")
+            .params(r#"{"id": number} | {"kind": "inbox"|"drafts"|"sent"|"deleted"|"junk"|"archive"|"outbox", "account"?: number} | {"path": "Inbox/Projects"}"#),
+        CommandSpec::new("folder.list", "List Folders", "Folder", list).pure(),
+        CommandSpec::new("folder.new", "New Folder", "Folder › New", new)
+            .key("Mod+Shift+E")
+            .params(r#"{"name": string, "parent"?: number | null (default: the folder in view; null: top level), "account"?: number}"#),
+        CommandSpec::new("folder.rename", "Rename Folder", "Folder › Actions", rename).key("F2").params(r#"{"name": string, "id"?: number}"#),
+        CommandSpec::new("folder.move", "Move Folder", "Folder › Actions", move_folder).params(r#"{"parent": number | null, "id"?: number}"#),
+        CommandSpec::new("folder.delete", "Delete Folder", "Folder › Actions", delete).params(FOLDER),
+        CommandSpec::new("folder.favorite", "Add to Favorites", "Folder › Favorites", favorite).params(r#"{"value"?: bool (default: toggle), "id"?: number}"#),
+        CommandSpec::new("folder.empty", "Empty Folder", "Folder › Clean Up", empty).params(FOLDER).selection(can_empty),
+    ]
+}
+
+const FOLDER: &str = r#"{"id"?: number} (default: the folder in view)"#;
+
+fn can_empty(s: &Session) -> Option<&'static str> {
+    if s.mailbox.count(s.view.folder) == 0 { Some("the folder is already empty") } else { None }
+}
+
+fn target(s: &Session, v: &Value) -> Result<Id, CmdError> {
+    let id = p::id(v, "id").unwrap_or(s.view.folder);
+    s.mailbox.folder(id).map(|f| f.id).ok_or_else(|| fail(format!("no folder with id {id}")))
+}
+
+/// A folder by `Inbox/Projects/Apollo` (case-insensitive), in `account` or any account.
+fn by_path(s: &Session, account: Option<Id>, path: &str) -> Option<Id> {
+    let want = path.trim().trim_matches('/').to_lowercase();
+    s.mailbox
+        .folders
+        .iter()
+        .filter(|f| account.is_none_or(|a| f.account == a))
+        .find(|f| s.mailbox.folder_path(f.id).to_lowercase() == want)
+        .map(|f| f.id)
+}
+
+fn select(s: &mut Session, v: &Value) -> CmdResult {
+    let account = p::id(v, "account");
+    let id = if let Some(id) = p::id(v, "id") {
+        s.mailbox.folder(id).map(|f| f.id).ok_or_else(|| fail(format!("no folder with id {id}")))?
+    } else if let Some(kind) = p::str(v, "kind") {
+        let kind = FolderKind::parse(kind).ok_or_else(|| bad("`kind` is inbox, drafts, sent, deleted, junk, archive or outbox"))?;
+        let account = account.or_else(|| s.mailbox.folder(s.view.folder).map(|f| f.account)).or_else(|| s.mailbox.default_account().map(|a| a.id));
+        account.and_then(|a| s.mailbox.folder_of_kind(a, kind)).ok_or_else(|| fail(format!("no {} folder", kind.default_name())))?
+    } else if let Some(path) = p::str(v, "path") {
+        by_path(s, account, path).ok_or_else(|| fail(format!("no folder \"{path}\"")))?
+    } else {
+        return Err(bad("`id`, `kind` or `path` is required"));
+    };
+    if s.view.folder != id || s.view.module != Module::Mail {
+        s.view.folder = id;
+        s.view.module = Module::Mail;
+        s.sel.messages.clear();
+    }
+    // A search belongs to the folder it was typed in.
+    s.view.search.clear();
+    Ok(json!({"folder": id, "path": s.mailbox.folder_path(id), "messages": s.mailbox.count(id), "unread": s.mailbox.unread_count(id)}))
+}
+
+fn tree(s: &Session, account: Id, parent: Option<Id>, depth: usize) -> Vec<Value> {
+    if depth > 40 {
+        return Vec::new();
+    }
+    s.mailbox
+        .children(account, parent)
+        .into_iter()
+        .map(|f| {
+            json!({
+                "id": f.id, "name": f.name, "kind": f.kind, "favorite": f.favorite,
+                "messages": s.mailbox.count(f.id), "unread": s.mailbox.unread_count(f.id),
+                "folders": tree(s, account, Some(f.id), depth + 1),
+            })
+        })
+        .collect()
+}
+
+fn list(s: &mut Session, _: &Value) -> CmdResult {
+    let accounts: Vec<Value> = s
+        .mailbox
+        .accounts
+        .iter()
+        .map(|a| json!({"id": a.id, "name": a.name, "email": a.email, "kind": a.kind, "folders": tree(s, a.id, None, 0)}))
+        .collect();
+    Ok(json!({"accounts": accounts, "current": s.view.folder}))
+}
+
+fn new(s: &mut Session, v: &Value) -> CmdResult {
+    let name = p::req_str(v, "name")?;
+    // `"parent": null` asks for the top level; no `parent` means under the folder in view.
+    let parent = match v.get("parent") {
+        Some(Value::Null) => None,
+        Some(_) => Some(p::req_id(v, "parent")?),
+        None => s.mailbox.folder(s.view.folder).map(|f| f.id),
+    };
+    let account = match parent.and_then(|p| s.mailbox.folder(p)) {
+        Some(f) => f.account,
+        None => p::id(v, "account")
+            .or_else(|| s.mailbox.folder(s.view.folder).map(|f| f.account))
+            .or_else(|| s.mailbox.default_account().map(|a| a.id))
+            .ok_or_else(|| fail("add an account first"))?,
+    };
+    let id = s.mailbox.add_folder(account, parent, name)?;
+    Ok(json!({"id": id, "path": s.mailbox.folder_path(id)}))
+}
+
+fn rename(s: &mut Session, v: &Value) -> CmdResult {
+    let id = target(s, v)?;
+    s.mailbox.rename_folder(id, p::req_str(v, "name")?)?;
+    Ok(json!({"id": id, "path": s.mailbox.folder_path(id)}))
+}
+
+fn move_folder(s: &mut Session, v: &Value) -> CmdResult {
+    let id = target(s, v)?;
+    let parent = match v.get("parent") {
+        Some(Value::Null) => None,
+        Some(_) => Some(p::req_id(v, "parent")?),
+        None => return Err(bad("`parent` (a folder id, or null for the top level) is required")),
+    };
+    s.mailbox.move_folder(id, parent)?;
+    Ok(json!({"id": id, "path": s.mailbox.folder_path(id)}))
+}
+
+fn delete(s: &mut Session, v: &Value) -> CmdResult {
+    let id = target(s, v)?;
+    let parent = s.mailbox.folder(id).and_then(|f| f.parent);
+    let account = s.mailbox.folder(id).map(|f| f.account);
+    let permanently = s.mailbox.delete_folder(id)?;
+    // The view goes to where the folder was.
+    if s.view.folder == id || s.mailbox.folder(s.view.folder).is_none() {
+        s.view.folder = parent
+            .filter(|p| s.mailbox.folder(*p).is_some())
+            .or_else(|| account.and_then(|a| s.mailbox.folder_of_kind(a, FolderKind::Inbox)))
+            .unwrap_or(0);
+        s.sel.messages.clear();
+    }
+    Ok(json!({"permanently": permanently}))
+}
+
+fn favorite(s: &mut Session, v: &Value) -> CmdResult {
+    let id = target(s, v)?;
+    let f = s.mailbox.folder_mut(id)?;
+    f.favorite = p::bool(v, "value").unwrap_or(!f.favorite);
+    Ok(json!({"id": id, "favorite": f.favorite}))
+}
+
+fn empty(s: &mut Session, v: &Value) -> CmdResult {
+    let id = target(s, v)?;
+    let kind = s.mailbox.folder(id).map(|f| f.kind);
+    let ids: Vec<Id> = s.mailbox.messages_in(id).map(|m| m.id).collect();
+    for m in &ids {
+        // Emptying Deleted Items or Junk removes for good; any other folder goes to Deleted Items.
+        if matches!(kind, Some(FolderKind::Deleted | FolderKind::Junk)) {
+            s.mailbox.remove_message(*m)?;
+        } else {
+            s.mailbox.delete_message(*m)?;
+        }
+    }
+    // Folders deleted into Deleted Items go with it.
+    if kind == Some(FolderKind::Deleted) {
+        let children: Vec<Id> = s.mailbox.folders.iter().filter(|f| f.parent == Some(id)).map(|f| f.id).collect();
+        for c in children {
+            s.mailbox.delete_folder(c)?;
+        }
+    }
+    s.sel.messages.clear();
+    Ok(json!({"removed": ids.len()}))
+}

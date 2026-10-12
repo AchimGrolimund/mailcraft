@@ -1,0 +1,17 @@
+[package]
+name = "mailcraft-vcard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MailCraft vCard (2.1, 3.0, 4.0) reader and writer"
+
+[lints]
+workspace = true
+
+[dependencies]
+mailcraft-time = { workspace = true }
+mailcraft-model = { workspace = true }
+base64 = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

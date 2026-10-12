@@ -1,0 +1,50 @@
+MailCraft
+Copyright (c) 2026 the MailCraft contributors.
+Licensed under the MIT License or the Apache License, Version 2.0, at your option
+(LICENSE-MIT, LICENSE-APACHE).
+
+MailCraft is a clean-room mail, calendar, contacts and tasks program. It is not affiliated with,
+endorsed by or derived from Microsoft Outlook or any other mail product. Product names mentioned
+in the documentation (to say what a feature corresponds to) are trademarks of their owners.
+
+Portions adapted from WordCraft
+
+MailCraft follows the architecture and conventions of WordCraft
+(https://github.com/storytold/wordcraft), and these parts started from WordCraft's source, which is
+Copyright (c) 2026 ArtCraft Team and the WordCraft contributors and licensed under the MIT License
+or the Apache License, Version 2.0:
+
+- workspace tooling: xtask (layers, assets, wasm, ci, stats, version, ico), rustfmt and clippy
+  settings, the lint set;
+- packaging scripts and metadata for macOS, Windows, Linux and the web (packaging/), and the
+  release workflows (.github/workflows/), which call the shared craft-common-actions;
+- the control channel (apps/mailcraft/src/control_server.rs, crates/control-key) and the MCP
+  server's JSON-RPC framing and bridge (crates/mcp/src/server.rs, backend.rs);
+- desktop plumbing: logging, Windows graphics-backend choice, native file dialogs, macOS Apple
+  events (apps/mailcraft/src/), window geometry (crates/ui-egui/src/window_geometry.rs);
+- the front end's design-token scheme, type rungs and ribbon widget shapes (crates/ui-egui/src/
+  theme.rs, widgets.rs), and the headless screenshot example.
+
+The ArtCraft name, wordmark and logos are trademarks of the ArtCraft Team. They are not open
+source, are not included in this repository and are not covered by the license above.
+
+Third-party material
+
+This product bundles third-party material under its own licenses, listed below. The per-file
+list (author, source, license) is in ATTRIBUTION.md.
+
+- Inter (assets/fonts/Inter-*.ttf) — SIL Open Font License 1.1. See assets/fonts/OFL-Inter.txt.
+- Source Sans 3 (assets/fonts/SourceSans3-Regular.ttf) — SIL Open Font License 1.1. See
+  assets/fonts/OFL-SourceSans3.txt.
+- JetBrains Mono (assets/fonts/JetBrainsMono-Regular.ttf) — SIL Open Font License 1.1. See
+  assets/fonts/OFL-JetBrainsMono.txt.
+- All UI icons are drawn in code (crates/ui-egui/src/icons.rs) and the app icon is drawn in code
+  (xtask/src/icon.rs); both are original work, MIT OR Apache-2.0.
+- The sample mailbox (crates/engine/src/sample.rs) is invented text about invented people,
+  MIT OR Apache-2.0.
+
+Rust dependencies (egui, eframe, wgpu, rustls, serde, image, …) are permissively licensed
+(MIT/Apache-2.0/BSD/ISC/Zlib) and fetched through crates.io.
+
+No Microsoft, Google, Apple, Mozilla or other vendor's icons, images, templates, sounds or artwork
+are included.

@@ -1,0 +1,15 @@
+[package]
+name = "mailcraft-html"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MailCraft HTML for mail: hostile HTML to safe display blocks and plain text, and plain text to HTML"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

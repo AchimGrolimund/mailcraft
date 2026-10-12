@@ -1,0 +1,39 @@
+Hi all,
+
+Short answer: yes, we can ship the patch on Thursday, provided the two fixes below land by Wednesday noon. The long answer is further down, under Hanna's questions, and it is long because the answer to the second one depends on which mirror you are pulling from and I did not want to hand-wave it.
+
+Build to test: https://builds.orchard-tools.example/nightly/2026-10-12/orchard-4.8.1-rc2.tar.gz
+Tracking list: www.orchard-tools.example/lists/dev (thread 4417), or write to release@orchard-tools.example.
+
+On Mon, 12 Oct 2026 at 18:03, Hanna Virtanen <hanna@orchard-tools.example> wrote:
+> Thanks Jorge. Two questions before I sign off on the date:
+>
+> 1. Is the checksum mismatch on the ARM build fixed, or only worked around?
+> 2. Do we still need the manual step after upgrading from 4.6?
+
+1. Fixed. The archive was being re-compressed by the mirror, so the checksum we published was for a file nobody could download any more. We now publish the checksum of what the mirror actually serves and the release script refuses to continue if the two differ.
+
+2. Only from 4.6.0 and 4.6.1. From 4.6.2 on, the migration runs by itself.
+
+> On Mon, 12 Oct 2026 at 11:20, Jorge Salas <jorge@orchard-tools.example> wrote:
+>> rc2 is up. Changes since rc1:
+>>
+>>   - importer no longer stops at the first malformed row
+>>   - the --dry-run flag prints what it would do (it used to print nothing)
+>>   - ARM build restored
+>>
+>> I would like to tag on Thursday unless someone objects.
+>>
+>>> On Fri, 9 Oct 2026 at 16:45, Hanna Virtanen wrote:
+>>> Any news on rc2? The people on 4.6 keep asking.
+>
+> Good. I will tell them Thursday, then.
+
+Agreed. I will send the announcement draft tomorrow.
+
+Jorge
+
+-- 
+Jorge Salas
+Release wrangler, Orchard Tools
+"Ship it when it is boring."

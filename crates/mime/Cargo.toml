@@ -1,0 +1,19 @@
+[package]
+name = "mailcraft-mime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MailCraft Internet messages: RFC 5322 / MIME reader and writer (.eml), mbox"
+
+[lints]
+workspace = true
+
+[dependencies]
+mailcraft-time = { workspace = true }
+mailcraft-model = { workspace = true }
+mailcraft-html = { workspace = true }
+base64 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

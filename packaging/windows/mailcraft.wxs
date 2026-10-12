@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MailCraft MSI (WiX Toolset v5: `dotnet tool install -g wix`, plus its UI and Util extensions:
+  `wix extension add -g WixToolset.UI.wixext/5.0.2` and the same for WixToolset.Util.wixext).
+  Built by package.ps1:
+
+    wix build mailcraft.wxs -arch x64 -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext
+      -d Version=1.2.3 -d BinDir=... -d IconPath=... -d LicenseRtf=... -o out.msi
+
+  Per-machine install into Program Files with a Start Menu shortcut. The installer shows the
+  standard WiX dialogs: welcome + license, progress, and a finish page.
+
+  UpgradeCode and the component GUIDs below belong to MailCraft alone. Never copy them from (or
+  into) a sibling Craft app: Windows Installer treats every package sharing an UpgradeCode as one
+  product, so a shared code makes one app's installer refuse to install ("a newer version is
+  already installed") or silently uninstall the other. packaging-lint.yml checks this.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package
+      Name="MailCraft"
+      Manufacturer="MailCraft contributors"
+      Version="$(var.Version)"
+      UpgradeCode="647FB3CC-7876-4DC8-84D9-CE2DD295D1C7"
+      Scope="perMachine"
+      Compressed="yes"
+      Language="1033">
+    <SummaryInformation Description="MailCraft mail and calendar" Manufacturer="MailCraft contributors" />
+    <!-- Same-version upgrades let successive pre-releases of one X.Y.Z replace each other
+         (MSI versions are numeric, so 1.2.3-rc.1 and 1.2.3-rc.2 are both 1.2.3). -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+        DowngradeErrorMessage="A newer version of MailCraft is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="MailcraftIcon.ico" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="MailcraftIcon.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://getartcraft.com/apps/mailcraft" />
+    <Property Id="ARPURLUPDATEINFO" Value="https://getartcraft.com/apps/mailcraft" />
+    <Property Id="ARPHELPLINK" Value="https://discord.gg/artcraft" />
+
+    <!-- Installer UI (#198): WixUI_Minimal is welcome + license, progress, then a finish page so
+         people can see the install worked. Its dialogs and bitmaps are WiX's own
+         (WixToolset.UI.wixext); package.ps1 builds the license RTF from LICENSE-MIT and
+         LICENSE-APACHE. The finish page offers to launch MailCraft (ticked by default) through
+         WixShellExec (WixToolset.Util.wixext); silent installs (/qn) never show it. -->
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch MailCraft" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="[#MailcraftExe]" />
+    <CustomAction Id="LaunchMailcraft" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixShellExec"
+        Impersonate="yes" Return="ignore" />
+    <UI>
+      <ui:WixUI Id="WixUI_Minimal" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchMailcraft"
+          Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="MailCraft" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="Main" Title="MailCraft" Level="1">
+      <ComponentGroupRef Id="MailcraftFiles" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="MailcraftFiles" Directory="INSTALLFOLDER">
+      <Component Id="MailcraftApp" Guid="6883EF8E-7160-4B89-85C5-0DB6E7264E61">
+        <File Id="MailcraftExe" Source="$(var.BinDir)\mailcraft.exe" KeyPath="yes">
+          <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="MailCraft"
+              Description="MailCraft mail and calendar" WorkingDirectory="INSTALLFOLDER" Advertise="yes"
+              Icon="MailcraftIcon.ico" IconIndex="0" />
+        </File>
+
+        <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\mailcraft.exe" Value="[#MailcraftExe]" Type="string" />
+      </Component>
+
+      <!-- What MailCraft opens. Each file type gets a MailCraft ProgId (name, icon, open command)
+           and is listed under the extension's OpenWithProgids, so MailCraft shows in Explorer's "Open
+           with"; messages, calendar files and contact cards are also MailCraft's Capabilities
+           (RegisteredApplications), as is the mailto: link type, so MailCraft appears in Settings ›
+           Default apps, where the owner makes it the mail program. Nothing here sets a default for a
+           type another program may own: the installer never takes over .eml, .ics, .vcf or mailto:.
+           A mailbox file (.mailcraft) is MailCraft's own and opens with it. A second start hands the
+           file or link to the window that is already open (apps/mailcraft/src/single_instance.rs).
+           Removed again on uninstall. -->
+      <Component Id="MailcraftFileTypes" Guid="D5E14B14-1BE0-4E96-A849-E5F04AC4D6BB">
+        <RegistryValue Root="HKLM" Key="Software\RegisteredApplications" Name="MailCraft" Value="Software\MailCraft\Capabilities" Type="string" KeyPath="yes" />
+        <RegistryValue Root="HKLM" Key="Software\MailCraft\Capabilities" Name="ApplicationName" Value="MailCraft" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\MailCraft\Capabilities" Name="ApplicationDescription" Value="Mail, calendar, contacts and tasks; opens messages, calendar files and contact cards." Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\MailCraft\Capabilities" Name="ApplicationIcon" Value="&quot;[#MailcraftExe]&quot;,0" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\mailcraft.exe" Name="FriendlyAppName" Value="MailCraft" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\mailcraft.exe\shell\open\command" Value="&quot;[#MailcraftExe]&quot; &quot;%1&quot;" Type="string" />
+
+        <ProgId Id="MailCraft.Message" Description="Email Message" Icon="MailcraftExe" IconIndex="0" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\MailCraft.Message\shell\open\command" Value="&quot;[#MailcraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.eml\OpenWithProgids" Name="MailCraft.Message" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\mailcraft.exe\SupportedTypes" Name=".eml" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\MailCraft\Capabilities\FileAssociations" Name=".eml" Value="MailCraft.Message" Type="string" />
+
+        <ProgId Id="MailCraft.Calendar" Description="iCalendar File" Icon="MailcraftExe" IconIndex="0" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\MailCraft.Calendar\shell\open\command" Value="&quot;[#MailcraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.ics\OpenWithProgids" Name="MailCraft.Calendar" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\mailcraft.exe\SupportedTypes" Name=".ics" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\MailCraft\Capabilities\FileAssociations" Name=".ics" Value="MailCraft.Calendar" Type="string" />
+
+        <ProgId Id="MailCraft.Contact" Description="vCard File" Icon="MailcraftExe" IconIndex="0" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\MailCraft.Contact\shell\open\command" Value="&quot;[#MailcraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.vcf\OpenWithProgids" Name="MailCraft.Contact" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\mailcraft.exe\SupportedTypes" Name=".vcf" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\MailCraft\Capabilities\FileAssociations" Name=".vcf" Value="MailCraft.Contact" Type="string" />
+
+        <ProgId Id="MailCraft.MailFolder" Description="Mail Folder File" Icon="MailcraftExe" IconIndex="0" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\MailCraft.MailFolder\shell\open\command" Value="&quot;[#MailcraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.mbox\OpenWithProgids" Name="MailCraft.MailFolder" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\mailcraft.exe\SupportedTypes" Name=".mbox" Value="" Type="string" />
+
+        <ProgId Id="MailCraft.Mailbox" Description="MailCraft Mailbox" Icon="MailcraftExe" IconIndex="0" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\MailCraft.Mailbox\shell\open\command" Value="&quot;[#MailcraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.mailcraft\OpenWithProgids" Name="MailCraft.Mailbox" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\mailcraft.exe\SupportedTypes" Name=".mailcraft" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\MailCraft\Capabilities\FileAssociations" Name=".mailcraft" Value="MailCraft.Mailbox" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.mailcraft" Value="MailCraft.Mailbox" Type="string" />
+
+        <!-- mailto: links. `URL Protocol` marks the ProgId as a link handler. -->
+        <ProgId Id="MailCraft.Url.mailto" Description="MailCraft Mail Link" Icon="MailcraftExe" IconIndex="0" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\MailCraft.Url.mailto" Name="URL Protocol" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\MailCraft.Url.mailto\shell\open\command" Value="&quot;[#MailcraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\MailCraft\Capabilities\URLAssociations" Name="mailto" Value="MailCraft.Url.mailto" Type="string" />
+      </Component>
+      <Component Id="MailcraftCli">
+        <File Id="MailcraftCliExe" Source="$(var.BinDir)\mailcraft-cli.exe" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

@@ -1,0 +1,30 @@
+[package]
+name = "mailcraft-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MailCraft engine: session, selection, undo, the command registry (every action is a command), Outlook's command catalog, the sample mailbox, file I/O dispatch"
+
+[lints]
+workspace = true
+
+[dependencies]
+mailcraft-time = { workspace = true }
+mailcraft-model = { workspace = true }
+mailcraft-html = { workspace = true }
+mailcraft-mime = { workspace = true }
+mailcraft-ical = { workspace = true }
+mailcraft-vcard = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+base64 = { workspace = true }
+
+# SHA-256 names the content files of a mailbox kept on disk (`store`). Not in the browser, which
+# keeps the mailbox as one file.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ring = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

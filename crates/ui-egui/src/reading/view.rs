@@ -1,0 +1,573 @@
+//! The body of a message being read: parsed and laid out once, painted every frame.
+//!
+//! A frame costs what is in view: the layout of the last few messages read is kept (with the
+//! message it was made from, where it is shown, the width, the theme and the display scale), and
+//! painting walks it and paints the pieces inside the clip rectangle. Laying out is spread over
+//! frames ([`FRAME_BUDGET`]), so opening a very long message does not stall the window.
+//!
+//! A message can be on screen in more than one place (the reading pane, a window of its own),
+//! each as wide as it likes: every [`Place`] has its own layout, and they share the parsed body.
+
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+
+use egui::{Color32, Rect, Sense, Stroke, Ui, pos2, vec2};
+use mailcraft_html::{Block, BlockKind, Marker};
+use mailcraft_model::Message;
+
+use super::Place;
+use super::colors::Paper;
+use super::images::{self, Picture, Pictures, Remote};
+use super::layout::{Glue, ItemKind, Laid, PIECE_CHARS, PlaceholderItem, TextItem, cut};
+use super::remote::Access;
+use super::select::{self, Action};
+use crate::MailApp;
+use crate::theme::{Tokens, paint_clipped, regular};
+
+/// About how many characters of text are laid out in one frame.
+pub const FRAME_BUDGET: usize = 60_000;
+
+/// How many messages' layouts are kept for the reading pane.
+const KEPT: usize = 4;
+
+/// How many layouts are kept for windows: one each, and a few that outlive theirs for a moment.
+const KEPT_IN_WINDOWS: usize = 16;
+
+/// The width a message is laid out at is a multiple of this many points.
+const WIDTH_STEP: f32 = 4.0;
+
+/// A message's body as display blocks.
+#[derive(Debug, Default)]
+pub struct Doc {
+    pub blocks: Vec<Block>,
+    /// Pictures that are not part of the message: they are placeholders unless the owner asks
+    /// for them (and then only those in `remote`).
+    pub remote_pictures: usize,
+    /// The addresses of the pictures on the web that may be asked for: each once, in reading
+    /// order, as the message wrote them, [`super::remote::MAX_PER_MESSAGE`] at most.
+    pub remote: Vec<Arc<str>>,
+    /// How many more such addresses the message has than may be asked for.
+    pub remote_left_out: usize,
+    /// Per block: `Some` when it goes on in the paragraph of the block before, which was cut for
+    /// its length, with what was dropped at the cut. Empty when nothing was cut.
+    pub cuts: Arc<[Option<Glue>]>,
+}
+
+impl Doc {
+    /// The message's display blocks: from its HTML when it has some, else from its text.
+    pub fn of(message: &Message) -> Doc {
+        let parsed = message.body.html.as_deref().map(mailcraft_html::parse);
+        let blocks = match parsed {
+            // HTML that came to nothing (only scripts, only pictures that can't be shown) falls back to the text.
+            Some(blocks) if mailcraft_html::has_text(&blocks) || shows_a_picture(&blocks, message) || message.body.text.trim().is_empty() => blocks,
+            _ => mailcraft_html::text_blocks(&message.body.text),
+        };
+        Doc::from_blocks(blocks)
+    }
+
+    /// The blocks as a body, with what is known of their pictures on the web.
+    pub(super) fn from_blocks(blocks: Vec<Block>) -> Doc {
+        let mut doc = Doc::default();
+        let mut seen = HashSet::new();
+        for picture in mailcraft_html::images(&blocks) {
+            let BlockKind::Image { src, width, height, .. } = &picture.kind else { continue };
+            if mailcraft_html::is_embedded(src) {
+                continue;
+            }
+            doc.remote_pictures += 1;
+            // A picture that says it is two pixels or less is there to be counted, not seen (the
+            // parser drops those; this is the second look). Nor is anything asked for that is
+            // not on the web.
+            let tiny = |v: &Option<u16>| v.is_some_and(|v| v <= 2);
+            let src = src.trim();
+            if tiny(width) || tiny(height) || !images::is_remote(src) || !seen.insert(src) {
+                continue;
+            }
+            if doc.remote.len() < super::remote::MAX_PER_MESSAGE {
+                doc.remote.push(Arc::from(src));
+            } else {
+                doc.remote_left_out += 1;
+            }
+        }
+        let (blocks, cuts) = in_pieces(blocks);
+        doc.blocks = blocks;
+        doc.cuts = cuts.into();
+        doc
+    }
+}
+
+/// Whether one of the pictures is an attachment of the message.
+fn shows_a_picture(blocks: &[Block], message: &Message) -> bool {
+    mailcraft_html::images(blocks)
+        .iter()
+        .any(|b| matches!(&b.kind, BlockKind::Image { src, .. } if super::images::attachment(message, src).is_some()))
+}
+
+/// A very long paragraph of the message as several blocks, so that it is laid out a part per
+/// frame like everything else. (Paragraphs inside tables are cut up when they are laid out.)
+/// With them, for each block that goes on where the one before was cut, what was dropped there:
+/// nothing at all when no paragraph was that long.
+fn in_pieces(blocks: Vec<Block>) -> (Vec<Block>, Vec<Option<Glue>>) {
+    if !blocks.iter().any(|b| b.spans.iter().map(|s| s.text.len()).sum::<usize>() > PIECE_CHARS) {
+        return (blocks, Vec::new());
+    }
+    let mut out = Vec::with_capacity(blocks.len());
+    let mut cuts = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        if block.spans.iter().map(|s| s.text.len()).sum::<usize>() <= PIECE_CHARS {
+            out.push(block);
+            cuts.push(None);
+            continue;
+        }
+        for (n, (spans, glue)) in cut(&block.spans).into_iter().enumerate() {
+            let kind = match &block.kind {
+                BlockKind::ListItem { depth, .. } if n > 0 => BlockKind::ListItem { marker: Marker::None, depth: *depth },
+                kind => kind.clone(),
+            };
+            out.push(Block { kind, spans, quote: block.quote, align: block.align, space: if n == 0 { block.space } else { 0 } });
+            cuts.push((n > 0).then_some(glue));
+        }
+    }
+    (out, cuts)
+}
+
+/// What a layout was made for: when any of it changes, it is made again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Key {
+    /// In whole points.
+    width: u32,
+    dark: bool,
+    /// The display scale and the height of a line of text, as bits: the fonts or the zoom changed.
+    scale: u32,
+    line: u32,
+    /// How many of the message's pictures from the web had come when it was made; `None` while
+    /// they are not shown at all.
+    remote: Option<usize>,
+}
+
+struct Entry {
+    /// The message the blocks were made from. Keeping it keeps its address its own: a message
+    /// that is edited is a new one.
+    message: Arc<Message>,
+    place: Place,
+    doc: Arc<Doc>,
+    key: Option<Key>,
+    laid: Laid,
+    /// A layout in the making that takes the place of `laid` once it is done: pictures came, and
+    /// what is on screen stays there (and stays scrolled where it is) meanwhile.
+    next: Option<(Key, Laid)>,
+    used: u64,
+    /// Where the body was last painted, for tests that point at things in it.
+    #[cfg(test)]
+    origin: egui::Pos2,
+}
+
+/// The bodies of the messages read lately.
+#[derive(Default)]
+pub struct Store {
+    entries: Vec<Entry>,
+    /// How many layouts were begun, for tests.
+    #[cfg(test)]
+    begun: usize,
+}
+
+/// Whether two messages show the same body: the same text, HTML and attached bytes.
+fn same_body(a: &Message, b: &Message) -> bool {
+    a.body == b.body
+        && a.attachments.len() == b.attachments.len()
+        && a.attachments.iter().zip(&b.attachments).all(|(x, y)| x.content_id == y.content_id && Arc::ptr_eq(&x.data, &y.data))
+}
+
+impl Store {
+    fn of(ctx: &egui::Context) -> Arc<Mutex<Store>> {
+        ctx.data_mut(|d| d.get_temp_mut_or_default::<Arc<Mutex<Store>>>(egui::Id::new("mailcraft-reading-bodies")).clone())
+    }
+
+    /// The entry for `message` shown at `place`, parsing its body when it is not known yet.
+    fn entry(&mut self, message: &Arc<Message>, place: Place, frame: u64) -> Option<&mut Entry> {
+        let shows = |e: &Entry| {
+            // Flagging or filing a message makes a new one of it; its body is still the same.
+            Arc::ptr_eq(&e.message, message) || (e.message.id == message.id && same_body(&e.message, message))
+        };
+        let index = match self.entries.iter().position(|e| e.place == place && shows(e)) {
+            Some(index) => index,
+            None => {
+                // The body may be known from the other place it is shown in.
+                let doc = self.entries.iter().find(|e| shows(e)).map(|e| e.doc.clone());
+                // What was kept here of this message before it changed is of no use any more.
+                self.entries.retain(|e| e.place != place || e.message.id != message.id || message.id == 0);
+                let (kept, room) = match place {
+                    Place::Pane => (self.entries.iter().filter(|e| e.place == Place::Pane).count(), KEPT),
+                    Place::Window(_) => {
+                        // A window shows one message, and a window that is gone shows none.
+                        self.entries.retain(|e| e.place == Place::Pane || (e.place != place && e.used.saturating_add(2) >= frame));
+                        (self.entries.iter().filter(|e| e.place != Place::Pane).count(), KEPT_IN_WINDOWS)
+                    }
+                };
+                let of_a_kind = |e: &Entry| (e.place == Place::Pane) == (place == Place::Pane);
+                if kept >= room
+                    && let Some(oldest) = self.entries.iter().enumerate().filter(|(_, e)| of_a_kind(e)).min_by_key(|(_, e)| e.used).map(|(i, _)| i)
+                {
+                    self.entries.swap_remove(oldest);
+                }
+                self.entries.push(Entry {
+                    message: message.clone(),
+                    place,
+                    doc: doc.unwrap_or_else(|| Arc::new(Doc::of(message))),
+                    key: None,
+                    laid: Laid::default(),
+                    next: None,
+                    used: frame,
+                    #[cfg(test)]
+                    origin: egui::Pos2::ZERO,
+                });
+                self.entries.len() - 1
+            }
+        };
+        let entry = self.entries.get_mut(index)?;
+        entry.message = message.clone();
+        entry.used = frame;
+        Some(entry)
+    }
+}
+
+/// The message's display blocks, kept from one frame to the next.
+pub fn doc(ctx: &egui::Context, message: &Arc<Message>, place: Place) -> Arc<Doc> {
+    let store = Store::of(ctx);
+    let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
+    match store.entry(message, place, images::frame(ctx)) {
+        Some(entry) => entry.doc.clone(),
+        None => Arc::new(Doc::of(message)),
+    }
+}
+
+/// Paint the body of `message` in the width there is. Links open in the browser and its text can
+/// be selected and copied ([`select`]); nothing else in a message is interactive and nothing in
+/// it runs. Pictures from the web are shown when `access` says the owner asked for them, as far
+/// as they have come.
+pub fn show(app: &mut MailApp, ui: &mut Ui, message: &Arc<Message>, place: Place, access: Access) {
+    let ctx = ui.ctx().clone();
+    let t = Tokens::get(&ctx);
+    // In steps of a few points, so that dragging the pane's edge does not lay a long message out
+    // again for every pixel.
+    let width = ((ui.available_width().min(super::MAX_BODY_WIDTH) / WIDTH_STEP).floor() * WIDTH_STEP).max(1.0);
+    let store = Store::of(&ctx);
+    let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
+    #[cfg(test)]
+    let mut begun = 0;
+    let Some(entry) = store.entry(message, place, images::frame(&ctx)) else { return };
+    if entry.doc.blocks.is_empty() {
+        ui.label(egui::RichText::new(tl!("This message has no text.")).color(t.text_dim));
+        if let Some(state) = app.text_selection.state(place) {
+            state.no_body();
+        }
+        return;
+    }
+    let pictures = Pictures::of(&ctx);
+    let mut pictures = pictures.lock().unwrap_or_else(|e| e.into_inner());
+    let showing = access == Access::Allowed && !entry.doc.remote.is_empty();
+    let key = Key {
+        width: width as u32,
+        dark: t.dark,
+        scale: ctx.pixels_per_point().to_bits(),
+        line: ctx.fonts_mut(|f| f.row_height(&regular(super::layout::BASE_SIZE))).to_bits(),
+        remote: showing.then(|| entry.doc.remote.iter().filter(|url| matches!(pictures.remote_peek(url), Some(Remote::Ready(_)))).count()),
+    };
+    if entry.key == Some(key) {
+        entry.next = None;
+    } else if entry.laid.done && entry.key.is_some_and(|old| Key { remote: key.remote, ..old } == key) {
+        // Only the pictures changed: what is shown stays until the new layout is whole.
+        if entry.next.as_ref().is_none_or(|(next, _)| *next != key) {
+            entry.next = Some((key, Laid::new(width).showing_remote(showing).cut(entry.doc.cuts.clone())));
+            #[cfg(test)]
+            {
+                begun += 1;
+            }
+        }
+    } else {
+        entry.key = Some(key);
+        entry.laid = Laid::new(width).showing_remote(showing).cut(entry.doc.cuts.clone());
+        entry.next = None;
+        #[cfg(test)]
+        {
+            begun += 1;
+        }
+    }
+    let making = match &mut entry.next {
+        Some((_, next)) => next,
+        None => &mut entry.laid,
+    };
+    if !making.done {
+        making.advance(&ctx, &entry.doc.blocks, Some(&entry.message), &mut pictures, FRAME_BUDGET);
+        if !making.done {
+            // The rest follows in the next frames.
+            ctx.request_repaint();
+        }
+    }
+    if let Some((key, next)) = entry.next.take_if(|(_, next)| next.done) {
+        (entry.key, entry.laid) = (Some(key), next);
+    }
+    drop(pictures);
+    let mut state = app.text_selection.state(place);
+    // A copy that waited for the layout to be whole is due now.
+    let due = state.as_deref_mut().and_then(|state| state.bind(&entry.doc, entry.laid.done));
+    let (origin, asked) = paint(ui, &entry.laid, &t, access, state);
+    #[cfg(test)]
+    {
+        entry.origin = origin;
+        store.begun += begun;
+    }
+    #[cfg(not(test))]
+    let _ = origin;
+    // What a menu asked for is a command, run once the layouts are let go of.
+    drop(store);
+    for action in due.into_iter().chain(asked) {
+        select::act(app, place, action);
+    }
+}
+
+/// Look at what is laid out of a message's body where it is shown, when it is shown there.
+pub(super) fn with_laid<R>(ctx: &egui::Context, place: Place, message: mailcraft_model::Id, read: impl FnOnce(&Laid) -> R) -> Option<R> {
+    let store = Store::of(ctx);
+    let store = store.lock().unwrap_or_else(|e| e.into_inner());
+    store.entries.iter().find(|e| e.place == place && e.message.id == message).map(|e| read(&e.laid))
+}
+
+/// What is kept of a message's body where it is shown in the reading pane, for tests: its
+/// layout and where it was last painted.
+#[cfg(test)]
+pub fn kept<R>(ctx: &egui::Context, message: mailcraft_model::Id, read: impl FnOnce(&Laid, egui::Pos2) -> R) -> Option<R> {
+    kept_at(ctx, Place::Pane, message, read)
+}
+
+/// The same for any place a message is shown in.
+#[cfg(test)]
+pub fn kept_at<R>(ctx: &egui::Context, place: Place, message: mailcraft_model::Id, read: impl FnOnce(&Laid, egui::Pos2) -> R) -> Option<R> {
+    let store = Store::of(ctx);
+    let store = store.lock().unwrap();
+    store.entries.iter().find(|e| e.place == place && e.message.id == message).map(|e| read(&e.laid, e.origin))
+}
+
+/// How many messages' bodies are kept, for tests.
+#[cfg(test)]
+pub fn kept_count(ctx: &egui::Context) -> usize {
+    Store::of(ctx).lock().unwrap().entries.len()
+}
+
+/// How many layouts were begun so far, for tests.
+#[cfg(test)]
+pub fn layouts_begun(ctx: &egui::Context) -> usize {
+    Store::of(ctx).lock().unwrap().begun
+}
+
+/// What the pointer is over that leads somewhere, or that has something to say.
+struct Hover {
+    /// Where a click leads.
+    link: Option<Arc<str>>,
+    /// What to say besides: where a picture that is not shown would have come from.
+    note: Option<String>,
+}
+
+/// Paint what is in view of a layout with what is selected in it, and follow the pointer: over
+/// its links, and through its text when it selects (`state` is the selection of the place the
+/// layout is shown in). Where its top left is, and what its menu was asked to do.
+pub fn paint(ui: &mut Ui, laid: &Laid, t: &Tokens, access: Access, mut state: Option<&mut select::PlaceState>) -> (egui::Pos2, Option<Action>) {
+    let (area, _) = ui.allocate_exact_size(vec2(laid.size.x.max(1.0), laid.size.y.max(1.0)), Sense::hover());
+    let origin = area.min.to_vec2();
+    let clip = ui.clip_rect();
+    let ctx = ui.ctx().clone();
+    // The pointer is sensed over all of the body that is in view, its margins and the room under
+    // a short message too: a drag that selects begins and ends wherever the pointer happens to be.
+    let response = ui.interact(clip, ui.id().with("body"), select::sense(ui));
+    if let Some(state) = state.as_deref_mut() {
+        select::body(ui, &response, laid, area.min, state);
+    }
+    let selected = state.as_deref().and_then(|state| state.body_range(laid));
+    let dragging = state.as_deref().is_some_and(|state| state.dragging_body());
+    let marks = selected.map(|_| select::Marks::new(ui, t));
+    let painter = ui.painter().clone();
+    let pointer = response.hover_pos();
+    let mut hover = None;
+    let mut on_picture = false;
+    let mut pictures = None;
+    for item in &laid.items {
+        let rect = item.rect.translate(origin);
+        if !clip.intersects(rect) {
+            continue;
+        }
+        let over = pointer.filter(|p| rect.contains(*p));
+        // The part of it that is selected: of a text its characters, of a picture all or nothing.
+        let part = |len: usize| selected.and_then(|(lo, hi)| select::part(lo, hi, item.seg as usize, len));
+        match &item.kind {
+            ItemKind::Fill { color, radius } => {
+                painter.rect_filled(rect, *radius, *color);
+            }
+            ItemKind::Outline { color } => {
+                painter.rect_stroke(rect, 0.0, Stroke::new(1.0, *color), egui::StrokeKind::Inside);
+            }
+            ItemKind::Bullet { depth, color } => bullet(&painter, rect, *depth, *color),
+            ItemKind::Text(text) => {
+                let mut galley = ctx.fonts_mut(|f| f.layout_job((*text.job).clone()));
+                let at = pos2(rect.min.x + text.anchor, rect.min.y);
+                if let Some(link) = over.and_then(|p| link_under(text, &galley, p - at)) {
+                    hover = Some(Hover { link: Some(link), note: None });
+                }
+                if let (Some(marks), Some(part)) = (&marks, part(text.chars as usize)) {
+                    marks.text(&mut galley, part);
+                }
+                painter.galley(at, galley, t.text);
+            }
+            ItemKind::Picture(picture) => {
+                let store = pictures.get_or_insert_with(|| Pictures::of(&ctx));
+                let state = store.lock().unwrap_or_else(|e| e.into_inner()).texture(&ctx, &picture.data);
+                match state {
+                    Picture::Ready(texture) => {
+                        painter.image(texture.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                    }
+                    Picture::Pending => {
+                        painter.rect_stroke(rect, 2.0, Stroke::new(1.0, picture.paper.line(t)), egui::StrokeKind::Inside);
+                        ctx.request_repaint();
+                    }
+                    Picture::Failed => stand_in(&painter, rect, &picture.alt, picture.paper, t),
+                }
+                if let (Some(marks), Some(_)) = (&marks, part(1)) {
+                    painter.rect_filled(rect, 0.0, marks.veil);
+                }
+                on_picture |= over.is_some();
+                if over.is_some() && (picture.link.is_some() || !picture.alt.is_empty()) {
+                    hover = Some(Hover { link: picture.link.clone(), note: (!picture.alt.is_empty()).then(|| picture.alt.clone()) });
+                }
+            }
+            ItemKind::Placeholder(placeholder) => {
+                stand_in(&painter, rect, &placeholder.label, placeholder.paper, t);
+                if let (Some(marks), Some(_)) = (&marks, part(1)) {
+                    painter.rect_filled(rect, 4.0, marks.veil);
+                }
+                on_picture |= over.is_some();
+                if over.is_some() {
+                    let store = pictures.get_or_insert_with(|| Pictures::of(&ctx));
+                    let came = store.lock().unwrap_or_else(|e| e.into_inner()).remote_peek(placeholder.src.trim()).cloned();
+                    hover = Some(Hover { link: placeholder.link.clone(), note: Some(placeholder_note(placeholder, access, came.as_ref())) });
+                }
+            }
+        }
+    }
+    let link =
+        hover.as_ref().and_then(|hover| hover.link.clone()).filter(|url| mailcraft_html::is_safe_url(url) && !mailcraft_html::is_embedded(url));
+    // The pointer says what it would do: follow a link, or select text (as it does all over the
+    // body, the way a page of a word processor has it); over a picture it is the plain arrow.
+    if dragging {
+        ctx.set_cursor_icon(egui::CursorIcon::Text);
+    } else if response.hovered() {
+        if link.is_some() {
+            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+        } else if !on_picture {
+            ctx.set_cursor_icon(egui::CursorIcon::Text);
+        }
+    }
+    // The menu: Copy and Select All, and for the link it was asked for on, its address.
+    let mut asked = None;
+    if let Some(state) = state {
+        if response.secondary_clicked() {
+            state.set_menu_link(link.clone());
+        }
+        let on_link = state.menu_link();
+        response.context_menu(|ui| asked = select::menu(ui, selected.is_some(), true, on_link.as_ref()));
+    }
+    // While a drag selects, nothing pops up under it; nor over a menu, which opens right where
+    // the pointer is.
+    if let Some(hover) = hover.filter(|_| !dragging && !egui::Popup::is_any_open(&ctx)) {
+        egui::Tooltip::always_open(ctx.clone(), ui.layer_id(), response.id.with("link"), egui::PopupAnchor::Pointer).gap(12.0).show(|ui| {
+            ui.set_max_width(520.0);
+            if let Some(note) = &hover.note {
+                ui.label(note.as_str());
+            }
+            // A link is shown with where it really leads.
+            if let Some(url) = &link {
+                ui.label(&**url);
+            }
+        });
+    }
+    // One click follows a link. A drag that began on it selected instead; so do the second and
+    // third click of a row, and a click with Shift moves the end of what is selected.
+    let followed = response.clicked() && !response.double_clicked() && !response.triple_clicked() && !ui.input(|i| i.modifiers.shift);
+    if let Some(url) = link
+        && followed
+    {
+        ctx.open_url(egui::OpenUrl::new_tab(url.to_string()));
+    }
+    (area.min, asked)
+}
+
+/// What is said of a picture that is not shown, and where it would come from.
+fn placeholder_note(placeholder: &PlaceholderItem, access: Access, came: Option<&Remote>) -> String {
+    let why = if !placeholder.remote || !images::is_remote(&placeholder.src) {
+        tl!("This picture is missing from the message, or can't be shown.")
+    } else {
+        match (access, came) {
+            (Access::Unavailable, _) => tl!("This picture is on the web. This build can't download pictures."),
+            (Access::Blocked, _) => tl!("This picture is on the web. It is not downloaded unless you ask."),
+            (Access::Allowed, Some(Remote::Failed)) => tl!("This picture couldn't be downloaded."),
+            (Access::Allowed, Some(Remote::Ready(_))) => tl!("This picture was downloaded, but can't be shown."),
+            (Access::Allowed, None) => tl!("This picture has not been downloaded."),
+        }
+    };
+    let src: String = placeholder.src.chars().take(200).collect();
+    format!("{why}\n{src}")
+}
+
+/// The character of a laid-out text under a point (from the text's origin), when there is one:
+/// not the nearest one, as for a cursor, but the one the point is on.
+pub(super) fn char_at(galley: &egui::Galley, point: egui::Vec2) -> Option<usize> {
+    let mut index = 0usize;
+    for row in &galley.rows {
+        let rect = row.rect();
+        if point.y >= rect.min.y && point.y < rect.max.y {
+            let x = point.x - rect.min.x;
+            return row.row.glyphs.iter().position(|g| x >= g.pos.x && x < g.pos.x + g.advance_width).map(|i| index + i);
+        }
+        index += row.row.glyphs.len() + usize::from(row.ends_with_newline);
+    }
+    None
+}
+
+/// The link of a laid-out text that a point (from the text's origin) is on.
+pub fn link_under(text: &TextItem, galley: &egui::Galley, point: egui::Vec2) -> Option<Arc<str>> {
+    let index = char_at(galley, point)?;
+    text.links.iter().find(|(range, _)| range.contains(&index)).map(|(_, url)| url.clone())
+}
+
+/// A list bullet: a disc, a ring or a square by the depth of the list, as in a browser.
+fn bullet(painter: &egui::Painter, rect: Rect, depth: u8, color: Color32) {
+    let r = rect.width() / 2.0;
+    match depth % 3 {
+        0 => {
+            painter.circle_filled(rect.center(), r, color);
+        }
+        1 => {
+            painter.circle_stroke(rect.center(), r - 0.5, Stroke::new(1.0, color));
+        }
+        _ => {
+            painter.rect_filled(rect.shrink(0.5), 0.0, color);
+        }
+    }
+}
+
+/// What stands where a picture is not shown: a quiet frame with a small picture mark and the
+/// picture's description, when it has one.
+fn stand_in(painter: &egui::Painter, rect: Rect, label: &str, paper: Paper, t: &Tokens) {
+    let ink = Paper { fill: paper.shade(t), own: paper.own }.text(t, true);
+    let line = paper.line(t);
+    painter.rect(rect, 4.0, paper.shade(t), Stroke::new(1.0, line), egui::StrokeKind::Inside);
+    // The mark: a frame, a hill and a sun, drawn here (no artwork is taken from anywhere).
+    let mark = Rect::from_center_size(pos2(rect.min.x + 12.0, rect.min.y + 12.0), vec2(12.0, 10.0));
+    if rect.width() >= 20.0 && rect.height() >= 20.0 {
+        painter.rect_stroke(mark, 1.5, Stroke::new(1.0, ink), egui::StrokeKind::Inside);
+        painter.circle_filled(pos2(mark.max.x - 3.5, mark.min.y + 3.5), 1.2, ink);
+        let hill = vec![pos2(mark.min.x + 1.5, mark.max.y - 1.5), pos2(mark.min.x + 4.5, mark.min.y + 4.5), pos2(mark.min.x + 8.0, mark.max.y - 1.5)];
+        painter.add(egui::Shape::line(hill, Stroke::new(1.0, ink)));
+    }
+    if !label.is_empty() && rect.width() > 40.0 && rect.height() >= 20.0 {
+        paint_clipped(painter, pos2(rect.min.x + 23.0, rect.min.y + 12.0), rect.width() - 28.0, label, regular(11.5), ink);
+    }
+}

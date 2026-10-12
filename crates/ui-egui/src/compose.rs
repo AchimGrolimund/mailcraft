@@ -1,0 +1,326 @@
+//! Writing a message: recipients, subject, attachments and the body, in place of the reading pane.
+
+use egui::{Align2, Rect, Sense, Stroke, Ui, pos2, vec2};
+use mailcraft_engine::ComposeMode;
+use serde_json::json;
+
+use crate::theme::{Tokens, paint_clipped, regular, semibold};
+use crate::{MailApp, icons};
+
+const LABEL_W: f32 = 62.0;
+
+/// One labelled single-line field. Returns the new text when it was edited.
+fn field(ui: &mut Ui, label: &str, text: &str, hint: &str, focus: bool) -> Option<String> {
+    field_at(ui, label, text, hint, focus).0
+}
+
+/// [`field`], also answering where the text is and how it responded.
+fn field_at(ui: &mut Ui, label: &str, text: &str, hint: &str, focus: bool) -> (Option<String>, Rect, egui::Response) {
+    let t = Tokens::get(ui.ctx());
+    let mut buf = text.to_string();
+    let mut changed = None;
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+    ui.painter().text(pos2(r.min.x + 16.0, r.center().y), Align2::LEFT_CENTER, label, regular(12.0), t.text_dim);
+    let edit_rect = Rect::from_min_max(pos2(r.min.x + 16.0 + LABEL_W, r.min.y + 3.0), pos2(r.max.x - 12.0, r.max.y - 3.0));
+    let edit = egui::TextEdit::singleline(&mut buf)
+        .id(ui.id().with(("compose", label)))
+        .frame(egui::Frame::NONE)
+        .hint_text(hint)
+        .font(regular(13.0))
+        .vertical_align(egui::Align::Center)
+        .desired_width(edit_rect.width());
+    let resp = ui.put(edit_rect, edit);
+    if focus {
+        resp.request_focus();
+    }
+    if resp.changed() {
+        changed = Some(buf);
+    }
+    ui.painter().line_segment([pos2(r.min.x + 16.0, r.max.y), pos2(r.max.x - 12.0, r.max.y)], Stroke::new(1.0, t.border));
+    (changed, edit_rect, resp)
+}
+
+/// The suggestions under a recipient line, from one frame to the next.
+#[derive(Clone, Default)]
+struct Suggesting {
+    /// Which line they are for (`to`, `cc`, `bcc`).
+    field: String,
+    items: Vec<mailcraft_engine::cmd::compose::Suggestion>,
+    selected: usize,
+    /// Where they were drawn, so a click on one isn't taken for a click away from the line.
+    rect: Option<Rect>,
+}
+
+/// What is being typed at the end of a recipient line: the part after the last `;` or `,`.
+pub(crate) fn typing(text: &str) -> (&str, &str) {
+    let at = text.rfind([';', ',']).map_or(0, |i| i + 1);
+    let (before, last) = text.split_at(at);
+    (before, last.trim_start())
+}
+
+/// A recipient line with `who` in place of what was being typed, ready for the next name.
+pub(crate) fn completed(text: &str, who: &mailcraft_engine::cmd::compose::Suggestion) -> String {
+    let (before, _) = typing(text);
+    let name: String = who.name.chars().filter(|c| !c.is_control() && !"\"<>".contains(*c)).collect();
+    let name = name.trim();
+    let written = if name.is_empty() || name.eq_ignore_ascii_case(&who.email) {
+        who.email.clone()
+    } else if name.contains([',', ';']) {
+        format!("\"{name}\" <{}>", who.email)
+    } else {
+        format!("{name} <{}>", who.email)
+    };
+    let gap = if before.is_empty() || before.ends_with(' ') { "" } else { " " };
+    format!("{before}{gap}{written}; ")
+}
+
+/// A recipient line: as it is typed in, the people it could be are offered underneath (contacts,
+/// then whoever mail was exchanged with); arrow keys choose, Enter or Tab or a click takes one.
+fn recipient_field(app: &mut MailApp, ui: &mut Ui, key: &str, label: &str, text: &str, hint: &str, focus: bool) {
+    let t = Tokens::get(ui.ctx());
+    let id = ui.id().with(("compose", label));
+    let store = egui::Id::new("compose_suggesting");
+    let mut st: Suggesting = ui.data(|d| d.get_temp(store)).unwrap_or_default();
+    let mine = st.field == key && !st.items.is_empty();
+    let focused = ui.memory(|m| m.has_focus(id));
+    let over = st.rect.is_some_and(|r| ui.rect_contains_pointer(r));
+    let open = mine && (focused || over);
+    let mut take: Option<usize> = None;
+    if open && focused {
+        // Before the line itself sees the keys: they are for the list while it is showing.
+        let n = st.items.len();
+        ui.input_mut(|i| {
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
+                st.selected = (st.selected + 1) % n;
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
+                st.selected = (st.selected + n - 1) % n;
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) || i.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
+                take = Some(st.selected.min(n - 1));
+            }
+        });
+    }
+    let (changed, at, resp) = field_at(ui, label, text, hint, focus);
+    let mut now = changed.clone().unwrap_or_else(|| text.to_string());
+    if open {
+        let shown = egui::Area::new(store.with(key)).order(egui::Order::Foreground).fixed_pos(pos2(at.min.x, at.max.y + 2.0)).show(ui.ctx(), |ui| {
+            egui::Frame::NONE.fill(t.menu).stroke(Stroke::new(1.0, t.border_strong)).corner_radius(6.0).inner_margin(egui::Margin::same(4)).show(
+                ui,
+                |ui| {
+                    ui.set_width(at.width().clamp(240.0, 440.0));
+                    for (i, who) in st.items.iter().enumerate() {
+                        let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+                        if i == st.selected || row.hovered() {
+                            ui.painter().rect_filled(r, 4.0, if i == st.selected { t.selection } else { t.hover });
+                        }
+                        let name = if who.name.is_empty() { who.email.as_str() } else { who.name.as_str() };
+                        let w = paint_clipped(ui.painter(), pos2(r.min.x + 8.0, r.center().y), r.width() * 0.5, name, regular(12.5), t.text);
+                        if !who.name.is_empty() {
+                            paint_clipped(
+                                ui.painter(),
+                                pos2(r.min.x + 16.0 + w, r.center().y),
+                                (r.width() - w - 24.0).max(0.0),
+                                &who.email,
+                                regular(11.5),
+                                t.text_dim,
+                            );
+                        }
+                        if row.clicked() {
+                            take = Some(i);
+                        }
+                    }
+                },
+            );
+        });
+        st.rect = Some(shown.response.rect);
+    } else {
+        st.rect = None;
+    }
+    if let Some(who) = take.and_then(|i| st.items.get(i)) {
+        now = completed(&now, who);
+        let _ = app.execute("compose.set", json!({ key: now }));
+        // Carry on typing after it: the keyboard stays in the line, at its end.
+        let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+        let end = egui::text::CCursor::new(now.chars().count());
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+        state.store(ui.ctx(), id);
+        ui.memory_mut(|m| m.request_focus(id));
+        st.items.clear();
+    } else if let Some(new) = changed {
+        let _ = app.execute("compose.set", json!({ key: new }));
+    }
+    // What to offer next frame, for what is being typed now.
+    if resp.has_focus() || ui.memory(|m| m.has_focus(id)) {
+        let (_, last) = typing(&now);
+        let items = if last.trim().is_empty() { Vec::new() } else { mailcraft_engine::cmd::compose::suggest(&app.session, last, 6) };
+        st.selected = if st.field == key { st.selected.min(items.len().saturating_sub(1)) } else { 0 };
+        st.field = key.to_string();
+        st.items = items;
+    } else if st.field == key && !over {
+        st.items.clear();
+    }
+    ui.data_mut(|d| d.insert_temp(store, st));
+}
+
+pub fn show(app: &mut MailApp, ui: &mut Ui) {
+    let t = Tokens::get(ui.ctx());
+    let Some(c) = app.session.compose.clone() else { return };
+    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+
+    // What this is, and the actions.
+    let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
+    let title = match c.mode {
+        ComposeMode::New => tl!("New message"),
+        ComposeMode::Reply => tl!("Reply"),
+        ComposeMode::ReplyAll => tl!("Reply all"),
+        ComposeMode::Forward => tl!("Forward"),
+        ComposeMode::Draft => tl!("Draft"),
+    };
+    let mut actions =
+        ui.new_child(egui::UiBuilder::new().max_rect(bar.shrink2(vec2(12.0, 8.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    {
+        let ui = &mut actions;
+        ui.spacing_mut().item_spacing = vec2(6.0, 0.0);
+        let sc = crate::widgets::shortcut_text(app, "compose.send");
+        if crate::widgets::primary_button(ui, tl!("Send"), true).on_hover_text(format!("{} ({sc})", tl!("Send"))).clicked() {
+            let _ = app.run("compose.send", json!({}));
+        }
+        if crate::widgets::icon_text_button(ui, "attach", tl!("Attach"), true).clicked() {
+            let _ = app.run("ui.attach", json!({}));
+        }
+        if crate::widgets::icon_text_button(ui, "saveDraft", tl!("Save draft"), c.dirty || c.draft.is_none()).clicked() {
+            let _ = app.run("compose.saveDraft", json!({}));
+        }
+        if crate::widgets::icon_text_button(ui, "discard", tl!("Discard"), true).clicked() {
+            let _ = app.run("compose.discard", json!({}));
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if crate::widgets::icon_button(ui, "close", tl!("Close (the draft stays as last saved)"), 14.0, true).clicked() {
+                let _ = app.run("compose.close", json!({}));
+            }
+            let state = if c.dirty {
+                tl!("Not saved")
+            } else if c.draft.is_some() {
+                tl!("Saved to Drafts")
+            } else {
+                ""
+            };
+            ui.label(egui::RichText::new(format!("{title}  {state}")).font(regular(11.5)).color(t.text_dim));
+        });
+    }
+    ui.painter().line_segment([pos2(bar.min.x, bar.max.y), pos2(bar.max.x, bar.max.y)], Stroke::new(1.0, t.border));
+    // A message that just opened has the keyboard: To for a new one, the body for a reply.
+    let fresh = !c.dirty && ui.memory(|m| m.focused().is_none());
+    let focus_to = fresh && c.to.is_empty();
+
+    // From, when there is a choice.
+    if app.session.mailbox.accounts.len() > 1 {
+        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+        ui.painter().text(pos2(r.min.x + 16.0, r.center().y), Align2::LEFT_CENTER, tl!("From"), regular(12.0), t.text_dim);
+        let current = app.session.mailbox.account(c.account).map(|a| a.address().full()).unwrap_or_default();
+        let pick = Rect::from_min_max(pos2(r.min.x + 16.0 + LABEL_W, r.min.y + 4.0), pos2(r.max.x - 12.0, r.max.y - 4.0));
+        let resp = ui.interact(pick, ui.id().with("compose_from"), Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(pick.expand2(vec2(4.0, 0.0)), 4.0, t.hover);
+        }
+        paint_clipped(ui.painter(), pos2(pick.min.x, pick.center().y), pick.width(), &format!("{current} ▾"), regular(13.0), t.text);
+        let accounts: Vec<(u64, String)> = app.session.mailbox.accounts.iter().map(|a| (a.id, a.address().full())).collect();
+        egui::Popup::menu(&resp).show(|ui| {
+            for (id, label) in accounts {
+                if ui.selectable_label(id == c.account, label).clicked() {
+                    let _ = app.execute("compose.set", json!({"account": id}));
+                    ui.close();
+                }
+            }
+        });
+        ui.painter().line_segment([pos2(r.min.x + 16.0, r.max.y), pos2(r.max.x - 12.0, r.max.y)], Stroke::new(1.0, t.border));
+    }
+    let hint = tl!("Names or addresses, separated by ;");
+    for (key, label, text, show) in
+        [("to", "To", &c.to, true), ("cc", "Cc", &c.cc, true), ("bcc", "Bcc", &c.bcc, !c.bcc.is_empty() || app.compose_bcc)]
+    {
+        if !show {
+            continue;
+        }
+        recipient_field(app, ui, key, tl!(label), text, hint, key == "to" && focus_to);
+    }
+    if let Some(new) = field(ui, tl!("Subject"), &c.subject, "", false) {
+        let _ = app.execute("compose.set", json!({"subject": new}));
+    }
+    if c.bcc.is_empty() && !app.compose_bcc {
+        // A quiet way to get the Bcc line.
+        let last = ui.min_rect();
+        let br = Rect::from_min_size(
+            pos2(last.max.x - 52.0, bar.max.y + if app.session.mailbox.accounts.len() > 1 { 34.0 } else { 4.0 }),
+            vec2(40.0, 22.0),
+        );
+        let resp = ui.interact(br, ui.id().with("show_bcc"), Sense::click());
+        ui.painter().text(br.center(), Align2::CENTER_CENTER, tl!("Bcc"), regular(11.5), if resp.hovered() { t.accent_text } else { t.text_dim });
+        if resp.clicked() {
+            app.compose_bcc = true;
+        }
+    }
+
+    // Attachments, each with a way to take it off again.
+    if !c.attachments.is_empty() {
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 12, top: 6, bottom: 6 }).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                for (i, a) in c.attachments.iter().enumerate() {
+                    let label = format!("{}  ({})", a.name, a.size_label());
+                    let w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(label.clone(), regular(12.0), t.text).size().x).min(260.0);
+                    let (r, _) = ui.allocate_exact_size(vec2(w + 52.0, 26.0), Sense::hover());
+                    ui.painter().rect(r, 5.0, t.panel, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+                    icons::paint(
+                        ui.painter(),
+                        Rect::from_center_size(pos2(r.min.x + 13.0, r.center().y), vec2(14.0, 14.0)),
+                        "attach",
+                        t.icon,
+                        t.accent,
+                    );
+                    paint_clipped(ui.painter(), pos2(r.min.x + 26.0, r.center().y), w, &label, regular(12.0), t.text);
+                    let x = Rect::from_center_size(pos2(r.max.x - 12.0, r.center().y), vec2(18.0, 18.0));
+                    let xr = ui.interact(x, ui.id().with(("unattach", i)), Sense::click());
+                    if xr.hovered() {
+                        ui.painter().rect_filled(x, 3.0, t.hover);
+                    }
+                    icons::paint(ui.painter(), x.shrink(4.0), "close", t.text_dim, t.accent);
+                    if xr.on_hover_text(tl!("Remove")).clicked() {
+                        let _ = app.execute("compose.removeAttachment", json!({"index": i}));
+                    }
+                }
+            });
+        });
+        let r = ui.available_rect_before_wrap();
+        ui.painter().line_segment([pos2(r.min.x + 16.0, r.min.y), pos2(r.max.x - 12.0, r.min.y)], Stroke::new(1.0, t.border));
+    }
+
+    // The body takes what is left.
+    let mut body = c.body.clone();
+    egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("compose_body").show(ui, |ui| {
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 10, bottom: 16 }).show(ui, |ui| {
+            let rows = ((ui.available_height() / 19.0) as usize).max(8);
+            let edit = egui::TextEdit::multiline(&mut body)
+                .id(ui.id().with("compose_body_edit"))
+                .frame(egui::Frame::NONE)
+                .font(regular(13.0))
+                .desired_width(f32::INFINITY)
+                .desired_rows(rows)
+                .hint_text(tl!("Write your message"));
+            let resp = ui.add(edit);
+            if fresh && !focus_to {
+                resp.request_focus();
+                // The caret goes to the top, above the quoted original.
+                if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), resp.id) {
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(0))));
+                    state.store(ui.ctx(), resp.id);
+                }
+            }
+            if resp.changed() {
+                let _ = app.execute("compose.set", json!({"body": body}));
+            }
+        });
+    });
+    let _ = semibold;
+}

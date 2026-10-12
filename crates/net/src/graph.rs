@@ -1,0 +1,1385 @@
+//! Microsoft Graph, for what a Microsoft 365 or Outlook.com account has that IMAP and SMTP don't
+//! reach: [`send`] sends a message where SMTP is switched off for the account, [`events`] reads
+//! the calendar and [`contacts`] the contacts.
+//!
+//! Each takes an access token for Graph, which is not the one the mail servers take:
+//! [`oauth::refresh_for`](crate::oauth::refresh_for) with
+//! [`Resource::Graph`](crate::oauth::Resource::Graph) gets one with the refresh token of the
+//! sign-in. All of them block, for as long as the timeouts allow at most.
+//!
+//! Only `https://graph.microsoft.com` is ever spoken to: the address of a next page that a list
+//! names is followed there and nowhere else, and redirects are not followed at all. What comes
+//! back is hostile JSON: every answer, every list and every text in it is capped, what can't be
+//! read is passed over, and nothing in it is run or fetched. The token and the mail never appear
+//! in an error or a log line: an error says what was being done, the status, and at most the
+//! short code Graph names its refusal by.
+//!
+//! What can go wrong, for the host to act on:
+//! - `ProtoError::Auth` ([`NetError::is_refused_sign_in`]): Graph didn't take the token (401).
+//!   Get a new one and ask again; when a new one is refused too, see `refresh_for`.
+//! - [`NetError::Forbidden`]: the token is good and the account may not do this through Graph
+//!   (403). Asking again won't help; mail can still try SMTP.
+//! - [`NetError::Busy`]: not now (429, 503, 504). Ask again later, after as many seconds as it
+//!   says when it says; nothing here waits.
+//! - `ProtoError::Rejected`: Graph answered something else (a message it won't take, 400).
+//! - Anything else: Graph couldn't be reached, or its answer made no sense.
+//!
+//! Events are written back too ([`push_events`]): one made here is created in the account's
+//! main calendar (`POST /me/events`) or in another of its calendars
+//! (`POST /me/calendars/{id}/events`), one changed here has what changed sent
+//! (`PATCH /me/events/{id}`), one deleted here is deleted (`DELETE /me/events/{id}`). Each is
+//! named by the id that came with it ([`mailcraft_model::Origin`]); a new one goes with a mark
+//! (`transactionId`) that keeps a second try from making a second event. Contacts are only read.
+//!
+//! A series goes with its rule (`recurrence`) and its times by the clock in the owner's zone;
+//! one occurrence of a series is found by its time (`GET /me/events/{id}/instances`) and then
+//! changed or deleted as an event of its own. A meeting goes with who is invited, which makes
+//! Exchange write to them: invitations for a new one, updates for a changed one, and a
+//! cancellation when it is called off (`POST /me/events/{id}/cancel`, with a note). Somebody
+//! else's invitation is answered with `/accept`, `/tentativelyAccept` or `/decline`. **Nothing
+//! here decides to send mail**: an upload holds only what the mailbox was told to send
+//! (`mailcraft-engine` refuses to note such a change without the owner's yes).
+//!
+//! Besides: every series of a stretch as itself ([`events_in`], twenty to a `$batch`), the
+//! account's calendars and their groups ([`calendars`]), the mailbox's categories
+//! ([`categories`], which takes `MailboxSettings.Read`), and when people are free and busy
+//! ([`schedule`]).
+
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
+
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
+use mailcraft_mime::WriteOptions;
+use mailcraft_model::remote::{
+    BusyTime, CalendarsDownload, CategoriesDownload, ContactsDownload, EventChangeKind, EventFields, EventOp, EventOutcome, EventResult, EventTime,
+    EventsDownload, EventsUpload, EventsUploaded, FreeBusy, FreeBusyAsk, MAX_BUSY, MAX_CONTACTS, MAX_EVENT_OPS, MAX_EVENTS, MAX_REMOTE_CALENDARS,
+    MAX_REMOTE_CATEGORIES, MAX_SCHEDULE_STRETCH, MAX_SCHEDULES, PersonSchedule, RemoteCalendar, RemoteContact, RemoteEvent, RemoteEventKind,
+};
+use mailcraft_model::{Address, Attendee, Category, Freq, Labeled, Message, PostalAddress, Recurrence, Response, Rgb, ShowAs};
+use mailcraft_proto::ProtoError;
+use mailcraft_time::{Date, DateTime, Timestamp, Weekday};
+use serde_json::{Map, Value, json};
+
+use crate::NetError;
+use crate::http::{self, Reply, Request, Url};
+
+/// Where Graph is, and what is asked of it.
+const GRAPH: &str = "https://graph.microsoft.com";
+const SEND_MAIL: &str = "/v1.0/me/sendMail";
+const CALENDAR_VIEW: &str = "/v1.0/me/calendarView";
+const CONTACTS: &str = "/v1.0/me/contacts";
+const EVENTS: &str = "/v1.0/me/events";
+
+/// What is asked for of each event, and of each contact: no more comes down than is kept.
+const EVENT_FIELDS: &str = "id,iCalUId,changeKey,subject,bodyPreview,body,start,end,isAllDay,isCancelled,location,organizer,attendees,\
+                            responseStatus,showAs,sensitivity,type,seriesMasterId,lastModifiedDateTime,isReminderOn,reminderMinutesBeforeStart,\
+                            isOrganizer,transactionId";
+/// The same without the two that were added last: asked for instead when Graph won't have the
+/// list above (the calendar is still read then, as it was before events were written back).
+const EVENT_FIELDS_PLAIN: &str = "id,iCalUId,changeKey,subject,bodyPreview,body,start,end,isAllDay,isCancelled,location,organizer,attendees,\
+                                  responseStatus,showAs,sensitivity,type,seriesMasterId,lastModifiedDateTime,isReminderOn,reminderMinutesBeforeStart";
+/// And what is asked for first: with the categories, and when a series has each occurrence.
+const EVENT_FIELDS_FULL: &str = "id,iCalUId,changeKey,subject,bodyPreview,body,start,end,isAllDay,isCancelled,location,organizer,attendees,\
+                                 responseStatus,showAs,sensitivity,type,seriesMasterId,lastModifiedDateTime,isReminderOn,reminderMinutesBeforeStart,\
+                                 isOrganizer,transactionId,categories,originalStart";
+/// What is asked for of a series itself: the same, and how it repeats.
+const SERIES_FIELDS: &str = "id,iCalUId,changeKey,subject,bodyPreview,body,start,end,isAllDay,isCancelled,location,organizer,attendees,\
+                             responseStatus,showAs,sensitivity,type,seriesMasterId,lastModifiedDateTime,isReminderOn,reminderMinutesBeforeStart,\
+                             isOrganizer,transactionId,categories,recurrence";
+const BATCH: &str = "/v1.0/$batch";
+const CALENDARS: &str = "/v1.0/me/calendars";
+/// Most questions one batch carries (Graph's own limit), most series asked about in one go, and
+/// the largest answer to a batch that is read.
+const BATCH_SIZE: usize = 20;
+const MAX_SERIES: usize = 200;
+const MAX_BATCH: usize = 8 * 1024 * 1024;
+/// How near to the time it is asked for by an occurrence has to be to be the one (seconds): a
+/// timed one to the minute, a whole-day one within half a day (it is named by its day).
+const NEAR: i64 = 90;
+const NEAR_DAY: i64 = 12 * 3_600 - 1;
+const CONTACT_FIELDS: &str = "id,changeKey,displayName,givenName,middleName,surname,nickName,companyName,jobTitle,department,emailAddresses,\
+                              businessPhones,homePhones,mobilePhone,businessAddress,homeAddress,otherAddress,businessHomePage,birthday,\
+                              personalNotes,lastModifiedDateTime";
+/// How times and descriptions are asked for: in UTC, and as text rather than HTML.
+const EVENT_PREFERENCES: &str = "outlook.timezone=\"UTC\", outlook.body-content-type=\"text\"";
+/// The names UTC goes by in an answer.
+const UTC: [&str; 7] = ["UTC", "Etc/UTC", "GMT", "Etc/GMT", "Zulu", "Z", "tzone://Microsoft/Utc"];
+
+/// How long Graph has to be reached and to answer one question, and to take a message.
+const ASK_TIMEOUT: Duration = Duration::from_secs(30);
+const SEND_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long Graph has to make, change or delete one event, and the largest answer to that which
+/// is read (the event comes back whole).
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_WRITTEN: usize = 4 * 1024 * 1024;
+/// Longest name of a time zone that is sent.
+const MAX_ZONE: usize = 64;
+/// How long all the pages of one list may take together.
+const LIST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// Entries asked for per page, the largest page taken, and the most pages of one list.
+const PAGE_SIZE: &str = "50";
+const MAX_PAGE: usize = 4 * 1024 * 1024;
+const MAX_PAGES: usize = 400;
+/// Most events and contacts taken in one go; a list that has more is left incomplete.
+const MAX_LISTED_EVENTS: usize = if MAX_EVENTS < 10_000 { MAX_EVENTS } else { 10_000 };
+const MAX_LISTED_CONTACTS: usize = if MAX_CONTACTS < 10_000 { MAX_CONTACTS } else { 10_000 };
+/// Most people read from one event, and most addresses or numbers of one kind from a contact.
+const MAX_PEOPLE: usize = 500;
+const MAX_ENTRIES: usize = 50;
+/// The largest message that is sent (as it goes over the wire, before base64).
+const MAX_MESSAGE: usize = 150 * 1024 * 1024;
+/// Longest token sent, longest date read, longest address sent to, longest refusal code shown.
+const MAX_TOKEN: usize = 16 * 1024;
+const MAX_DATE: usize = 40;
+const MAX_ADDRESS: usize = 254;
+const MAX_CODE: usize = 64;
+/// The longest run of characters a refusal code may have in common with what was sent.
+const MAX_ECHO: usize = 8;
+/// The longest Graph is believed when it says how long to stay away (seconds).
+const MAX_WAIT: u64 = 24 * 3_600;
+
+/// How [`send`] sends.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SendOptions {
+    /// The zone the `Date` header is written in, in minutes east of UTC; `None` for this
+    /// machine's own zone at the message's date.
+    pub offset_minutes: Option<i32>,
+}
+
+/// Send one message through Microsoft Graph, as the owner of `token` (an access token for
+/// Graph). Graph also files a copy in the account's Sent Items.
+///
+/// The message goes as it would over SMTP (`mailcraft_mime::write`), in base64. Graph has no
+/// envelope: it reads who the message is for from the message's own header fields. So the `Bcc`
+/// field is written here, which it never is for SMTP; Exchange delivers to the people it names
+/// and leaves the field out of what everybody else gets.
+///
+/// A message that can't be sent (nobody to send it to, an address that isn't one) is refused
+/// before anything goes anywhere.
+pub fn send(token: &str, message: &Message, options: &SendOptions) -> Result<(), NetError> {
+    send_at(GRAPH, token, message, options)
+}
+
+/// The events of the account's main calendar that fall between `from` and `to` (Unix seconds),
+/// for the owner of `token` (an access token for Graph).
+///
+/// A series comes as its occurrences in that stretch, one event each, so no rule for repeating
+/// comes with them. Times are UTC, for the mailbox to turn into its own wall-clock times.
+/// [`EventsDownload::complete`] is false when not everything could be taken (the calendar has
+/// more in the stretch than is read at once, or an event couldn't be read): what is there is
+/// good, but nothing should be removed for being missing from it.
+///
+/// The download doesn't know whose it is: say so with [`EventsDownload::for_account`] before
+/// the mailbox takes it in.
+pub fn events(token: &str, from: Timestamp, to: Timestamp) -> Result<EventsDownload, NetError> {
+    events_at(GRAPH, token, from, to)
+}
+
+/// What [`events_in`] is asked for.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EventsQuery {
+    /// What the server calls the calendar; empty for the account's main one.
+    pub calendar: String,
+    /// The stretch (Unix seconds): from, and up to.
+    pub from: Timestamp,
+    pub to: Timestamp,
+    /// Series the mailbox has that should happen in the stretch, by what the server calls them:
+    /// those of them the stretch brings nothing of are asked about by name, so that one the
+    /// server no longer has is known to be gone ([`EventsDownload::gone`]), and one that was cut
+    /// short comes with its new end.
+    pub series: Vec<String>,
+}
+
+/// [`events`] of any calendar of the account, with every series that happens in the stretch as
+/// itself too: its rule, when that is one the mailbox can keep
+/// ([`RemoteEvent::recurrence`](mailcraft_model::remote::RemoteEvent::recurrence)), beside its
+/// occurrences in the stretch. The series are asked for together, twenty to a request.
+///
+/// A series that couldn't be asked about just now is left out, and the download is as complete
+/// as it was: its occurrences are there, and the mailbox keeps the series as it has it.
+pub fn events_in(token: &str, query: &EventsQuery) -> Result<EventsDownload, NetError> {
+    events_in_at(GRAPH, token, query)
+}
+
+/// The contacts in the account's contacts folder, for the owner of `token` (an access token for
+/// Graph). [`ContactsDownload::complete`] and [`ContactsDownload::for_account`] are as for
+/// [`events`].
+pub fn contacts(token: &str) -> Result<ContactsDownload, NetError> {
+    contacts_at(GRAPH, token)
+}
+
+/// How events are written ([`push_events`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EventOptions {
+    /// The owner's time zone by a name Graph knows (`Pacific Standard Time`, `Europe/Berlin`).
+    /// The days of a whole-day event are days there: without it they are days in UTC, which a
+    /// program that shows them by the clock draws across two days for anyone not in UTC. Empty
+    /// for UTC. (An event with times goes as instants, which need no zone.)
+    pub zone: String,
+}
+
+/// Tell Graph what was done here to the events of the account's main calendar, as the owner of
+/// `token` (an access token for Graph): each op of the upload in turn, with what Graph made of
+/// it ([`EventOutcome`]).
+///
+/// What a status means, for the mailbox to act on:
+/// - made (201), changed (200), deleted (204), or any other 2xx: [`EventResult::Done`], with
+///   the event's id and change key as they are now, when the answer says.
+/// - 404 or 410 to a change or a deletion: [`EventResult::Gone`], the server no longer has it.
+/// - 403: [`EventResult::Denied`], the account may not write to its calendar (the owner agreed
+///   to reading only, or it can't be had).
+/// - 429, 503, 504, any other 5xx, no connection, an answer that makes no sense:
+///   [`EventResult::Failed`], to be tried again; after the first two (Graph is busy) and when
+///   Graph can't be reached the rest of the upload is left untried.
+/// - 409 to a new event: [`EventResult::Failed`] too (Graph has an event with that mark
+///   already: the next download brings it, and it is known by the mark).
+/// - any other refusal (400, 409 to a change, 412, 413…): [`EventResult::Refused`], for good.
+/// - 401: nothing more is tried, and [`EventsUploaded::token_refused`] says so.
+///
+/// Nothing of the token or of an event appears in an outcome's error.
+pub fn push_events(token: &str, upload: &EventsUpload, options: &EventOptions) -> EventsUploaded {
+    push_events_at(GRAPH, token, upload, options)
+}
+
+/// What Graph was being asked for when it said no, for the words of the error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Doing {
+    Sending,
+    Calendar,
+    Contacts,
+    Writing,
+    Categories,
+}
+
+fn nonsense(text: &str) -> NetError {
+    NetError::Proto(ProtoError::Protocol(text.into()))
+}
+
+/// Graph as one caller has it: where it is, and the token that says who is asking.
+struct Graph<'a> {
+    base: Url,
+    token: &'a str,
+}
+
+impl<'a> Graph<'a> {
+    /// Graph at `base` (its own address, or a stand-in on this machine in the tests), for `token`.
+    fn at(base: &str, token: &'a str) -> Result<Graph<'a>, NetError> {
+        // A token that isn't one is not sent anywhere; it is also what a header can't carry.
+        if token.is_empty() || token.len() > MAX_TOKEN || !token.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(NetError::Proto(ProtoError::Auth("there is no sign-in to show Microsoft Graph".into())));
+        }
+        Ok(Graph { base: Url::parse(base)?, token })
+    }
+
+    /// `path` (with its query) on Graph.
+    fn url(&self, path: &str) -> Url {
+        Url { path: path.to_string(), ..self.base.clone() }
+    }
+
+    /// One request, with the token. The answer comes back whatever its status.
+    fn ask(
+        &self,
+        url: &Url,
+        method: &str,
+        more: &[(&str, &str)],
+        body: Option<&str>,
+        patience: Duration,
+        max_body: usize,
+    ) -> Result<Reply, NetError> {
+        let bearer = format!("Bearer {}", self.token);
+        let mut headers = vec![("Authorization", bearer.as_str()), ("Accept", "application/json")];
+        headers.extend_from_slice(more);
+        http::request(url, &Request { method, headers: &headers, body, patience, max_body }).map_err(|e| e.without(self.token))
+    }
+
+    /// The error for an answer that isn't the one hoped for. `sent` is what went to Graph besides
+    /// the token: none of it may come back in the error.
+    fn refusal(&self, doing: Doing, reply: &Reply, sent: &str) -> NetError {
+        refusal(doing, reply, &[self.token, sent], mailcraft_time::now())
+    }
+
+    /// Read a list page by page, handing every entry to `take`, `most` of them at most. Whether
+    /// the list was read to its end.
+    fn list(&self, doing: Doing, first: Url, more: &[(&str, &str)], most: usize, take: &mut dyn FnMut(&Value)) -> Result<bool, NetError> {
+        let started = Instant::now();
+        let mut taken = 0usize;
+        let mut next = Some(first);
+        for _ in 0..MAX_PAGES {
+            let Some(url) = next.take() else { return Ok(true) };
+            if started.elapsed() >= LIST_TIMEOUT {
+                return Err(NetError::Proto(ProtoError::Io("Microsoft Graph took too long to answer".into())));
+            }
+            let reply = self.ask(&url, "GET", more, None, ASK_TIMEOUT, MAX_PAGE)?;
+            if reply.status != 200 {
+                return Err(self.refusal(doing, &reply, ""));
+            }
+            let page = page_of(&reply.body)?;
+            for entry in &page.entries {
+                if taken >= most {
+                    return Ok(false);
+                }
+                taken += 1;
+                take(entry);
+            }
+            next = match &page.next {
+                Some(link) => Some(self.next_page(link, &url)?),
+                None => None,
+            };
+        }
+        Ok(next.is_none())
+    }
+
+    /// The address of the page after `current`, when it is one that may be asked: on Graph
+    /// itself, which is where the token belongs, and not the page it came from.
+    fn next_page(&self, link: &Value, current: &Url) -> Result<Url, NetError> {
+        let astray = || nonsense("Microsoft Graph named a next page that can't be followed");
+        let url = Url::parse_within(link.as_str().ok_or_else(astray)?, http::MAX_LONG_URL).map_err(|_| astray())?;
+        if self.base.same_server(&url) && url != *current { Ok(url) } else { Err(astray()) }
+    }
+}
+
+/// One page of a list.
+struct Page {
+    entries: Vec<Value>,
+    /// What the page says of where the list goes on (`@odata.nextLink`); `None` at its end.
+    next: Option<Value>,
+}
+
+/// The entries of a page, and where it says the next one is: `{"value": […], "@odata.nextLink": "…"}`.
+fn page_of(body: &[u8]) -> Result<Page, NetError> {
+    let json = serde_json::from_slice::<Value>(body).ok();
+    let Some(Value::Object(mut page)) = json else { return Err(nonsense("Microsoft Graph's answer isn't the JSON it should be")) };
+    let Some(Value::Array(entries)) = page.remove("value") else { return Err(nonsense("Microsoft Graph's answer has no list in it")) };
+    Ok(Page { entries, next: page.remove("@odata.nextLink").filter(|link| !link.is_null()) })
+}
+
+/// The short name Graph gives a refusal (`{"error": {"code": "ErrorAccessDenied", …}}`), in
+/// brackets for the end of a sentence; nothing when it has none, or when what stands in its
+/// place isn't a name, or repeats what was `sent`: a careless server could write the token or
+/// the mail back there. The message that comes with the name is never shown.
+fn code_of(body: &[u8], sent: &[&str]) -> String {
+    let json = serde_json::from_slice::<Value>(body).ok();
+    let code = json.as_ref().and_then(|json| json.get("error")).and_then(|error| error.get("code")).and_then(Value::as_str).unwrap_or("");
+    let named = !code.is_empty() && code.len() <= MAX_CODE && code.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.'));
+    if named && !sent.iter().any(|sent| repeats(code, sent)) { format!(" ({code})") } else { String::new() }
+}
+
+/// Whether `code` (ASCII) repeats something of `sent`: it is a piece of it, or it has a run of
+/// [`MAX_ECHO`] characters and more in common with it. No more of a token or of a message than
+/// fits below that could come back in a name.
+fn repeats(code: &str, sent: &str) -> bool {
+    if code.len() <= MAX_ECHO {
+        return sent.contains(code);
+    }
+    code.as_bytes().windows(MAX_ECHO).any(|run| std::str::from_utf8(run).is_ok_and(|run| sent.contains(run)))
+}
+
+/// How many seconds a `Retry-After` header asks for: a number of them, or the time to come back
+/// at (RFC 9110 §10.2.3). No longer than a day.
+fn wait_of(retry_after: Option<&str>, now: Timestamp) -> Option<u32> {
+    let text = retry_after?.trim();
+    let seconds = match text.parse::<u64>() {
+        Ok(seconds) => seconds,
+        Err(_) => u64::try_from(mailcraft_time::parse_rfc5322(text)?.0.saturating_sub(now)).unwrap_or(0),
+    };
+    u32::try_from(seconds.min(MAX_WAIT)).ok()
+}
+
+/// The error for an answer that isn't the one hoped for.
+fn refusal(doing: Doing, reply: &Reply, sent: &[&str], now: Timestamp) -> NetError {
+    let code = || code_of(&reply.body, sent);
+    match reply.status {
+        401 => NetError::Proto(ProtoError::Auth(format!("Microsoft Graph didn't take the sign-in{}", code()))),
+        403 => {
+            let what = match doing {
+                Doing::Sending => "this account may not send through Microsoft Graph",
+                Doing::Calendar => "this account may not read its calendar through Microsoft Graph",
+                Doing::Contacts => "this account may not read its contacts through Microsoft Graph",
+                Doing::Writing => "this account may not change its calendar through Microsoft Graph",
+                Doing::Categories => "this account may not read its list of categories through Microsoft Graph",
+            };
+            NetError::Forbidden(format!("{what}{}", code()))
+        }
+        429 | 503 | 504 => {
+            let retry_after = wait_of(reply.retry_after.as_deref(), now);
+            let text = match retry_after {
+                Some(1) => "Microsoft Graph is busy; try again in a second".to_string(),
+                Some(seconds) => format!("Microsoft Graph is busy; try again in {seconds} seconds"),
+                None => "Microsoft Graph is busy; try again later".to_string(),
+            };
+            NetError::Busy { text, retry_after }
+        }
+        413 if doing == Doing::Sending => NetError::Proto(ProtoError::Rejected("the message is too large to send through Microsoft Graph".into())),
+        status => NetError::Proto(ProtoError::Rejected(format!("Microsoft Graph answered with status {status}{}", code()))),
+    }
+}
+
+/// `local@domain` in visible ASCII: an address Graph can be handed in a header field.
+fn is_address(email: &str) -> bool {
+    let plain = email.len() <= MAX_ADDRESS && email.bytes().all(|b| b.is_ascii_graphic() && !matches!(b, b'<' | b'>' | b',' | b';' | b'"'));
+    plain && email.split_once('@').is_some_and(|(local, domain)| !local.is_empty() && !domain.is_empty() && !domain.contains('@'))
+}
+
+/// [`send`] through Graph at `base`.
+fn send_at(base: &str, token: &str, message: &Message, options: &SendOptions) -> Result<(), NetError> {
+    // Leaving someone out silently would be worse than not sending.
+    let mut anyone = false;
+    for address in message.recipients() {
+        let email = address.email.trim();
+        if email.is_empty() {
+            continue;
+        }
+        if !is_address(email) {
+            let shown: String = email.chars().filter(|c| !c.is_control()).take(80).collect();
+            return Err(NetError::Config(format!("\"{shown}\" isn't an address mail can be sent to")));
+        }
+        anyone = true;
+    }
+    if !anyone {
+        return Err(NetError::Config("the message has no recipients".into()));
+    }
+    let graph = Graph::at(base, token)?;
+    // A message that was never dated is dated now, as it is for SMTP.
+    let message = if message.date == 0 { Cow::Owned(Message { date: mailcraft_time::now(), ..message.clone() }) } else { Cow::Borrowed(message) };
+    let offset_minutes = options.offset_minutes.unwrap_or_else(|| mailcraft_time::local_offset_minutes(message.date));
+    // With the Bcc field: it is the only way Graph learns of those it names.
+    let mime = mailcraft_mime::write(&message, &WriteOptions { include_bcc: true, offset_minutes });
+    if mime.len() > MAX_MESSAGE {
+        return Err(NetError::Config("the message is too large to send through Microsoft Graph".into()));
+    }
+    let body = STANDARD.encode(&mime);
+    drop(mime);
+    let reply = graph.ask(&graph.url(SEND_MAIL), "POST", &[("Content-Type", "text/plain")], Some(&body), SEND_TIMEOUT, http::MAX_BODY)?;
+    if reply.status == 202 { Ok(()) } else { Err(graph.refusal(Doing::Sending, &reply, &body)) }
+}
+
+/// [`events`] from Graph at `base`.
+fn events_at(base: &str, token: &str, from: Timestamp, to: Timestamp) -> Result<EventsDownload, NetError> {
+    events_in_at(base, token, &EventsQuery { from, to, ..Default::default() })
+}
+
+/// [`events_in`] from Graph at `base`.
+fn events_in_at(base: &str, token: &str, query: &EventsQuery) -> Result<EventsDownload, NetError> {
+    let (from, to) = (query.from, query.to);
+    if to <= from {
+        return Err(NetError::Config("the calendar was asked for a stretch of time with no length".into()));
+    }
+    let calendar = mailcraft_model::remote::clean_key(&query.calendar);
+    if calendar.is_empty() != query.calendar.trim().is_empty() {
+        return Err(NetError::Config("the calendar that was asked for isn't one the server could have".into()));
+    }
+    let graph = Graph::at(base, token)?;
+    // Graph won't have the question as it is put (400): put as it was before the newest fields
+    // were asked for, the calendar still comes.
+    let mut listed = Err(nonsense("the calendar wasn't asked for"));
+    let mut full = true;
+    for fields in [EVENT_FIELDS_FULL, EVENT_FIELDS, EVENT_FIELDS_PLAIN] {
+        listed = events_with(&graph, &calendar, from, to, fields);
+        match &listed {
+            Err(NetError::Proto(ProtoError::Rejected(why))) if why.starts_with(BAD_REQUEST) => {
+                log::debug!("calendar: asked again with fewer fields");
+                full = false;
+            }
+            _ => break,
+        }
+    }
+    let mut download = listed?;
+    download.calendar = calendar;
+    download.has_categories = full;
+    // Every series that happens in the stretch, and those the mailbox expected to: as themselves.
+    let mut wanted: Vec<String> = Vec::new();
+    let named = download.events.iter().map(|event| &event.series).chain(&query.series);
+    for series in named.map(|series| mailcraft_model::remote::clean_key(series)).filter(|series| !series.is_empty()) {
+        if wanted.len() < MAX_SERIES && !wanted.contains(&series) {
+            wanted.push(series);
+        }
+    }
+    for (series, answer) in graph.series(&wanted) {
+        match answer {
+            Series::Found(event) => download.events.push(*event),
+            Series::Gone => download.gone.push(series),
+            Series::Unknown => {}
+        }
+    }
+    Ok(download)
+}
+
+/// How the error for a 400 starts ([`refusal`]).
+const BAD_REQUEST: &str = "Microsoft Graph answered with status 400";
+
+/// What Graph said of a series that was asked for by name.
+enum Series {
+    Found(Box<RemoteEvent>),
+    /// Graph no longer has it.
+    Gone,
+    /// It couldn't be asked, or the answer couldn't be read.
+    Unknown,
+}
+
+impl Graph<'_> {
+    /// Ask for the series called `ids` as themselves, [`BATCH_SIZE`] to a request. Every one
+    /// gets an answer, in order.
+    fn series(&self, ids: &[String]) -> Vec<(String, Series)> {
+        let mut out: Vec<(String, Series)> = Vec::new();
+        let select = http::form(&[("$select", SERIES_FIELDS)]);
+        for some in ids.chunks(BATCH_SIZE) {
+            let requests: Vec<Value> = some
+                .iter()
+                .enumerate()
+                .map(|(n, id)| {
+                    json!({
+                        "id": n.to_string(),
+                        "method": "GET",
+                        "url": format!("/me/events/{}?{select}", http::encode(id)),
+                        "headers": {"Prefer": EVENT_PREFERENCES},
+                    })
+                })
+                .collect();
+            let body = json!({"requests": requests}).to_string();
+            let mut answers: Vec<Series> = some.iter().map(|_| Series::Unknown).collect();
+            let asked = self.ask(&self.url(BATCH), "POST", &[("Content-Type", "application/json")], Some(&body), ASK_TIMEOUT, MAX_BATCH);
+            match asked {
+                Ok(reply) if reply.status == 200 => {
+                    let json = serde_json::from_slice::<Value>(&reply.body).unwrap_or(Value::Null);
+                    let said = json.get("responses").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+                    for one in said.iter().take(BATCH_SIZE * 2) {
+                        // Each answer says which question it is to; one that doesn't is no answer.
+                        let n = one.get("id").and_then(Value::as_str).and_then(|n| n.parse::<usize>().ok());
+                        let Some((slot, id)) = n.and_then(|n| answers.get_mut(n).zip(some.get(n))) else { continue };
+                        *slot = match one.get("status").and_then(Value::as_u64) {
+                            Some(200) => one.get("body").and_then(|entry| series_of(entry, id)).map_or(Series::Unknown, Series::Found),
+                            Some(404 | 410) => Series::Gone,
+                            _ => Series::Unknown,
+                        };
+                    }
+                }
+                // Graph won't take questions together (or not put this way): one at a time.
+                Ok(reply) if matches!(reply.status, 400 | 404 | 405 | 415 | 501) => {
+                    log::debug!("calendar: the series are asked for one by one");
+                    for (slot, id) in answers.iter_mut().zip(some) {
+                        *slot = self.one_series(id, &select);
+                    }
+                }
+                Ok(reply) => log::debug!("calendar: the series couldn't be asked for (status {})", reply.status),
+                Err(_) => log::debug!("calendar: the series couldn't be asked for"),
+            }
+            out.extend(some.iter().cloned().zip(answers));
+        }
+        out
+    }
+
+    /// One series, asked for by itself.
+    fn one_series(&self, id: &str, select: &str) -> Series {
+        let url = self.url(&format!("{EVENTS}/{}?{select}", http::encode(id)));
+        match self.ask(&url, "GET", &[("Prefer", EVENT_PREFERENCES)], None, ASK_TIMEOUT, MAX_PAGE) {
+            Ok(reply) if reply.status == 200 => {
+                let entry = serde_json::from_slice::<Value>(&reply.body).unwrap_or(Value::Null);
+                series_of(&entry, id).map_or(Series::Unknown, Series::Found)
+            }
+            Ok(reply) if matches!(reply.status, 404 | 410) => Series::Gone,
+            _ => Series::Unknown,
+        }
+    }
+}
+
+/// The series in an answer, when it is the one that was asked for (`id`) and is a series.
+fn series_of(entry: &Value, id: &str) -> Option<Box<RemoteEvent>> {
+    let mut event = event_of(entry)?;
+    // Whatever the answer calls it, it is the answer to this question; and whatever else it
+    // says it is, it was asked for as a series.
+    if event.kind != RemoteEventKind::SeriesMaster {
+        return None;
+    }
+    event.id = id.to_string();
+    event.series.clear();
+    Some(Box::new(event))
+}
+
+/// [`events_at`], asking for `fields` of each event of `calendar` (empty: the main one).
+fn events_with(graph: &Graph<'_>, calendar: &str, from: Timestamp, to: Timestamp, fields: &str) -> Result<EventsDownload, NetError> {
+    let (start, end) = (mailcraft_time::format_iso_utc(from), mailcraft_time::format_iso_utc(to));
+    let query = http::form(&[("startDateTime", &start), ("endDateTime", &end), ("$top", PAGE_SIZE), ("$select", fields)]);
+    let mut download = EventsDownload { from, to, complete: true, ..Default::default() };
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut unread = 0usize;
+    let view = if calendar.is_empty() { CALENDAR_VIEW.to_string() } else { format!("{CALENDARS}/{}/calendarView", http::encode(calendar)) };
+    let first = graph.url(&format!("{view}?{query}"));
+    let whole =
+        graph.list(Doing::Calendar, first, &[("Prefer", EVENT_PREFERENCES)], MAX_LISTED_EVENTS, &mut |entry: &Value| match event_of(entry) {
+            // A page that repeats an event doesn't make two of it.
+            Some(event) if seen.insert(event.id.clone()) => download.events.push(event),
+            Some(_) => {}
+            None => unread += 1,
+        })?;
+    // Something that couldn't be read may be an event that is here already.
+    download.complete = whole && unread == 0;
+    log::debug!("calendar: {} events, {unread} that couldn't be read, complete: {}", download.events.len(), download.complete);
+    Ok(download)
+}
+
+/// The name Graph has for how an event shows.
+fn show_as_name(show_as: ShowAs) -> &'static str {
+    match show_as {
+        ShowAs::Free => "free",
+        ShowAs::Tentative => "tentative",
+        ShowAs::Busy => "busy",
+        ShowAs::OutOfOffice => "oof",
+        ShowAs::WorkingElsewhere => "workingElsewhere",
+    }
+}
+
+/// `{"dateTime": "2026-10-12T13:00:00", "timeZone": "UTC"}`: an instant as Graph takes it. For a
+/// whole-day event the instant is a midnight in UTC that names a day, and the day is one in
+/// `zone` (UTC when that is empty).
+fn date_time(instant: Timestamp, all_day: bool, zone: &str) -> Value {
+    let named = if all_day { DateTime::at_midnight(DateTime::from_timestamp(instant, 0).date) } else { DateTime::from_timestamp(instant, 0) };
+    let zone = if all_day && !zone.is_empty() { zone } else { "UTC" };
+    json!({"dateTime": named.iso(), "timeZone": zone})
+}
+
+/// The name of a time zone, when `zone` can be one: letters, digits, spaces and `/_+-().`.
+fn zone_name(zone: &str) -> &str {
+    let zone = zone.trim();
+    let fits = zone.len() <= MAX_ZONE && zone.chars().all(|c| c.is_ascii_alphanumeric() || " /_+-().".contains(c));
+    if fits { zone } else { "" }
+}
+
+/// The event Graph is sent for `fields`: only what they say. `mark` goes with a new event.
+/// `None` when it repeats in a way Graph has no way of saying.
+fn event_body(fields: &EventFields, mark: &str, zone: &str) -> Option<String> {
+    let mut event = Map::new();
+    if let Some(title) = &fields.title {
+        event.insert("subject".into(), json!(title));
+    }
+    if let Some(place) = &fields.location {
+        event.insert("location".into(), json!({"displayName": place}));
+    }
+    if let Some(words) = &fields.description {
+        event.insert("body".into(), json!({"contentType": "text", "content": words}));
+    }
+    if let Some(EventTime { start, end, all_day }) = fields.time {
+        // A whole-day event is whole days: at least one, from midnight to midnight.
+        let end = if all_day { end.max(start.saturating_add(mailcraft_time::DAY)) } else { end.max(start) };
+        match fields.wall.filter(|_| !all_day && !zone.is_empty()) {
+            // A series: by the clock in the owner's zone, so that it stays at its hour all year.
+            Some(wall) => {
+                event.insert("start".into(), json!({"dateTime": wall.start.iso(), "timeZone": zone}));
+                event.insert("end".into(), json!({"dateTime": wall.end.max(wall.start).iso(), "timeZone": zone}));
+            }
+            None => {
+                event.insert("start".into(), date_time(start, all_day, zone));
+                event.insert("end".into(), date_time(end, all_day, zone));
+            }
+        }
+        event.insert("isAllDay".into(), json!(all_day));
+    }
+    if let Some(repeat) = &fields.repeat {
+        let rule = match &repeat.rule {
+            Some(rule) => recurrence_body(rule, repeat.first, zone)?,
+            None => Value::Null,
+        };
+        event.insert("recurrence".into(), rule);
+    }
+    if let Some(people) = &fields.attendees {
+        let invited: Vec<Value> = people
+            .iter()
+            .take(MAX_PEOPLE)
+            .filter(|attendee| is_address(attendee.address.email.trim()))
+            .map(|attendee| {
+                json!({
+                    "emailAddress": {"address": attendee.address.email.trim(), "name": attendee.address.name.trim()},
+                    "type": if attendee.optional { "optional" } else { "required" },
+                })
+            })
+            .collect();
+        event.insert("attendees".into(), json!(invited));
+    }
+    if let Some(categories) = &fields.categories {
+        event.insert("categories".into(), json!(categories));
+    }
+    if let Some(show_as) = fields.show_as {
+        event.insert("showAs".into(), json!(show_as_name(show_as)));
+    }
+    if let Some(private) = fields.private {
+        event.insert("sensitivity".into(), json!(if private { "private" } else { "normal" }));
+    }
+    if let Some(reminder) = fields.reminder {
+        event.insert("isReminderOn".into(), json!(reminder.on));
+        if reminder.on {
+            event.insert("reminderMinutesBeforeStart".into(), json!(reminder.minutes));
+        }
+    }
+    if !mark.is_empty() {
+        event.insert("transactionId".into(), json!(mark));
+    }
+    Some(Value::Object(event).to_string())
+}
+
+/// What became of one try at writing an event.
+enum Wrote {
+    /// Graph answered, or couldn't be asked: the outcome, and whether the rest of the upload is
+    /// better left for later (Graph is busy, or can't be reached).
+    Outcome(Box<EventOutcome>, bool),
+    /// Graph didn't take the token: nothing more goes with it.
+    TokenRefused,
+}
+
+/// [`push_events`] to Graph at `base`.
+fn push_events_at(base: &str, token: &str, upload: &EventsUpload, options: &EventOptions) -> EventsUploaded {
+    let mut uploaded = EventsUploaded { account: upload.account, email: upload.email.clone(), ..Default::default() };
+    let Ok(graph) = Graph::at(base, token) else {
+        uploaded.token_refused = true;
+        return uploaded;
+    };
+    let zone = zone_name(&options.zone);
+    for op in upload.ops.iter().take(MAX_EVENT_OPS) {
+        let mut op = op.clone();
+        op.tidy();
+        match graph.write_event(op, zone) {
+            Wrote::Outcome(outcome, stop) => {
+                uploaded.outcomes.push(*outcome);
+                if stop {
+                    break;
+                }
+            }
+            Wrote::TokenRefused => {
+                uploaded.token_refused = true;
+                break;
+            }
+        }
+    }
+    log::debug!("calendar: {} of {} changes answered", uploaded.outcomes.len(), upload.ops.len());
+    uploaded
+}
+
+impl Graph<'_> {
+    /// Carry out one op, and say what Graph made of it.
+    fn write_event(&self, op: EventOp, zone: &str) -> Wrote {
+        let outcome = |op: EventOp, result: EventResult, error: String| Box::new(EventOutcome { op, result, error, ..Default::default() });
+        // Changed and changed back: there is nothing to tell.
+        if op.kind == EventChangeKind::Update && op.fields.is_empty() {
+            return Wrote::Outcome(outcome(op, EventResult::Done, String::new()), false);
+        }
+        // One occurrence of a series, known by its time: Graph says what it calls it.
+        let found = if op.of_occurrence() {
+            match self.occurrence(&op.series, op.occurrence) {
+                Ok(Some(id)) => id,
+                Ok(None) => return Wrote::Outcome(outcome(op, EventResult::Gone, "the series no longer has that occurrence".into()), false),
+                Err(e) if e.is_refused_sign_in() => return Wrote::TokenRefused,
+                Err(e) => {
+                    let stop = !matches!(e, NetError::Proto(ProtoError::Rejected(_)) | NetError::Forbidden(_));
+                    let result = match e {
+                        NetError::Forbidden(_) => EventResult::Denied,
+                        NetError::Proto(ProtoError::Rejected(_)) => EventResult::Refused,
+                        _ => EventResult::Failed,
+                    };
+                    let mut said = outcome(op, result, e.to_string());
+                    if let NetError::Busy { retry_after, .. } = e {
+                        said.retry_after = retry_after;
+                    }
+                    return Wrote::Outcome(said, stop);
+                }
+            }
+        } else {
+            op.remote.clone()
+        };
+        let named = !found.is_empty();
+        let event = format!("{EVENTS}/{}", http::encode(&found));
+        let answer = match op.response {
+            Response::Accepted => "accept",
+            Response::Tentative => "tentativelyAccept",
+            Response::Declined => "decline",
+            Response::None => "",
+        };
+        let (method, path) = match op.kind {
+            EventChangeKind::Create if !op.token.is_empty() && op.calendar.is_empty() => ("POST", EVENTS.to_string()),
+            EventChangeKind::Create if !op.token.is_empty() => ("POST", format!("{CALENDARS}/{}/events", http::encode(&op.calendar))),
+            EventChangeKind::Update if named => ("PATCH", event),
+            // A meeting the owner called is called off, which tells the people invited.
+            EventChangeKind::Delete if named && op.cancel => ("POST", format!("{event}/cancel")),
+            EventChangeKind::Delete if named => ("DELETE", event),
+            EventChangeKind::Respond if named && !answer.is_empty() => ("POST", format!("{event}/{answer}")),
+            // Nothing says which event: not a question Graph can be asked.
+            _ => return Wrote::Outcome(outcome(op, EventResult::Refused, "the change doesn't say which event it is about".into()), false),
+        };
+        let url = self.url(&path);
+        let whole_day = op.fields.time.is_some_and(|time| time.all_day);
+        let zoned = whole_day || op.fields.wall.is_some() || op.fields.repeat.is_some();
+        let mut zone = zone;
+        // Twice at most: a second time in UTC, should Graph not know the zone a whole day is in.
+        for _ in 0..2 {
+            let body = match op.kind {
+                EventChangeKind::Delete if op.cancel => Some(json!({"comment": op.comment}).to_string()),
+                EventChangeKind::Delete => None,
+                EventChangeKind::Respond => {
+                    Some(json!({"comment": if op.send { op.comment.as_str() } else { "" }, "sendResponse": op.send}).to_string())
+                }
+                EventChangeKind::Create | EventChangeKind::Update => match event_body(&op.fields, &op.token, zone) {
+                    Some(body) => Some(body),
+                    None => {
+                        let why = "it repeats in a way Microsoft 365 has no way of keeping";
+                        return Wrote::Outcome(outcome(op, EventResult::Refused, why.into()), false);
+                    }
+                },
+            };
+            let headers: &[(&str, &str)] = if body.is_some() { &[("Content-Type", "application/json"), ("Prefer", EVENT_PREFERENCES)] } else { &[] };
+            let reply = match self.ask(&url, method, headers, body.as_deref(), WRITE_TIMEOUT, MAX_WRITTEN) {
+                Ok(reply) => reply,
+                // Whether it went is not known. It is asked again later: a change is the same
+                // change twice, and a new event carries its mark.
+                Err(e) => return Wrote::Outcome(outcome(op, EventResult::Failed, e.to_string()), true),
+            };
+            let sent = format!("{} {} {found} {} {}", body.as_deref().unwrap_or(""), op.remote, op.series, op.calendar);
+            let why = || self.refusal(Doing::Writing, &reply, &sent);
+            let (result, stop) = match (op.kind, reply.status) {
+                (_, 401) => return Wrote::TokenRefused,
+                // Done, however Graph words its yes: taking a yes for a no would put back here
+                // what the server has taken on.
+                (_, 200..=299) => {
+                    let json = serde_json::from_slice::<Value>(&reply.body).unwrap_or(Value::Null);
+                    // What an occurrence is called from now on, should the answer not say.
+                    let changed_one = op.kind == EventChangeKind::Update && op.of_occurrence();
+                    let mut done = outcome(op, EventResult::Done, String::new());
+                    done.remote = text(&json, "id").to_string();
+                    if done.remote.is_empty() && changed_one {
+                        done.remote = found;
+                    }
+                    done.change_key = match text(&json, "changeKey") {
+                        "" => text(&json, "@odata.etag").to_string(),
+                        key => key.to_string(),
+                    };
+                    done.uid = text(&json, "iCalUId").to_string();
+                    done.tidy();
+                    return Wrote::Outcome(done, false);
+                }
+                (EventChangeKind::Update | EventChangeKind::Delete | EventChangeKind::Respond, 404 | 410) => (EventResult::Gone, false),
+                (_, 403) => (EventResult::Denied, false),
+                (_, 429 | 503 | 504) => (EventResult::Failed, true),
+                (EventChangeKind::Create, 409) | (_, 500..=599) => (EventResult::Failed, false),
+                // A day or an hour in a zone Graph doesn't know: the same in UTC.
+                (EventChangeKind::Create | EventChangeKind::Update, 400) if zoned && !zone.is_empty() => {
+                    zone = "";
+                    continue;
+                }
+                _ => (EventResult::Refused, false),
+            };
+            let error = why();
+            // In Graph's own words where it has any, without "the server said" before them.
+            let words = match &error {
+                NetError::Proto(ProtoError::Rejected(words)) => words.clone(),
+                other => other.to_string(),
+            };
+            let mut said = outcome(op, result, words);
+            if let NetError::Busy { retry_after, .. } = error {
+                said.retry_after = retry_after;
+            }
+            return Wrote::Outcome(said, stop);
+        }
+        Wrote::Outcome(outcome(op, EventResult::Refused, "Microsoft Graph wouldn't take the event".into()), false)
+    }
+
+    /// What Graph calls the occurrence that the series `series` has at `when` (Unix seconds):
+    /// asked for among the occurrences of the day before and after. `None` when the series is
+    /// gone, or has nothing then (it was deleted there, or the series was changed).
+    fn occurrence(&self, series: &str, time: Timestamp) -> Result<Option<String>, NetError> {
+        if series.is_empty() || time == 0 {
+            return Ok(None);
+        }
+        let (from, to) = (time.saturating_sub(mailcraft_time::DAY), time.saturating_add(mailcraft_time::DAY));
+        let (start, end) = (mailcraft_time::format_iso_utc(from), mailcraft_time::format_iso_utc(to));
+        let query =
+            http::form(&[("startDateTime", &start), ("endDateTime", &end), ("$top", PAGE_SIZE), ("$select", "id,start,originalStart,isAllDay")]);
+        let url = self.url(&format!("{EVENTS}/{}/instances?{query}", http::encode(series)));
+        let reply = self.ask(&url, "GET", &[("Prefer", EVENT_PREFERENCES)], None, ASK_TIMEOUT, MAX_PAGE)?;
+        match reply.status {
+            200 => {}
+            404 | 410 => return Ok(None),
+            _ => return Err(self.refusal(Doing::Writing, &reply, series)),
+        }
+        let mut best: Option<(i64, String)> = None;
+        for entry in page_of(&reply.body)?.entries.iter().take(200) {
+            let id = mailcraft_model::remote::clean_key(text(entry, "id"));
+            let all_day = entry.get("isAllDay").and_then(Value::as_bool).unwrap_or(false);
+            // A whole-day one is named by its day; a timed one by when the series has it.
+            let at = if all_day { when(entry.get("start")) } else { instant(text(entry, "originalStart")).or_else(|| when(entry.get("start"))) };
+            let Some(off) = at.map(|at| at.saturating_sub(time).saturating_abs()) else { continue };
+            let near = off <= if all_day { NEAR_DAY } else { NEAR };
+            if !id.is_empty() && near && best.as_ref().is_none_or(|(least, _)| off < *least) {
+                best = Some((off, id));
+            }
+        }
+        Ok(best.map(|(_, id)| id))
+    }
+}
+
+/// [`contacts`] from Graph at `base`.
+fn contacts_at(base: &str, token: &str) -> Result<ContactsDownload, NetError> {
+    let graph = Graph::at(base, token)?;
+    let query = http::form(&[("$top", PAGE_SIZE), ("$select", CONTACT_FIELDS)]);
+    let mut download = ContactsDownload { complete: true, ..Default::default() };
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut unread = 0usize;
+    let first = graph.url(&format!("{CONTACTS}?{query}"));
+    let whole = graph.list(Doing::Contacts, first, &[], MAX_LISTED_CONTACTS, &mut |entry: &Value| match contact_of(entry) {
+        Some(contact) if seen.insert(contact.id.clone()) => download.contacts.push(contact),
+        Some(_) => {}
+        None => unread += 1,
+    })?;
+    download.complete = whole && unread == 0;
+    log::debug!("contacts: {} of them, {unread} that couldn't be read, complete: {}", download.contacts.len(), download.complete);
+    Ok(download)
+}
+
+/// The text of `name` in a JSON object; empty when there is none, or it isn't text.
+fn text<'v>(of: &'v Value, name: &str) -> &'v str {
+    of.get(name).and_then(Value::as_str).unwrap_or("")
+}
+
+/// The instant a text names (ISO 8601, read as UTC when it names no zone of its own).
+fn instant(text: &str) -> Option<Timestamp> {
+    if text.len() > MAX_DATE { None } else { mailcraft_time::iso_to_timestamp(text, 0) }
+}
+
+/// The instant in `{"dateTime": "2026-10-12T13:00:00.0000000", "timeZone": "UTC"}`. UTC is what
+/// was asked for; a time in a zone that would have to be looked up is not read.
+fn when(value: Option<&Value>) -> Option<Timestamp> {
+    let value = value?;
+    let zone = text(value, "timeZone").trim();
+    if !zone.is_empty() && !UTC.iter().any(|utc| utc.eq_ignore_ascii_case(zone)) {
+        return None;
+    }
+    instant(text(value, "dateTime"))
+}
+
+/// The person in `{"emailAddress": {"name": "…", "address": "…"}}`, or in the inner object itself.
+fn person(value: &Value) -> Address {
+    let inner = value.get("emailAddress").unwrap_or(value);
+    Address { name: text(inner, "name").to_string(), email: text(inner, "address").to_string() }
+}
+
+/// What somebody answered an invitation.
+fn response(status: Option<&Value>) -> Response {
+    match status.map_or("", |status| text(status, "response")).to_ascii_lowercase().as_str() {
+        "accepted" | "organizer" => Response::Accepted,
+        "tentativelyaccepted" => Response::Tentative,
+        "declined" => Response::Declined,
+        _ => Response::None,
+    }
+}
+
+/// One entry of a calendar view as the mailbox can take it; `None` for one that has no id, or no
+/// times that can be read.
+fn event_of(entry: &Value) -> Option<RemoteEvent> {
+    if !entry.is_object() {
+        return None;
+    }
+    let (start, end) = (when(entry.get("start"))?, when(entry.get("end"))?);
+    // The description as text when Graph sent text, as asked; otherwise the short text it makes of it.
+    let body = entry.get("body").filter(|body| text(body, "contentType").eq_ignore_ascii_case("text")).map(|body| text(body, "content"));
+    let attendees = entry.get("attendees").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let flag = |name: &str| entry.get(name).and_then(Value::as_bool).unwrap_or(false);
+    let reminder = entry.get("reminderMinutesBeforeStart").and_then(Value::as_u64).map(|minutes| u32::try_from(minutes).unwrap_or(u32::MAX));
+    let mut event = RemoteEvent {
+        id: text(entry, "id").to_string(),
+        change_key: match text(entry, "changeKey") {
+            "" => text(entry, "@odata.etag").to_string(),
+            key => key.to_string(),
+        },
+        uid: text(entry, "iCalUId").to_string(),
+        title: text(entry, "subject").to_string(),
+        location: entry.get("location").map_or("", |place| text(place, "displayName")).to_string(),
+        description: body.filter(|body| !body.trim().is_empty()).unwrap_or_else(|| text(entry, "bodyPreview")).to_string(),
+        start,
+        end,
+        all_day: flag("isAllDay"),
+        organizer: entry.get("organizer").map(person),
+        attendees: attendees
+            .iter()
+            .take(MAX_PEOPLE)
+            .map(|attendee| Attendee {
+                address: person(attendee),
+                optional: text(attendee, "type").eq_ignore_ascii_case("optional"),
+                response: response(attendee.get("status")),
+            })
+            .collect(),
+        response: response(entry.get("responseStatus")),
+        show_as: ShowAs::parse(text(entry, "showAs")).unwrap_or_default(),
+        private: matches!(text(entry, "sensitivity").to_ascii_lowercase().as_str(), "private" | "confidential"),
+        cancelled: flag("isCancelled"),
+        kind: match text(entry, "type").to_ascii_lowercase().as_str() {
+            "occurrence" => RemoteEventKind::Occurrence,
+            "exception" => RemoteEventKind::Exception,
+            "seriesmaster" => RemoteEventKind::SeriesMaster,
+            _ => RemoteEventKind::Single,
+        },
+        series: text(entry, "seriesMasterId").to_string(),
+        reminder_minutes: reminder.filter(|_| flag("isReminderOn")),
+        modified: instant(text(entry, "lastModifiedDateTime")).unwrap_or(0),
+        is_organizer: entry.get("isOrganizer").and_then(Value::as_bool),
+        token: text(entry, "transactionId").to_string(),
+        recurrence: None,
+        series_day: None,
+        original: instant(text(entry, "originalStart")),
+        categories: entry
+            .get("categories")
+            .and_then(Value::as_array)
+            .map(|names| names.iter().take(MAX_ENTRIES).filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default(),
+    };
+    if event.kind == RemoteEventKind::SeriesMaster
+        && let Some((rule, day)) = entry.get("recurrence").and_then(rule_of)
+    {
+        (event.recurrence, event.series_day) = (Some(rule), Some(day));
+    }
+    event.tidy();
+    (!event.id.is_empty()).then_some(event)
+}
+
+/// The names Graph has for the days of the week, and for which one of a month is meant.
+const DAYS: [(&str, Weekday); 7] = [
+    ("monday", Weekday::Mon),
+    ("tuesday", Weekday::Tue),
+    ("wednesday", Weekday::Wed),
+    ("thursday", Weekday::Thu),
+    ("friday", Weekday::Fri),
+    ("saturday", Weekday::Sat),
+    ("sunday", Weekday::Sun),
+];
+const INDEXES: [(&str, i8); 5] = [("first", 1), ("second", 2), ("third", 3), ("fourth", 4), ("last", -1)];
+
+/// How a series repeats (`{"pattern": {…}, "range": {…}}`) as the mailbox says it, with the day
+/// the rule counts from; `None` for a rule the mailbox has no way of saying (the first weekday of
+/// a month, a day of the month other than the one it starts on), which leaves the series to come
+/// as its occurrences.
+fn rule_of(recurrence: &Value) -> Option<(Recurrence, Date)> {
+    let (pattern, range) = (recurrence.get("pattern")?, recurrence.get("range")?);
+    let first = Some(text(range, "startDate")).filter(|day| day.len() <= MAX_DATE).and_then(Date::parse_iso)?;
+    let number = |of: &Value, name: &str| of.get(name).and_then(Value::as_u64);
+    let interval = u32::try_from(number(pattern, "interval").unwrap_or(1)).ok().filter(|n| (1..=999).contains(n))?;
+    let mut by_day: Vec<Weekday> = Vec::new();
+    for day in pattern.get("daysOfWeek").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default().iter().take(8) {
+        let name = day.as_str()?.to_ascii_lowercase();
+        by_day.push(DAYS.iter().find(|(known, _)| *known == name)?.1);
+    }
+    by_day.sort();
+    by_day.dedup();
+    let index = || INDEXES.iter().find(|(name, _)| name.eq_ignore_ascii_case(text(pattern, "index"))).map(|(_, nth)| *nth);
+    // The mailbox counts a month's or a year's day from the day the series starts on.
+    let on_its_day = || number(pattern, "dayOfMonth").is_none_or(|day| day == 0 || day == u64::from(first.day));
+    let in_its_month = || number(pattern, "month").is_none_or(|month| month == 0 || month == u64::from(first.month));
+    let one_day = by_day.len() == 1;
+    let mut rule = match text(pattern, "type").to_ascii_lowercase().as_str() {
+        "daily" => Recurrence { freq: Freq::Daily, ..Default::default() },
+        "weekly" => Recurrence { freq: Freq::Weekly, by_day, ..Default::default() },
+        "absolutemonthly" if on_its_day() => Recurrence { freq: Freq::Monthly, ..Default::default() },
+        "relativemonthly" if one_day => Recurrence { freq: Freq::Monthly, by_day, nth: Some(index()?), ..Default::default() },
+        "absoluteyearly" if on_its_day() && in_its_month() => Recurrence { freq: Freq::Yearly, ..Default::default() },
+        "relativeyearly" if one_day && in_its_month() => Recurrence { freq: Freq::Yearly, by_day, nth: Some(index()?), ..Default::default() },
+        _ => return None,
+    };
+    rule.interval = interval;
+    match text(range, "type").to_ascii_lowercase().as_str() {
+        "enddate" => rule.until = Some(Some(text(range, "endDate")).filter(|day| day.len() <= MAX_DATE).and_then(Date::parse_iso)?),
+        "numbered" => rule.count = Some(u32::try_from(number(range, "numberOfOccurrences")?).ok().filter(|n| (1..=9_999).contains(n))?),
+        "noend" => {}
+        _ => return None,
+    }
+    Some((rule, first))
+}
+
+/// How a series repeats, as Graph is told: the rule, counted from the day `first` in `zone`
+/// (UTC when that is empty). `None` for a rule Graph has no way of saying.
+fn recurrence_body(rule: &Recurrence, first: Date, zone: &str) -> Option<Value> {
+    let interval = rule.interval.clamp(1, 999);
+    let name = |day: Weekday| DAYS.iter().find(|(_, known)| *known == day).map_or("monday", |(name, _)| *name);
+    let own_day = [first.weekday()];
+    let days = |list: &[Weekday]| -> Vec<&'static str> { if list.is_empty() { &own_day[..] } else { list }.iter().map(|day| name(*day)).collect() };
+    let index = |nth: i8| INDEXES.iter().find(|(_, known)| *known == nth).map(|(name, _)| *name);
+    let one_day = rule.by_day.len() <= 1;
+    let pattern = match (rule.freq, rule.nth.filter(|nth| *nth != 0)) {
+        (Freq::Daily, _) if rule.by_day.is_empty() => json!({"type": "daily", "interval": interval}),
+        // "Every weekday": Graph says that as a week with those days in it.
+        (Freq::Daily, _) if interval == 1 => json!({"type": "weekly", "interval": 1, "daysOfWeek": days(&rule.by_day), "firstDayOfWeek": "monday"}),
+        (Freq::Daily, _) => return None,
+        (Freq::Weekly, _) => json!({"type": "weekly", "interval": interval, "daysOfWeek": days(&rule.by_day), "firstDayOfWeek": "monday"}),
+        (Freq::Monthly, None) => json!({"type": "absoluteMonthly", "interval": interval, "dayOfMonth": first.day}),
+        (Freq::Monthly, Some(nth)) if one_day => {
+            json!({"type": "relativeMonthly", "interval": interval, "daysOfWeek": days(&rule.by_day), "index": index(nth)?})
+        }
+        (Freq::Yearly, None) => json!({"type": "absoluteYearly", "interval": interval, "dayOfMonth": first.day, "month": first.month}),
+        (Freq::Yearly, Some(nth)) if one_day => {
+            json!({"type": "relativeYearly", "interval": interval, "daysOfWeek": days(&rule.by_day), "index": index(nth)?, "month": first.month})
+        }
+        _ => return None,
+    };
+    let zone = if zone.is_empty() { "UTC" } else { zone };
+    let range = match (rule.count, rule.until) {
+        (Some(count), _) => {
+            json!({"type": "numbered", "startDate": first.iso(), "numberOfOccurrences": count.clamp(1, 9_999), "recurrenceTimeZone": zone})
+        }
+        (None, Some(until)) => json!({"type": "endDate", "startDate": first.iso(), "endDate": until.max(first).iso(), "recurrenceTimeZone": zone}),
+        (None, None) => json!({"type": "noEnd", "startDate": first.iso(), "recurrenceTimeZone": zone}),
+    };
+    Some(json!({"pattern": pattern, "range": range}))
+}
+
+/// The postal address in a contact's `businessAddress`, `homeAddress` or `otherAddress`.
+fn postal(entry: &Value, name: &str, label: &str) -> PostalAddress {
+    let empty = Value::Null;
+    let place = entry.get(name).unwrap_or(&empty);
+    PostalAddress {
+        label: label.to_string(),
+        street: text(place, "street").to_string(),
+        city: text(place, "city").to_string(),
+        region: text(place, "state").to_string(),
+        postal_code: text(place, "postalCode").to_string(),
+        country: text(place, "countryOrRegion").to_string(),
+    }
+}
+
+/// One entry of the contacts as the mailbox can take it; `None` for one without an id.
+fn contact_of(entry: &Value) -> Option<RemoteContact> {
+    if !entry.is_object() {
+        return None;
+    }
+    let list = |name: &str| entry.get(name).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let numbers = |name: &str, label: &'static str| {
+        list(name).iter().take(MAX_ENTRIES).filter_map(Value::as_str).map(move |number| Labeled::new(label, number))
+    };
+    let mut contact = RemoteContact {
+        id: text(entry, "id").to_string(),
+        change_key: match text(entry, "changeKey") {
+            "" => text(entry, "@odata.etag").to_string(),
+            key => key.to_string(),
+        },
+        display_name: text(entry, "displayName").to_string(),
+        first: text(entry, "givenName").to_string(),
+        middle: text(entry, "middleName").to_string(),
+        last: text(entry, "surname").to_string(),
+        nickname: text(entry, "nickName").to_string(),
+        company: text(entry, "companyName").to_string(),
+        title: text(entry, "jobTitle").to_string(),
+        department: text(entry, "department").to_string(),
+        emails: list("emailAddresses").iter().take(MAX_ENTRIES).map(|address| Labeled::new("", person(address).email)).collect(),
+        phones: std::iter::once(Labeled::new("mobile", text(entry, "mobilePhone")))
+            .chain(numbers("businessPhones", "work"))
+            .chain(numbers("homePhones", "home"))
+            .collect(),
+        addresses: vec![postal(entry, "businessAddress", "work"), postal(entry, "homeAddress", "home"), postal(entry, "otherAddress", "other")],
+        websites: vec![text(entry, "businessHomePage").to_string()],
+        // The day as it is written: a birthday is a day, whatever time of it the server adds.
+        birthday: Some(text(entry, "birthday")).filter(|day| day.len() <= MAX_DATE).and_then(mailcraft_time::parse_iso).map(|(day, _)| day.date),
+        notes: text(entry, "personalNotes").to_string(),
+        modified: instant(text(entry, "lastModifiedDateTime")).unwrap_or(0),
+    };
+    // Entries with nothing in them (no mobile number, no home address) go here.
+    contact.tidy();
+    (!contact.id.is_empty()).then_some(contact)
+}
+
+const CALENDAR_GROUPS: &str = "/v1.0/me/calendarGroups";
+const CALENDAR_FIELDS: &str = "id,name,color,hexColor,canEdit,isDefaultCalendar";
+const MASTER_CATEGORIES: &str = "/v1.0/me/outlook/masterCategories";
+const GET_SCHEDULE: &str = "/v1.0/me/calendar/getSchedule";
+/// Most groups of calendars one account is taken to have.
+const MAX_GROUPS: usize = 30;
+
+/// The account's calendars, each with the name of the group it is listed under, its colour,
+/// whether it is the main one and whether the account may change it, for the owner of `token`
+/// (an access token for Graph). Calendars and groups are only read.
+///
+/// The groups are asked for first and then the calendars of each. Should Graph not list the
+/// groups, the calendars come without them. [`CalendarsDownload::complete`] and
+/// [`CalendarsDownload::for_account`] are as for [`events`].
+pub fn calendars(token: &str) -> Result<CalendarsDownload, NetError> {
+    calendars_at(GRAPH, token)
+}
+
+/// The mailbox's own list of categories, with a colour for each, for the owner of `token`. This
+/// takes a permission of its own (`MailboxSettings.Read`): without it the answer is
+/// [`NetError::Forbidden`], and nothing else is the worse for it.
+pub fn categories(token: &str) -> Result<CategoriesDownload, NetError> {
+    categories_at(GRAPH, token)
+}
+
+/// When the people of `ask` are busy in its stretch, as far as the owner of `token` may know:
+/// when their time is taken and how (busy, tentative, out of office), never by what. At most
+/// [`MAX_SCHEDULES`] people and [`MAX_SCHEDULE_STRETCH`] seconds at once.
+pub fn schedule(token: &str, ask: &FreeBusyAsk) -> Result<FreeBusy, NetError> {
+    schedule_at(GRAPH, token, ask)
+}
+
+/// Our own colours for the names Graph has for a calendar's colour, when it gives no colour as
+/// such; `None` for "whatever the program likes" and for a name that isn't known.
+fn calendar_color(name: &str) -> Option<Rgb> {
+    const COLORS: [(&str, Rgb); 9] = [
+        ("lightblue", Rgb(0x4A, 0x90, 0xD9)),
+        ("lightgreen", Rgb(0x4C, 0xAF, 0x6A)),
+        ("lightorange", Rgb(0xE8, 0x8F, 0x3C)),
+        ("lightgray", Rgb(0x9A, 0xA0, 0xA6)),
+        ("lightyellow", Rgb(0xD9, 0xB5, 0x2B)),
+        ("lightteal", Rgb(0x2F, 0xA8, 0xA0)),
+        ("lightpink", Rgb(0xD9, 0x6C, 0xA6)),
+        ("lightbrown", Rgb(0xA6, 0x7C, 0x52)),
+        ("lightred", Rgb(0xD9, 0x53, 0x4F)),
+    ];
+    let name = name.to_ascii_lowercase();
+    COLORS.iter().find(|(known, _)| *known == name).map(|(_, color)| *color)
+}
+
+/// Our own colours for the numbered colours Graph gives a category (`preset0` to `preset24`:
+/// red, orange, brown, yellow, green, teal, olive, blue, purple, cranberry, steel, dark steel,
+/// gray, dark gray, black, then the dark ones of the first ten); grey for none or any other.
+fn category_color(name: &str) -> Rgb {
+    const COLORS: [Rgb; 25] = [
+        Rgb(0xD1, 0x3B, 0x3B),
+        Rgb(0xE0, 0x7B, 0x1F),
+        Rgb(0x9C, 0x6B, 0x3F),
+        Rgb(0xD9, 0xA4, 0x0C),
+        Rgb(0x2E, 0x8B, 0x57),
+        Rgb(0x1A, 0x9B, 0xA6),
+        Rgb(0x7A, 0x8B, 0x2E),
+        Rgb(0x2F, 0x6F, 0xD0),
+        Rgb(0x7E, 0x57, 0xC2),
+        Rgb(0xB0, 0x2E, 0x6B),
+        Rgb(0x6E, 0x8A, 0xA5),
+        Rgb(0x4A, 0x5F, 0x73),
+        Rgb(0x8A, 0x8A, 0x8A),
+        Rgb(0x5A, 0x5A, 0x5A),
+        Rgb(0x2B, 0x2B, 0x2B),
+        Rgb(0x8E, 0x1F, 0x1F),
+        Rgb(0xA8, 0x52, 0x0C),
+        Rgb(0x6B, 0x45, 0x23),
+        Rgb(0x9A, 0x73, 0x00),
+        Rgb(0x1C, 0x5E, 0x38),
+        Rgb(0x0F, 0x66, 0x6E),
+        Rgb(0x52, 0x5E, 0x1A),
+        Rgb(0x1B, 0x45, 0x8A),
+        Rgb(0x52, 0x35, 0x8A),
+        Rgb(0x78, 0x1B, 0x47),
+    ];
+    let number = name.to_ascii_lowercase().strip_prefix("preset").and_then(|n| n.parse::<usize>().ok());
+    number.and_then(|n| COLORS.get(n).copied()).unwrap_or(Rgb(0x8A, 0x8A, 0x8A))
+}
+
+/// One calendar of a list as the mailbox can take it, in the group called `group`.
+fn calendar_of(entry: &Value, group: &str) -> Option<RemoteCalendar> {
+    let id = text(entry, "id");
+    (!id.is_empty()).then(|| RemoteCalendar {
+        id: id.to_string(),
+        name: text(entry, "name").to_string(),
+        color: Rgb::parse(text(entry, "hexColor")).or_else(|| calendar_color(text(entry, "color"))),
+        group: group.to_string(),
+        read_only: entry.get("canEdit").and_then(Value::as_bool) == Some(false),
+        main: entry.get("isDefaultCalendar").and_then(Value::as_bool).unwrap_or(false),
+    })
+}
+
+/// [`calendars`] from Graph at `base`.
+fn calendars_at(base: &str, token: &str) -> Result<CalendarsDownload, NetError> {
+    let graph = Graph::at(base, token)?;
+    let mut download = CalendarsDownload { complete: true, ..Default::default() };
+    let mut groups: Vec<(String, String)> = Vec::new();
+    let query = http::form(&[("$top", PAGE_SIZE), ("$select", "id,name")]);
+    let grouped = graph.list(Doing::Calendar, graph.url(&format!("{CALENDAR_GROUPS}?{query}")), &[], MAX_GROUPS, &mut |entry: &Value| {
+        let id = mailcraft_model::remote::clean_key(text(entry, "id"));
+        if !id.is_empty() {
+            groups.push((id, text(entry, "name").to_string()));
+        }
+    });
+    let query = http::form(&[("$top", PAGE_SIZE), ("$select", CALENDAR_FIELDS)]);
+    match grouped {
+        Ok(whole) if !groups.is_empty() => {
+            download.complete = whole;
+            for (id, name) in &groups {
+                let url = graph.url(&format!("{CALENDAR_GROUPS}/{}/calendars?{query}", http::encode(id)));
+                let whole = graph.list(Doing::Calendar, url, &[], MAX_REMOTE_CALENDARS, &mut |entry: &Value| {
+                    download.calendars.extend(calendar_of(entry, name))
+                })?;
+                download.complete &= whole;
+            }
+        }
+        // A sign-in that is no longer taken, or a Graph that is busy: nothing more is asked.
+        Err(e) if e.is_refused_sign_in() || matches!(e, NetError::Busy { .. }) => return Err(e),
+        // No groups to be had: the calendars as one list.
+        _ => {
+            let url = graph.url(&format!("{CALENDARS}?{query}"));
+            download.complete = graph
+                .list(Doing::Calendar, url, &[], MAX_REMOTE_CALENDARS, &mut |entry: &Value| download.calendars.extend(calendar_of(entry, "")))?;
+        }
+    }
+    download.tidy();
+    // A list with nothing in it is no reason to take every calendar away.
+    download.complete &= !download.calendars.is_empty();
+    log::debug!("calendars: {} of them in {} groups, complete: {}", download.calendars.len(), groups.len(), download.complete);
+    Ok(download)
+}
+
+/// [`categories`] from Graph at `base`.
+fn categories_at(base: &str, token: &str) -> Result<CategoriesDownload, NetError> {
+    let graph = Graph::at(base, token)?;
+    let mut download = CategoriesDownload::default();
+    graph.list(Doing::Categories, graph.url(MASTER_CATEGORIES), &[], MAX_REMOTE_CATEGORIES, &mut |entry: &Value| {
+        download.categories.push(Category { name: text(entry, "displayName").to_string(), color: category_color(text(entry, "color")) });
+    })?;
+    download.tidy();
+    Ok(download)
+}
+
+/// [`schedule`] from Graph at `base`.
+fn schedule_at(base: &str, token: &str, ask: &FreeBusyAsk) -> Result<FreeBusy, NetError> {
+    let mut ask = ask.clone();
+    ask.tidy();
+    if ask.people.is_empty() {
+        return Err(NetError::Config("nobody with an address was asked about".into()));
+    }
+    if ask.to <= ask.from || ask.to.saturating_sub(ask.from) > MAX_SCHEDULE_STRETCH {
+        return Err(NetError::Config("free and busy times are asked for a stretch of 62 days at most".into()));
+    }
+    let graph = Graph::at(base, token)?;
+    let body = json!({
+        "schedules": ask.people,
+        "startTime": date_time(ask.from, false, ""),
+        "endTime": date_time(ask.to, false, ""),
+        "availabilityViewInterval": 30,
+    })
+    .to_string();
+    let headers = [("Content-Type", "application/json"), ("Prefer", "outlook.timezone=\"UTC\"")];
+    let reply = graph.ask(&graph.url(GET_SCHEDULE), "POST", &headers, Some(&body), ASK_TIMEOUT, MAX_PAGE)?;
+    if reply.status != 200 {
+        return Err(graph.refusal(Doing::Calendar, &reply, &body));
+    }
+    let mut answer = FreeBusy { from: ask.from, to: ask.to, people: Vec::new() };
+    for entry in page_of(&reply.body)?.entries.iter().take(2 * MAX_SCHEDULES) {
+        // Only those who were asked about, under the address they were asked about by.
+        let named = text(entry, "scheduleId").trim();
+        let Some(email) = ask.people.iter().find(|email| email.eq_ignore_ascii_case(named)) else { continue };
+        let items = entry.get("scheduleItems").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        // When, and how the time shows: nothing of what it is taken by is read.
+        let busy = items
+            .iter()
+            .take(MAX_BUSY)
+            .filter_map(|item| {
+                Some(BusyTime { start: when(item.get("start"))?, end: when(item.get("end"))?, show_as: ShowAs::parse(text(item, "status"))? })
+            })
+            .collect();
+        let code = entry.get("error").map_or("", |error| text(error, "responseCode"));
+        let known = !code.is_empty() && code.len() <= MAX_CODE && code.bytes().all(|b| b.is_ascii_alphanumeric());
+        let error = match entry.get("error").filter(|error| error.is_object()) {
+            Some(_) if known => format!("their time couldn't be looked up ({code})"),
+            Some(_) => "their time couldn't be looked up".to_string(),
+            None => String::new(),
+        };
+        answer.people.push(PersonSchedule { email: email.clone(), busy, error });
+    }
+    answer.tidy();
+    Ok(answer)
+}
+
+mod settings;
+pub use settings::{MailboxSettings, WorkingHours, mailbox_settings};
+
+#[cfg(test)]
+mod tests;
