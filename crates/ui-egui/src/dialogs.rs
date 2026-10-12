@@ -400,8 +400,9 @@ fn calendar_question(app: &MailApp, id: &str, params: &Value) -> Option<Question
     let e = mb.event(named.and_then(Value::as_u64).or(app.session.sel.event)?)?;
     // 1. Just this one, or the entire series? Asked of the occurrence that is selected (the
     // grid selects the one it acts on); nothing is asked about what is the same for both.
-    let day =
-        app.session.sel.event_day.filter(|day| app.session.sel.event == Some(e.id) && e.occurrences(*day, *day).iter().any(|o| o.start.date == *day));
+    // (An occurrence is named by the day it starts on here, whatever zone its series repeats in.)
+    let here = |instant: mailcraft_time::Timestamp| app.session.offset_at(instant);
+    let day = app.session.sel.event_day.filter(|day| app.session.sel.event == Some(e.id) && e.series_day_on(*day, &here).is_some());
     let about_days = match id {
         "calendar.move" | "calendar.delete" | "calendar.respond" | "ui.openWindow" => true,
         // (Putting it into another calendar, and how it shows, is about the series.)

@@ -298,7 +298,7 @@ fn forward(s: &mut Session, v: &Value) -> CmdResult {
     let note = super::comment(v);
     let one = part(s, &event, v)?;
     if let Part::One(day) = one
-        && !super::happens_on(&event, day)
+        && !super::happens_on(s, &event, day)
     {
         return Err(fail(format!("the series doesn't happen on {}", day.iso())));
     }

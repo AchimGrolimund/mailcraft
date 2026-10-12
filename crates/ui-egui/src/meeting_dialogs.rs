@@ -132,9 +132,16 @@ impl ProposeTime {
             let event = s.mailbox.event(number("id").or(number("event")).or(s.sel.event)?)?;
             // Of a series: the occurrence that is selected, which is the one the proposal is for.
             let day = s.sel.event_day.filter(|_| s.sel.event == Some(event.id) && event.recurrence.is_some());
-            let day = day.filter(|day| event.occurrences(*day, *day).iter().any(|o| o.start.date == *day));
+            // (When that occurrence is by the clock here: a series may repeat by another zone's.)
+            let here = |instant: mailcraft_time::Timestamp| s.offset_at(instant);
+            let day = day.filter(|day| event.series_day_on(*day, &here).is_some());
+            let times = day.map(|day| event.occurrence_times(event.series_day_on(day, &here).unwrap_or(day), &here));
             let apart = day.map_or(0, |day| event.start.date.days_until(day));
-            (start, end, all_day) = (event.start.add_days(apart), event.end.add_days(apart), event.all_day);
+            (start, end) = match times.filter(|_| !event.all_day) {
+                Some(times) => times,
+                None => (event.start.add_days(apart), event.end.add_days(apart)),
+            };
+            all_day = event.all_day;
             dialog.event = Some(event.id);
             dialog.occurrence = day;
             dialog.title = kit::shown(&event.title, 120);
@@ -394,9 +401,15 @@ impl ForwardMeeting {
         let said = p.get("occurrence").and_then(Value::as_str).and_then(Date::parse_iso);
         let one = p.get("scope").and_then(Value::as_str) == Some("occurrence");
         let day = said.or(s.sel.event_day.filter(|_| one && s.sel.event == Some(event.id))).filter(|_| event.recurrence.is_some());
-        let day = day.filter(|day| event.occurrences(*day, *day).iter().any(|o| o.start.date == *day));
+        // (When that occurrence is by the clock here: a series may repeat by another zone's.)
+        let here = |instant: mailcraft_time::Timestamp| s.offset_at(instant);
+        let day = day.filter(|day| event.series_day_on(*day, &here).is_some());
         let apart = day.map_or(0, |day| event.start.date.days_until(day));
-        let mut when = when_text(event.start.add_days(apart), event.end.add_days(apart), event.all_day, s.prefs.twelve_hour);
+        let (starts, ends) = match day.filter(|_| !event.all_day) {
+            Some(day) => event.occurrence_times(event.series_day_on(day, &here).unwrap_or(day), &here),
+            None => (event.start.add_days(apart), event.end.add_days(apart)),
+        };
+        let mut when = when_text(starts, ends, event.all_day, s.prefs.twelve_hour);
         if let (Some(rule), None) = (&event.recurrence, day) {
             when = format!("{when} ({})", kit::shown(&rule.describe(event.start.date), 120));
         }

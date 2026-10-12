@@ -413,8 +413,57 @@ fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
         let _ = app.run("view.weekNumbers", json!({"value": numbers}));
     }
     crate::reading::invitation_options(app, ui);
+    time_zones(app, ui, &prefs);
     section(ui, tl!("Signatures"), t);
     signatures(app, ui, t);
+}
+
+/// The time zone the calendar is shown in, and a second one for its time bar, each with a label
+/// for the bar: this computer's own zone unless another is chosen, as in Outlook's options.
+fn time_zones(app: &mut MailApp, ui: &mut Ui, prefs: &mailcraft_engine::Prefs) {
+    use mailcraft_time::Zone;
+    // What is typed into a zone's list, kept from frame to frame.
+    let typed = |ui: &Ui, key: &str| ui.data(|data| data.get_temp::<String>(egui::Id::new(key))).unwrap_or_default();
+    let keep = |ui: &Ui, key: &str, text: String| ui.data_mut(|data| data.insert_temp(egui::Id::new(key), text));
+    let label = |ui: &mut Ui, text: &str| {
+        let mut text = text.to_string();
+        let field = egui::TextEdit::singleline(&mut text).hint_text(tl!("Label")).desired_width(80.0).char_limit(24);
+        ui.add(field).changed().then_some(text)
+    };
+    let follows = Zone::named(&prefs.time_zone).is_none();
+    row(ui, tl!("Time zone"), |ui| {
+        if let Some(text) = label(ui, &prefs.zone_label) {
+            let _ = app.run("view.timeZone", json!({"label": text}));
+        }
+        let mut query = typed(ui, "opt_zone_query");
+        if let Some(zone) = crate::zones::picker(ui, egui::Id::new("opt_zone"), &app.session, app.session.zone(), &mut query, 250.0) {
+            let _ = app.run("view.timeZone", json!({"zone": zone.id()}));
+        }
+        keep(ui, "opt_zone_query", query);
+        let mut own = follows;
+        if ui.checkbox(&mut own, tl!("This computer's, wherever it goes")).changed() {
+            // (Unticked, the calendar stays in the zone it is in now, wherever the computer goes.)
+            let zone = if own { serde_json::Value::Null } else { json!(app.session.zone().id()) };
+            let _ = app.run("view.timeZone", json!({"zone": zone}));
+        }
+    });
+    let second = mailcraft_engine::cmd::zones::second_zone(&app.session);
+    row(ui, tl!("Second time zone"), |ui| {
+        let mut shown = second.is_some();
+        if ui.checkbox(&mut shown, tl!("Show in the time bar")).changed() {
+            let zone = if shown { json!("UTC") } else { serde_json::Value::Null };
+            let _ = app.run("view.timeZone", json!({"second": zone}));
+        }
+        let Some(second) = second else { return };
+        if let Some(text) = label(ui, &prefs.second_zone_label) {
+            let _ = app.run("view.timeZone", json!({"secondLabel": text}));
+        }
+        let mut query = typed(ui, "opt_second_zone_query");
+        if let Some(zone) = crate::zones::picker(ui, egui::Id::new("opt_second_zone"), &app.session, second, &mut query, 250.0) {
+            let _ = app.run("view.timeZone", json!({"second": zone.id()}));
+        }
+        keep(ui, "opt_second_zone_query", query);
+    });
 }
 
 fn signatures(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {

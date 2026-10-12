@@ -181,6 +181,22 @@ pub(crate) fn hold_quit(app: &mut MailApp) -> bool {
     true
 }
 
+/// The zone the calendar is shown in is another one than `was` (the computer was carried to
+/// another zone, or the owner chose one): the appointments that stand open, in windows of their
+/// own or in the dialog, read by the new clock as the calendar does, so that saving one of them
+/// moves nothing.
+pub(crate) fn rezone(app: &mut MailApp, was: mailcraft_time::Zone) {
+    let (now, twelve) = (app.session.zone(), app.session.prefs.twelve_hour);
+    let in_windows = app.windows.open.iter_mut().filter_map(|window| window.what.form_mut());
+    let in_dialog = match &mut app.dialog {
+        Some(crate::dialogs::Dialog::Form(form)) => Some(form),
+        _ => None,
+    };
+    for form in in_windows.chain(in_dialog).filter_map(Form::event_mut) {
+        form.rezone(was, now, twelve);
+    }
+}
+
 fn open_message(app: &mut MailApp, id: Id) -> Result<Value, String> {
     let Some(m) = app.session.mailbox.messages.get(&id).cloned() else { return Err(format!("no message with id {id}")) };
     // A draft opens where it is written.

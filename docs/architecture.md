@@ -1,6 +1,6 @@
 # MailCraft architecture
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-12 · **Change:** minor (calendar changes are checked against the server; `html` makes the line a message list shows) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-12 · **Change:** minor (time zones: `time::Zone`, how stored times are read; calendar changes are checked against the server; `html` makes the line a message list shows) · **Target:** Microsoft Outlook (Microsoft 365)
 
 How MailCraft is built today. Rules for working in the code are in [`AGENTS.md`](../AGENTS.md). The
 shape — layers, "everything is a command", the swappable egui front end, the control channel, MCP,
@@ -14,7 +14,7 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
 
 | Layer | Crate | Job |
 |---|---|---|
-| L0 | `time` | Dates and times without a clock dependency: proleptic Gregorian maths, weekdays, ISO weeks, RFC 5322 and ISO 8601 text, list and group labels; `now()` and the local zone offset are the only calls that ask the system (or the browser) |
+| L0 | `time` | Dates and times without a clock dependency: proleptic Gregorian maths, weekdays, ISO weeks, RFC 5322 and ISO 8601 text, list and group labels; time zones (`Zone`: the IANA database with its history, built in; Windows' names for zones; offsets; the system's zone), the only place the zone library is used; `now()` and the system's zone are the only calls that ask the system (or the browser) |
 | L0 | `control-key` | Per-window control-port key files shared by the app and the MCP bridge |
 | L1 | `model` | The mailbox: accounts, folders, messages, contacts, calendars, events with recurrence, tasks, categories, rules, signatures; edit primitives (`move_message`, `delete_folder`…), conversations, the search query language, `repair()` for whatever a file held, and the sync data types |
 | L1 | `html` | Hostile HTML mail → display blocks (`parse`), plain text (`to_text`) and the line a message list shows (`preview`, `text_preview`); plain text → blocks and HTML; entities; the safe-URL rule |
@@ -54,9 +54,16 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
 
 ## Decisions worth knowing
 
-- **Event times are wall-clock times** in the user's zone ("floating"), so a 9:00 series stays at
-  9:00 across a daylight-saving change. Readers convert UTC times on the way in; named zones are
-  taken as written for now (see `docs/gaps.md`).
+- **Event times are wall-clock times, and the mailbox says whose clock.** `Event::start` and
+  `end` are clock times in the zone the calendar is shown in, which `Mailbox::zone` names; a
+  timed event is the moment that clock time is there (`Event::instants`; `start_repeated` says
+  which, in an hour the clocks show twice), and a whole-day event is its days. When the zone
+  the calendar is shown in changes (the computer travels, or File › Options names another),
+  `Session::settle_zone` has `Mailbox::rebase` rewrite every timed event by the new clock: the
+  moments stay, nothing is marked as changed for a server, and a series is pinned to the zone it
+  was written in (`Event::start_zone`), so that it goes on repeating by that clock. A mailbox
+  without the stamp (written before 2026-10-12) is read as it always was, by this computer's
+  clock, and only stamped. Everything that converts goes through `mailcraft_model::zoned`.
 - **Conversations are grouped by topic** (the subject without `RE:`/`FW:` prefixes) within an
   account, as the incumbent does, not by `References` chains.
 - **A mailbox file, and its content beside it.** On the desktop `mailbox.mailcraft` is JSON holding
@@ -117,3 +124,4 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
 | 2026-10-11 | major | First architecture doc |
 | 2026-10-12 | patch | `html` also makes the line a message list shows (`preview`, `text_preview`) |
 | 2026-10-12 | minor | Calendar changes are checked against what comes down; the strict Graph stand-in |
+| 2026-10-12 | minor | Time zones (M3.5): `time::Zone`, the mailbox's zone stamp and how stored times are read |

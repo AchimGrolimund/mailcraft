@@ -341,19 +341,35 @@ fn the_window_bar_sets_importance_response_options_and_teams() {
         let state = |harness: &mut Harness| windows(harness)[0].clone();
         assert_eq!((&state(&mut harness)["importance"], &state(&mut harness)["online"]), (&json!("normal"), &json!(false)), "{theme}");
         // High Importance on; Low takes its place; pressed again it is off; High once more.
+        // (Low Importance is the first of the row to go behind `…` when the row is full, as it
+        // is for a new meeting: it works from there.)
+        let low = |harness: &mut Harness| {
+            if harness.state().hit.rect("windowBar", crate::forms::kit::bar::hit_id(window, "importanceLow")).is_some() {
+                bar(harness, window, "importanceLow");
+            } else {
+                bar(harness, window, "more");
+                click_label(harness, "Low Importance");
+            }
+        };
         bar(&mut harness, window, "importanceHigh");
         assert_eq!(state(&mut harness)["importance"], "high");
-        bar(&mut harness, window, "importanceLow");
+        low(&mut harness);
         assert_eq!(state(&mut harness)["importance"], "low");
-        bar(&mut harness, window, "importanceLow");
+        low(&mut harness);
         assert_eq!(state(&mut harness)["importance"], "normal");
         bar(&mut harness, window, "importanceHigh");
         // Teams Meeting on: the form says where the link will come from.
         bar(&mut harness, window, "teams");
         assert_eq!(state(&mut harness)["online"], true, "{theme}");
         assert!(says(&harness, "The account's server makes it when the meeting is sent"), "{theme}");
-        // Response Options: no proposals of another time, please.
-        bar(&mut harness, window, "responseOptions");
+        // Response Options: no proposals of another time, please. (It too is behind `…` when
+        // the row is full, and opens from there.)
+        if harness.state().hit.rect("windowBar", crate::forms::kit::bar::hit_id(window, "responseOptions")).is_some() {
+            bar(&mut harness, window, "responseOptions");
+        } else {
+            bar(&mut harness, window, "more");
+            click_label(&mut harness, "Response Options");
+        }
         assert!(says(&harness, "Request Responses") && says(&harness, "Allow New Time Proposals"));
         click_label(&mut harness, "Allow New Time Proposals");
         // Send: made on the server as it says, the invitation goes, and the link comes back.

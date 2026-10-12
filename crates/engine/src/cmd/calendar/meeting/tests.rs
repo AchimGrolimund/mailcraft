@@ -637,7 +637,8 @@ fn another_time_is_proposed_from_the_invitation_in_the_mail() {
         sent[0].body.text
     );
     let ics = String::from_utf8(sent[0].attachments[0].data.to_vec()).unwrap();
-    for line in ["METHOD:COUNTER\r\n", "UID:uid-9\r\n", "DTSTART:20261016T130000\r\n", "DTEND:20261016T143000\r\n", "PARTSTAT=TENTATIVE"] {
+    // (The time that is proposed is written as the moment it is: the clock here is UTC's.)
+    for line in ["METHOD:COUNTER\r\n", "UID:uid-9\r\n", "DTSTART:20261016T130000Z\r\n", "DTEND:20261016T143000Z\r\n", "PARTSTAT=TENTATIVE"] {
         assert!(ics.contains(line), "{line} in {ics}");
     }
     // The meeting is on the calendar at the time its organizer has it, tentatively.

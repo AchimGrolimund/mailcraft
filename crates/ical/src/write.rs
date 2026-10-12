@@ -1,21 +1,45 @@
 //! Writing events and to-dos as iCalendar text.
 
+use std::collections::BTreeMap;
+
+use mailcraft_model::zoned::instant_of;
 use mailcraft_model::{Address, Event, Importance, OnlineMeeting, OnlineProvider, Response, ShowAs, Task};
-use mailcraft_time::DateTime;
+use mailcraft_time::{DateTime, Timestamp, Zone};
 
 use crate::WriteOptions;
 use crate::lines::{fold, param_value};
 use crate::rrule;
 use crate::values::{escape_text, format_date, format_local, format_utc, valid_time};
+use crate::zones::{tzid, write_zone};
 
 /// Write a `VCALENDAR` (`VERSION:2.0`, `PRODID:-//MailCraft//MailCraft//EN`) with CRLF line endings
 /// and lines folded at 75 octets on char boundaries.
 ///
-/// Times are written floating (no zone), as the model keeps them; all-day events as dates. An
+/// Times are written floating (no zone), just as the events have them; all-day events as dates.
+/// ([`write_in`] writes them in their zones, which is what a file for another program wants.) An
 /// event without a uid gets `mailcraft-<id>@mailcraft.local`, a to-do
 /// `mailcraft-task-<id>@mailcraft.local`. Text is escaped; control characters other than line
 /// breaks and tabs are dropped. A to-do's link to a message isn't written.
 pub fn write(events: &[&Event], tasks: &[&Task], opts: &WriteOptions) -> String {
+    write_in(events, tasks, opts, None)
+}
+
+/// How far past its start a series without an end has its zone written out, in years, when the
+/// zone can only be written change by change.
+const SERIES_YEARS: i32 = 10;
+
+/// [`write()`], with every time in its zone: `zone` is the zone the calendar is shown in, which
+/// is the one the events' wall-clock times are by ([`Mailbox::zone`](mailcraft_model::Mailbox)).
+///
+/// A timed event is written by the clock of its own zone when it has one
+/// ([`Event::start_zone`]), else of `zone`, as `DTSTART;TZID=…`, and the text carries a
+/// `VTIMEZONE` for each zone it names, so that a program which knows nothing of the zone's name
+/// still reads the instant. A time in UTC is written as UTC (`…Z`). A series is written with the
+/// rule in its zone's days, its `UNTIL` in UTC and its skipped days as times in the zone, as
+/// RFC 5545 asks. All-day events are dates, which have no zone. Without a `zone` (or with one
+/// the system couldn't name) the times are floating, as [`write()`] writes them.
+pub fn write_in(events: &[&Event], tasks: &[&Task], opts: &WriteOptions, zone: Option<Zone>) -> String {
+    let zone = zone.filter(|zone| !zone.is_local());
     let mut out = String::new();
     fold(&mut out, "BEGIN:VCALENDAR");
     fold(&mut out, "VERSION:2.0");
@@ -24,15 +48,69 @@ pub fn write(events: &[&Event], tasks: &[&Task], opts: &WriteOptions) -> String 
     if !method.is_empty() {
         fold(&mut out, &format!("METHOD:{method}"));
     }
+    if let Some(here) = zone {
+        // The zones the events name, each with the years its times fall in.
+        let mut named: BTreeMap<String, (Zone, i32, i32)> = BTreeMap::new();
+        for event in events.iter().filter(|event| !event.all_day) {
+            let times = Zoned::of(event, here);
+            let last = match &event.recurrence {
+                Some(rule) => rule.until.map_or(times.first.date.year.saturating_add(SERIES_YEARS), |until| until.year),
+                None => times.last.date.year,
+            };
+            for (zone, from, to) in [(times.start_zone, times.first.date.year, last), (times.end_zone, times.last.date.year, times.last.date.year)] {
+                if zone != Zone::UTC {
+                    let span = named.entry(tzid(zone)).or_insert((zone, from, to));
+                    (span.1, span.2) = (span.1.min(from), span.2.max(to).max(from));
+                }
+            }
+        }
+        for (zone, from, to) in named.into_values() {
+            write_zone(&mut out, zone, from, to);
+        }
+    }
     let stamp = format_utc(opts.now);
     for event in events {
-        write_event(&mut out, event, &stamp);
+        write_event(&mut out, event, &stamp, zone);
     }
     for task in tasks {
         write_task(&mut out, task, &stamp);
     }
     fold(&mut out, "END:VCALENDAR");
     out
+}
+
+/// A timed event as it is written in its zones.
+struct Zoned {
+    start_zone: Zone,
+    end_zone: Zone,
+    /// When it starts and ends.
+    start: Timestamp,
+    end: Timestamp,
+    /// The same by the clocks of its zones.
+    first: DateTime,
+    last: DateTime,
+}
+
+impl Zoned {
+    /// `event`, whose wall-clock times are by the clock of `here`.
+    fn of(event: &Event, here: Zone) -> Zoned {
+        let offset_at = |instant: Timestamp| here.offset_at(instant);
+        let start = instant_of(valid_time(event.start), event.start_repeated, &offset_at);
+        let end = instant_of(valid_time(event.end), event.end_repeated, &offset_at).max(start);
+        let start_zone = event.zone().filter(|zone| !zone.is_local()).unwrap_or(here);
+        // A series ends by the clock it starts by.
+        let end_zone = event.zone_of_end().filter(|zone| !zone.is_local() && event.recurrence.is_none()).unwrap_or(start_zone);
+        Zoned { start_zone, end_zone, start, end, first: start_zone.wall(start), last: end_zone.wall(end) }
+    }
+}
+
+/// `NAME;TZID=Europe/Berlin:20261012T090000`, or `NAME:20261012T070000Z` for UTC.
+fn zoned_time(name: &str, instant: Timestamp, zone: Zone) -> String {
+    if zone == Zone::UTC {
+        format!("{name}:{}", format_utc(instant))
+    } else {
+        format!("{name};TZID={}:{}", param_value(&tzid(zone)), format_local(zone.wall(instant)))
+    }
 }
 
 /// `NAME:escaped text`.
@@ -58,7 +136,7 @@ fn is_blank(address: &Address) -> bool {
     address.name.trim().is_empty() && address.email.trim().is_empty()
 }
 
-fn write_event(out: &mut String, e: &Event, stamp: &str) {
+fn write_event(out: &mut String, e: &Event, stamp: &str, zone: Option<Zone>) {
     fold(out, "BEGIN:VEVENT");
     let uid = e.uid.trim();
     if uid.is_empty() {
@@ -69,6 +147,9 @@ fn write_event(out: &mut String, e: &Event, stamp: &str) {
     fold(out, &format!("DTSTAMP:{stamp}"));
     let start = valid_time(e.start);
     let end = valid_time(e.end).max(start);
+    // In its zones, when the zone the calendar is shown in is known; the times as they are
+    // otherwise.
+    let zoned = zone.filter(|_| !e.all_day).map(|here| (here, Zoned::of(e, here)));
     if e.all_day {
         // The end is exclusive: a time left on it still counts its day in.
         let mut last = if end.seconds_of_day() > 0 { end.date.add_days(1) } else { end.date };
@@ -77,17 +158,43 @@ fn write_event(out: &mut String, e: &Event, stamp: &str) {
         }
         fold(out, &format!("DTSTART;VALUE=DATE:{}", format_date(start.date)));
         fold(out, &format!("DTEND;VALUE=DATE:{}", format_date(last)));
+    } else if let Some((_, times)) = &zoned {
+        // A time in the second of an hour that comes twice (clocks going back) can't be written
+        // by the clock: read back, it would be the first. An event that happens once is then
+        // written in UTC, and an end as the time it comes after the start.
+        let exact = |instant: Timestamp, zone: Zone| zone.instant(zone.wall(instant)) == instant;
+        if !exact(times.start, times.start_zone) && e.recurrence.is_none() {
+            fold(out, &zoned_time("DTSTART", times.start, Zone::UTC));
+            fold(out, &zoned_time("DTEND", times.end, Zone::UTC));
+        } else {
+            fold(out, &zoned_time("DTSTART", times.start, times.start_zone));
+            if exact(times.end, times.end_zone) {
+                fold(out, &zoned_time("DTEND", times.end, times.end_zone));
+            } else {
+                fold(out, &format!("DURATION:PT{}S", times.end.saturating_sub(times.start).max(0)));
+            }
+        }
     } else {
         fold(out, &format!("DTSTART:{}", format_local(start)));
         fold(out, &format!("DTEND:{}", format_local(end)));
     }
     if let Some(recurrence) = &e.recurrence {
-        fold(out, &format!("RRULE:{}", rrule::format_for(recurrence, start, e.all_day)));
+        match &zoned {
+            // The rule counts days in the series' zone; where it ends is an instant.
+            Some((_, times)) => {
+                let until = recurrence.until.map(|day| times.start_zone.instant(DateTime { date: day, hour: 23, minute: 59, second: 59 }));
+                fold(out, &format!("RRULE:{}", rrule::format_zoned(recurrence, times.first, until)));
+            }
+            None => fold(out, &format!("RRULE:{}", rrule::format_for(recurrence, start, e.all_day))),
+        }
     }
     for day in &e.exceptions {
         // The same value type as DTSTART, so other programs match the day to an occurrence.
         if e.all_day {
             fold(out, &format!("EXDATE;VALUE=DATE:{}", format_date(*day)));
+        } else if let Some((here, times)) = &zoned {
+            let offset_at = |instant: Timestamp| here.offset_at(instant);
+            fold(out, &zoned_time("EXDATE", e.occurrence_instant(*day, &offset_at), times.start_zone));
         } else {
             fold(out, &format!("EXDATE:{}", format_local(DateTime { date: *day, ..start })));
         }

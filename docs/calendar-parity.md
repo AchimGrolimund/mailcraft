@@ -1,6 +1,6 @@
 # Calendar: matching Outlook
 
-Status: working list, 2026-10-12 (fifth revision: a change that doesn't reach the server can't go unnoticed). The owner's bar for the
+Status: working list, 2026-10-12 (sixth revision: time zones; fifth: a change that doesn't reach the server can't go unnoticed). The owner's bar for the
 calendar is "behaves exactly like Outlook"; this is the list that bar is checked against.
 Behaviour is written down from using Outlook for Windows (classic) as a black box; nothing of it
 is copied but how it behaves.
@@ -20,8 +20,10 @@ server; what has met the real Microsoft 365 service is only what the owner has u
 | Go to Date (Ctrl+G) | Done |
 | Alt+1…0 shows that many days; Alt+= month, Alt+- week | Done |
 | Half-hour time scale by default; 60, 15, 10, 6 and 5 minutes on request | Done (right-click the time bar, View › Time Scale, or File › Options); no minute labels at the fine scales yet |
-| Working hours lighter than the rest, from the owner's settings (start, end, days) | Done: the mailbox's own (days, start, end; asked for once an hour, and it takes the permission to read mailbox settings) for the shading, Work Week's days and Home/End, the local options until they come and whenever File › Options › "Use my own working hours" is ticked. The times are taken as this computer's, whatever time zone the mailbox names. The first day of the week stays a local option: the mailbox's settings as Microsoft Graph gives them don't have it |
+| Working hours lighter than the rest, from the owner's settings (start, end, days) | Done: the mailbox's own (days, start, end; asked for once an hour, and it takes the permission to read mailbox settings) for the shading, Work Week's days and Home/End, the local options until they come and whenever File › Options › "Use my own working hours" is ticked. The hours are those of the zone the mailbox keeps them in, shown by the clock the calendar is shown by (a mailbox in Pacific time that works 8 to 5 is shaded 11 to 8 on a calendar in New York); a zone this program doesn't know leaves them as written. The first day of the week stays a local option: the mailbox's settings as Microsoft Graph gives them don't have it |
 | A line at the present time | Done |
+| A time zone for the calendar, with a label over the time bar; a second time zone beside it | Done: File › Options › Calendar › Time zones (`view.timeZone`). The calendar is shown in this computer's zone and follows it, or in one that is chosen; "Today", the line at the present time, reminders and working hours go by it. A second zone adds a column of its hours to the time bar, each column under its label (the zone's short name, `UTC-5`, unless one is typed). One second zone, where Outlook now takes two |
+| The computer is carried to another time zone | Done: every appointment stays at its moment and is read by the new clock; an all-day item stays on its day (Outlook moves it, so that it straddles two days); a series goes on repeating at the clock time of the zone it was made in; reminders come up at the same moments; nothing is sent to the server for it. Noticed while the program runs (within a few minutes) and when it starts |
 | Week numbers (option) | Done (ISO weeks) |
 | Several calendars side by side or overlaid, each in its colour, under My Calendars / Other Calendars / shared | Done for the account's own: the list by group (the account's own first, its other groups, Other Calendars, On this computer), each group folding; every ticked calendar in a block of its own with its tab, in Day, Work Week, Week and Month; the arrow on a tab (or View › Overlay) lays calendars over one another, the one in front solid and the others dimmer, a click on a tab bringing it to the front; View › Side-by-Side stands them apart. Right-click a calendar: Show Only This Calendar, Overlay, Colour. A calendar that can only be read says so and takes no new items. Eight blocks at most (the calendars beyond share the last). Later: shared and other people's calendars, Schedule view |
 | The calendar clicked in the list is the one new items go to | Done (the account's own calendar unless another is picked); and what is picked, typed or dropped in a calendar's block is that calendar's, which is then the one being worked in |
@@ -51,11 +53,11 @@ server; what has met the real Microsoft 365 service is only what the owner has u
 
 | Outlook does | MailCraft |
 |---|---|
-| Opens in its own window with its own ribbon: Save & Close, Delete, Show As, Reminder, Recurrence, Time Zones, Categorize, Private, importance | Done: new and existing items open in windows of their own, several at once, each with its own command bar (Save & Close or Send / Send Update, Delete or Cancel Meeting, Forward, Show As, Reminder, Recurrence, Categorize, Private, High Importance, Low Importance, Invite Attendees, and on a meeting Teams Meeting, Response Options, Check Names), Ctrl+S, Ctrl+Enter, and a question before closing with unsaved changes. One row, no tabs; no time zones |
+| Opens in its own window with its own ribbon: Save & Close, Delete, Show As, Reminder, Recurrence, Time Zones, Categorize, Private, importance | Done: new and existing items open in windows of their own, several at once, each with its own command bar (Save & Close or Send / Send Update, Delete or Cancel Meeting, Forward, Show As, Reminder, Recurrence, Categorize, Private, High Importance, Low Importance, Invite Attendees, and on a meeting Teams Meeting, Response Options, Check Names), Ctrl+S, Ctrl+Enter, and a question before closing with unsaved changes. One row, no tabs; Time Zones is in the row. What doesn't fit goes behind `…`: on a meeting, Low Importance and Response Options first |
 | Subject, location, start and end with date and time pickers, All day | Done |
 | Recurrence dialog: daily, weekly on chosen days, monthly by date or by "second Tuesday", yearly; no end, after n, by date | Done as a dialog over the window; the form says the rule in one line. A window opened for one occurrence shows that day and saves to it alone |
 | Reminder choices from "none" and "0 minutes" to "2 weeks" | Done |
-| Time zones for start and end | Later (the mailbox keeps floating local times) |
+| Time zones for start and end | Done: **Time Zones** in the command bar shows a zone beside Start and beside End, each a list to type in (this computer's zone first, the ones used lately next, then one per zone Windows names, every other zone of the IANA database by typing; each with its offset now). Changing a zone keeps the clock time and moves the moment, as in Outlook; a time typed beside a zone is that zone's clock time. An item with zones of its own opens with them showing; an all-day item has none. In the grid everything is at its moment by the calendar's clock, and the tooltip and a meeting request say the item's own time too: `9:00 AM – 10:00 AM (Eastern Time)`; its window shows its zones. A series made in another zone repeats at its clock time there, across both zones' daylight-saving changes. Microsoft 365 keeps the zones (`start` and `end` said in them, read back from `originalStartTimeZone`, `originalEndTimeZone` and `recurrenceTimeZone`), and so does `.ics` (`TZID` with a `VTIMEZONE`) |
 | Rich-text body, attachments, inline pictures | Later (plain text) |
 | Meeting: required and optional attendees with names checked against contacts; Send | Done: on a Microsoft 365 calendar Send creates the meeting there and the server mails the invitations; "Don't Send" keeps it on this computer. Updates and cancellations are sent the same way, each after a question |
 | Scheduling Assistant: everyone's free/busy on a grid; Room Finder | Done for one day: a row per person, busy / tentative / out of office / working elsewhere / no information, and the meeting's time as a band to move and stretch. Next: several days, AutoPick; Later: rooms |
@@ -116,9 +118,13 @@ server; what has met the real Microsoft 365 service is only what the owner has u
    from the mailbox.
 4. **Next**: Teams meetings and response options (items need a place for them first); Propose New
    Time; forwarding a meeting; the Scheduling Assistant over several days; moving items between
-   server calendars; time zones in invitations from other zones.
-5. **Later**: time zones per item, rich bodies and attachments in items, rooms, shared calendars,
+   server calendars.
+5. **Later**: rich bodies and attachments in items, rooms, shared calendars,
    Schedule view, notifications in the background.
+6. **Done 2026-10-12** (M3.5, ahead of its wave): time zones. A zone database for every build;
+   every stored time a moment; invitations and items from other zones at the right time here;
+   zones of an item's own in its window, kept by Microsoft 365 and in `.ics`; a zone for the
+   calendar and a second one in the time bar; a computer that travels.
 
 ## Known differences from Outlook in what is done
 
@@ -137,17 +143,34 @@ server; what has met the real Microsoft 365 service is only what the owner has u
 - The questions about mail to attendees come up in the main window, not in the item's own.
 - After declining on a Microsoft 365 account the item is gone from the server, so the answer can't
   be changed from the message.
-- An invitation from another time zone, on an account without a server calendar, lands at the
-  organizer's clock time (`TZID` is read as written).
+- Time zones are called by shorter names than Outlook's: `Eastern Time` for what Windows calls
+  Eastern Standard Time and Outlook lists as "(UTC-05:00) Eastern Time (US & Canada)"; a zone
+  Windows has no name for goes by its place (`Kathmandu`). They are made from the identifiers the zones have (Windows' and the IANA database's), not from Outlook's list.
+- The rules of the zones come with the program (the IANA database, built in), on every system
+  and in the browser the same; Outlook takes them from Windows. A zone whose rules a government
+  changes is right here after an update of MailCraft, not of Windows.
+- An all-day item is a day, wherever the computer is. In Outlook it is the midnights of the zone
+  it was made in, and shows across two days from another zone.
+- An item whose zone has the same clock as the calendar's at its time is kept without a zone of
+  its own (a series always keeps the zone it was made in). Opened again, its window shows no
+  zones until Time Zones is pressed.
+- A zone that an invitation names and nobody knows (and that the invitation doesn't define) is
+  not guessed: the item is put at the offset the invitation gives, or else at its clock time
+  here, and the request says so in a line of its own.
+- A zone that Microsoft 365 has no name for (the service documents the names Windows has and
+  about a hundred more) costs an item its zone on the server, never its moment: it is sent in
+  UTC. A series by such a zone's clock is not sent by another clock; it is refused and said.
+- The time bar names the calendar's zone over the hours once a zone is chosen for the calendar,
+  a label is typed or a second zone is shown; Outlook shows a label only when one is typed.
 - Enter in a one-line field of the window saves or sends; in Outlook it does not.
 - None of the Microsoft 365 behaviour has been checked against the real service beyond the
   owner's own use; where the service turns out to differ, the change is refused and put back.
 - An item that repeats is not taken to another calendar by dragging or by cut and paste (one
   day of a series can't be in another calendar than the rest): that is said, and Ctrl copies the
   occurrence there instead.
-- The mailbox's working hours are shown as they are written, by this computer's clock: no time
-  zone is looked up, so a mailbox whose working hours are kept in another zone than the
-  computer's shows them unshifted. Working days that are not next to one another (Monday,
+- The mailbox's working hours are shifted from its zone by what the two clocks differ today;
+  hours that cross midnight that way are shown to the end of the day. Working days that are not
+  next to one another (Monday,
   Wednesday, Friday) make a Work Week from the first of them to the last.
 - A calendar's tab has our own arrow and cross; the Overlay and Side-by-Side buttons borrow
   icons the ribbon had already. Outlook opens a calendar in a window of its own on request;
@@ -161,6 +184,19 @@ ids with `=`, `/` and `+`, a view that lags behind a change). What only the real
 is what the owner's Check Calendar Connection shows: whether a change of time is taken as it is
 sent, and whether a time said in this computer's zone means the same instant there.
 
+Time zones: every conversion is tested around the changes of the clock in both hemispheres, in
+zones half and three quarters of an hour off, in zones whose rules changed, far in the past and
+the future, and with nonsense (names nobody knows, a megabyte of `TZID`, a `VTIMEZONE` that
+contradicts its name, offsets of days); `.ics` and Graph bodies round-trip under property tests.
+The stand-in takes the zone names the Graph reference lists and no others, keeps the zones a
+start and an end were told in, and repeats a series by its zone's clock from rules written out
+on its own (checked against the program's tables for every half hour of two years). The flows in
+`apps/mailcraft/src/calendar_flow.rs` run an item made in another zone, series across both
+zones' changes of the clock, and a mailbox written before zones were kept that is opened and
+carried to Berlin and to Kiritimati and home: not one write reaches the server. Not proven:
+which names beyond the documented ones the real service takes, and what it gives back as an
+item's original zone when another program made the item.
+
 ## Revision history
 
 | Date | Change |
@@ -171,3 +207,4 @@ sent, and whether a time said in this computer's zone means the same instant the
 | 2026-10-12 | The third wave is in: meeting requests in the reading pane, the appointment window's command bar, unsaved-changes question and recurrence dialog, the Scheduling Assistant, calendars by group, side by side and overlaid, working hours from the mailbox |
 | 2026-10-12 | The second wave is in: the grid (resize, copy, keys, navigator, time scales), series as series with the question, meetings and answers through Microsoft 365, every calendar, categories, several appointment windows; a list of known differences |
 | 2026-10-12 | Of the third wave: the calendar list by group, calendars side by side and overlaid, working hours from the mailbox, a reminder opening its occurrence; calendars other than the account's own arrive unticked |
+| 2026-10-12 | Time zones (M3.5): the calendar's zone and a second one, zones of an item's own in its window, on Microsoft 365 and in `.ics`, working hours in the mailbox's zone, a computer that travels; the known differences that came with them |

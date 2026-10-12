@@ -33,8 +33,10 @@ fn importance_response_options_and_online_meetings_are_read() {
                     {"type": "required", "status": {"response": "tentativelyAccepted"}, "emailAddress": {"name": "Bo Marsh", "address": "bo@example.org"},
                      "proposedNewTime": proposed("2026-10-13T13:00:00.0000000", "2026-10-13T14:00:00.0000000", "UTC")},
                     {"type": "optional", "status": {"response": "none"}, "emailAddress": {"name": "Cy", "address": "cy@example.org"}},
-                    // A time in a zone that would have to be looked up is not guessed at; nor one that isn't one.
+                    // A time said in another zone is the moment it is there: one in the afternoon on the Pacific coast.
                     {"type": "required", "emailAddress": {"address": "dee@example.org"}, "proposedNewTime": proposed("2026-10-13T13:00:00", "2026-10-13T14:00:00", "Pacific Standard Time")},
+                    // One in a zone nobody knows is not guessed at; nor is what isn't a time at all.
+                    {"type": "required", "emailAddress": {"address": "fay@example.org"}, "proposedNewTime": proposed("2026-10-13T13:00:00", "2026-10-13T14:00:00", "Olympus Mons Time")},
                     {"type": "required", "emailAddress": {"address": "eve@example.org"}, "proposedNewTime": "tomorrow"},
                 ],
             }),
@@ -83,7 +85,10 @@ fn importance_response_options_and_online_meetings_are_read() {
     assert_eq!(teams.online, Some(OnlineMeeting { provider: OnlineProvider::Teams, join_url: JOIN.into() }));
     assert_eq!(
         teams.proposals,
-        [RemoteProposal { from: Address::new("Bo Marsh", "bo@example.org"), start: at(2026, 10, 13, 13, 0), end: at(2026, 10, 13, 14, 0) }]
+        [
+            RemoteProposal { from: Address::new("Bo Marsh", "bo@example.org"), start: at(2026, 10, 13, 13, 0), end: at(2026, 10, 13, 14, 0) },
+            RemoteProposal { from: Address::new("", "dee@example.org"), start: at(2026, 10, 13, 20, 0), end: at(2026, 10, 13, 21, 0) },
+        ]
     );
     let plain = by_id("e-plain");
     assert_eq!(

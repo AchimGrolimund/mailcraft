@@ -2,13 +2,15 @@
 
 use std::collections::{HashMap, HashSet};
 
-use mailcraft_model::{Address, Attendee, Event, Importance, OnlineMeeting, OnlineProvider, Recurrence, Response, ResponseOptions, ShowAs, Task};
-use mailcraft_time::{Date, DateTime, Timestamp};
+use mailcraft_model::zoned::{instant_at, own_zones, wall_at};
+use mailcraft_model::{Address, Attendee, Event, Importance, OnlineMeeting, OnlineProvider, Response, ResponseOptions, ShowAs, Task};
+use mailcraft_time::{Date, DateTime, Timestamp, Zone};
 
 use crate::IcsFile;
 use crate::lines::{ContentLine, Lines, prefix};
 use crate::rrule;
 use crate::values::{When, parse_duration, split_list, unescape_text};
+use crate::zones::{FileZones, MAX_NOTES};
 
 /// Most events and to-dos read from one text.
 const MAX_COMPONENTS: usize = 20_000;
@@ -26,10 +28,15 @@ type OffsetAt<'a> = &'a dyn Fn(Timestamp) -> i32;
 
 /// Parse iCalendar text. Never fails: junk gives an empty file, a broken component is skipped.
 ///
-/// `offset_at(ts)` is the local zone's offset (minutes east of UTC) at a UTC instant; it converts
-/// `…Z` times to local wall-clock times. Times with a `TZID` and floating times are taken as local
-/// wall-clock times as written (only a `TZID` that names UTC is honoured). Ids are left 0 and
-/// `calendar` 0.
+/// `offset_at(ts)` is the offset (minutes east of UTC) at an instant of the zone the events are
+/// to be shown in: every time that is an instant becomes the wall-clock time there. A `…Z` time
+/// is an instant, and so is a time with a `TZID` that says when it is: by the `VTIMEZONE` the
+/// text brings for it, else by the zone of that name (the IANA database, Windows' names), else
+/// by the offset the name mentions. A time in a zone of which nothing is known, and a time
+/// without any zone, is taken as a wall-clock time as it is written; of the first,
+/// [`IcsFile::notes`] says so. An event whose zone keeps another clock than `offset_at` carries
+/// it ([`Event::start_zone`]), and a series then repeats by that zone's clock. Ids are left 0
+/// and `calendar` 0.
 ///
 /// A `VEVENT` with a `RECURRENCE-ID` (a changed instance of a series) comes back as its own
 /// single event with the uid `<uid>#<recurrence-id>`, and its day joins the `exceptions` of the
@@ -37,9 +44,10 @@ type OffsetAt<'a> = &'a dyn Fn(Timestamp) -> i32;
 /// without a `DTSTART` is skipped.
 ///
 /// Work is bounded: at most 20 000 events and to-dos are read, 500 attendees and 5 000 excluded
-/// days per event, and what a line holds beyond 1 MiB is dropped.
+/// days per event, 64 time zones, and what a line holds beyond 1 MiB is dropped.
 pub fn parse(text: &str, offset_at: &dyn Fn(Timestamp) -> i32) -> IcsFile {
-    let mut reader = Reader { offset_at, file: IcsFile::default(), stack: Vec::new(), item: None, alarm: None, changed: Vec::new() };
+    let zones = FileZones::collect(text);
+    let mut reader = Reader { offset_at, zones: &zones, file: IcsFile::default(), stack: Vec::new(), item: None, alarm: None, changed: Vec::new() };
     for raw in Lines::new(text) {
         if reader.full() {
             break;
@@ -89,6 +97,8 @@ enum Item {
 
 struct Reader<'a> {
     offset_at: OffsetAt<'a>,
+    /// The zones the text defines.
+    zones: &'a FileZones,
     file: IcsFile,
     /// The names of the open components, outermost first.
     stack: Vec<String>,
@@ -96,8 +106,9 @@ struct Reader<'a> {
     item: Option<(usize, Item)>,
     /// The open `VALARM` of `item`.
     alarm: Option<Alarm>,
-    /// Changed instances: their index in `file.events`, the uid of their series, the day they replace.
-    changed: Vec<(usize, String, Date)>,
+    /// Changed instances: their index in `file.events`, the uid of their series, the time of the
+    /// occurrence they replace.
+    changed: Vec<(usize, String, Stamp)>,
 }
 
 impl Reader<'_> {
@@ -171,8 +182,8 @@ impl Reader<'_> {
             // Deeper lines belong to a component this reader doesn't know.
             if depth == at.saturating_add(1) {
                 match item {
-                    Item::Event(event) => event.apply(line, self.offset_at),
-                    Item::Todo(todo) => todo.apply(line),
+                    Item::Event(event) => event.apply(line, self.zones),
+                    Item::Todo(todo) => todo.apply(line, self.zones),
                 }
             }
             return;
@@ -203,11 +214,17 @@ impl Reader<'_> {
         }
         match item {
             Item::Event(event) => {
-                if let Some((event, changed)) = event.finish(self.offset_at) {
-                    if let Some((series, day)) = changed {
-                        self.changed.push((self.file.events.len(), series, day));
+                let mut notes = Vec::new();
+                if let Some((event, changed)) = event.finish(self.offset_at, &mut notes) {
+                    if let Some((series, at)) = changed {
+                        self.changed.push((self.file.events.len(), series, at));
                     }
                     self.file.events.push(event);
+                }
+                for note in notes {
+                    if self.file.notes.len() < MAX_NOTES && !self.file.notes.contains(&note) {
+                        self.file.notes.push(note);
+                    }
                 }
             }
             Item::Todo(todo) => self.file.tasks.extend(todo.finish(self.offset_at)),
@@ -227,7 +244,14 @@ impl Reader<'_> {
                 series.entry(event.uid.as_str()).or_insert(index);
             }
         }
-        let days: Vec<(usize, Date)> = self.changed.iter().filter_map(|(_, uid, day)| series.get(uid.as_str()).map(|index| (*index, *day))).collect();
+        let days: Vec<(usize, Date)> = self
+            .changed
+            .iter()
+            .filter_map(|(_, uid, at)| {
+                let index = *series.get(uid.as_str())?;
+                Some((index, series_day(self.file.events.get(index)?, at, self.offset_at)))
+            })
+            .collect();
         for (index, day) in days {
             if let Some(event) = self.file.events.get_mut(index)
                 && event.exceptions.len() < MAX_EXDATES
@@ -245,18 +269,61 @@ fn keyword(value: &str) -> String {
     prefix(value.trim(), MAX_KEYWORD).to_ascii_uppercase()
 }
 
-/// The date or time of a property.
-fn when(line: &ContentLine) -> Option<When> {
-    When::parse(&line.value).map(|at| zoned(line, at))
+/// A date or a time as a property gives it, with what its zone says.
+#[derive(Clone, Copy)]
+struct Stamp {
+    /// When it is. A time in a zone that says when it is, is that instant (as a UTC time); a
+    /// time without a zone, or in a zone of which nothing is known, is the time as written.
+    when: When,
+    /// The time as it is written, whatever the zone.
+    written: DateTime,
+    /// The zone it is written in, when that is one an event can keep as its own.
+    zone: Option<Zone>,
 }
 
-/// A time whose `TZID` names UTC is a UTC time. No other zone is looked up: its times are taken as
-/// local wall-clock times, as written.
-fn zoned(line: &ContentLine, at: When) -> When {
-    const UTC: [&str; 6] = ["UTC", "Etc/UTC", "GMT", "Etc/GMT", "Zulu", "Z"];
-    match at {
-        When::Local(t) if line.param("TZID").is_some_and(|zone| UTC.iter().any(|utc| utc.eq_ignore_ascii_case(zone.trim()))) => When::Utc(t),
-        other => other,
+impl Stamp {
+    fn plain(when: When) -> Stamp {
+        Stamp { when, written: when.wall(), zone: None }
+    }
+}
+
+/// One value of a property (`value`: all of it, or one of a list) with what the line's `TZID`
+/// makes of it. What there is to say about the zone goes to `notes`.
+fn stamp_of(line: &ContentLine, value: &str, zones: &FileZones, notes: &mut Vec<String>) -> Option<Stamp> {
+    let when = When::parse(value)?;
+    let (When::Local(written), Some(tzid)) = (when, line.param("TZID")) else {
+        // (A time that ends in `Z` is UTC, whatever a parameter says.)
+        let zone = matches!(when, When::Utc(_)).then_some(Zone::UTC);
+        return Some(Stamp { zone, ..Stamp::plain(when) });
+    };
+    let source = zones.source(tzid);
+    let instant = source.instant(written);
+    let (zone, said) = source.zone(tzid, written, instant.unwrap_or(0));
+    if let Some(said) = said
+        && notes.len() < MAX_NOTES
+        && !notes.contains(&said)
+    {
+        notes.push(said);
+    }
+    let when = match instant {
+        Some(instant) => When::Utc(DateTime::from_timestamp(instant, 0)),
+        None => when,
+    };
+    Some(Stamp { when, written, zone })
+}
+
+/// The day of `series` that the occurrence at `at` is, as the series names its days: for a
+/// series that repeats in a zone of its own, by that zone.
+fn series_day(series: &Event, at: &Stamp, offset_at: OffsetAt) -> Date {
+    match (series.zone(), at.when) {
+        (Some(_), When::Utc(_)) if !series.all_day => series.occurrence_day(at.when.timestamp(offset_at), offset_at),
+        // Written as a day, or as a time without a zone: in the reckoning of the series itself.
+        (Some(zone), When::Local(written)) if !series.all_day => series.occurrence_day(zone.instant(written), offset_at),
+        (Some(zone), When::Date(day)) if !series.all_day => {
+            let first = zone.wall(series.instants(offset_at).0);
+            series.occurrence_day(zone.instant(DateTime { date: day, ..first }), offset_at)
+        }
+        _ => at.when.local(offset_at).date,
     }
 }
 
@@ -300,14 +367,18 @@ struct EventBuilder {
     title: Option<String>,
     location: Option<String>,
     description: Option<String>,
-    start: Option<When>,
-    end: Option<When>,
+    start: Option<Stamp>,
+    end: Option<Stamp>,
     /// `DURATION`, in seconds.
     duration: Option<i64>,
     /// `RECURRENCE-ID`: the value as written, and what it says.
-    instance: Option<(String, When)>,
-    recurrence: Option<Recurrence>,
-    exceptions: Vec<Date>,
+    instance: Option<(String, Stamp)>,
+    /// `RRULE`, as written: what its `UNTIL` means depends on the start, which may come later.
+    rule: Option<String>,
+    /// `EXDATE`s, which are named by the series' own days once its zone is known.
+    exceptions: Vec<Stamp>,
+    /// What there is to say about the zones of its times.
+    notes: Vec<String>,
     organizer: Option<Address>,
     attendees: Vec<Attendee>,
     categories: Vec<String>,
@@ -341,28 +412,42 @@ fn priority(value: &str) -> Option<Importance> {
 }
 
 impl EventBuilder {
-    fn apply(&mut self, line: &ContentLine, offset_at: OffsetAt) {
+    fn apply(&mut self, line: &ContentLine, zones: &FileZones) {
         match line.name.as_str() {
             "UID" => once(&mut self.uid, line),
             "SUMMARY" => once(&mut self.title, line),
             "LOCATION" => once(&mut self.location, line),
             "DESCRIPTION" => once(&mut self.description, line),
-            "DTSTART" => self.start = self.start.or_else(|| when(line)),
-            "DTEND" => self.end = self.end.or_else(|| when(line)),
+            "DTSTART" => {
+                if self.start.is_none() {
+                    self.start = stamp_of(line, &line.value, zones, &mut self.notes);
+                }
+            }
+            "DTEND" => {
+                if self.end.is_none() {
+                    self.end = stamp_of(line, &line.value, zones, &mut self.notes);
+                }
+            }
             "DURATION" => self.duration = self.duration.or_else(|| parse_duration(&line.value)),
             "RECURRENCE-ID" => {
                 if self.instance.is_none() {
-                    self.instance = when(line).map(|at| (prefix(line.value.trim(), MAX_KEYWORD).to_string(), at));
+                    self.instance =
+                        stamp_of(line, &line.value, zones, &mut self.notes).map(|at| (prefix(line.value.trim(), MAX_KEYWORD).to_string(), at));
                 }
             }
             "RRULE" => {
-                if self.recurrence.is_none() {
-                    self.recurrence = rrule::parse_with(&line.value, Some(offset_at));
+                // The first rule that is one counts.
+                if self.rule.is_none() && rrule::parse_rrule(&line.value).is_some() {
+                    self.rule = Some(prefix(line.value.trim(), 4096).to_string());
                 }
             }
             "EXDATE" => {
                 let room = MAX_EXDATES.saturating_sub(self.exceptions.len());
-                self.exceptions.extend(line.value.split(',').take(room).filter_map(When::parse).map(|at| zoned(line, at).local(offset_at).date));
+                for value in line.value.split(',').take(room) {
+                    if let Some(at) = stamp_of(line, value, zones, &mut self.notes) {
+                        self.exceptions.push(at);
+                    }
+                }
             }
             "CATEGORIES" => add_categories(&mut self.categories, &line.value),
             "CLASS" => self.private = matches!(keyword(&line.value).as_str(), "PRIVATE" | "CONFIDENTIAL"),
@@ -415,23 +500,31 @@ impl EventBuilder {
 
     /// The event, and for a changed instance the uid of its series and the day it replaces. `None`
     /// without a start.
-    fn finish(self, offset_at: OffsetAt) -> Option<(Event, Option<(String, Date)>)> {
+    fn finish(self, offset_at: OffsetAt, notes: &mut Vec<String>) -> Option<(Event, Option<(String, Stamp)>)> {
         let first = self.start?;
-        let start = first.local(offset_at);
+        notes.extend(self.notes);
+        let is_instant = |at: &Stamp| matches!(at.when, When::Utc(_));
+        let mut start = first.when.local(offset_at);
         let end = match self.end {
-            Some(end) => Some(end.local(offset_at)),
-            None => self
-                .duration
-                .filter(|seconds| *seconds >= 0)
-                .map(|seconds| DateTime::from_civil_seconds(start.civil_seconds().saturating_add(seconds))),
+            Some(end) => Some(end.when.local(offset_at)),
+            // So long after the start: by the clock for a time as written, in seconds for an instant.
+            None => self.duration.filter(|seconds| *seconds >= 0).map(|seconds| match first.when {
+                When::Utc(_) => wall_at(first.when.timestamp(offset_at).saturating_add(seconds), offset_at),
+                _ => DateTime::from_civil_seconds(start.civil_seconds().saturating_add(seconds)),
+            }),
         };
         let midnight = |t: DateTime| t.seconds_of_day() == 0;
-        let (end, all_day) = if matches!(first, When::Date(_)) {
+        // Midnight to midnight where it was written, with the flag some programs set instead of
+        // a DATE value: those days, wherever it is read.
+        let flagged = self.end.filter(|end| self.whole_days && midnight(first.written) && midnight(end.written) && end.written > first.written);
+        let (end, all_day) = if matches!(first.when, When::Date(_)) {
             // Whole days, and at least one of them.
             (end.map(|end| DateTime::at_midnight(end.date)).filter(|end| *end > start).unwrap_or_else(|| start.add_days(1)), true)
+        } else if let Some(last) = flagged {
+            start = first.written;
+            (last.written, true)
         } else {
-            let end = end.filter(|end| *end >= start).unwrap_or(start);
-            (end, self.whole_days && midnight(start) && midnight(end) && end > start)
+            (end.filter(|end| *end >= start).unwrap_or(start), false)
         };
         let length = end.civil_seconds().saturating_sub(start.civil_seconds());
         let reminder_minutes = self.alarms.iter().find_map(|alarm| {
@@ -443,13 +536,29 @@ impl EventBuilder {
             if before >= 0 { u32::try_from(before / 60).ok() } else { None }
         });
         let uid = self.uid.unwrap_or_default().trim().to_string();
-        let changed = self.instance.as_ref().map(|(_, at)| (uid.clone(), at.local(offset_at).date));
+        let changed = self.instance.as_ref().map(|(_, at)| (uid.clone(), *at));
         let uid = match &self.instance {
             Some((written, _)) => format!("{uid}#{written}"),
             None => uid,
         };
         let series = changed.is_none();
-        let event = Event {
+        let repeats = series && self.rule.is_some();
+        // When it is, for a start that is an instant; and the zone it keeps as its own: one
+        // whose clock is another than the one it is read by.
+        let instants = (!all_day && is_instant(&first)).then(|| {
+            let begins = first.when.timestamp(offset_at);
+            let ends = match (self.end, self.duration) {
+                (Some(end), _) if is_instant(&end) => end.when.timestamp(offset_at),
+                (None, Some(seconds)) if seconds >= 0 => begins.saturating_add(seconds),
+                _ => instant_at(end, offset_at),
+            };
+            (begins, ends.max(begins))
+        });
+        let (start_zone, end_zone) = match instants {
+            Some(instants) => own_zones(first.zone, self.end.and_then(|end| end.zone), instants, repeats, offset_at),
+            None => (String::new(), String::new()),
+        };
+        let mut event = Event {
             id: 0,
             calendar: 0,
             uid,
@@ -459,10 +568,10 @@ impl EventBuilder {
             start,
             end,
             all_day,
+            start_zone,
+            end_zone,
             organizer: self.organizer,
             attendees: self.attendees,
-            recurrence: self.recurrence.filter(|_| series),
-            exceptions: if series { self.exceptions } else { Vec::new() },
             reminder_minutes,
             show_as: self.busy.unwrap_or(if self.transparent { ShowAs::Free } else { ShowAs::Busy }),
             categories: self.categories,
@@ -477,6 +586,21 @@ impl EventBuilder {
             online: self.join,
             ..Default::default()
         };
+        if let Some((begins, ends)) = instants {
+            // Exactly then: also when the clock here shows that time twice.
+            event.set_instants(begins, ends, offset_at);
+        }
+        if repeats {
+            // The rule counts its days where the series repeats: an `UNTIL` in UTC is a day there.
+            let there = event.zone();
+            let in_zone = |instant: Timestamp| there.map_or_else(|| offset_at(instant), |zone| zone.offset_at(instant));
+            event.recurrence = self.rule.as_deref().and_then(|rule| rrule::parse_with(rule, Some(&in_zone)));
+        }
+        if series {
+            let mut days: Vec<Date> = Vec::with_capacity(self.exceptions.len());
+            days.extend(self.exceptions.iter().map(|at| series_day(&event, at, offset_at)));
+            event.exceptions = days;
+        }
         Some((event, changed))
     }
 }
@@ -502,8 +626,10 @@ struct TodoBuilder {
 }
 
 impl TodoBuilder {
-    fn apply(&mut self, line: &ContentLine) {
+    fn apply(&mut self, line: &ContentLine, zones: &FileZones) {
         let mut seen = true;
+        // (A to-do keeps days, not zones: nothing is said about the zone of one.)
+        let when = |line: &ContentLine| stamp_of(line, &line.value, zones, &mut Vec::new()).map(|at| at.when);
         match line.name.as_str() {
             "UID" => once(&mut self.uid, line),
             "SUMMARY" => once(&mut self.title, line),
@@ -569,7 +695,7 @@ impl TodoBuilder {
 
 #[cfg(test)]
 mod tests {
-    use mailcraft_model::Freq;
+    use mailcraft_model::{Freq, Recurrence};
     use mailcraft_time::Weekday;
 
     use super::*;
@@ -667,8 +793,16 @@ END:VCALENDAR\r\n";
         assert_eq!(e.title, "Quarterly planning");
         assert_eq!(e.location, "Room 4.12, North Building");
         assert_eq!(e.description, "Agenda:\n1. Budget, phase two\n2. Hiring; open roles\n");
-        // A time in a named zone is taken as written.
-        assert_eq!((e.start, e.end, e.all_day), (at(2026, 10, 12, 9, 0), at(2026, 10, 12, 10, 30), false));
+        // Nine o'clock in the zone the text defines (four hours behind UTC in October) is one
+        // o'clock in UTC, where this is read. Nobody knows a zone of that name; it keeps the
+        // clock of the zone it is like, and nothing needs saying.
+        assert_eq!((e.start, e.end, e.all_day), (at(2026, 10, 12, 13, 0), at(2026, 10, 12, 14, 30), false));
+        assert_eq!((e.start_zone.as_str(), e.end_zone.as_str()), ("America/New_York", ""));
+        assert!(file.notes.is_empty(), "{:?}", file.notes);
+        // Read where the clock is the same, it is nine o'clock, and has no zone of its own.
+        let new_york = Zone::named("America/New_York").unwrap();
+        let there = parse(INVITATION, &|instant| new_york.offset_at(instant));
+        assert_eq!((there.events[0].start, there.events[0].start_zone.as_str()), (at(2026, 10, 12, 9, 0), ""));
         assert_eq!(e.organizer, Some(Address::new("Okafor, Nadia", "nadia.okafor@example.org")));
         let attendees: Vec<(&str, &str, bool, Response)> =
             e.attendees.iter().map(|a| (a.address.name.as_str(), a.address.email.as_str(), a.optional, a.response)).collect();
@@ -697,16 +831,21 @@ END:VCALENDAR\r\n";
         let zone = |ts: Timestamp| if ts < change { -240 } else { -300 };
         let e = parse("BEGIN:VEVENT\nDTSTART:20261101T050000Z\nDTEND:20261101T070000Z\nEND:VEVENT\n", &zone).events.remove(0);
         assert_eq!((e.start, e.end), (at(2026, 11, 1, 1, 0), at(2026, 11, 1, 2, 0)));
-        // Floating times are left alone, and so are times in a named zone.
-        let e = parse("BEGIN:VEVENT\nDTSTART:20261012T130000\nDTEND;TZID=Example/Riverton:20261012T143000\nEND:VEVENT\n", &|_| -240).events.remove(0);
-        assert_eq!((e.start, e.end), (at(2026, 10, 12, 13, 0), at(2026, 10, 12, 14, 30)));
-        // Unless the zone is UTC under another name.
-        let text = "BEGIN:VEVENT\nDTSTART;TZID=UTC:20261012T130000\nDTEND;TZID=\"Etc/UTC\":20261012T143000\nRRULE:FREQ=DAILY\nEXDATE;TZID=utc:20261014T020000\nEND:VEVENT\n\
+        // Floating times are left alone, and so are times in a zone of which nothing is known,
+        // which is said.
+        let file = parse("BEGIN:VEVENT\nDTSTART:20261012T130000\nDTEND;TZID=Example/Riverton:20261012T143000\nEND:VEVENT\n", &|_| -240);
+        let e = &file.events[0];
+        assert_eq!((e.start, e.end, e.start_zone.as_str()), (at(2026, 10, 12, 13, 0), at(2026, 10, 12, 14, 30), ""));
+        assert_eq!(file.notes, ["The time zone \"Example/Riverton\" isn't one that is known: its times are kept as they are written."]);
+        // UTC under another name is UTC. A series written in UTC repeats by UTC's clock, and
+        // the day it skips is the day of that occurrence.
+        let text = "BEGIN:VEVENT\nDTSTART;TZID=UTC:20261012T130000\nDTEND;TZID=\"Etc/UTC\":20261012T143000\nRRULE:FREQ=DAILY\nEXDATE;TZID=utc:20261014T130000\nEND:VEVENT\n\
 BEGIN:VTODO\nDUE;TZID=GMT:20261016T020000\nEND:VTODO\n";
         let file = parse(text, &|_| -240);
         assert_eq!((file.events[0].start, file.events[0].end), (at(2026, 10, 12, 9, 0), at(2026, 10, 12, 10, 30)));
-        assert_eq!(file.events[0].exceptions, [d(2026, 10, 13)]);
+        assert_eq!((file.events[0].start_zone.as_str(), &file.events[0].exceptions[..]), ("UTC", &[d(2026, 10, 14)][..]));
         assert_eq!(file.tasks[0].due, Some(d(2026, 10, 15)));
+        assert!(file.notes.is_empty());
     }
 
     #[test]
@@ -799,7 +938,11 @@ BEGIN:VEVENT\nUID:late\nDTSTART:20261006T020000Z\nRRULE:FREQ=WEEKLY;UNTIL=202612
         let series = &file.events[1];
         assert_eq!(series.start, at(2026, 10, 5, 21, 0));
         assert_eq!(series.exceptions, [d(2026, 10, 19), d(2026, 10, 12)]);
-        assert_eq!(series.recurrence.as_ref().and_then(|r| r.until), Some(d(2026, 11, 30)));
+        // Written in UTC, it repeats by UTC's clock, and its rule counts UTC's days: the last
+        // one is December 1 there, which is the evening of November 30 here.
+        assert_eq!((series.start_zone.as_str(), series.recurrence.as_ref().and_then(|r| r.until)), ("UTC", Some(d(2026, 12, 1))));
+        let last = series.occurrences_in(d(2026, 11, 20), d(2026, 12, 31), &|_| -300).pop().unwrap();
+        assert_eq!((last.start, last.day), (at(2026, 11, 30, 21, 0), d(2026, 11, 30)));
         // Listed twice, taken out once.
         let twice = utc("BEGIN:VEVENT\nUID:s\nDTSTART:20261005\nRRULE:FREQ=DAILY\nEXDATE:20261007\nEND:VEVENT\n\
 BEGIN:VEVENT\nUID:s\nRECURRENCE-ID:20261007\nDTSTART:20261007\nEND:VEVENT\nBEGIN:VEVENT\nUID:s\nRECURRENCE-ID:20261007\nDTSTART:20261008\nEND:VEVENT\n");

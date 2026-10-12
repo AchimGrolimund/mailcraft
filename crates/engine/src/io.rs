@@ -166,11 +166,12 @@ pub fn import(s: &mut Session, name: &str, bytes: &[u8], folder: Option<Id>) -> 
         }
         Format::Ics => {
             let text = String::from_utf8_lossy(bytes);
-            let offset = s.clock.offset;
-            let file = mailcraft_ical::parse(&text, &|ts| offset.unwrap_or_else(|| mailcraft_time::local_offset_minutes(ts)));
+            // (Times in a zone become the times of the zone the calendar is shown in.)
+            let file = mailcraft_ical::parse(&text, &crate::cmd::remote::offset_of(s));
             if file.events.is_empty() && file.tasks.is_empty() {
                 return Err(fail(format!("{name} has no events or tasks")));
             }
+            let notes = file.notes;
             let (mut events, mut tasks, mut updated) = (Vec::new(), Vec::new(), 0);
             for mut e in file.events {
                 e.id = 0;
@@ -199,7 +200,8 @@ pub fn import(s: &mut Session, name: &str, bytes: &[u8], folder: Option<Id>) -> 
                 s.view.date = first.start.date;
                 s.sel.event = Some(first.id);
             }
-            Ok(json!({"format": "ics", "events": events.len(), "tasks": tasks.len(), "updated": updated, "method": file.method}))
+            // (`notes`: what was unclear about a time zone in the file, for the owner to read.)
+            Ok(json!({"format": "ics", "events": events.len(), "tasks": tasks.len(), "updated": updated, "method": file.method, "notes": notes}))
         }
         Format::Vcf => {
             let contacts = mailcraft_vcard::parse(&String::from_utf8_lossy(bytes));
