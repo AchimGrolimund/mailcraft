@@ -181,7 +181,8 @@ server; what has met the real Microsoft 365 service is only what the owner has u
 - A Teams meeting the server has made can't be turned back into a plain one (the service doesn't
   allow it); an account that can't make Teams meetings says so, and the meeting is made without.
 - Whether proposals of another time are allowed is told the server when a meeting is made; the
-  documented service doesn't take a change of it afterwards.
+  documented service doesn't take a change of it afterwards. When the server refuses it, the
+  rest of what was saved stands, that one option is as it was, and a line says so.
 - Propose New Time shows the owner's own day beside the new time, not the other attendees' free
   and busy times.
 - Forwarding a meeting takes the people and a note; there is no message to write beyond it.
