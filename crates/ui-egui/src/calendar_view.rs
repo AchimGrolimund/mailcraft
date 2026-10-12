@@ -4484,7 +4484,11 @@ mod tests {
     }
 
     /// Ctrl, as the keyboard of this machine has it.
-    const CTRL: egui::Modifiers = egui::Modifiers { alt: false, ctrl: true, shift: false, mac_cmd: false, command: !cfg!(target_os = "macos") };
+    const MAC: bool = cfg!(target_os = "macos");
+    /// The key of a shortcut on this system: Ctrl, or Command on a Mac.
+    const CTRL: egui::Modifiers = egui::Modifiers { alt: false, ctrl: !MAC, shift: false, mac_cmd: MAC, command: true };
+    /// The key that makes a drag a copy on this system: Ctrl, or Option on a Mac ([`copy_key`]).
+    const COPY: egui::Modifiers = if MAC { egui::Modifiers::ALT } else { CTRL };
 
     impl Rig {
         fn new(mailbox: mailcraft_model::Mailbox) -> Rig {
@@ -5554,7 +5558,7 @@ mod tests {
         // there, and its ghost says so.
         rig.drag(from, to);
         assert!(rig.app.hit.rect("ghost", review.id).is_some() && rig.app.hit.rect("ghostCopy", review.id).is_none());
-        rig.mods = CTRL;
+        rig.mods = COPY;
         rig.frames(2);
         assert!(rig.dragging().is_some_and(|drag| drag.copy));
         assert!(rig.app.hit.rect("ghostCopy", review.id).is_some() && rig.app.hit.rect("ghost", review.id).is_none());
@@ -5573,7 +5577,7 @@ mod tests {
         let lunch = rig.event("Lunch with Dev");
         let from = rig.at("Lunch with Dev").center();
         let to = from + vec2(0.0, HOUR_H);
-        rig.mods = CTRL;
+        rig.mods = COPY;
         rig.drag(from, to);
         rig.mods = egui::Modifiers::NONE;
         rig.frames(2);
@@ -5652,7 +5656,7 @@ mod tests {
         // With Ctrl it is copied there.
         let to = cell(&rig, d(2026, 10, 30)).center();
         rig.drag(rig.at("Dentist").center(), to);
-        rig.mods = CTRL;
+        rig.mods = COPY;
         rig.frames(2);
         rig.drop_at(to);
         rig.mods = egui::Modifiers::NONE;
@@ -5770,7 +5774,7 @@ mod tests {
         // would scroll along: the tabs over the two calendars take a row of the window.)
         let from = rig.at("Haircut").center();
         rig.drag(from, from + vec2(0.0, 3.0 * HOUR_H));
-        rig.mods = CTRL;
+        rig.mods = COPY;
         rig.frames(2);
         rig.drop_at(from + vec2(0.0, 3.0 * HOUR_H));
         rig.mods = egui::Modifiers::NONE;
@@ -5798,7 +5802,7 @@ mod tests {
         // A copy of it is the owner's own appointment: nobody is asked, nobody is invited.
         let from = rig.at("Board meeting").center();
         rig.drag(from, from + vec2(0.0, -3.0 * HOUR_H));
-        rig.mods = CTRL;
+        rig.mods = COPY;
         rig.frames(2);
         rig.drop_at(from + vec2(0.0, -3.0 * HOUR_H));
         rig.mods = egui::Modifiers::NONE;
@@ -5937,7 +5941,7 @@ mod tests {
         // A copy is of the occurrence, whichever is meant: nothing is asked.
         let from = spot(&rig, friday);
         rig.drag(from, from + vec2(0.0, 2.0 * HOUR_H));
-        rig.mods = CTRL;
+        rig.mods = COPY;
         rig.frames(2);
         rig.drop_at(from + vec2(0.0, 2.0 * HOUR_H));
         rig.mods = egui::Modifiers::NONE;
@@ -6985,7 +6989,7 @@ mod tests {
         let from = rig.at("School play").center();
         let to = pos2(rig.column(team, 3, 7), from.y + HOUR_H);
         rig.drag(from, to);
-        rig.mods = CTRL;
+        rig.mods = COPY;
         rig.frames(2);
         assert!(rig.app.hit.rect("ghostCopy", play.id).is_some_and(|ghost| ghost.max.x <= rig.block(team).max.x + 0.5));
         rig.drop_at(to);
@@ -7019,7 +7023,7 @@ mod tests {
         assert!(rig.said().starts_with("An item that repeats"), "{}", rig.said());
         // A copy of that day's can go there.
         rig.drag(from, to);
-        rig.mods = CTRL;
+        rig.mods = COPY;
         rig.frames(2);
         rig.drop_at(to);
         rig.mods = egui::Modifiers::NONE;
@@ -7119,7 +7123,7 @@ mod tests {
         assert_eq!(*rig.event("Roadmap"), *planning);
         // With Ctrl it is copied there: an appointment of its own, to which nobody is invited.
         rig.drag(from, to);
-        rig.mods = CTRL;
+        rig.mods = COPY;
         rig.frames(2);
         rig.drop_at(to);
         rig.mods = egui::Modifiers::NONE;
@@ -7164,7 +7168,7 @@ mod tests {
         assert_eq!(server.lock().unwrap().events.len(), 2);
         // A copy of it can be kept here, and nothing of that reaches the server.
         rig.drag(from, to);
-        rig.mods = CTRL;
+        rig.mods = COPY;
         rig.frames(2);
         rig.drop_at(to);
         rig.mods = egui::Modifiers::NONE;
