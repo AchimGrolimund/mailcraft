@@ -314,6 +314,14 @@ pub struct Mailbox {
     /// to be told, oldest first ([`crate::remote::EventChange`]).
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::sync::lenient_list")]
     pub event_changes: Vec<crate::remote::EventChange>,
+    /// The time zone the wall-clock times of the events are written in ([`Event::start`]): the
+    /// zone the calendar was shown in when they were written, by its name in the IANA database
+    /// (`Europe/Berlin`) or as an offset (`UTC+05:30`). Empty in a mailbox written before zones
+    /// were kept, and when the system couldn't say which zone it is in: the times are then
+    /// taken as this computer's, as they always were. Whoever shows the calendar in another
+    /// zone has the times rewritten first ([`Mailbox::rebase`]).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub zone: String,
     next_id: Id,
 }
 
@@ -333,6 +341,7 @@ impl Default for Mailbox {
             signatures: Vec::new(),
             pending: Vec::new(),
             event_changes: Vec::new(),
+            zone: String::new(),
             next_id: 1,
         }
     }

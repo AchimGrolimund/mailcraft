@@ -33,8 +33,11 @@ log = "0.4"
 proptest = "1"
 base64 = "0.22"
 getrandom = "0.3"
-# The local time-zone offset (the one thing std can't tell us); calendar maths is our own (`mailcraft-time`).
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Time zones: the IANA Time Zone Database compiled in (`tzdb-bundle-always`: the same rules on
+# every platform and in the browser) and the system's own zone. Unlicense OR MIT; the database is
+# in the public domain. Used by `mailcraft-time` only, which wraps it (`Zone`); calendar maths is
+# our own.
+jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
 
 # network (desktop and CLI only; the browser can't open sockets)
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }

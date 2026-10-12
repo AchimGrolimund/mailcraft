@@ -264,13 +264,18 @@ pub fn due_reminders(s: &Session, now: mailcraft_time::DateTime) -> Vec<Reminder
     // A reminder is at most four weeks ahead of its event.
     let (from, to) = (now.date.add_days(-1), now.date.add_days(29));
     let mut due: Vec<Reminder> = Vec::new();
+    // How long until it starts is so many minutes that pass, not so many on the clock: the two
+    // differ on a night the clocks change. (A whole-day event is by the clock: it has no instant.)
+    let here = super::remote::offset_of(s);
+    let instant = |wall: mailcraft_time::DateTime| mailcraft_model::zoned::instant_at(wall, &here);
+    let at = instant(now);
     for e in s.mailbox.events.values() {
         let Some(ahead) = e.reminder_minutes else { continue };
         if e.cancelled {
             continue;
         }
-        for o in e.occurrences(from, to) {
-            let minutes = now.minutes_until(o.start);
+        for o in e.occurrences_in(from, to, &here) {
+            let minutes = if e.all_day { now.minutes_until(o.start) } else { instant(o.start).saturating_sub(at).div_euclid(60) };
             if minutes <= i64::from(ahead) && o.end.minutes_until(now) < 1440 {
                 due.push(Reminder {
                     event: e.id,

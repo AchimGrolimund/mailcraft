@@ -1807,20 +1807,34 @@ fn when_label(item: &Item, twelve: bool) -> String {
             format!("{} – {} · {}", day(start.date), day(last), tl!("All day"))
         }
     } else if last == start.date {
-        format!("{} · {}", day(start.date), item.ev.time_label(twelve))
+        // (When this occurrence is: one of a series by another zone's clock is not always at
+        // the time of the first.)
+        format!("{} · {} – {}", day(start.date), start.time_short(twelve), end.time_short(twelve))
     } else {
         format!("{} {} – {} {}", day(start.date), start.time_short(twelve), day(end.date), end.time_short(twelve))
     }
 }
 
-/// What hovering an event says: title, when, where, who, how it repeats.
-fn tooltip(ui: &mut Ui, item: &Item, twelve: bool) {
+/// When an occurrence is by the clock of its event's own zone (`3:00 PM – 4:00 PM (Eastern
+/// Time)`), for an event that has a zone whose clock shows another time than the calendar's.
+fn own_time(s: &mailcraft_engine::Session, item: &Item) -> Option<String> {
+    item.ev.zone_of_end()?;
+    let at = Event { start: item.occ.start, end: item.occ.end, ..(*item.ev).clone() };
+    mailcraft_model::zoned::own_time_label(&at, &|instant| s.offset_at(instant), s.prefs.twelve_hour)
+}
+
+/// What hovering an event says: title, when (and when that is where the event is at home),
+/// where, who, how it repeats.
+fn tooltip(ui: &mut Ui, item: &Item, twelve: bool, own: Option<&str>) {
     let t = Tokens::get(ui.ctx());
     let ev = &item.ev;
     ui.set_max_width(300.0);
     let line = |ui: &mut Ui, text: &str| ui.label(egui::RichText::new(text).font(regular(11.5)).color(t.text_dim));
     ui.label(egui::RichText::new(item.title()).font(semibold(12.5)).color(t.text));
     ui.label(egui::RichText::new(when_label(item, twelve)).font(regular(11.5)).color(t.text));
+    if let Some(own) = own {
+        line(ui, own);
+    }
     let place = clip_text(ev.location.trim(), 200);
     if !place.is_empty() {
         line(ui, place);
@@ -1950,7 +1964,8 @@ fn event_input(app: &mut MailApp, resp: Response, item: &Item, tips: bool) {
     });
     if tips {
         let twelve = app.session.prefs.twelve_hour;
-        resp.on_hover_ui(|ui| tooltip(ui, item, twelve));
+        let session = &app.session;
+        resp.on_hover_ui(|ui| tooltip(ui, item, twelve, own_time(session, item).as_deref()));
     }
 }
 
@@ -2893,7 +2908,9 @@ fn time_grid(app: &mut MailApp, ui: &mut Ui, frame: &mut Frame, from: Date, to: 
     let days = days_of(from, to, i64::from(MAX_DAYS));
     let n = days.len();
     let full = ui.available_rect_before_wrap();
-    let blocks = Blocks::of(full.min.x + GUTTER_W, full.width() - GUTTER_W, n, panes.len());
+    // (A second time zone has a column of its own in the time bar, left of the first.)
+    let gutter = GUTTER_W + second_zone_width(app);
+    let blocks = Blocks::of(full.min.x + gutter, full.width() - gutter, n, panes.len());
     let count = blocks.count;
     let scale = Scale::of(time_scale(&app.session));
     let g = Grid { t, blocks, from, days: &days, items, today: app.session.today(), twelve: app.session.prefs.twelve_hour, scale, panes };
@@ -2952,9 +2969,51 @@ fn time_grid(app: &mut MailApp, ui: &mut Ui, frame: &mut Frame, from: Date, to: 
     if tabbed(panes) {
         tab_strip(app, ui, &blocks, panes);
     }
-    day_headers(ui, &g);
+    let heads = day_headers(ui, &g);
+    zone_labels(app, ui, &g, Rect::from_min_max(pos2(full.min.x, heads.min.y), pos2(blocks.left(), heads.max.y)));
     all_day_row(app, ui, &g, frame, &bars, &hidden);
     hour_grid(app, ui, &g, frame, &mut segs);
+}
+
+/// How wide the second time zone's column of the time bar is; nothing without one.
+const SECOND_ZONE_W: f32 = 52.0;
+
+fn second_zone_width(app: &MailApp) -> f32 {
+    if mailcraft_engine::cmd::zones::second_zone(&app.session).is_some() { SECOND_ZONE_W } else { 0.0 }
+}
+
+/// The instant the time bar's zones are compared at: noon of the first day in view (a week in
+/// January is labelled as the zones are in January).
+fn bar_instant(app: &MailApp, g: &Grid) -> mailcraft_time::Timestamp {
+    let noon = DateTime { hour: 12, ..DateTime::at_midnight(g.from) };
+    mailcraft_model::zoned::instant_at(noon, &|instant| app.session.offset_at(instant))
+}
+
+/// What the time bar says over its hours (`area`: the bar's part of the days' headings): the
+/// zone the calendar is shown in, when that is worth saying (the owner chose it, gave it a
+/// name, or has a second zone beside it), and the second zone over its own column. Hovering one
+/// says which zone it is.
+fn zone_labels(app: &mut MailApp, ui: &mut Ui, g: &Grid, area: Rect) {
+    let t = g.t;
+    let prefs = &app.session.prefs;
+    let second = mailcraft_engine::cmd::zones::second_zone(&app.session);
+    let shown = app.session.zone();
+    let worth = second.is_some() || !prefs.zone_label.trim().is_empty() || mailcraft_time::Zone::named(&prefs.time_zone).is_some();
+    let at = bar_instant(app, g);
+    let split = area.min.x + if second.is_some() { SECOND_ZONE_W } else { 0.0 };
+    let mut label = |zone: mailcraft_time::Zone, given: &str, cell: Rect, key: u64| {
+        let text = crate::zones::bar_label(zone, given, at);
+        let p = ui.painter().with_clip_rect(cell.intersect(ui.clip_rect()));
+        p.text(pos2(cell.max.x - 8.0, cell.max.y - 6.0), Align2::RIGHT_BOTTOM, clip_text(&text, 16), regular(10.5), t.text_dim);
+        app.hit.add("zoneLabel", key, cell);
+        ui.interact(cell, ui.id().with(("zone_label", key)), Sense::hover()).on_hover_text(crate::zones::row(zone, at));
+    };
+    if let Some(second) = second {
+        label(second, &prefs.second_zone_label, Rect::from_min_max(area.min, pos2(split, area.max.y)), 2);
+    }
+    if worth && !shown.is_local() {
+        label(shown, &prefs.zone_label, Rect::from_min_max(pos2(split, area.min.y), area.max), 1);
+    }
 }
 
 /// The tabs over the calendars, when more than one is shown: over each block the name of its
@@ -3052,7 +3111,7 @@ fn tab_strip(app: &mut MailApp, ui: &mut Ui, blocks: &Blocks, panes: &[PaneView]
 }
 
 /// The weekday and the day number over each column, in every block; today's stands out.
-fn day_headers(ui: &mut Ui, g: &Grid) {
+fn day_headers(ui: &mut Ui, g: &Grid) -> Rect {
     let t = g.t;
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), DAY_HEAD_H), Sense::hover());
     for k in 0..g.blocks.count {
@@ -3091,6 +3150,7 @@ fn day_headers(ui: &mut Ui, g: &Grid) {
             ui.painter().vline(cols.right(), r.y_range(), Stroke::new(1.0, t.border));
         }
     }
+    r
 }
 
 /// The row under the headers with whole-day and multi-day events as bars across their days, in
@@ -3203,6 +3263,11 @@ fn hour_grid(app: &mut MailApp, ui: &mut Ui, g: &Grid, frame: &mut Frame, segs: 
     // The working hours in effect: the mailbox's own, or the ones of the local options.
     let work = calendar_settings::work_hours(&app.session);
     let (work_start, work_end) = (work.start.clamp(0, DAY_MINUTES), work.end.clamp(0, DAY_MINUTES));
+    // The second time zone of the time bar: how many minutes its clock is ahead of the calendar's.
+    let ahead = mailcraft_engine::cmd::zones::second_zone(&app.session).map(|zone| {
+        let at = bar_instant(app, g);
+        i64::from(zone.offset_at(at)) - i64::from(app.session.offset_at(at))
+    });
 
     // The first time, and when the view or the time scale changes, the working day starts near
     // the top.
@@ -3257,7 +3322,14 @@ fn hour_grid(app: &mut MailApp, ui: &mut Ui, g: &Grid, frame: &mut Frame, segs: 
                     && hour < 24
                 {
                     paint_hour(&p, pos2(left - 8.0, y + 2.0), hour, g.twelve, &t);
+                    // The same moment by the second zone's clock, in its own column.
+                    if let Some(ahead) = ahead {
+                        paint_clock(&p, pos2(rect.min.x + SECOND_ZONE_W - 8.0, y + 2.0), (minute + ahead).rem_euclid(DAY_MINUTES), g.twelve, &t);
+                    }
                 }
+            }
+            if k == 0 && ahead.is_some() {
+                p.vline(rect.min.x + SECOND_ZONE_W, rect.y_range(), Stroke::new(1.0, t.border.linear_multiply(0.6)));
             }
             // At an hour a row, the half hours still show, faintly.
             if scale.slot >= 60 {
@@ -3407,6 +3479,24 @@ fn paint_hour(p: &Painter, at: egui::Pos2, hour: u8, twelve: bool, t: &Tokens) {
     };
     let suffix = p.text(pos2(at.x, at.y + 1.0), Align2::RIGHT_TOP, small, regular(9.0), t.text_dim);
     p.text(pos2(suffix.min.x - 2.0, at.y), Align2::RIGHT_TOP, figures, regular(14.0), t.text_dim);
+}
+
+/// A time of day in the time bar's second column (`minutes` since midnight), its right end at
+/// `at`: as [`paint_hour`] for a full hour, and `9:30` in small figures for a zone that is half
+/// or three quarters of an hour apart.
+fn paint_clock(p: &Painter, at: egui::Pos2, minutes: i64, twelve: bool, t: &Tokens) {
+    let (hour, minute) = (u8::try_from(minutes.div_euclid(60).clamp(0, 23)).unwrap_or(0), u8::try_from(minutes.rem_euclid(60)).unwrap_or(0));
+    if minute == 0 {
+        return paint_hour(p, at, hour, twelve, t);
+    }
+    let (figures, small) = if twelve {
+        let hour12 = if hour.is_multiple_of(12) { 12 } else { hour % 12 };
+        (format!("{hour12}:{minute:02}"), if hour < 12 { tl!("AM") } else { tl!("PM") })
+    } else {
+        (format!("{hour:02}:{minute:02}"), "")
+    };
+    let suffix = p.text(pos2(at.x, at.y + 3.0), Align2::RIGHT_TOP, small, regular(8.0), t.text_dim);
+    p.text(pos2(suffix.min.x - 1.0, at.y + 2.0), Align2::RIGHT_TOP, figures, regular(11.0), t.text_dim);
 }
 
 /// The time scales as a menu's entries, the one in use ticked: what a row of the hours stands
@@ -6998,7 +7088,9 @@ mod tests {
         // After the hour they are asked for, and they are the working hours from then on.
         assert!(rig.app.calendar_tick_at(true, t0 + 61.0 * 60_000.0));
         rig.app.poll_calendar();
-        assert_eq!((asked(&server), hours(&rig)), (2, (5, 420, 900, true)));
+        // (They are Pacific time's hours: seven to three there is fourteen to twenty-two by the
+        // clock here, which is UTC's in these tests.)
+        assert_eq!((asked(&server), hours(&rig)), (2, (5, 840, 1320, true)));
         assert_eq!(
             rig.app.session.prefs.mailbox_hours.as_ref().map(|kept| (kept.email.as_str(), kept.zone.as_str())),
             Some(("avery@mail.example", "Pacific Standard Time"))
@@ -7007,9 +7099,9 @@ mod tests {
         rig.frames(3);
         rig.click(after_noon(&rig, 1.0), 1);
         rig.key(Key::Home);
-        assert_eq!(rig.pick().map(|pick| pick.0), Some(at(wednesday, 7, 0)));
+        assert_eq!(rig.pick().map(|pick| pick.0), Some(at(wednesday, 14, 0)));
         rig.key(Key::End);
-        assert_eq!(rig.pick().map(|pick| pick.0), Some(at(wednesday, 14, 30)));
+        assert_eq!(rig.pick().map(|pick| pick.0), Some(at(wednesday, 21, 30)));
         // The Work Week is the mailbox's days: Sunday to Thursday, in a week that starts on Sunday.
         rig.run("view.workWeek", json!({}));
         assert_eq!(rig.range(), (d(2026, 10, 11), d(2026, 10, 15)));
@@ -7021,7 +7113,7 @@ mod tests {
         rig.key(Key::Home);
         assert_eq!(rig.pick().map(|pick| pick.0), Some(at(wednesday, 8, 0)));
         rig.run("view.workHours", json!({"own": false}));
-        assert_eq!(hours(&rig), (5, 420, 900, true));
+        assert_eq!(hours(&rig), (5, 840, 1320, true));
 
         // "Connect" asks for them at the next look, hour or no hour. Hours that are none (no
         // days, an end before the start) are not taken in, and the ones that were kept stay.
@@ -7029,14 +7121,14 @@ mod tests {
         rig.app.calendar_connected(account);
         assert!(rig.app.calendar_tick_at(true, t0 + 62.0 * 60_000.0));
         rig.app.poll_calendar();
-        assert_eq!((asked(&server), hours(&rig)), (3, (5, 420, 900, true)));
+        assert_eq!((asked(&server), hours(&rig)), (3, (5, 840, 1320, true)));
         // A sign-in that doesn't cover the mailbox's settings brings none, and says so quietly.
         server.lock().unwrap().extras_missing = true;
         rig.app.calendar_connected(account);
         assert!(rig.app.calendar_tick_at(true, t0 + 63.0 * 60_000.0));
         rig.app.poll_calendar();
         assert!(rig.app.graph_extras_missing(account));
-        assert_eq!((asked(&server), hours(&rig)), (4, (5, 420, 900, true)));
+        assert_eq!((asked(&server), hours(&rig)), (4, (5, 840, 1320, true)));
         // Once they come, the sign-in is known to cover them.
         server.lock().unwrap().extras_missing = false;
         server.lock().unwrap().hours = Some(theirs);

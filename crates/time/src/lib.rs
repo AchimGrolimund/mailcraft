@@ -1,15 +1,18 @@
 //! MailCraft dates and times.
 //!
 //! Calendar maths is our own (proleptic Gregorian, no leap seconds) so it is the same on every
-//! platform and never panics on hostile input. The clock ([`now`]) and the local time-zone offset
-//! ([`local_offset_minutes`]) are the only things that ask the system (or the browser).
+//! platform and never panics on hostile input. The clock ([`now`]) and this computer's time zone
+//! ([`Zone::system`], [`local_offset_minutes`]) are the only things that ask the system (or the
+//! browser). Time zones ([`Zone`]) come from a database that is compiled in.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod text;
+pub mod zone;
 
 use serde::{Deserialize, Serialize};
 
 pub use text::{format_iso_utc, format_rfc5322, iso_to_timestamp, parse_iso, parse_rfc5322};
+pub use zone::{MAX_ZONE_NAME, Transition, Zone};
 
 /// Seconds since the Unix epoch, UTC.
 pub type Timestamp = i64;
@@ -399,18 +402,7 @@ pub fn now() -> Timestamp {
 /// Minutes east of UTC of the system's (or browser's) time zone at `ts`, daylight saving included;
 /// 0 when the system can't say.
 pub fn local_offset_minutes(ts: Timestamp) -> i32 {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        use chrono::{Offset as _, TimeZone as _};
-        chrono::Local.timestamp_opt(ts, 0).single().map(|d| d.offset().fix().local_minus_utc() / 60).unwrap_or(0)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let d = js_sys::Date::new_0();
-        d.set_time(ts as f64 * 1000.0);
-        let off = d.get_timezone_offset();
-        if off.is_finite() { -(off as i32) } else { 0 }
-    }
+    Zone::system().offset_at(ts)
 }
 
 /// How a message list groups by date, newest group first.

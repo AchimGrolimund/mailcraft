@@ -107,16 +107,22 @@ fn position(n: i32) -> Option<i8> {
 /// out. For monthly and yearly rules without an `nth` the model ignores `by_day`, so it isn't
 /// written.
 pub fn format_rrule(r: &Recurrence) -> String {
-    format(r, None)
+    format(r, None, None)
 }
 
 /// The rule of an event that starts at `start`: the start's weekday and month are spelled out
 /// where the rule leans on them, and `UNTIL` has the start's value type.
 pub(crate) fn format_for(r: &Recurrence, start: DateTime, all_day: bool) -> String {
-    format(r, Some((valid_time(start), all_day)))
+    format(r, Some((valid_time(start), all_day)), None)
 }
 
-fn format(r: &Recurrence, start: Option<(DateTime, bool)>) -> String {
+/// The rule of a timed event whose start is written in a zone: as [`format_for`], with `UNTIL`
+/// as the instant `until` in UTC, which is how RFC 5545 has it beside such a start.
+pub(crate) fn format_zoned(r: &Recurrence, start: DateTime, until: Option<Timestamp>) -> String {
+    format(r, Some((valid_time(start), false)), until)
+}
+
+fn format(r: &Recurrence, start: Option<(DateTime, bool)>, until_at: Option<Timestamp>) -> String {
     let mut out = format!("FREQ={}", r.freq.code().to_ascii_uppercase());
     if r.interval > 1 {
         out.push_str(&format!(";INTERVAL={}", r.interval));
@@ -156,7 +162,9 @@ fn format(r: &Recurrence, start: Option<(DateTime, bool)>) -> String {
     if let Some(count) = r.count {
         out.push_str(&format!(";COUNT={count}"));
     }
-    if let Some(until) = r.until {
+    if let (Some(_), Some(at)) = (r.until, until_at) {
+        out.push_str(&format!(";UNTIL={}", crate::values::format_utc(at)));
+    } else if let Some(until) = r.until {
         out.push_str(&format!(";UNTIL={}", format_date(until)));
         // The whole last day of a timed series.
         if matches!(start, Some((_, false))) {

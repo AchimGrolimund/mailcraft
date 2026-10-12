@@ -83,11 +83,11 @@ const EVENT_FIELDS_PLAIN: &str = "id,iCalUId,changeKey,subject,bodyPreview,body,
 /// And what is asked for first: with the categories, and when a series has each occurrence.
 const EVENT_FIELDS_FULL: &str = "id,iCalUId,changeKey,subject,bodyPreview,body,start,end,isAllDay,isCancelled,location,organizer,attendees,\
                                  responseStatus,showAs,sensitivity,type,seriesMasterId,lastModifiedDateTime,isReminderOn,reminderMinutesBeforeStart,\
-                                 isOrganizer,transactionId,categories,originalStart";
+                                 isOrganizer,transactionId,categories,originalStart,originalStartTimeZone,originalEndTimeZone";
 /// What is asked for of a series itself: the same, and how it repeats.
 const SERIES_FIELDS: &str = "id,iCalUId,changeKey,subject,bodyPreview,body,start,end,isAllDay,isCancelled,location,organizer,attendees,\
                              responseStatus,showAs,sensitivity,type,seriesMasterId,lastModifiedDateTime,isReminderOn,reminderMinutesBeforeStart,\
-                             isOrganizer,transactionId,categories,recurrence";
+                             isOrganizer,transactionId,categories,recurrence,originalStartTimeZone,originalEndTimeZone";
 const BATCH: &str = "/v1.0/$batch";
 const CALENDARS: &str = "/v1.0/me/calendars";
 /// Most questions one batch carries (Graph's own limit), most series asked about in one go, and
@@ -648,7 +648,14 @@ fn zone_name(zone: &str) -> &str {
 
 /// The event Graph is sent for `fields`: only what they say. `mark` goes with a new event.
 /// `None` when it repeats in a way Graph has no way of saying.
-fn event_body(fields: &EventFields, mark: &str, zone: &str) -> Option<String> {
+///
+/// `zone` is the zone the calendar is shown in, by a name Graph knows (empty: UTC). An event
+/// with zones of its own ([`EventFields::zones`]) goes by their clocks and with their names when
+/// `own` is set, which is how Graph keeps the zone an event was made in; without `own` (a second
+/// try, after Graph wouldn't have a zone) it goes as instants in UTC, which is the same moment,
+/// and a series that repeats by a zone's clock doesn't go at all: in UTC it would be another
+/// series.
+fn event_body(fields: &EventFields, mark: &str, zone: &str, own: bool) -> Option<String> {
     let mut event = Map::new();
     if let Some(title) = &fields.title {
         event.insert("subject".into(), json!(title));
@@ -662,13 +669,33 @@ fn event_body(fields: &EventFields, mark: &str, zone: &str) -> Option<String> {
     if let Some(EventTime { start, end, all_day }) = fields.time {
         // A whole-day event is whole days: at least one, from midnight to midnight.
         let end = if all_day { end.max(start.saturating_add(mailcraft_time::DAY)) } else { end.max(start) };
-        match fields.wall.filter(|_| !all_day && !zone.is_empty()) {
+        // The zones it has of its own, by the names Graph has for them.
+        let zones = fields.zones.as_ref().filter(|_| !all_day);
+        let named = zones.filter(|_| own).and_then(|zones| {
+            let start = graph_zone(&zones.start)?;
+            let end = if zones.end.is_empty() { start.clone() } else { graph_zone(&zones.end)? };
+            Some((start, end))
+        });
+        match (named, fields.wall.filter(|_| !all_day)) {
+            // Graph is to keep it in its zones: by their clocks. (A series comes with its
+            // clock times; an event that happens once has them worked out.)
+            (Some(((starts_in, start_name), (ends_in, end_name))), wall) => {
+                let (from, to) = match wall {
+                    Some(wall) => (wall.start, wall.end),
+                    None => (starts_in.wall(start), ends_in.wall(end)),
+                };
+                event.insert("start".into(), json!({"dateTime": from.iso(), "timeZone": start_name}));
+                event.insert("end".into(), json!({"dateTime": to.iso(), "timeZone": end_name}));
+            }
+            // A series by the clock of a zone Graph has no name for, or wouldn't have: it is
+            // not sent by another clock. (An event that happens once goes as its instants.)
+            (None, Some(_)) if zones.is_some() => return None,
             // A series: by the clock in the owner's zone, so that it stays at its hour all year.
-            Some(wall) => {
+            (None, Some(wall)) if !zone.is_empty() => {
                 event.insert("start".into(), json!({"dateTime": wall.start.iso(), "timeZone": zone}));
                 event.insert("end".into(), json!({"dateTime": wall.end.max(wall.start).iso(), "timeZone": zone}));
             }
-            None => {
+            _ => {
                 event.insert("start".into(), date_time(start, all_day, zone));
                 event.insert("end".into(), date_time(end, all_day, zone));
             }
@@ -676,8 +703,10 @@ fn event_body(fields: &EventFields, mark: &str, zone: &str) -> Option<String> {
         event.insert("isAllDay".into(), json!(all_day));
     }
     if let Some(repeat) = &fields.repeat {
+        // The rule counts its days in the series' own zone, when it has one.
+        let own_zone = fields.zones.as_ref().filter(|_| own).and_then(|zones| graph_zone(&zones.start)).map(|(_, name)| name);
         let rule = match &repeat.rule {
-            Some(rule) => recurrence_body(rule, repeat.first, zone)?,
+            Some(rule) => recurrence_body(rule, repeat.first, own_zone.as_deref().unwrap_or(zone))?,
             None => Value::Null,
         };
         event.insert("recurrence".into(), rule);
@@ -733,7 +762,10 @@ fn push_events_at(base: &str, token: &str, upload: &EventsUpload, options: &Even
         uploaded.token_refused = true;
         return uploaded;
     };
-    let zone = zone_name(&options.zone);
+    // The zone the calendar is shown in, as the upload names it; else this computer's, as the
+    // host knows it.
+    let shown = graph_zone(&upload.zone).map(|(_, name)| name);
+    let zone = shown.as_deref().unwrap_or_else(|| zone_name(&options.zone));
     for op in upload.ops.iter().take(MAX_EVENT_OPS) {
         let mut op = op.clone();
         op.tidy();
@@ -806,8 +838,10 @@ impl Graph<'_> {
         };
         let url = self.url(&path);
         let whole_day = op.fields.time.is_some_and(|time| time.all_day);
-        let zoned = whole_day || op.fields.wall.is_some() || op.fields.repeat.is_some();
+        let zoned = whole_day || op.fields.wall.is_some() || op.fields.repeat.is_some() || op.fields.zones.is_some();
         let mut zone = zone;
+        // (Its own zones go with the first try; the second is without any.)
+        let mut own = true;
         // Twice at most: a second time in UTC, should Graph not know the zone a whole day is in.
         for _ in 0..2 {
             let body = match op.kind {
@@ -816,7 +850,7 @@ impl Graph<'_> {
                 EventChangeKind::Respond => {
                     Some(json!({"comment": if op.send { op.comment.as_str() } else { "" }, "sendResponse": op.send}).to_string())
                 }
-                EventChangeKind::Create | EventChangeKind::Update => match event_body(&op.fields, &op.token, zone) {
+                EventChangeKind::Create | EventChangeKind::Update => match event_body(&op.fields, &op.token, zone, own) {
                     Some(body) => Some(body),
                     None => {
                         let why = "it repeats in a way Microsoft 365 has no way of keeping";
@@ -859,8 +893,8 @@ impl Graph<'_> {
                 (_, 429 | 503 | 504) => (EventResult::Failed, true),
                 (EventChangeKind::Create, 409) | (_, 500..=599) => (EventResult::Failed, false),
                 // A day or an hour in a zone Graph doesn't know: the same in UTC.
-                (EventChangeKind::Create | EventChangeKind::Update, 400) if zoned && !zone.is_empty() => {
-                    zone = "";
+                (EventChangeKind::Create | EventChangeKind::Update, 400) if zoned && (!zone.is_empty() || (own && op.fields.zones.is_some())) => {
+                    (zone, own) = ("", false);
                     continue;
                 }
                 _ => (EventResult::Refused, false),
@@ -948,9 +982,29 @@ fn when(value: Option<&Value>) -> Option<Timestamp> {
     let value = value?;
     let zone = text(value, "timeZone").trim();
     if !zone.is_empty() && !UTC.iter().any(|utc| utc.eq_ignore_ascii_case(zone)) {
-        return None;
+        // Not what was asked for, but a zone that is known says when it is all the same. One
+        // that isn't is not read: nothing is guessed.
+        let known = Some(zone).filter(|zone| zone.len() <= MAX_ZONE).and_then(mailcraft_time::Zone::named)?;
+        let written = Some(text(value, "dateTime")).filter(|text| text.len() <= MAX_DATE).and_then(mailcraft_time::parse_iso)?;
+        return match written {
+            (wall, None) => Some(known.instant(wall)),
+            (wall, Some(offset)) => Some(wall.to_timestamp(offset)),
+        };
     }
     instant(text(value, "dateTime"))
+}
+
+/// The name Graph knows a zone by, with the zone: the name Windows has for it when it has one
+/// (which Exchange is sure to know), else its name in the IANA database, which Graph takes for
+/// most zones. `None` for a name that is no zone, and for an offset, which Graph has no name for.
+fn graph_zone(name: &str) -> Option<(mailcraft_time::Zone, String)> {
+    let zone = Some(name).filter(|name| name.len() <= MAX_ZONE).and_then(mailcraft_time::Zone::named)?;
+    let known = match zone.windows_name() {
+        Some(windows) => windows.to_string(),
+        None if zone.id().contains('/') => zone.id(),
+        None => return None,
+    };
+    Some((zone, known))
 }
 
 /// The person in `{"emailAddress": {"name": "…", "address": "…"}}`, or in the inner object itself.
@@ -981,7 +1035,13 @@ fn event_of(entry: &Value) -> Option<RemoteEvent> {
     let attendees = entry.get("attendees").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     let flag = |name: &str| entry.get(name).and_then(Value::as_bool).unwrap_or(false);
     let reminder = entry.get("reminderMinutesBeforeStart").and_then(Value::as_u64).map(|minutes| u32::try_from(minutes).unwrap_or(u32::MAX));
+    // The zones it was made in, as Graph names them; a series counts by the zone of its rule.
+    let zone = |name: &str| Some(name.trim()).filter(|name| name.len() <= MAX_ZONE).unwrap_or("").to_string();
+    let rule_zone = entry.get("recurrence").and_then(|rule| rule.get("range")).map_or("", |range| text(range, "recurrenceTimeZone"));
+    let start_zone = if rule_zone.trim().is_empty() { text(entry, "originalStartTimeZone") } else { rule_zone };
     let mut event = RemoteEvent {
+        start_zone: zone(start_zone),
+        end_zone: zone(text(entry, "originalEndTimeZone")),
         id: text(entry, "id").to_string(),
         change_key: match text(entry, "changeKey") {
             "" => text(entry, "@odata.etag").to_string(),

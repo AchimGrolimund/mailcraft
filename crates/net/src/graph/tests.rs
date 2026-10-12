@@ -559,7 +559,8 @@ fn events_are_read_as_they_are_said() {
     // Without a change key, the ETag is the mark of the version.
     assert_eq!(read(json!({"@odata.etag": "W/\"abc==\""})).unwrap().change_key, "W/\"abc==\"");
     assert_eq!(read(json!({"@odata.etag": "W/\"abc==\"", "changeKey": "abc=="})).unwrap().change_key, "abc==");
-    // UTC by any of its names, or by an offset of the time's own; no other zone is guessed at.
+    // UTC by any of its names, or by an offset of the time's own; a zone that is known (it is not
+    // what is asked for, but it says when it is all the same); no other zone is guessed at.
     for (start, zone, expected) in [
         ("2026-10-12T13:00:00.0000000", "UTC", Some(at(2026, 10, 12, 13, 0))),
         ("2026-10-12T13:00:00", "utc", Some(at(2026, 10, 12, 13, 0))),
@@ -567,8 +568,11 @@ fn events_are_read_as_they_are_said() {
         ("2026-10-12T13:00:00Z", "Etc/GMT", Some(at(2026, 10, 12, 13, 0))),
         ("2026-10-12T15:00:00+02:00", "tzone://Microsoft/Utc", Some(at(2026, 10, 12, 13, 0))),
         ("2026-10-12", "UTC", Some(at(2026, 10, 12, 0, 0))),
-        ("2026-10-12T13:00:00", "Pacific Standard Time", None),
-        ("2026-10-12T13:00:00", "Europe/Berlin", None),
+        ("2026-10-12T13:00:00", "Pacific Standard Time", Some(at(2026, 10, 12, 20, 0))),
+        ("2026-10-12T13:00:00.0000000", "Europe/Berlin", Some(at(2026, 10, 12, 11, 0))),
+        ("2026-12-12T13:00:00", "Europe/Berlin", Some(at(2026, 12, 12, 12, 0))),
+        ("2026-10-12T13:00:00", "Customized Time Zone", None),
+        ("2026-10-12T13:00:00", "tzone://Microsoft/Custom", None),
         ("tomorrow", "UTC", None),
         ("2026-13-40T13:00:00", "UTC", None),
         ("", "UTC", None),
@@ -744,7 +748,7 @@ fn hostile_calendar_answers_give_events_or_nothing() {
         1, "x", null, [], {}, true,
         {"id": "no-times"},
         {"id": "no-end", "start": {"dateTime": "2026-10-12T13:00:00", "timeZone": "UTC"}},
-        {"id": "another-zone", "start": {"dateTime": "2026-10-12T13:00:00", "timeZone": "Pacific Standard Time"}, "end": {"dateTime": "2026-10-12T14:00:00", "timeZone": "UTC"}},
+        {"id": "another-zone", "start": {"dateTime": "2026-10-12T13:00:00", "timeZone": "Somewhere Standard Time"}, "end": {"dateTime": "2026-10-12T14:00:00", "timeZone": "UTC"}},
         {"id": "no-time", "start": {"dateTime": "tomorrow", "timeZone": "UTC"}, "end": {"dateTime": "later", "timeZone": "UTC"}},
         {"id": "times-not-said", "start": "2026-10-12T13:00:00", "end": "2026-10-12T14:00:00"},
         timed(json!(7)), timed(json!(null)), timed(json!("")), timed(json!("two words")), timed(json!("line\r\nbreak")), timed(json!("x".repeat(2_000))), timed(json!(["e-1"])),
@@ -1281,7 +1285,7 @@ proptest! {
             send: flags.0,
             comment: title.clone(),
         }).collect::<Vec<_>>();
-        let upload = EventsUpload { account: 3, email: "ada@example.org".into(), ops };
+        let upload = EventsUpload { account: 3, email: "ada@example.org".into(), ops, ..Default::default() };
         let uploaded = push_events_at(&server.url(""), TOKEN, &upload, &EventOptions { zone });
         prop_assert!(uploaded.outcomes.len() <= upload.ops.len());
         for outcome in &uploaded.outcomes {
@@ -1312,7 +1316,7 @@ fn delete(remote: &str) -> EventOp {
 }
 
 fn upload(ops: Vec<EventOp>) -> EventsUpload {
-    EventsUpload { account: 3, email: "ada@example.org".into(), ops }
+    EventsUpload { account: 3, email: "ada@example.org".into(), ops, ..Default::default() }
 }
 
 /// What Graph says to a deletion it carried out.
@@ -1743,7 +1747,7 @@ fn a_series_comes_as_itself_beside_its_occurrences() {
     let urls: Vec<&str> = asked["requests"].as_array().unwrap().iter().map(|one| one["url"].as_str().unwrap()).collect();
     assert_eq!(urls.len(), 3);
     for (url, id) in urls.iter().zip(["s-1", "s-2", "s-3"]) {
-        assert!(url.starts_with(&format!("/me/events/{id}?%24select=id%2C")) && url.ends_with("%2Crecurrence"), "{url}");
+        assert!(url.starts_with(&format!("/me/events/{id}?%24select=id%2C")) && url.ends_with("%2Crecurrence%2CoriginalStartTimeZone%2CoriginalEndTimeZone"), "{url}");
     }
     assert_eq!(asked["requests"][0]["method"], "GET");
     assert_eq!(asked["requests"][0]["headers"]["Prefer"], "outlook.timezone=\"UTC\", outlook.body-content-type=\"text\"");
@@ -2278,5 +2282,150 @@ proptest! {
         }
         let one = EventOp { kind: EventChangeKind::Delete, series: "s-1".into(), occurrence: from, ..Default::default() };
         let _ = push_events_at(&server.url(""), TOKEN, &upload(vec![one]), &EventOptions::default());
+    }
+}
+
+// ---- time zones ----
+
+/// The zones of an event as an upload names them.
+fn zones(start: &str, end: &str) -> Option<mailcraft_model::remote::EventZones> {
+    Some(mailcraft_model::remote::EventZones { start: start.into(), end: end.into() })
+}
+
+#[test]
+fn the_zones_an_event_was_made_in_are_read() {
+    let read = |more: Value| {
+        let mut entry = event("e-1", "Review");
+        entry.as_object_mut().unwrap().extend(more.as_object().unwrap().clone());
+        event_of(&entry).unwrap()
+    };
+    // Asked for in UTC, the times are instants; where the event was made comes beside them, by
+    // whatever name Graph has for the zone.
+    let made = read(json!({"originalStartTimeZone": "Pacific Standard Time", "originalEndTimeZone": "Asia/Tokyo"}));
+    assert_eq!((made.start_zone.as_str(), made.end_zone.as_str()), ("Pacific Standard Time", "Asia/Tokyo"));
+    assert_eq!(read(json!({})).start_zone, "");
+    // A series counts by the zone of its rule, whatever its start says.
+    let mut master = series("s-1", "Stand-up", weekly());
+    master["originalStartTimeZone"] = json!("UTC");
+    let master = event_of(&master).unwrap();
+    assert_eq!((master.kind, master.start_zone.as_str()), (RemoteEventKind::SeriesMaster, "Eastern Standard Time"));
+    // Names that are none, and names of any length, are names all the same here: what they
+    // mean is for the mailbox to say, which keeps a zone only when it is one.
+    for odd in [json!("tzone://Microsoft/Custom"), json!("Customized Time Zone"), json!(7), json!(null), json!("x".repeat(1 << 20)), json!("Line\r\nbreak")] {
+        let event = read(json!({"originalStartTimeZone": odd}));
+        assert!(event.start_zone.len() <= 64 && !event.start_zone.contains('\n'), "{:?}", event.start_zone);
+        assert_eq!(event.start, at(2026, 10, 12, 13, 0));
+    }
+}
+
+#[test]
+fn an_event_with_zones_of_its_own_is_written_by_their_clocks() {
+    let server = FakeHttp::answering(json_answer("200 OK", r#"{"id":"e-1","changeKey":"ck"}"#));
+    let sent = |fields: EventFields, shown: &str| {
+        let before = server.asked();
+        let upload = EventsUpload { zone: shown.into(), ..upload(vec![update("e-1", fields)]) };
+        let uploaded = push_events_at(&server.url(""), TOKEN, &upload, &EventOptions { zone: "Hawaiian Standard Time".into() });
+        (uploaded.outcomes[0].result, (server.asked() > before).then(|| body_of(&server.request(before))))
+    };
+    let stamp = |text: &str, zone: &str| json!({"dateTime": text, "timeZone": zone});
+    // 20:00 UTC on October 12 is one in the afternoon in Los Angeles and five the next morning
+    // in Tokyo: said by those clocks, under the names Graph is sure to know.
+    let time = Some(EventTime { start: at(2026, 10, 12, 20, 0), end: at(2026, 10, 12, 21, 0), all_day: false });
+    let (result, body) = sent(EventFields { time, zones: zones("America/Los_Angeles", "Asia/Tokyo"), ..Default::default() }, "America/Chicago");
+    assert_eq!(result, EventResult::Done);
+    assert_eq!(body, Some(json!({"start": stamp("2026-10-12T13:00:00", "Pacific Standard Time"), "end": stamp("2026-10-13T06:00:00", "Tokyo Standard Time"), "isAllDay": false})));
+    // Half and three quarters of an hour, the south in its summer, a zone Windows has no name for.
+    for (zone, name, start) in [
+        ("Asia/Kolkata", "India Standard Time", "2026-10-13T01:30:00"),
+        ("Asia/Kathmandu", "Nepal Standard Time", "2026-10-13T01:45:00"),
+        ("Australia/Sydney", "AUS Eastern Standard Time", "2026-10-13T07:00:00"),
+        ("America/Detroit", "America/Detroit", "2026-10-12T16:00:00"),
+        ("UTC", "UTC", "2026-10-12T20:00:00"),
+    ] {
+        let (_, body) = sent(EventFields { time, zones: zones(zone, ""), ..Default::default() }, "");
+        assert_eq!(body.unwrap()["start"], stamp(start, name), "{zone}");
+    }
+    // An event without zones of its own goes as instants, as it always did; whole days are
+    // days in the zone the calendar is shown in, which the upload names (and only when it
+    // doesn't, in the one the host knows the computer to be in).
+    let (_, body) = sent(EventFields { time, ..Default::default() }, "America/Chicago");
+    assert_eq!(body.unwrap()["start"], stamp("2026-10-12T20:00:00", "UTC"));
+    let days = Some(EventTime { start: at(2026, 10, 31, 0, 0), end: at(2026, 11, 1, 0, 0), all_day: true });
+    let (_, body) = sent(EventFields { time: days, zones: zones("Asia/Tokyo", ""), ..Default::default() }, "America/Chicago");
+    assert_eq!(body.unwrap()["start"], stamp("2026-10-31T00:00:00", "Central Standard Time"));
+    for unnamed in ["", "UTC+05:30", "Nowhere/At_All"] {
+        let (_, body) = sent(EventFields { time: days, ..Default::default() }, unnamed);
+        assert_eq!(body.unwrap()["start"], stamp("2026-10-31T00:00:00", "Hawaiian Standard Time"), "{unnamed}");
+    }
+
+    // A series in a zone of its own: by that zone's clock, and its rule counts that zone's days.
+    let rule = Recurrence { freq: Freq::Weekly, interval: 1, by_day: vec![Weekday::Mon], ..Default::default() };
+    let series = EventFields {
+        time: Some(EventTime { start: at(2026, 10, 5, 14, 0), end: at(2026, 10, 5, 15, 0), all_day: false }),
+        wall: Some(EventWall { start: clock(2026, 10, 5, 16, 0), end: clock(2026, 10, 5, 17, 0) }),
+        zones: zones("Europe/Berlin", "Europe/Berlin"),
+        repeat: Some(EventRepeat { rule: Some(rule.clone()), first: Date::new(2026, 10, 5).unwrap() }),
+        ..Default::default()
+    };
+    let (_, body) = sent(series.clone(), "America/Chicago");
+    let body = body.unwrap();
+    assert_eq!((body["start"].clone(), body["end"].clone()), (stamp("2026-10-05T16:00:00", "W. Europe Standard Time"), stamp("2026-10-05T17:00:00", "W. Europe Standard Time")));
+    assert_eq!(body["recurrence"]["range"], json!({"type": "noEnd", "startDate": "2026-10-05", "recurrenceTimeZone": "W. Europe Standard Time"}));
+    // The same series without a zone of its own is by the clock of the zone the calendar is
+    // shown in.
+    let (_, body) = sent(EventFields { zones: None, wall: Some(EventWall { start: clock(2026, 10, 5, 9, 0), end: clock(2026, 10, 5, 10, 0) }), ..series.clone() }, "America/Chicago");
+    let body = body.unwrap();
+    assert_eq!((body["start"].clone(), body["recurrence"]["range"]["recurrenceTimeZone"].clone()), (stamp("2026-10-05T09:00:00", "Central Standard Time"), json!("Central Standard Time")));
+    // A series by the clock of a zone Graph has no name for (an offset, a name that is none) is
+    // not written by another clock: it is refused, and Graph isn't asked.
+    for unnamed in ["UTC+05:30", "Nowhere/At_All", "x\r\ny"] {
+        let (result, body) = sent(EventFields { zones: zones(unnamed, ""), ..series.clone() }, "America/Chicago");
+        assert_eq!((result, body), (EventResult::Refused, None), "{unnamed}");
+    }
+    // An event that happens once in such a zone is the same moment in UTC.
+    let (result, body) = sent(EventFields { time, zones: zones("UTC+05:30", ""), ..Default::default() }, "America/Chicago");
+    assert_eq!((result, body.unwrap()["start"].clone()), (EventResult::Done, stamp("2026-10-12T20:00:00", "UTC")));
+
+    // Graph won't have a zone (400): an event that happens once is sent again as instants; a
+    // series is not sent by another clock, and says so.
+    let picky = FakeHttp::start(|_, request| {
+        if request.contains("Standard Time") {
+            answer("400 Bad Request", "", &graph_error("ErrorInvalidRequest", "Unknown time zone."))
+        } else {
+            json_answer("200 OK", r#"{"id":"e-1","changeKey":"ck"}"#)
+        }
+    });
+    let once = update("e-1", EventFields { time, zones: zones("America/Los_Angeles", ""), ..Default::default() });
+    let uploaded = push_events_at(&picky.url(""), TOKEN, &upload(vec![once]), &EventOptions::default());
+    assert_eq!((uploaded.outcomes[0].result, picky.asked()), (EventResult::Done, 2));
+    assert_eq!(body_of(&picky.request(1))["start"], stamp("2026-10-12T20:00:00", "UTC"));
+    let uploaded = push_events_at(&picky.url(""), TOKEN, &upload(vec![update("s-1", series)]), &EventOptions::default());
+    assert_eq!((uploaded.outcomes[0].result, picky.asked()), (EventResult::Refused, 3));
+    assert_eq!(uploaded.outcomes[0].error, "it repeats in a way Microsoft 365 has no way of keeping");
+}
+
+fn clock(year: i32, month: u8, day: u8, hour: u8, minute: u8) -> DateTime {
+    DateTime::new(Date::new(year, month, day).unwrap(), hour, minute, 0).unwrap()
+}
+
+proptest! {
+    /// What is written for an event in a zone is read back by Graph's own rule (a clock time
+    /// and the name of its zone) as the instants it was written for, whatever the zone.
+    #[test]
+    fn a_time_written_in_any_zone_reads_back_as_its_instant(index in 0usize..200, start in 0i64..4_000_000_000, minutes in 0i64..5_000) {
+        let choices = mailcraft_time::Zone::choices();
+        let zone = choices[index % choices.len()];
+        // (A time in the second of an hour that comes twice has no clock time of its own.)
+        let end = start + minutes * 60;
+        prop_assume!(zone.instant(zone.wall(start)) == start && zone.instant(zone.wall(end)) == end);
+        let fields = EventFields { time: Some(EventTime { start, end, all_day: false }), zones: zones(&zone.id(), ""), ..Default::default() };
+        let body: Value = serde_json::from_str(&event_body(&fields, "", "", true).unwrap()).unwrap();
+        // The name is one Graph knows, and one that is read back as the same zone.
+        let name = body["start"]["timeZone"].as_str().unwrap();
+        prop_assert_eq!(mailcraft_time::Zone::named(name), Some(zone));
+        prop_assert_eq!((when(body.get("start")), when(body.get("end"))), (Some(start), Some(end)));
+        // And as instants, when Graph wouldn't have the zone.
+        let plain: Value = serde_json::from_str(&event_body(&fields, "", "", false).unwrap()).unwrap();
+        prop_assert_eq!((when(plain.get("start")), when(plain.get("end")), plain["start"]["timeZone"].as_str()), (Some(start), Some(end), Some("UTC")));
     }
 }

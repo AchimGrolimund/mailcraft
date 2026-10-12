@@ -112,6 +112,10 @@ pub(crate) struct Info {
     start: String,
     end: String,
     all_day: bool,
+    /// Its times by the clock of the zone it was made in, when that shows another time.
+    own_time: Option<String>,
+    /// What was unclear about the time zone the message names.
+    notes: Vec<String>,
     people: People,
     repeats: Option<String>,
     occurrence: Option<String>,
@@ -886,6 +890,15 @@ fn details(app: &MailApp, ui: &mut Ui, t: &Tokens, info: &Info, when: Option<&Wh
     let twelve_hour = app.session.prefs.twelve_hour;
     if let Some(when) = when {
         row(ui, t, tl!("When"), &when.text(twelve_hour), if tight { 1 } else { 2 }, width);
+        // When that is where the meeting was made, for one from another time zone; and what
+        // was unclear about its zone (its times are then as the message wrote them).
+        let clean = |text: &str| text.chars().filter(|c| !c.is_control()).take(200).collect::<String>();
+        if let Some(own) = info.own_time.as_deref().filter(|own| !tight && !own.trim().is_empty()) {
+            row(ui, t, "", &clean(own), 1, width);
+        }
+        for note in info.notes.iter().take(2).filter(|_| !tight) {
+            row(ui, t, "", &clean(note), 2, width);
+        }
         if let Some(repeats) = info.repeats.as_deref().filter(|repeats| !tight && !repeats.trim().is_empty()) {
             row(ui, t, "", &repeats.chars().filter(|c| !c.is_control()).take(200).collect::<String>(), 1, width);
         }

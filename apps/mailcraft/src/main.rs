@@ -218,41 +218,14 @@ fn sign_in(ctx: &egui::Context, request: SignInRequest) -> Result<Tokens, String
 const CALENDAR_BEHIND: i64 = 31 * 86_400;
 const CALENDAR_AHEAD: i64 = 366 * 86_400;
 
-/// This machine's time zone by a name Microsoft Graph knows, for the days of whole-day events
-/// made here (a day is a day in the owner's zone, not in UTC); empty when the system doesn't say.
-/// Windows has its own name for the zone (`Pacific Standard Time`), which is the one Graph
-/// prefers; elsewhere it is the one `TZ` or `/etc/localtime` gives (`Europe/Berlin`).
-fn local_zone() -> &'static str {
-    static ZONE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    ZONE.get_or_init(|| {
-        let name = system_zone().unwrap_or_default();
-        // Windows marks a zone whose daylight saving is switched off; the zone is the same.
-        let name = name.trim().trim_end_matches("_dstoff");
-        let fits = !name.is_empty() && name.len() <= 64 && name.chars().all(|c| c.is_ascii_alphanumeric() || " /_+-().".contains(c));
-        if fits { name.to_string() } else { String::new() }
-    })
-}
-
-#[cfg(windows)]
-fn system_zone() -> Option<String> {
-    use std::os::windows::process::CommandExt as _;
-    // The system's own tool, by its full path, and without a console window flashing up.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let tool = PathBuf::from(std::env::var_os("SystemRoot")?).join("System32").join("tzutil.exe");
-    let out = std::process::Command::new(tool).arg("/g").creation_flags(CREATE_NO_WINDOW).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-#[cfg(not(windows))]
-fn system_zone() -> Option<String> {
-    if let Ok(zone) = std::env::var("TZ") {
-        let zone = zone.trim_start_matches(':');
-        if zone.contains('/') {
-            return Some(zone.to_string());
-        }
-    }
-    let link = std::fs::read_link("/etc/localtime").ok()?;
-    link.to_string_lossy().split_once("zoneinfo/").map(|(_, zone)| zone.to_string())
+/// This machine's time zone by a name Microsoft Graph knows, for an upload that doesn't name
+/// the zone the calendar is shown in (the engine names it whenever it has a name: this is what
+/// is left for a zone it can't name); empty when the system doesn't say either. The name is the
+/// one Windows has for the zone (`Pacific Standard Time`), which is the one Graph prefers, else
+/// the one of the IANA database (`Europe/Berlin`).
+fn local_zone() -> String {
+    let zone = mailcraft_time::Zone::system();
+    zone.windows_name().map_or_else(|| zone.id(), str::to_string)
 }
 
 /// What Microsoft Graph does for an account before its mail is synchronised: send what waits in
@@ -308,7 +281,7 @@ fn graph(request: GraphRequest) -> GraphResult {
     // What was made, moved, changed or deleted in the calendar here goes up before the calendar
     // comes down: what comes down then is what the server has after it.
     if let Some(changes) = request.changes.as_ref().filter(|changes| !changes.ops.is_empty() && !refused) {
-        let uploaded = graph::push_events(&access, changes, &graph::EventOptions { zone: local_zone().to_string() });
+        let uploaded = graph::push_events(&access, changes, &graph::EventOptions { zone: local_zone() });
         // What the server made of each change, for the log: the kind of change and the answer,
         // never what the event says.
         for outcome in &uploaded.outcomes {
@@ -404,9 +377,11 @@ fn graph(request: GraphRequest) -> GraphResult {
 }
 
 /// A mailbox's working hours as the engine keeps them, for the account with the address `email`.
-/// The times are taken as this computer's, whatever zone the mailbox names: no zone is looked up
-/// (the engine would shift them by an offset, were one given), and the mailbox's zone is as a
-/// rule the one its owner's computer is in. The zone's name goes along, to be shown.
+/// The zone they are in goes along by the name the mailbox has for it (`Pacific Standard Time`):
+/// the engine knows the zones, and shifts the hours to the clock the calendar is shown by
+/// (`calendar_settings::work_hours`). No offset is given beside it: a zone the engine doesn't
+/// know (`Customized Time Zone`) is one this program can't look up either, and its hours are
+/// then taken as they are written.
 fn mailbox_hours(email: &str, hours: mailcraft_net::graph::WorkingHours) -> mailcraft_engine::cmd::calendar_settings::MailboxHours {
     mailcraft_engine::cmd::calendar_settings::MailboxHours {
         email: email.trim().to_string(),

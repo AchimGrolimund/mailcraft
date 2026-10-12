@@ -15,6 +15,9 @@ pub mod remote;
 pub mod rules;
 pub mod tasks;
 pub mod view;
+#[cfg(test)]
+mod zone_tests;
+pub mod zones;
 
 use mailcraft_model::{Id, Message};
 use serde_json::{Value, json};
@@ -34,6 +37,7 @@ pub fn registry() -> Registry {
     v.extend(calendar::specs());
     v.extend(calendar_extra::specs());
     v.extend(calendar_settings::specs());
+    v.extend(zones::specs());
     v.extend(people::specs());
     v.extend(tasks::specs());
     v.extend(rules::specs());

@@ -78,6 +78,8 @@ struct Invitation {
     sequence: u32,
     /// Which attachment of the message it was read from.
     part: usize,
+    /// What there is to say about how its times were read: a time zone nobody knows.
+    notes: Vec<String>,
 }
 
 impl Invitation {
@@ -189,6 +191,7 @@ fn read(s: &Session, v: &Value) -> Result<Invitation, CmdError> {
     for (index, part) in message.attachments.iter().enumerate().filter(calendar).take(MAX_PARTS).filter(|(_, part)| part.data.len() <= MAX_ICS) {
         let text = String::from_utf8_lossy(&part.data);
         let file = mailcraft_ical::parse(&text, &offset_at);
+        let notes = file.notes;
         // The meeting itself comes first; changed days of a series follow it.
         if let Some(event) = file.events.into_iter().next() {
             let (event, instance) = tidy(event, &offset_at);
@@ -200,6 +203,7 @@ fn read(s: &Session, v: &Value) -> Result<Invitation, CmdError> {
                 instance,
                 sequence: sequence_of(&text),
                 part: index,
+                notes,
             });
         }
     }
@@ -245,7 +249,7 @@ fn with_uid<'a>(s: &'a Session, uid: &str, account: Id) -> Vec<&'a Event> {
 /// of a series, the event that occurrence has become, or else the series on that day.
 fn about(s: &Session, invitation: &Invitation) -> About {
     let found = with_uid(s, &invitation.event.uid, invitation.account);
-    let Some((_, day)) = &invitation.instance else {
+    let Some((written, day)) = &invitation.instance else {
         return found.first().map_or(About::Nothing, |event| About::Event(event.id));
     };
     // An event of this computer's own that the occurrence was made into before.
@@ -253,6 +257,15 @@ fn about(s: &Session, invitation: &Invitation) -> About {
         return About::Event(own.id);
     }
     let Some(series) = found.iter().find(|event| event.recurrence.is_some()) else { return About::Nothing };
+    // The day as the series here names its days: a series that repeats in a zone of its own
+    // has the day written there on the day here that its first occurrence is apart; a time in
+    // UTC is the occurrence that starts on that day here.
+    let here = remote::offset_of(s);
+    let day = &match series.zone().filter(|_| !series.all_day) {
+        Some(_) if written.ends_with(['Z', 'z']) => series.series_day_on(*day, &here).unwrap_or(*day),
+        Some(zone) => day.add_days(zone.wall(series.instants(&here).0).date.days_until(series.start.date)),
+        None => *day,
+    };
     // On a server, an occurrence that was changed is an event of its own that says which day of
     // which series it stands for.
     if remote::keeper(&s.mailbox, &series.origin).is_some() && !series.origin.id.is_empty() {
@@ -263,7 +276,7 @@ fn about(s: &Session, invitation: &Invitation) -> About {
             return About::Event(own.id);
         }
     }
-    if super::happens_on(series, *day) { About::Occurrence(series.id, *day) } else { About::Nothing }
+    if super::happens_on(s, series, *day) { About::Occurrence(series.id, *day) } else { About::Nothing }
 }
 
 /// Whether an account's server keeps the event.
@@ -371,7 +384,7 @@ fn is_over(s: &Session, event: &Event) -> bool {
     let now = s.local_now();
     match &event.recurrence {
         None => event.end <= now && event.start < now,
-        Some(_) => !event.occurrences(now.date, now.date.add_days(AHEAD_DAYS)).iter().any(|o| o.end > now),
+        Some(_) => !event.occurrences_in(now.date, now.date.add_days(AHEAD_DAYS), &remote::offset_of(s)).iter().any(|o| o.end > now),
     }
 }
 
@@ -445,7 +458,7 @@ fn invitation(s: &mut Session, v: &Value) -> CmdResult {
     let itself = |o: &Occurrence| match about {
         About::Nothing => false,
         About::Event(id) => o.event == id,
-        About::Occurrence(series, day) => o.event == series && o.start.date == day,
+        About::Occurrence(series, day) => o.event == series && o.day == day,
     };
     let same_uid = |other: &Event| !event.uid.is_empty() && other.uid.trim().eq_ignore_ascii_case(&event.uid) && invitation.instance.is_none();
     let listed = |o: &Occurrence| {
@@ -540,6 +553,11 @@ fn invitation(s: &mut Session, v: &Value) -> CmdResult {
         "start": start,
         "end": end,
         "allDay": event.all_day,
+        // Where it was made, when the clock there shows another time than the calendar's: the
+        // zone, and its times by that clock. And what was unclear about its zone.
+        "startZone": event.zone().map(mailcraft_time::Zone::id),
+        "ownTime": mailcraft_model::zoned::own_time_label(event, &remote::offset_of(s), s.prefs.twelve_hour),
+        "notes": invitation.notes,
         "organizer": event.organizer.as_ref().map(Address::full),
         "people": {
             "organizer": event.organizer.as_ref().map(person_json),
@@ -723,12 +741,17 @@ fn reply_message(
         start: event.start,
         end: event.end,
         all_day: event.all_day,
+        // (When it is, as the organizer wrote it: in the zone it was made in.)
+        start_zone: event.start_zone.clone(),
+        end_zone: event.end_zone.clone(),
+        start_repeated: event.start_repeated,
+        end_repeated: event.end_repeated,
         organizer: Some(organizer.clone()),
         attendees: vec![Attendee { address: owner.address(), optional: false, response }],
         ..Default::default()
     };
     let now = s.now();
-    let mut ics = mailcraft_ical::write(&[&answer], &[], &WriteOptions { method: "REPLY".into(), now });
+    let mut ics = mailcraft_ical::write_in(&[&answer], &[], &WriteOptions { method: "REPLY".into(), now }, Some(s.zone()));
     // One occurrence of a series is named as the invitation named it.
     if let Some((written, _)) = &invitation.instance
         && written.len() <= 16
