@@ -193,6 +193,10 @@ pub struct State {
     /// What it answers to the next requests of a method instead of doing them: the method, the
     /// status and the name of the error.
     pub fail_next: Vec<(String, u16, String)>,
+    /// It lets a change say whether another time may be proposed (`allowNewTimeProposals`),
+    /// which the reference lists for a new event and not for an update. Otherwise a change that
+    /// says it is answered 400. (The service may do either: a client has to live with both.)
+    pub updates_new_times: bool,
     /// An event that is to be held online with a service its calendar doesn't allow is made
     /// without it, and nothing is said. Otherwise it is answered 400. (The reference doesn't
     /// say which of the two the service does: a client has to live with both.)
@@ -937,7 +941,9 @@ impl State {
         for name in body.keys() {
             // (Whether another time may be proposed is said when an event is made: it is not
             // among what the reference says an update may change.)
-            let writable = WRITABLE.contains(&name.as_str()) || (making && matches!(name.as_str(), "transactionId" | "allowNewTimeProposals"));
+            let writable = WRITABLE.contains(&name.as_str())
+                || (making && matches!(name.as_str(), "transactionId" | "allowNewTimeProposals"))
+                || (self.updates_new_times && name == "allowNewTimeProposals");
             if name == "transactionId" && !making {
                 return Err(refuse(400, "ErrorInvalidPropertyUpdate", "The transactionId of an event can't be changed in an update."));
             }
@@ -1016,6 +1022,7 @@ impl State {
             event.no_response_requested = !asked;
         }
         if let Some(allowed) = flag("allowNewTimeProposals")? {
+            seen |= !making && allowed == event.no_new_times;
             event.no_new_times = !allowed;
         }
         let wants_online = flag("isOnlineMeeting")?;

@@ -1209,3 +1209,136 @@ fn a_hostile_file_cannot_make_the_server_write_to_anybody() {
     );
     assert!(s.mailbox.event_changes.is_empty() && s.mailbox.events == before.events);
 }
+
+#[test]
+fn a_deletion_answered_not_found_is_looked_for_like_one_that_was_taken() {
+    let (mut s, account, main, _) = session();
+    let gym = || remote("e-2", "Gym", at(14, 18, 0));
+    serve(&mut s, account, "", vec![remote("e-1", "Eye test", at(13, 9, 0)), gym()]);
+    let look = |s: &mut Session, events: Vec<RemoteEvent>| apply_events(s, &october(account, "", events)).unwrap();
+    // Deleted in Outlook too, meanwhile: the server has no such item, and what comes down
+    // agrees. It is gone, and nothing is said.
+    let dentist = event_called(&s, "e-1").id;
+    run(&mut s, "calendar.delete", json!({"id": dentist}));
+    let applied = push(&mut s, account, EventResult::Gone, "");
+    assert_eq!((applied.done, applied.unverified, applied.messages.len()), (1, 1, 0));
+    assert!(s.mailbox.event_checks[0].not_found);
+    let merged = look(&mut s, vec![gym()]);
+    assert_eq!((merged["verified"].as_u64(), merged["putBack"].as_u64(), merged["messages"].as_array().map(Vec::len)), (Some(1), Some(0), Some(0)));
+    assert!(s.mailbox.event_checks.is_empty() && s.mailbox.events.values().all(|e| e.title != "Eye test"));
+
+    // "No such item" for one the server has all the same (it was asked for at an address where
+    // it isn't): it is not taken for gone. After three looks it is back, with a line.
+    let id = event_called(&s, "e-2").id;
+    run(&mut s, "calendar.delete", json!({"id": id}));
+    push(&mut s, account, EventResult::Gone, "");
+    for n in 1..=2 {
+        let merged = look(&mut s, vec![gym()]);
+        assert_eq!((merged["unverified"].as_u64(), merged["added"].as_u64()), (Some(1), Some(0)), "look {n}");
+        assert!(s.mailbox.events.values().all(|e| e.title != "Gym"), "look {n}");
+    }
+    let merged = look(&mut s, vec![gym()]);
+    assert_eq!((merged["putBack"].as_u64(), merged["added"].as_u64(), merged["unverified"].as_u64()), (Some(1), Some(1), Some(0)));
+    assert_eq!(
+        merged["messages"],
+        json!(["\"Gym\" was deleted here and the server answered that it has no such item, but it still has it. It is back in the calendar."])
+    );
+    assert_eq!(event_called(&s, "e-2").calendar, main);
+    // It is said once: the next look finds it as it is, and has nothing to add.
+    let merged = look(&mut s, vec![gym()]);
+    assert_eq!((merged["messages"].as_array().map(Vec::len), merged["unchanged"].as_u64()), (Some(0), Some(1)));
+    assert!(s.mailbox.event_checks.is_empty() && s.mailbox.event_changes.is_empty() && s.mailbox.clone().repair().is_empty());
+}
+
+#[test]
+fn a_move_is_not_done_on_a_not_found_for_the_original() {
+    let (mut s, account, main, side) = session();
+    let gym = || remote("e-2", "Gym", at(14, 18, 0));
+    serve(&mut s, account, "", vec![gym()]);
+    let before = event_called(&s, "e-2");
+    let copy = format!("made-{}", before.id);
+    // Into the other calendar: the copy is made and seen there, and then the server answers
+    // "no such item" when the original is to go.
+    run(&mut s, "calendar.edit", json!({"id": before.id, "calendar": side}));
+    push(&mut s, account, EventResult::Done, "");
+    serve(&mut s, account, "c-side", vec![RemoteEvent { change_key: "ck-new".into(), ..remote(&copy, "Gym", at(14, 18, 0)) }]);
+    assert_eq!(ops(&s, account).iter().map(|op| (op.kind, op.remote.as_str())).collect::<Vec<_>>(), [(EventChangeKind::Delete, "e-2")]);
+    let applied = push(&mut s, account, EventResult::Gone, "");
+    assert_eq!((applied.unverified, applied.messages.len()), (1, 0));
+    // The calendar it was in still has it. That is no move: after three looks the copy goes
+    // again, here and (next) on the server, and the appointment is where the server has it.
+    for n in 1..=2 {
+        let merged = apply_events(&mut s, &october(account, "", vec![gym()])).unwrap();
+        assert_eq!((merged["unverified"].as_u64(), merged["added"].as_u64()), (Some(1), Some(0)), "look {n}");
+        assert_eq!(s.mailbox.events.values().filter(|e| e.title == "Gym").map(|e| e.calendar).collect::<Vec<_>>(), [side], "look {n}");
+    }
+    let merged = apply_events(&mut s, &october(account, "", vec![gym()])).unwrap();
+    assert_eq!(
+        merged["messages"],
+        json!([
+            "\"Gym\" was moved to another calendar here, and when it was to be taken out of the one it was in the server answered that it has no such item, but it still has it there. It wasn't moved: it is back there, and the copy in the other calendar was removed."
+        ])
+    );
+    let here: Vec<(Id, String)> = s.mailbox.events.values().filter(|e| e.title == "Gym").map(|e| (e.calendar, e.origin.id.clone())).collect();
+    assert_eq!(here, [(main, "e-2".to_string())]);
+    assert_eq!(
+        ops(&s, account).iter().map(|op| (op.kind, op.remote.clone(), op.calendar.clone())).collect::<Vec<_>>(),
+        [(EventChangeKind::Delete, copy, "c-side".to_string())]
+    );
+    assert!(s.mailbox.event_checks.is_empty());
+}
+
+#[test]
+fn what_is_undone_while_it_is_being_made_is_deleted_where_it_was_made() {
+    let (mut s, account, _, side) = session();
+    let made = run(&mut s, "calendar.new", json!({"title": "Fresh", "start": "2026-10-20T09:00", "calendar": side}))["id"].as_u64().unwrap();
+    let upload = event_upload(&s, account).unwrap();
+    assert_eq!((upload.ops[0].kind, upload.ops[0].calendar.as_str()), (EventChangeKind::Create, "c-side"));
+    // Taken back while it is on its way; then the server says it made it.
+    assert!(s.undo());
+    apply_event_outcomes(&mut s, &said(&upload, EventResult::Done, "")).unwrap();
+    assert!(s.mailbox.event(made).is_none());
+    // It is to be deleted there: through the calendar it was made in.
+    let name = format!("made-{made}");
+    assert_eq!(
+        ops(&s, account).iter().map(|op| (op.kind, op.remote.clone(), op.calendar.clone())).collect::<Vec<_>>(),
+        [(EventChangeKind::Delete, name.clone(), "c-side".to_string())]
+    );
+    // And it is looked for like any deletion: what another calendar has says nothing of it,
+    // and it does not come back while that calendar still shows it.
+    push(&mut s, account, EventResult::Done, "");
+    serve(&mut s, account, "", Vec::new());
+    serve(&mut s, account, "c-side", vec![remote(&name, "Fresh", at(20, 9, 0))]);
+    assert_eq!((s.mailbox.event_checks.len(), s.mailbox.events.values().filter(|e| e.title == "Fresh").count()), (1, 0));
+    serve(&mut s, account, "c-side", Vec::new());
+    assert!(s.mailbox.event_checks.is_empty() && s.mailbox.event_changes.is_empty());
+}
+
+#[test]
+fn an_option_the_server_will_not_change_does_not_undo_the_rest_of_a_save() {
+    let (mut s, account, _, _) = session();
+    serve(&mut s, account, "", vec![own_meeting("m-1", "Planning", at(12, 13, 0))]);
+    let planning = event_called(&s, "m-1").id;
+    // How much it matters and whether another time may be proposed, in one save.
+    run(&mut s, "calendar.edit", json!({"id": planning, "importance": "high", "allowProposals": false, "send": true}));
+    let upload = event_upload(&s, account).unwrap();
+    assert_eq!((upload.ops[0].fields.importance, upload.ops[0].fields.allow_proposals), (Some(Importance::High), Some(false)));
+    // The server took the change without the option: only that is put back, and it is said.
+    let mut answer = said(&upload, EventResult::Done, "");
+    answer.outcomes[0].new_times = Some(false);
+    let applied = apply_event_outcomes(&mut s, &answer).unwrap();
+    assert_eq!(
+        applied.messages,
+        [
+            "The account's server doesn't let it be changed, once a meeting is made, whether another time may be proposed for \"Planning\". That option is as it was."
+        ]
+    );
+    let here = s.mailbox.event(planning).unwrap();
+    assert_eq!((here.importance, here.response_options.allow_proposals), (Importance::High, true));
+    assert!(s.mailbox.event_changes.is_empty(), "nothing is sent a second time for it");
+    // The option can still be set: a server that takes it leaves it changed, and says nothing.
+    run(&mut s, "calendar.responseOptions", json!({"id": planning, "allowProposals": false, "send": true}));
+    let applied = push(&mut s, account, EventResult::Done, "");
+    assert!(applied.messages.is_empty() && !s.mailbox.event(planning).unwrap().response_options.allow_proposals);
+    assert!(s.mailbox.event_changes.is_empty());
+}
