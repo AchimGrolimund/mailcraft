@@ -43,8 +43,11 @@ pub enum Dialog {
     DiscardDraft {
         then: String,
     },
-    /// Lines to read and copy: what went wrong in the last Send/Receive.
+    /// Lines to read and copy: what went wrong in the last Send/Receive (`syncProblems`), what
+    /// a check of the calendar connection came to (`calendarCheck`).
     Report {
+        /// What `ui.inspect` calls it.
+        name: &'static str,
         title: String,
         lines: Vec<String>,
     },
@@ -103,7 +106,7 @@ impl Dialog {
             Dialog::Password { .. } => "password",
             Dialog::DiscardDraft { .. } => "discardDraft",
             Dialog::Confirm { .. } => "confirm",
-            Dialog::Report { .. } => "syncProblems",
+            Dialog::Report { name, .. } => name,
             Dialog::About => "about",
             Dialog::Form(f) => f.name(),
         }
@@ -138,7 +141,7 @@ impl Dialog {
                 if lines.is_empty() {
                     return None;
                 }
-                Dialog::Report { title: tl!("Send/Receive Problems").to_string(), lines }
+                Dialog::Report { name: "syncProblems", title: tl!("Send/Receive Problems").to_string(), lines }
             }
             // An item that repeats is asked about before it opens: just this one, or the series?
             "editEvent" if opening_question(app, params).is_some() => {
@@ -213,6 +216,61 @@ pub fn confirmation(app: &MailApp, id: &str, params: &Value) -> Option<Question>
                 tl!("Mail on the server is not touched.")
             );
             question(tl!("Remove Account"), text, tl!("Remove"))
+        }
+        // A check on the account's real calendar says exactly what it is about to do there.
+        "ui.checkCalendar" => {
+            let named = params.get("account").and_then(Value::as_u64).and_then(|id| mb.account(id));
+            let account = named
+                .or_else(|| mb.accounts.iter().find(|a| a.oauth.as_ref().is_some_and(|o| o.provider == mailcraft_model::OAuthProvider::Microsoft)))?;
+            let whose = if account.email.trim().is_empty() { account.name.as_str() } else { account.email.as_str() };
+            let text = crate::i18n::fmt(
+                tl!(
+                    "MailCraft will make one appointment called \"MailCraft connection check\" in the calendar of {account}, a year from today. It reads it back, changes its time twice (the second time said in this computer's time zone), reads it back each time, and deletes it again. Nothing else in your calendar is read or changed, nobody is invited or written to, and no reminder is set. Afterwards you see what the server answered at each step, and whether what was sent is what the server has."
+                ),
+                &[("account", whose)],
+            );
+            question(tl!("Check Calendar Connection"), text, tl!("Check Now"))
+        }
+        // Moving what is only on this computer into the account's calendar puts it on the
+        // server: asked about once, and about the invitations a meeting would send.
+        "calendar.moveToAccount" if params.get("send").is_none() => {
+            let only_here = mailcraft_engine::cmd::remote::only_here(mb);
+            let calendars: Vec<u64> = match params.get("calendar").and_then(Value::as_u64) {
+                Some(one) => vec![one],
+                None => only_here.iter().map(|(calendar, _)| *calendar).collect(),
+            };
+            let items: Vec<&mailcraft_model::Event> =
+                mb.events.values().filter(|e| calendars.contains(&e.calendar)).map(|e| e.as_ref()).take(10_000).collect();
+            if items.is_empty() || mailcraft_engine::cmd::remote::server_calendar_id(mb).is_none() {
+                return None;
+            }
+            let meetings = items.iter().filter(|e| !e.attendees.is_empty()).count();
+            let count = if items.len() == 1 {
+                tl!("1 item is").to_string()
+            } else {
+                crate::i18n::fmt(tl!("{n} items are"), &[("n", &items.len().to_string())])
+            };
+            let mut text = format!(
+                "{count} {} {}",
+                tl!(
+                    "only on this computer, and not in your Outlook calendar. Moving them puts them into your account's calendar, where Outlook and your other devices have them too."
+                ),
+                tl!("One that is there already (the same title at the same time) is not made a second time: the copy on this computer goes.")
+            );
+            if meetings == 0 {
+                return Some(Question::new(tl!("Move to Your Account's Calendar"), text, tl!("Move"), json!({"send": false})));
+            }
+            let invited = if meetings == 1 {
+                tl!("1 of them is a meeting with people invited: moving it makes the account's server send them the invitation by mail.").to_string()
+            } else {
+                crate::i18n::fmt(
+                    tl!("{n} of them are meetings with people invited: moving those makes the account's server send them the invitations by mail."),
+                    &[("n", &meetings.to_string())],
+                )
+            };
+            text.push_str(&format!(" {invited}"));
+            let ask = Question::new(tl!("Move to Your Account's Calendar"), text, tl!("Move All and Send Invitations"), json!({"send": true}));
+            Some(ask.or(tl!("Move the Appointments Only"), json!({"send": false})))
         }
         // The calendar asks as Outlook does: which of a series is meant, and before anything
         // that makes the account's server write to other people ([`calendar_question`]).
@@ -759,7 +817,7 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
                 close = true;
             }
         }
-        Dialog::Report { title, lines } => {
+        Dialog::Report { title, lines, .. } => {
             let open = window(ctx, title, 560.0, |ui| {
                 egui::ScrollArea::vertical().max_height(320.0).auto_shrink([false, true]).show(ui, |ui| {
                     for line in lines.iter() {

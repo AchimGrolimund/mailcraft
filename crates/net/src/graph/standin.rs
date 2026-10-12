@@ -1,0 +1,1374 @@
+//! A stand-in for Microsoft Graph's calendar that behaves like the documented service, for the
+//! tests. Nothing here leaves this machine, and nothing here is in a build that isn't a test's.
+//!
+//! The other stand-ins of the tests answer whatever they are told to and take whatever they are
+//! sent. This one keeps a calendar and holds a client to the contract of Graph v1.0 as its
+//! documentation has it:
+//!
+//! - **Addresses.** `/v1.0/me/events`, `/me/events/{id}`, `/me/calendars/{id}/events[/{id}]`,
+//!   `/me/calendarView`, `/me/calendars/{id}/calendarView`, `/me/events/{id}/instances`, the
+//!   actions `cancel`, `accept`, `tentativelyAccept` and `decline`, `/me/calendars`,
+//!   `/me/calendarGroups`, and `/$batch`. An id is one piece of an address: ids here are long
+//!   and hold `=`, `-`, `_`, `/` and `+`, so one that isn't written as `%XX` where it must be
+//!   names nothing (404, or 400). An event of a calendar that somebody else shares is found
+//!   through that calendar only.
+//! - **Headers.** `Authorization: Bearer` with the token it was set up with (401 otherwise), a
+//!   JSON `Content-Type` with every body (415 otherwise). `Prefer: outlook.timezone` and
+//!   `outlook.body-content-type` are honoured: times come back in UTC, and a body as HTML unless
+//!   text was asked for.
+//! - **Bodies.** Only the properties an event has, each of its type; `dateTime` as
+//!   `2026-10-15T16:00:00` with a `timeZone` it knows; a whole-day event from midnight to
+//!   midnight in one zone, a day at least; an end not before the start; a recurrence with the
+//!   properties its pattern needs and a range that starts on the day the event starts;
+//!   `transactionId` only with a new event. What isn't so is answered 400 with an error as Graph
+//!   words them (`{"error": {"code", "message", "innerError"}}`).
+//! - **Answers.** 201 with the event for one that was made, 200 with the event for a change, 204
+//!   for a deletion, 202 for an action, lists in pages with `@odata.nextLink`. A calendar view
+//!   holds single events, the occurrences of series and their exceptions, never a series itself.
+//!   A changed occurrence becomes an exception under the id it had.
+//! - **Time.** [`State::stale_views`] calendar views after a change are answered as the calendar
+//!   was before it: an answer may be older than the last change. [`State::keeps_times`] makes it
+//!   say yes to a change of time and not make it, which no client should take for done.
+//!
+//! [`route`] has the calls of this crate that go to Graph go to a stand-in instead, on the
+//! thread that asks for it and until the guard is dropped.
+
+use std::cell::RefCell;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use mailcraft_time::{DAY, Date, DateTime, Timestamp, Weekday};
+use serde_json::{Map, Value, json};
+
+/// The token a stand-in takes unless it is told another.
+pub const TOKEN: &str = "standin.acc-ess_tok.en-0123456789";
+/// Largest request it reads, and how many entries a page of a list has when none is asked for.
+const MAX_REQUEST: usize = 4 * 1024 * 1024;
+const PAGE: usize = 10;
+/// Most occurrences of one series in one answer.
+const MAX_OCCURRENCES: usize = 2_000;
+
+thread_local! {
+    static ROUTE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Where this thread's calls to Graph go instead, when a test has said so ([`route`]).
+pub(crate) fn routed() -> Option<String> {
+    ROUTE.with(|route| route.borrow().clone())
+}
+
+/// A stand-in is being spoken to in Graph's place on this thread, for as long as this lives.
+pub struct Routed(Option<String>);
+
+/// Have this thread's calls to Graph go to `base` (`http://127.0.0.1:{port}`, a stand-in on
+/// this machine: nothing else is spoken to unencrypted) until the guard is dropped.
+pub fn route(base: &str) -> Routed {
+    Routed(ROUTE.with(|route| route.borrow_mut().replace(base.to_string())))
+}
+
+impl Drop for Routed {
+    fn drop(&mut self) {
+        let before = self.0.take();
+        ROUTE.with(|route| *route.borrow_mut() = before);
+    }
+}
+
+/// A calendar the stand-in has.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Calendar {
+    pub id: String,
+    pub name: String,
+    /// The account's main one.
+    pub main: bool,
+    /// The account may write to it.
+    pub can_edit: bool,
+    /// Somebody else shares it: its events are found through it only.
+    pub shared: bool,
+}
+
+/// An event as the stand-in keeps it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Stored {
+    pub id: String,
+    pub calendar: String,
+    /// Counts its versions: the change key is made of it.
+    pub version: u32,
+    pub uid: String,
+    pub subject: String,
+    pub location: String,
+    pub body: String,
+    /// Instants (Unix seconds); for a whole-day event the midnights in `zone`.
+    pub start: Timestamp,
+    pub end: Timestamp,
+    pub all_day: bool,
+    /// The zone it was written in.
+    pub zone: String,
+    pub show_as: String,
+    pub sensitivity: String,
+    pub reminder_on: bool,
+    pub reminder_minutes: u64,
+    pub attendees: Vec<Value>,
+    pub categories: Vec<String>,
+    pub recurrence: Option<Value>,
+    pub transaction_id: String,
+    pub is_organizer: bool,
+    /// What the owner answered, for somebody else's meeting.
+    pub response: String,
+    /// For an exception: its series, and when the series had it.
+    pub series: String,
+    pub original: Timestamp,
+    /// For a series: the occurrences that were deleted or became exceptions, by when the series
+    /// had them.
+    pub gone: Vec<Timestamp>,
+    pub modified: Timestamp,
+}
+
+/// One request the stand-in was sent, with the status it answered.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Asked {
+    pub method: String,
+    /// The address as it came, with its query.
+    pub target: String,
+    /// The pieces of the path, each as it reads once its `%XX` are undone.
+    pub path: Vec<String>,
+    pub query: Vec<(String, String)>,
+    /// Names in lower case.
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+    pub status: u16,
+}
+
+impl Asked {
+    pub fn header(&self, name: &str) -> &str {
+        self.headers.iter().find(|(have, _)| have == name).map_or("", |(_, value)| value.as_str())
+    }
+
+    fn param(&self, name: &str) -> Option<&str> {
+        self.query.iter().find(|(have, _)| have == name).map(|(_, value)| value.as_str())
+    }
+
+    /// The body as JSON; `Null` when it isn't.
+    pub fn json(&self) -> Value {
+        serde_json::from_str(&self.body).unwrap_or(Value::Null)
+    }
+}
+
+/// What the stand-in keeps, for a test to set up and to look at.
+#[derive(Clone, Debug, Default)]
+pub struct State {
+    /// The token it takes.
+    pub token: String,
+    pub calendars: Vec<Calendar>,
+    pub events: Vec<Stored>,
+    /// Every request that came, in order.
+    pub requests: Vec<Asked>,
+    /// How many calendar views to come are answered as the calendar was before its last change.
+    pub stale_views: usize,
+    /// It says yes to a change of an event's time and leaves the time as it was.
+    pub keeps_times: bool,
+    /// What it answers to the next requests of a method instead of doing them: the method, the
+    /// status and the name of the error.
+    pub fail_next: Vec<(String, u16, String)>,
+    /// The mail a real server would have sent to other people: `invitation:Title:people`,
+    /// `update:Title:people`, `cancellation:Title:people:note`, `response:Title:answer:note`.
+    pub mail: Vec<String>,
+    /// The owner's address, which is who organizes what is made here.
+    pub owner: String,
+    before: Option<Vec<Stored>>,
+    made: u64,
+    clock: Timestamp,
+    base: String,
+}
+
+/// A refusal: the status, Graph's name for it, and its words.
+type Refusal = (u16, &'static str, String);
+/// An answer: the status and, when there is one, the body.
+type Answer = (u16, Option<Value>);
+
+fn refuse(status: u16, code: &'static str, message: impl Into<String>) -> Refusal {
+    (status, code, message.into())
+}
+
+fn bad(message: impl Into<String>) -> Refusal {
+    refuse(400, "ErrorInvalidRequest", message)
+}
+
+fn not_found() -> Refusal {
+    refuse(404, "ErrorItemNotFound", "The specified object was not found in the store.")
+}
+
+/// The days of the week as Graph names them, Monday first.
+const DAY_NAMES: [&str; 7] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+/// What an event may be asked for by name (`$select`), and what may be written of it.
+const PROPERTIES: &[&str] = &[
+    "id",
+    "createdDateTime",
+    "lastModifiedDateTime",
+    "changeKey",
+    "categories",
+    "transactionId",
+    "originalStartTimeZone",
+    "originalEndTimeZone",
+    "iCalUId",
+    "uid",
+    "reminderMinutesBeforeStart",
+    "isReminderOn",
+    "hasAttachments",
+    "subject",
+    "bodyPreview",
+    "importance",
+    "sensitivity",
+    "isAllDay",
+    "isCancelled",
+    "isOrganizer",
+    "responseRequested",
+    "seriesMasterId",
+    "showAs",
+    "type",
+    "webLink",
+    "onlineMeetingUrl",
+    "isOnlineMeeting",
+    "onlineMeetingProvider",
+    "allowNewTimeProposals",
+    "occurrenceId",
+    "isDraft",
+    "hideAttendees",
+    "responseStatus",
+    "body",
+    "start",
+    "end",
+    "location",
+    "locations",
+    "recurrence",
+    "attendees",
+    "organizer",
+    "onlineMeeting",
+    "originalStart",
+    "cancelledOccurrences",
+    "exceptionOccurrences",
+    "calendar",
+    "instances",
+    "attachments",
+];
+const WRITABLE: &[&str] = &[
+    "subject",
+    "body",
+    "start",
+    "end",
+    "isAllDay",
+    "location",
+    "locations",
+    "attendees",
+    "categories",
+    "showAs",
+    "sensitivity",
+    "importance",
+    "isReminderOn",
+    "reminderMinutesBeforeStart",
+    "recurrence",
+    "responseRequested",
+    "isOnlineMeeting",
+    "onlineMeetingProvider",
+    "hideAttendees",
+];
+
+/// How far east of UTC a zone is at an instant (minutes), for the zones the stand-in knows:
+/// UTC, and a few with daylight saving by the rules of the United States and of Europe.
+pub fn zone_offset(zone: &str, instant: Timestamp) -> Option<i32> {
+    #[derive(Clone, Copy)]
+    enum Rule {
+        None,
+        Us,
+        Europe,
+    }
+    let (standard, rule) = match zone {
+        "UTC" | "Etc/UTC" | "Etc/GMT" | "tzone://Microsoft/Utc" => (0, Rule::None),
+        "Eastern Standard Time" | "America/New_York" => (-300, Rule::Us),
+        "Central Standard Time" | "America/Chicago" => (-360, Rule::Us),
+        "Mountain Standard Time" | "America/Denver" => (-420, Rule::Us),
+        "Pacific Standard Time" | "America/Los_Angeles" => (-480, Rule::Us),
+        "GMT Standard Time" | "Europe/London" => (0, Rule::Europe),
+        "W. Europe Standard Time" | "Europe/Berlin" => (60, Rule::Europe),
+        "India Standard Time" | "Asia/Kolkata" => (330, Rule::None),
+        "Tokyo Standard Time" | "Asia/Tokyo" => (540, Rule::None),
+        _ => return None,
+    };
+    let year = DateTime::from_timestamp(instant, 0).date.year;
+    // The `n`th Sunday of a month (the last one for 0), at midnight UTC.
+    let sunday = |month: u8, n: i64| -> Option<Timestamp> {
+        let first = Date::new(year, month, 1)?;
+        let to_sunday = (i64::from(Weekday::Sun.index()) - i64::from(first.weekday().index())).rem_euclid(7);
+        let day = if n > 0 {
+            first.add_days(to_sunday + 7 * (n - 1))
+        } else {
+            let last = first.end_of_month();
+            last.add_days(-(i64::from(last.weekday().index()) - i64::from(Weekday::Sun.index())).rem_euclid(7))
+        };
+        Some(DateTime::at_midnight(day).to_timestamp(0))
+    };
+    let summer = match rule {
+        Rule::None => None,
+        // From two in the morning standard time to two in the morning daylight time.
+        Rule::Us => {
+            sunday(3, 2).zip(sunday(11, 1)).map(|(from, to)| (from + 7_200 - i64::from(standard) * 60, to + 7_200 - i64::from(standard + 60) * 60))
+        }
+        // From one in the morning UTC to one in the morning UTC.
+        Rule::Europe => sunday(3, 0).zip(sunday(10, 0)).map(|(from, to)| (from + 3_600, to + 3_600)),
+    };
+    Some(if summer.is_some_and(|(from, to)| (from..to).contains(&instant)) { standard + 60 } else { standard })
+}
+
+/// The instant of a wall-clock time in a zone the stand-in knows.
+fn instant_in(wall: DateTime, zone: &str) -> Option<Timestamp> {
+    let guess = wall.to_timestamp(zone_offset(zone, wall.to_timestamp(0))?);
+    Some(wall.to_timestamp(zone_offset(zone, guess)?))
+}
+
+/// The wall-clock time of an instant in a zone the stand-in knows (UTC for one it doesn't).
+fn wall_in(instant: Timestamp, zone: &str) -> DateTime {
+    DateTime::from_timestamp(instant, zone_offset(zone, instant).unwrap_or(0))
+}
+
+/// `2026-10-15T16:00:00` or `2026-10-15T16:00:00.0000000`: a date and a time, and no zone.
+fn wall_of(text: &str) -> Option<DateTime> {
+    let (date, time) = text.split_once('T')?;
+    let (clock, fraction) = time.split_once('.').unwrap_or((time, "0"));
+    let digits = |part: &str, n: usize| part.len() == n && part.bytes().all(|b| b.is_ascii_digit());
+    let mut parts = clock.split(':');
+    let (hour, minute, second) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() || !digits(hour, 2) || !digits(minute, 2) || !digits(second, 2) {
+        return None;
+    }
+    if fraction.is_empty() || fraction.len() > 7 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if date.len() != 10 {
+        return None;
+    }
+    DateTime::new(Date::parse_iso(date)?, hour.parse().ok()?, minute.parse().ok()?, second.parse().ok()?)
+}
+
+/// A piece of a path with its `%XX` undone (a `+` is a plus here, not a space).
+fn piece(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let hex = |b: Option<&u8>| b.and_then(|b| char::from(*b).to_digit(16)).and_then(|d| u8::try_from(d).ok());
+    let (mut out, mut i) = (Vec::with_capacity(bytes.len()), 0);
+    while let Some(&b) = bytes.get(i) {
+        match (b, hex(bytes.get(i + 1)), hex(bytes.get(i + 2))) {
+            (b'%', Some(high), Some(low)) => {
+                out.push(high << 4 | low);
+                i += 3;
+            }
+            _ => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `2026-10-12T13:00:00.0000000`, as Graph writes a time.
+fn stamp(instant: Timestamp) -> String {
+    format!("{}.0000000", DateTime::from_timestamp(instant, 0).iso())
+}
+
+fn instant_text(instant: Timestamp) -> String {
+    format!("{}Z", DateTime::from_timestamp(instant, 0).iso())
+}
+
+impl Stored {
+    fn change_key(&self) -> String {
+        format!("CQAAABYAAAAiIsqMbYjsT5e/T7KzowPTAAA{:05}+A==", self.version)
+    }
+
+    fn kind(&self) -> &'static str {
+        match (self.recurrence.is_some(), self.series.is_empty()) {
+            (true, _) => "seriesMaster",
+            (false, false) => "exception",
+            (false, true) => "singleInstance",
+        }
+    }
+
+    /// How the series repeats, as this crate reads a recurrence, with its first day.
+    fn rule(&self) -> Option<(mailcraft_model::Recurrence, Date)> {
+        self.recurrence.as_ref().and_then(super::rule_of)
+    }
+
+    /// When the series has its occurrences between `from` and `to` (those it still has).
+    fn occurrences(&self, from: Timestamp, to: Timestamp) -> Vec<Timestamp> {
+        let Some((rule, first)) = self.rule() else { return Vec::new() };
+        let at = wall_in(self.start, &self.zone);
+        let day = |instant: Timestamp| DateTime::from_timestamp(instant.clamp(0, 4_000_000_000), 0).date;
+        let length = self.end.saturating_sub(self.start);
+        rule.dates(first, day(from).add_days(-2), day(to).add_days(2), &[])
+            .into_iter()
+            .filter_map(|on| instant_in(DateTime { date: on, ..at }, &self.zone))
+            .filter(|start| *start < to && start.saturating_add(length.max(1)) > from && !self.gone.contains(start))
+            .take(MAX_OCCURRENCES)
+            .collect()
+    }
+
+    /// The id of the occurrence that the series has at `original`.
+    fn occurrence_id(&self, original: Timestamp) -> String {
+        format!("{}_{original:011}BBA=", self.id.trim_end_matches('='))
+    }
+
+    /// The occurrence of this series at `original`, as an event of its own.
+    fn occurrence(&self, original: Timestamp) -> Stored {
+        Stored {
+            id: self.occurrence_id(original),
+            start: original,
+            end: original.saturating_add(self.end.saturating_sub(self.start)),
+            recurrence: None,
+            series: self.id.clone(),
+            original,
+            gone: Vec::new(),
+            ..self.clone()
+        }
+    }
+}
+
+/// What an answer is asked to look like.
+#[derive(Clone, Debug, Default)]
+struct Look {
+    /// The body as text rather than HTML (`Prefer: outlook.body-content-type="text"`).
+    text: bool,
+    /// The properties asked for by name; all of them when none were.
+    select: Option<Vec<String>>,
+    /// It is one occurrence of a series as the series has it.
+    occurrence: bool,
+    /// The view it is for can't be asked for these by name, and leaves them out.
+    no_stamps: bool,
+}
+
+impl State {
+    fn new_id(&mut self) -> String {
+        self.made += 1;
+        format!(
+            "AAMkAGVmMDEzMTM4LTZmYWUtNDdkNC1hMDZiLTU1OGY5OTZhYmY4OABGAAAAAAAiQ8W967B7TKBjgx9rVEURBwAiIsqMbYjsT5e-T7KzowPTAAAAAAENAAAiIsq/MbYjs+T5e_T7Kzow{:05}AAA=",
+            self.made
+        )
+    }
+
+    /// A calendar of the stand-in's making, beside the main one: its id.
+    pub fn add_calendar(&mut self, name: &str, can_edit: bool, shared: bool) -> String {
+        self.made += 1;
+        let id = format!(
+            "AQMkAGVmMDEzMTM4LTZmYWUtNDdkNC1hMDZiLTU1OGY5OTZhYmY4OABGAAADIkPFveuwe0ygY4Mfa1RFEQcAIiLKjG2I7E_Xvk-ys6MD0wAAAgEG{:04}/+A==",
+            self.made
+        );
+        self.calendars.push(Calendar { id: id.clone(), name: name.to_string(), main: false, can_edit, shared });
+        id
+    }
+
+    /// An event that is in the calendar already, an hour long, the owner's own: its id.
+    pub fn add_event(&mut self, calendar: &str, subject: &str, start: Timestamp) -> String {
+        let id = self.new_id();
+        self.clock += 1;
+        self.events.push(Stored {
+            id: id.clone(),
+            calendar: calendar.to_string(),
+            version: 1,
+            uid: format!("040000008200E00074C5B7101A82E008{:032X}", self.made),
+            subject: subject.to_string(),
+            start,
+            end: start + 3_600,
+            zone: "UTC".into(),
+            show_as: "busy".into(),
+            sensitivity: "normal".into(),
+            is_organizer: true,
+            response: "organizer".into(),
+            modified: self.clock,
+            ..Default::default()
+        });
+        id
+    }
+
+    /// The main calendar's id.
+    pub fn main_calendar(&self) -> String {
+        self.calendars.iter().find(|calendar| calendar.main).map(|calendar| calendar.id.clone()).unwrap_or_default()
+    }
+
+    /// The event called `subject`, when there is one.
+    pub fn event(&self, subject: &str) -> Option<&Stored> {
+        self.events.iter().find(|event| event.subject == subject)
+    }
+
+    /// The requests that changed something: their methods and the pieces of their paths.
+    pub fn writes(&self) -> Vec<(String, Vec<String>)> {
+        self.requests
+            .iter()
+            .filter(|asked| asked.method != "GET" && asked.path.last().is_none_or(|last| last != "$batch"))
+            .map(|asked| (asked.method.clone(), asked.path.clone()))
+            .collect()
+    }
+
+    fn calendar(&self, id: &str) -> Option<&Calendar> {
+        self.calendars.iter().find(|calendar| calendar.id == id)
+    }
+
+    /// The calendar an address names (`None`: the events of the account, which is every
+    /// calendar of its own), when there is one.
+    fn calendar_of(&self, named: Option<&str>) -> Result<Option<&Calendar>, Refusal> {
+        match named {
+            None => Ok(None),
+            Some(id) => {
+                self.calendar(id).map(Some).ok_or_else(|| refuse(404, "ErrorItemNotFound", "The specified folder could not be found in the store."))
+            }
+        }
+    }
+
+    /// Where the event `id` is among the events, as an address through `calendar` finds it.
+    fn find(&self, calendar: Option<&str>, id: &str) -> Result<usize, Refusal> {
+        // What can't be an id at all is told apart from one that names nothing.
+        if id.len() < 20 || id.chars().any(|c| !(c.is_ascii_alphanumeric() || "-_=/+".contains(c))) {
+            return Err(refuse(400, "ErrorInvalidIdMalformed", "Id is malformed."));
+        }
+        let at = self.events.iter().position(|event| event.id == id).ok_or_else(not_found)?;
+        let home = self.events.get(at).map(|event| event.calendar.clone()).unwrap_or_default();
+        match calendar {
+            Some(calendar) if calendar != home => Err(not_found()),
+            // The copy of a calendar that somebody else shares is found through it only.
+            None if self.calendar(&home).is_some_and(|calendar| calendar.shared) => Err(not_found()),
+            _ => Ok(at),
+        }
+    }
+
+    /// The series and the time that an occurrence's id names.
+    fn occurrence_named(&self, id: &str) -> Option<(usize, Timestamp)> {
+        let (series, rest) = id.rsplit_once('_')?;
+        let original = rest.strip_suffix("BBA=")?.parse::<Timestamp>().ok()?;
+        let at = self.events.iter().position(|event| event.recurrence.is_some() && event.id.trim_end_matches('=') == series)?;
+        let master = self.events.get(at)?;
+        master.occurrences(original, original.saturating_add(1)).contains(&original).then_some((at, original))
+    }
+
+    /// One more version of the calendar: what a view that lags behind is answered from.
+    fn changing(&mut self) {
+        self.before = Some(self.events.clone());
+        self.clock += 1;
+    }
+
+    fn json_of(&self, event: &Stored, look: &Look) -> Value {
+        let person = |address: &str| json!({"emailAddress": {"name": address.split('@').next().unwrap_or(""), "address": address}});
+        let time = |instant: Timestamp| json!({"dateTime": stamp(instant), "timeZone": "UTC"});
+        let body = if look.text {
+            json!({"contentType": "text", "content": event.body})
+        } else {
+            let escaped = event.body.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\n', "<br>");
+            json!({"contentType": "html", "content": format!("<html><head></head><body>{escaped}</body></html>")})
+        };
+        let attendees: Vec<Value> = event
+            .attendees
+            .iter()
+            .map(|attendee| {
+                json!({
+                    "type": attendee.get("type").cloned().unwrap_or(json!("required")),
+                    "status": {"response": "none", "time": "0001-01-01T00:00:00Z"},
+                    "emailAddress": attendee.get("emailAddress").cloned().unwrap_or(Value::Null),
+                })
+            })
+            .collect();
+        let kind = if look.occurrence { "occurrence" } else { event.kind() };
+        let mut all = json!({
+            "@odata.etag": format!("W/\"{}\"", event.change_key()),
+            "id": event.id,
+            "createdDateTime": instant_text(event.modified),
+            "lastModifiedDateTime": instant_text(event.modified),
+            "changeKey": event.change_key(),
+            "categories": event.categories,
+            "originalStartTimeZone": event.zone,
+            "originalEndTimeZone": event.zone,
+            "iCalUId": event.uid,
+            "reminderMinutesBeforeStart": event.reminder_minutes,
+            "isReminderOn": event.reminder_on,
+            "hasAttachments": false,
+            "subject": event.subject,
+            "bodyPreview": event.body.chars().take(255).collect::<String>(),
+            "importance": "normal",
+            "sensitivity": event.sensitivity,
+            "isAllDay": event.all_day,
+            "isCancelled": false,
+            "isOrganizer": event.is_organizer,
+            "responseRequested": true,
+            "seriesMasterId": if event.series.is_empty() { Value::Null } else { json!(event.series) },
+            "showAs": event.show_as,
+            "type": kind,
+            "webLink": "https://outlook.example/calendar/item",
+            "onlineMeetingUrl": Value::Null,
+            "isOnlineMeeting": false,
+            "responseStatus": {"response": event.response, "time": "0001-01-01T00:00:00Z"},
+            "body": body,
+            "start": time(event.start),
+            "end": time(event.end),
+            "location": {"displayName": event.location, "locationType": "default", "uniqueIdType": "unknown", "address": {}, "coordinates": {}},
+            "locations": [],
+            "recurrence": event.recurrence.clone().unwrap_or(Value::Null),
+            "attendees": attendees,
+            "organizer": person(if event.is_organizer { &self.owner } else { "bo@example.org" }),
+        });
+        let Some(map) = all.as_object_mut() else { return all };
+        // Only returned when a client set it; and when a series has it only for what is one of
+        // its days.
+        if !event.transaction_id.is_empty() {
+            map.insert("transactionId".into(), json!(event.transaction_id));
+        }
+        if !event.series.is_empty() {
+            map.insert("originalStart".into(), json!(instant_text(event.original)));
+        }
+        if look.no_stamps && look.select.is_some() {
+            map.remove("createdDateTime");
+            map.remove("lastModifiedDateTime");
+        }
+        if let Some(select) = &look.select {
+            map.retain(|name, _| name == "@odata.etag" || name == "id" || select.iter().any(|asked| asked == name));
+        }
+        all
+    }
+
+    /// What a body says of when an event is, checked against what Graph takes: the instants of
+    /// its start and its end, whether it is a whole day, and its zone. `now` is the event as it
+    /// is, for a change that doesn't say everything.
+    fn times_of(body: &Map<String, Value>, now: Option<&Stored>) -> Result<(Timestamp, Timestamp, bool, String), Refusal> {
+        let invalid = |message: &str| refuse(400, "ErrorPropertyValidationFailure", message.to_string());
+        let read = |name: &str| -> Result<Option<(DateTime, String)>, Refusal> {
+            let Some(value) = body.get(name) else { return Ok(None) };
+            let Some(said) = value.as_object() else { return Err(bad(format!("The property '{name}' is a dateTimeTimeZone."))) };
+            if let Some(other) = said.keys().find(|key| !matches!(key.as_str(), "dateTime" | "timeZone")) {
+                return Err(bad(format!("The property '{other}' does not exist on type 'microsoft.graph.dateTimeTimeZone'.")));
+            }
+            let text = said.get("dateTime").and_then(Value::as_str).ok_or_else(|| bad(format!("'{name}' has no dateTime.")))?;
+            let zone = said.get("timeZone").and_then(Value::as_str).ok_or_else(|| bad(format!("'{name}' has no timeZone.")))?;
+            let wall = wall_of(text).ok_or_else(|| bad(format!("The value '{text}' of '{name}' is not a date and a time.")))?;
+            if zone_offset(zone, 0).is_none() {
+                let message = format!("A valid TimeZone value must be specified. The following TimeZone value is not supported: '{zone}'.");
+                return Err(refuse(400, "TimeZoneNotSupportedException", message));
+            }
+            Ok(Some((wall, zone.to_string())))
+        };
+        let (start, end) = (read("start")?, read("end")?);
+        let all_day = match body.get("isAllDay") {
+            None => now.is_some_and(|now| now.all_day),
+            Some(Value::Bool(all_day)) => *all_day,
+            Some(_) => return Err(bad("The property 'isAllDay' is a Boolean.")),
+        };
+        let kept = |instant: Timestamp, zone: &str| (wall_in(instant, zone), zone.to_string());
+        let start = match (start, now) {
+            (Some(start), _) => start,
+            (None, Some(now)) => kept(now.start, &now.zone),
+            (None, None) => return Err(invalid("The Start property is required.")),
+        };
+        let end = match (end, now) {
+            (Some(end), _) => end,
+            (None, Some(now)) => kept(now.end, &now.zone),
+            (None, None) => return Err(invalid("The End property is required.")),
+        };
+        let instants = instant_in(start.0, &start.1).zip(instant_in(end.0, &end.1));
+        let Some((from, to)) = instants else { return Err(invalid("The time is out of range.")) };
+        if to < from {
+            return Err(refuse(400, "ErrorCalendarEndDateIsEarlierThanStartDate", "The end date is earlier than the start date."));
+        }
+        if all_day {
+            if start.1 != end.1 {
+                return Err(invalid("The start and the end of an all-day event must be in the same time zone."));
+            }
+            if start.0.seconds_of_day() != 0 {
+                return Err(invalid("The Event.Start property for an all-day event needs to be set to midnight."));
+            }
+            if end.0.seconds_of_day() != 0 {
+                return Err(invalid("The Event.End property for an all-day event needs to be set to midnight."));
+            }
+            if start.0.date.days_until(end.0.date) < 1 {
+                return Err(invalid("The duration of an all-day event must be at least 24 hours."));
+            }
+        }
+        Ok((from, to, all_day, start.1))
+    }
+
+    /// A recurrence as Graph takes one, for an event that starts on `first` (the day of its
+    /// start as its start says it).
+    fn recurrence_of(value: &Value, first: Date) -> Result<Option<Value>, Refusal> {
+        if value.is_null() {
+            return Ok(None);
+        }
+        let invalid = |message: String| refuse(400, "ErrorPropertyValidationFailure", message);
+        let (Some(pattern), Some(range)) = (value.get("pattern").and_then(Value::as_object), value.get("range").and_then(Value::as_object)) else {
+            return Err(bad("A recurrence has a pattern and a range."));
+        };
+        let known = |of: &Map<String, Value>, names: &[&str], what: &str| match of.keys().find(|key| !names.contains(&key.as_str())) {
+            Some(other) => Err(bad(format!("The property '{other}' does not exist on type 'microsoft.graph.{what}'."))),
+            None => Ok(()),
+        };
+        known(pattern, &["type", "interval", "month", "dayOfMonth", "daysOfWeek", "firstDayOfWeek", "index"], "recurrencePattern")?;
+        known(range, &["type", "startDate", "endDate", "recurrenceTimeZone", "numberOfOccurrences"], "recurrenceRange")?;
+        let number = |of: &Map<String, Value>, name: &str| of.get(name).and_then(Value::as_u64);
+        let day_name = |day: &Value| day.as_str().is_some_and(|day| DAY_NAMES.contains(&day.to_ascii_lowercase().as_str()));
+        let days = pattern.get("daysOfWeek").and_then(Value::as_array).is_some_and(|days| !days.is_empty() && days.iter().all(day_name));
+        if !number(pattern, "interval").is_some_and(|interval| (1..=999).contains(&interval)) {
+            return Err(invalid("The recurrence pattern's interval is required and must be 1 or more.".into()));
+        }
+        let kind = pattern.get("type").and_then(Value::as_str).unwrap_or("");
+        let day_of_month = number(pattern, "dayOfMonth").is_some_and(|day| (1..=31).contains(&day));
+        let month = number(pattern, "month").is_some_and(|month| (1..=12).contains(&month));
+        let complete = match kind {
+            "daily" => true,
+            "weekly" | "relativeMonthly" => days,
+            "absoluteMonthly" => day_of_month,
+            "absoluteYearly" => day_of_month && month,
+            "relativeYearly" => days && month,
+            other => return Err(invalid(format!("The recurrence pattern type '{other}' is not supported."))),
+        };
+        if !complete {
+            return Err(invalid(format!("The recurrence pattern of type '{kind}' is missing a property it requires.")));
+        }
+        if pattern.get("firstDayOfWeek").is_some_and(|day| !day_name(day)) {
+            return Err(invalid("The recurrence pattern's firstDayOfWeek is not a day of the week.".into()));
+        }
+        let index = pattern.get("index").map(|index| index.as_str().unwrap_or(""));
+        if index.is_some_and(|index| !["first", "second", "third", "fourth", "last"].contains(&index)) {
+            return Err(invalid("The recurrence pattern's index is not one of first, second, third, fourth, last.".into()));
+        }
+        let date = |name: &str| range.get(name).and_then(Value::as_str).and_then(Date::parse_iso);
+        let Some(starts) = date("startDate") else { return Err(invalid("The recurrence range's startDate is required.".into())) };
+        if starts != first {
+            return Err(invalid(format!(
+                "The recurrence range's startDate ({}) must be the date of the event's start ({}).",
+                starts.iso(),
+                first.iso()
+            )));
+        }
+        match range.get("type").and_then(Value::as_str).unwrap_or("") {
+            "noEnd" => {}
+            "endDate" if date("endDate").is_some_and(|ends| ends >= starts) => {}
+            "endDate" => return Err(invalid("The recurrence range's endDate is required and must not be before its startDate.".into())),
+            "numbered" if number(range, "numberOfOccurrences").is_some_and(|n| n >= 1) => {}
+            "numbered" => return Err(invalid("The recurrence range's numberOfOccurrences must be 1 or more.".into())),
+            other => return Err(invalid(format!("The recurrence range type '{other}' is not supported."))),
+        }
+        if let Some(zone) = range.get("recurrenceTimeZone")
+            && !zone.as_str().is_some_and(|zone| zone_offset(zone, 0).is_some())
+        {
+            return Err(refuse(400, "TimeZoneNotSupportedException", "The recurrenceTimeZone is not supported."));
+        }
+        Ok(Some(value.clone()))
+    }
+
+    /// Put what a body says into `event`, when it is what Graph takes. Whether the people
+    /// invited would hear of it.
+    fn write(&self, event: &mut Stored, body: &Value, making: bool) -> Result<bool, Refusal> {
+        let Some(body) = body.as_object() else { return Err(refuse(400, "BadRequest", "Unable to read JSON request payload.")) };
+        for name in body.keys() {
+            let writable = WRITABLE.contains(&name.as_str()) || (making && name == "transactionId");
+            if name == "transactionId" && !making {
+                return Err(refuse(400, "ErrorInvalidPropertyUpdate", "The transactionId of an event can't be changed in an update."));
+            }
+            if !writable && PROPERTIES.contains(&name.as_str()) {
+                return Err(refuse(400, "ErrorInvalidPropertySet", format!("The property '{name}' is read-only.")));
+            }
+            if !writable {
+                let message = format!("The property '{name}' does not exist on type 'Microsoft.OutlookServices.Event'.");
+                return Err(refuse(400, "RequestBodyRead", message));
+            }
+        }
+        let text = |name: &str| -> Result<Option<String>, Refusal> {
+            match body.get(name) {
+                None => Ok(None),
+                Some(Value::String(text)) => Ok(Some(text.clone())),
+                Some(_) => Err(bad(format!("The property '{name}' is a String."))),
+            }
+        };
+        let one_of = |name: &str, values: &[&str]| -> Result<Option<String>, Refusal> {
+            match text(name)? {
+                Some(value) if values.contains(&value.as_str()) => Ok(Some(value)),
+                Some(value) => Err(bad(format!("The value '{value}' is not one that '{name}' can have."))),
+                None => Ok(None),
+            }
+        };
+        let mut seen = false;
+        if let Some(subject) = text("subject")? {
+            seen |= subject != event.subject;
+            event.subject = subject;
+        }
+        if let Some(said) = body.get("body") {
+            let kind = said.get("contentType").and_then(Value::as_str).map(str::to_ascii_lowercase);
+            let (Some("text" | "html"), Some(content)) = (kind.as_deref(), said.get("content").and_then(Value::as_str)) else {
+                return Err(bad("The property 'body' is an itemBody: a contentType (text or html) and a content."));
+            };
+            seen |= content != event.body;
+            event.body = content.to_string();
+        }
+        if let Some(place) = body.get("location") {
+            let Some(name) = place.get("displayName").and_then(Value::as_str) else { return Err(bad("The property 'location' has a displayName.")) };
+            seen |= name != event.location;
+            event.location = name.to_string();
+        }
+        if body.contains_key("start") || body.contains_key("end") || body.contains_key("isAllDay") || making {
+            let (start, end, all_day, zone) = State::times_of(body, (!making).then_some(&*event))?;
+            if (start, end, all_day) != (event.start, event.end, event.all_day) {
+                seen = true;
+                // (A server that says yes and keeps the time it had: what no client may take for done.)
+                if !self.keeps_times || making {
+                    (event.start, event.end, event.all_day, event.zone) = (start, end, all_day, zone);
+                }
+            }
+        }
+        if let Some(show_as) = one_of("showAs", &["free", "tentative", "busy", "oof", "workingElsewhere", "unknown"])? {
+            event.show_as = show_as;
+        }
+        if let Some(sensitivity) = one_of("sensitivity", &["normal", "personal", "private", "confidential"])? {
+            seen |= sensitivity != event.sensitivity;
+            event.sensitivity = sensitivity;
+        }
+        one_of("importance", &["low", "normal", "high"])?;
+        match body.get("isReminderOn") {
+            None => {}
+            Some(Value::Bool(on)) => event.reminder_on = *on,
+            Some(_) => return Err(bad("The property 'isReminderOn' is a Boolean.")),
+        }
+        match body.get("reminderMinutesBeforeStart") {
+            None => {}
+            Some(minutes) => {
+                event.reminder_minutes = minutes.as_u64().ok_or_else(|| bad("The property 'reminderMinutesBeforeStart' is an Int32."))?
+            }
+        }
+        if let Some(categories) = body.get("categories") {
+            let names = categories.as_array().filter(|names| names.iter().all(Value::is_string));
+            let Some(names) = names else { return Err(bad("The property 'categories' is a collection of String.")) };
+            event.categories = names.iter().filter_map(Value::as_str).map(str::to_string).collect();
+        }
+        if let Some(people) = body.get("attendees") {
+            let invited = |attendee: &Value| {
+                let address = attendee.get("emailAddress").and_then(|address| address.get("address")).and_then(Value::as_str);
+                let kind = attendee.get("type").and_then(Value::as_str).unwrap_or("required");
+                address.is_some_and(|address| address.contains('@')) && ["required", "optional", "resource"].contains(&kind)
+            };
+            let Some(people) = people.as_array().filter(|people| people.iter().all(invited)) else {
+                return Err(bad("The property 'attendees' is a collection of attendee: each an emailAddress with an address, and a type."));
+            };
+            seen |= *people != event.attendees;
+            event.attendees = people.clone();
+        }
+        if let Some(recurrence) = body.get("recurrence") {
+            let first = wall_in(event.start, &event.zone).date;
+            let rule = State::recurrence_of(recurrence, first)?;
+            seen |= rule != event.recurrence;
+            event.recurrence = rule;
+            if event.recurrence.is_none() {
+                event.gone.clear();
+            }
+        }
+        if let Some(mark) = text("transactionId")? {
+            event.transaction_id = mark;
+        }
+        Ok(seen)
+    }
+
+    /// The events of a view between `from` and `to` in `calendar` (`None`: the main one), as
+    /// they are now or as they were before the last change.
+    fn view(&mut self, calendar: Option<&str>, from: Timestamp, to: Timestamp, lagging: bool) -> Vec<(Stored, bool)> {
+        let home = calendar.map(str::to_string).unwrap_or_else(|| self.main_calendar());
+        let stale = if lagging && self.stale_views > 0 && self.before.is_some() {
+            self.stale_views -= 1;
+            self.before.clone()
+        } else {
+            None
+        };
+        let events = stale.as_ref().unwrap_or(&self.events);
+        let mut out: Vec<(Stored, bool)> = Vec::new();
+        for event in events.iter().filter(|event| event.calendar == home) {
+            if event.recurrence.is_some() {
+                out.extend(event.occurrences(from, to).into_iter().map(|at| (event.occurrence(at), true)));
+            } else if event.start < to && (event.end > from || event.start >= from) {
+                out.push((event.clone(), false));
+            }
+        }
+        out.sort_by_key(|(event, _)| (event.start, event.id.clone()));
+        out
+    }
+
+    /// A page of `entries` for a list that was asked for with `asked`.
+    fn page(&self, asked: &Asked, entries: Vec<Value>) -> Result<Answer, Refusal> {
+        let number = |name: &str| asked.param(name).map(|n| n.parse::<usize>().map_err(|_| bad(format!("The value of '{name}' is not a number."))));
+        let top = number("$top").transpose()?;
+        if top.is_some_and(|top| !(1..=1_000).contains(&top)) {
+            return Err(bad("The value of '$top' must be between 1 and 1000."));
+        }
+        let (top, skip) = (top.unwrap_or(PAGE), number("$skip").transpose()?.unwrap_or(0));
+        let total = entries.len();
+        let page: Vec<Value> = entries.into_iter().skip(skip).take(top).collect();
+        let mut list = json!({"@odata.context": format!("{}/v1.0/$metadata#users('me')/events", self.base), "value": page});
+        if skip.saturating_add(top) < total {
+            let path = asked.target.split('?').next().unwrap_or("");
+            let mut query: Vec<(String, String)> = asked.query.iter().filter(|(name, _)| name != "$skip").cloned().collect();
+            query.push(("$skip".into(), (skip + top).to_string()));
+            let pairs: Vec<(&str, &str)> = query.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect();
+            list["@odata.nextLink"] = json!(format!("{}{path}?{}", self.base, crate::http::form(&pairs)));
+        }
+        Ok((200, Some(list)))
+    }
+
+    /// How an answer to `asked` is to look.
+    fn look(asked: &Asked) -> Result<Look, Refusal> {
+        let prefer = asked.header("prefer").to_ascii_lowercase();
+        let select = match asked.param("$select") {
+            None => None,
+            Some(names) => {
+                let names: Vec<String> = names.split(',').map(|name| name.trim().to_string()).collect();
+                if let Some(unknown) = names.iter().find(|name| !PROPERTIES.contains(&name.as_str())) {
+                    return Err(refuse(400, "BadRequest", format!("Could not find a property named '{unknown}' on type 'microsoft.graph.event'.")));
+                }
+                Some(names)
+            }
+        };
+        Ok(Look { text: prefer.contains("outlook.body-content-type=\"text\""), select, occurrence: false, no_stamps: false })
+    }
+
+    /// An instant in a query (`2026-10-08T19:00:00Z`, with an offset, or with none: UTC).
+    fn window(asked: &Asked) -> Result<(Timestamp, Timestamp), Refusal> {
+        let needs = || {
+            let message = "This request requires a time window specified by the query string parameters StartDateTime and EndDateTime.";
+            refuse(400, "ErrorInvalidParameter", message)
+        };
+        let read = |name: &str| asked.param(name).and_then(|text| mailcraft_time::iso_to_timestamp(text, 0)).ok_or_else(needs);
+        let (from, to) = (read("startDateTime")?, read("endDateTime")?);
+        if to < from {
+            return Err(bad("The end of the time window is before its start."));
+        }
+        Ok((from, to))
+    }
+
+    /// May `calendar` be written to?
+    fn writable(&self, calendar: &str) -> Result<(), Refusal> {
+        match self.calendar(calendar) {
+            Some(calendar) if calendar.can_edit => Ok(()),
+            Some(_) => Err(refuse(403, "ErrorAccessDenied", "Access is denied. Check credentials and try again.")),
+            None => Err(not_found()),
+        }
+    }
+
+    /// Answer one request.
+    fn answer(&mut self, asked: &Asked) -> Result<Answer, Refusal> {
+        if asked.header("authorization") != format!("Bearer {}", self.token) {
+            return Err(refuse(401, "InvalidAuthenticationToken", "Access token validation failure."));
+        }
+        if let Some(at) = self.fail_next.iter().position(|(method, _, _)| *method == asked.method) {
+            let (_, status, code) = self.fail_next.remove(at);
+            let code: &'static str = match code.as_str() {
+                "TooManyRequests" => "TooManyRequests",
+                "ErrorItemNotFound" => "ErrorItemNotFound",
+                "ErrorAccessDenied" => "ErrorAccessDenied",
+                "ErrorInvalidRequest" => "ErrorInvalidRequest",
+                _ => "ServiceUnavailable",
+            };
+            return Err(refuse(status, code, "The stand-in was told to say so."));
+        }
+        if !asked.body.is_empty() && !asked.header("content-type").to_ascii_lowercase().starts_with("application/json") {
+            return Err(refuse(415, "RequestBodyRead", "A body is JSON, and says so in its Content-Type."));
+        }
+        let path: Vec<&str> = asked.path.iter().map(String::as_str).collect();
+        let method = asked.method.as_str();
+        match (method, path.as_slice()) {
+            ("POST", ["v1.0", "$batch"]) => self.batch(asked),
+            (_, ["v1.0", "me", rest @ ..]) => self.me(asked, method, rest),
+            (_, [first, ..]) => Err(refuse(400, "BadRequest", format!("Resource not found for the segment '{first}'."))),
+            _ => Err(refuse(400, "BadRequest", "Resource not found.")),
+        }
+    }
+
+    fn me(&mut self, asked: &Asked, method: &str, rest: &[&str]) -> Result<Answer, Refusal> {
+        let no_way = || refuse(405, "MethodNotAllowed", "The method is not allowed on this resource.");
+        match rest {
+            ["events", tail @ ..] => self.events_at(asked, method, None, tail),
+            ["calendar", "events", tail @ ..] => {
+                let main = self.main_calendar();
+                self.events_at(asked, method, Some(main.as_str()), tail)
+            }
+            ["calendars", calendar, "events", tail @ ..] => self.events_at(asked, method, Some(*calendar), tail),
+            ["calendarView"] if method == "GET" => self.calendar_view(asked, None),
+            ["calendars", calendar, "calendarView"] if method == "GET" => self.calendar_view(asked, Some(*calendar)),
+            ["calendars"] | ["calendarGroups", _, "calendars"] if method == "GET" => {
+                let list = self
+                    .calendars
+                    .iter()
+                    .map(|calendar| {
+                        json!({
+                            "id": calendar.id, "name": calendar.name, "color": "auto", "hexColor": "", "canEdit": calendar.can_edit,
+                            "canShare": !calendar.shared, "isDefaultCalendar": calendar.main,
+                            "owner": {"name": if calendar.shared { "Somebody Else" } else { "Owner" }, "address": if calendar.shared { "else@example.org" } else { self.owner.as_str() }},
+                        })
+                    })
+                    .collect();
+                self.page(asked, list)
+            }
+            ["calendarGroups"] if method == "GET" => {
+                let group = json!({"id": "AAMkAGVmMDEzMTM4LTZmYWUtNDdkNC1hMDZiLTU1OGY5OTZhYmY4OABGAAAAAAAiQ8W967B7TKBjgx9rVEURBgAA-group=", "name": "My Calendars"});
+                self.page(asked, vec![group])
+            }
+            ["contacts"] | ["outlook", "masterCategories"] if method == "GET" => self.page(asked, Vec::new()),
+            ["mailboxSettings", "workingHours"] if method == "GET" => Ok((
+                200,
+                Some(json!({
+                    "daysOfWeek": ["monday", "tuesday", "wednesday", "thursday", "friday"],
+                    "startTime": "08:00:00.0000000", "endTime": "17:00:00.0000000", "timeZone": {"name": "UTC"},
+                })),
+            )),
+            ["calendarView"] | ["calendars"] | ["calendarGroups"] | ["contacts"] => Err(no_way()),
+            [first, ..] => Err(refuse(400, "BadRequest", format!("Resource not found for the segment '{first}'."))),
+            [] => Err(no_way()),
+        }
+    }
+
+    fn calendar_view(&mut self, asked: &Asked, calendar: Option<&str>) -> Result<Answer, Refusal> {
+        self.calendar_of(calendar)?;
+        let (from, to) = State::window(asked)?;
+        let look = Look { no_stamps: true, ..State::look(asked)? };
+        // Only the first page of a view lags behind: a list is one answer, however many pages.
+        let lagging = asked.param("$skip").is_none();
+        let entries = self.view(calendar, from, to, lagging);
+        let list = entries.iter().map(|(event, occurrence)| self.json_of(event, &Look { occurrence: *occurrence, ..look.clone() })).collect();
+        self.page(asked, list)
+    }
+
+    /// `/events…` of the account (`calendar` is `None`) or of one of its calendars.
+    fn events_at(&mut self, asked: &Asked, method: &str, calendar: Option<&str>, tail: &[&str]) -> Result<Answer, Refusal> {
+        self.calendar_of(calendar)?;
+        let look = State::look(asked)?;
+        match (method, tail) {
+            ("POST", []) => {
+                let home = calendar.map(str::to_string).unwrap_or_else(|| self.main_calendar());
+                self.writable(&home)?;
+                let body = asked.json();
+                // The same mark again: the event that was made with it, and not a second one.
+                let mark = body.get("transactionId").and_then(Value::as_str).unwrap_or("");
+                if let Some(made) = self.events.iter().find(|event| !mark.is_empty() && event.transaction_id == mark) {
+                    return Ok((201, Some(self.json_of(made, &look))));
+                }
+                let mut event = Stored {
+                    calendar: home,
+                    version: 1,
+                    show_as: "busy".into(),
+                    sensitivity: "normal".into(),
+                    zone: "UTC".into(),
+                    is_organizer: true,
+                    response: "organizer".into(),
+                    reminder_on: true,
+                    reminder_minutes: 15,
+                    ..Default::default()
+                };
+                self.write(&mut event, &body, true)?;
+                self.changing();
+                event.id = self.new_id();
+                event.uid = format!("040000008200E00074C5B7101A82E008{:032X}", self.made);
+                event.modified = self.clock;
+                if !event.attendees.is_empty() {
+                    self.mail.push(format!("invitation:{}:{}", event.subject, event.attendees.len()));
+                }
+                let made = self.json_of(&event, &look);
+                self.events.push(event);
+                Ok((201, Some(made)))
+            }
+            ("GET", [id]) => match self.find(calendar, id) {
+                Ok(at) => Ok((200, self.events.get(at).map(|event| self.json_of(event, &look)))),
+                // One occurrence of a series, as the series has it.
+                Err(why) => match self.occurrence_named(id) {
+                    Some((series, original)) => {
+                        let one = self.events.get(series).map(|series| series.occurrence(original));
+                        Ok((200, one.map(|one| self.json_of(&one, &Look { occurrence: true, ..look }))))
+                    }
+                    None => Err(why),
+                },
+            },
+            ("GET", [id, "instances"]) => {
+                let at = self.find(calendar, id)?;
+                let (from, to) = State::window(asked)?;
+                let Some(series) = self.events.get(at).filter(|event| event.recurrence.is_some()).cloned() else {
+                    return Err(bad("The event is not a series: it has no instances."));
+                };
+                let mut all: Vec<(Stored, bool)> = series.occurrences(from, to).into_iter().map(|at| (series.occurrence(at), true)).collect();
+                let within = |event: &&Stored| event.series == series.id && event.start < to && event.start >= from;
+                all.extend(self.events.iter().filter(within).map(|event| (event.clone(), false)));
+                all.sort_by_key(|(event, _)| event.start);
+                let list = all.iter().map(|(event, occurrence)| self.json_of(event, &Look { occurrence: *occurrence, ..look.clone() })).collect();
+                self.page(asked, list)
+            }
+            ("PATCH", [id]) => {
+                let body = asked.json();
+                let at = match self.find(calendar, id) {
+                    Ok(at) => at,
+                    // A change to one occurrence makes it an exception, under the id it had.
+                    Err(why) => {
+                        let Some((series, original)) = self.occurrence_named(id) else { return Err(why) };
+                        let Some(master) = self.events.get(series).cloned() else { return Err(why) };
+                        self.writable(&master.calendar)?;
+                        let mut one = master.occurrence(original);
+                        self.write(&mut one, &body, false)?;
+                        // It may not cross the occurrences beside it.
+                        let beside = master.occurrences(original.saturating_sub(400 * DAY), original.saturating_add(400 * DAY));
+                        let crosses = |other: &Timestamp| (*other < original && one.start <= *other) || (*other > original && one.start >= *other);
+                        if beside.iter().any(crosses) {
+                            let message = "Modified occurrence is crossing or overlapping adjacent occurrence.";
+                            return Err(refuse(400, "ErrorOccurrenceCrossingBoundary", message));
+                        }
+                        self.changing();
+                        one.version += 1;
+                        one.modified = self.clock;
+                        if let Some(master) = self.events.get_mut(series) {
+                            master.gone.push(original);
+                        }
+                        let made = self.json_of(&one, &look);
+                        self.events.push(one);
+                        return Ok((200, Some(made)));
+                    }
+                };
+                let Some(mut event) = self.events.get(at).cloned() else { return Err(not_found()) };
+                self.writable(&event.calendar)?;
+                let seen = self.write(&mut event, &body, false)?;
+                self.changing();
+                event.version += 1;
+                event.modified = self.clock;
+                if seen && event.is_organizer && !event.attendees.is_empty() {
+                    self.mail.push(format!("update:{}:{}", event.subject, event.attendees.len()));
+                }
+                let changed = self.json_of(&event, &look);
+                if let Some(slot) = self.events.get_mut(at) {
+                    *slot = event;
+                }
+                Ok((200, Some(changed)))
+            }
+            ("DELETE", [id]) => {
+                match self.find(calendar, id) {
+                    Ok(at) => {
+                        let Some(event) = self.events.get(at).cloned() else { return Err(not_found()) };
+                        self.writable(&event.calendar)?;
+                        self.changing();
+                        if event.is_organizer && !event.attendees.is_empty() {
+                            self.mail.push(format!("cancellation:{}:{}:", event.subject, event.attendees.len()));
+                        }
+                        self.events.retain(|other| other.id != event.id && other.series != event.id);
+                    }
+                    Err(why) => {
+                        let Some((series, original)) = self.occurrence_named(id) else { return Err(why) };
+                        let home = self.events.get(series).map(|series| series.calendar.clone()).unwrap_or_default();
+                        self.writable(&home)?;
+                        self.changing();
+                        if let Some(master) = self.events.get_mut(series) {
+                            master.gone.push(original);
+                        }
+                    }
+                }
+                Ok((204, None))
+            }
+            ("POST", [id, action @ ("cancel" | "accept" | "tentativelyAccept" | "decline")]) => {
+                let body = asked.json();
+                let comment = body.get("comment").and_then(Value::as_str).unwrap_or("").to_string();
+                let allowed: &[&str] = if *action == "cancel" { &["comment"] } else { &["comment", "sendResponse", "proposedNewTime"] };
+                if let Some(other) = body.as_object().and_then(|body| body.keys().find(|key| !allowed.contains(&key.as_str()))) {
+                    return Err(bad(format!("The parameter '{other}' is not one of this action's.")));
+                }
+                let at = self.find(calendar, id)?;
+                let Some(event) = self.events.get(at).cloned() else { return Err(not_found()) };
+                self.writable(&event.calendar)?;
+                match (*action, event.is_organizer) {
+                    ("cancel", false) => {
+                        let message = "Your request can't be completed. You need to be an organizer to cancel a meeting.";
+                        return Err(refuse(400, "ErrorAccessDenied", message));
+                    }
+                    ("cancel", true) => {
+                        self.changing();
+                        self.mail.push(format!("cancellation:{}:{}:{comment}", event.subject, event.attendees.len()));
+                        self.events.retain(|other| other.id != event.id && other.series != event.id);
+                    }
+                    (_, true) => return Err(bad("Your request can't be completed. You can't respond to a meeting you organize.")),
+                    (answer, false) => {
+                        let send = body.get("sendResponse").and_then(Value::as_bool).unwrap_or(true);
+                        self.changing();
+                        if send {
+                            self.mail.push(format!("response:{}:{answer}:{comment}", event.subject));
+                        }
+                        if answer == "decline" {
+                            self.events.retain(|other| other.id != event.id);
+                        } else if let Some(slot) = self.events.get_mut(at) {
+                            slot.response = if answer == "accept" { "accepted".into() } else { "tentativelyAccepted".into() };
+                            slot.version += 1;
+                            slot.modified = self.clock;
+                        }
+                    }
+                }
+                Ok((202, None))
+            }
+            (_, [] | [_] | [_, "instances" | "cancel" | "accept" | "tentativelyAccept" | "decline"]) => {
+                Err(refuse(405, "MethodNotAllowed", "The method is not allowed on this resource."))
+            }
+            (_, [_, other, ..]) => Err(refuse(400, "BadRequest", format!("Resource not found for the segment '{other}'."))),
+        }
+    }
+
+    /// Several requests in one (`POST /$batch`): each is answered by itself.
+    fn batch(&mut self, asked: &Asked) -> Result<Answer, Refusal> {
+        let body = asked.json();
+        let Some(requests) = body.get("requests").and_then(Value::as_array) else {
+            return Err(refuse(400, "BadRequest", "A batch has a list of requests."));
+        };
+        if requests.is_empty() || requests.len() > 20 {
+            return Err(refuse(400, "BadRequest", "A batch holds between 1 and 20 requests."));
+        }
+        let mut ids: Vec<&str> = Vec::new();
+        let mut responses: Vec<Value> = Vec::new();
+        for request in requests {
+            let (id, method, url) = (
+                request.get("id").and_then(Value::as_str),
+                request.get("method").and_then(Value::as_str),
+                request.get("url").and_then(Value::as_str),
+            );
+            let (Some(id), Some(method), Some(url)) = (id, method, url) else {
+                return Err(refuse(400, "BadRequest", "Every request of a batch has an id, a method and a url."));
+            };
+            if ids.contains(&id) {
+                return Err(refuse(400, "BadRequest", "The ids of a batch's requests must be unique."));
+            }
+            ids.push(id);
+            let mut headers: Vec<(String, String)> = vec![("authorization".into(), asked.header("authorization").to_string())];
+            for (name, value) in request.get("headers").and_then(Value::as_object).into_iter().flatten() {
+                headers.push((name.to_ascii_lowercase(), value.as_str().unwrap_or("").to_string()));
+            }
+            let body = request.get("body").map(Value::to_string).unwrap_or_default();
+            let target = format!("/v1.0/{}", url.trim_start_matches('/'));
+            let mut one = parse_target(method, &target, headers, body);
+            let (status, body) = match self.answer(&one) {
+                Ok((status, body)) => (status, body),
+                Err(refusal) => (refusal.0, Some(error_body(&refusal))),
+            };
+            one.status = status;
+            self.requests.push(one);
+            responses.push(json!({"id": id, "status": status, "headers": {"Content-Type": "application/json"}, "body": body.unwrap_or(Value::Null)}));
+        }
+        Ok((200, Some(json!({"responses": responses}))))
+    }
+}
+
+/// A refusal as Graph words it.
+fn error_body(refusal: &Refusal) -> Value {
+    json!({"error": {"code": refusal.1, "message": refusal.2, "innerError": {"date": "2026-10-12T08:00:00", "request-id": "00000000-0000-0000-0000-000000000000", "client-request-id": "00000000-0000-0000-0000-000000000000"}}})
+}
+
+/// A request as the stand-in looks at it: its path in pieces, its query in pairs.
+fn parse_target(method: &str, target: &str, headers: Vec<(String, String)>, body: String) -> Asked {
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    Asked {
+        method: method.to_string(),
+        target: target.to_string(),
+        path: path.split('/').filter(|part| !part.is_empty()).map(piece).collect(),
+        query: crate::http::pairs(query),
+        headers,
+        body,
+        status: 0,
+    }
+}
+
+/// Read one request from `stream`: the request line, the headers, and as much body as it says.
+fn read_request(stream: &TcpStream) -> Option<Asked> {
+    let mut reader = BufReader::new(stream.try_clone().ok()?);
+    let mut line = String::new();
+    reader.read_line(&mut line).ok().filter(|n| *n > 0)?;
+    let mut words = line.split_whitespace();
+    let (method, target) = (words.next()?.to_string(), words.next()?.to_string());
+    let (mut headers, mut length) = (Vec::new(), 0usize);
+    for _ in 0..200 {
+        let mut line = String::new();
+        if reader.read_line(&mut line).ok()? == 0 || line.trim().is_empty() {
+            break;
+        }
+        let (name, value) = line.split_once(':')?;
+        let (name, value) = (name.trim().to_ascii_lowercase(), value.trim().to_string());
+        if name == "content-length" {
+            length = value.parse().ok().filter(|n| *n <= MAX_REQUEST)?;
+        }
+        headers.push((name, value));
+    }
+    let mut body = vec![0u8; length];
+    reader.read_exact(&mut body).ok()?;
+    Some(parse_target(&method, &target, headers, String::from_utf8_lossy(&body).into_owned()))
+}
+
+/// A stand-in for Graph's calendar on a loopback port, with the calendar it keeps.
+pub struct StandIn {
+    pub port: u16,
+    state: Arc<Mutex<State>>,
+}
+
+impl StandIn {
+    /// Start one: a main calendar called "Calendar" with nothing in it, for the owner
+    /// `owner@example.org`, taking [`TOKEN`].
+    pub fn start() -> std::io::Result<StandIn> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let mut state = State {
+            token: TOKEN.into(),
+            owner: "owner@example.org".into(),
+            base: format!("http://127.0.0.1:{port}"),
+            clock: 1_790_000_000,
+            ..Default::default()
+        };
+        let main = state.add_calendar("Calendar", true, false);
+        if let Some(calendar) = state.calendars.iter_mut().find(|calendar| calendar.id == main) {
+            calendar.main = true;
+        }
+        let state = Arc::new(Mutex::new(state));
+        let shared = state.clone();
+        std::thread::Builder::new().name("graph stand-in".into()).spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let Some(mut asked) = read_request(&stream) else { continue };
+                let mut state = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let (status, body) = match state.answer(&asked) {
+                    Ok(answer) => answer,
+                    Err(refusal) => (refusal.0, Some(error_body(&refusal))),
+                };
+                asked.status = status;
+                state.requests.push(asked);
+                drop(state);
+                let reason = match status {
+                    200 => "OK",
+                    201 => "Created",
+                    202 => "Accepted",
+                    204 => "No Content",
+                    400 => "Bad Request",
+                    401 => "Unauthorized",
+                    403 => "Forbidden",
+                    404 => "Not Found",
+                    429 => "Too Many Requests",
+                    _ => "Other",
+                };
+                let retry = if status == 429 || status == 503 { "Retry-After: 1\r\n" } else { "" };
+                let answer = match body {
+                    Some(body) => {
+                        let body = body.to_string();
+                        format!(
+                            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json; odata.metadata=minimal\r\n{retry}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                    }
+                    None => format!("HTTP/1.1 {status} {reason}\r\n{retry}Content-Length: 0\r\nConnection: close\r\n\r\n"),
+                };
+                let _ = stream.write_all(answer.as_bytes());
+            }
+        })?;
+        Ok(StandIn { port, state })
+    }
+
+    /// `http://127.0.0.1:{port}`.
+    pub fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// What it keeps, to set up and to look at.
+    pub fn state(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Have this thread's calls to Graph come here until the guard is dropped ([`route`]).
+    pub fn route(&self) -> Routed {
+        route(&self.url())
+    }
+}

@@ -24,6 +24,11 @@ egui = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 
+[dev-dependencies]
+# The tests run the whole way of a calendar change against a stand-in for Microsoft Graph that
+# takes only what the documented service takes (`mailcraft_net::graph::standin`).
+mailcraft-net = { workspace = true, features = ["stand-in"] }
+
 [build-dependencies]
 # Icon + VERSIONINFO for mailcraft.exe; build.rs only uses it when the target is Windows.
 winresource = "0.1"

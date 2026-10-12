@@ -443,6 +443,21 @@ fn is_no_response(response: &Response) -> bool {
     *response == Response::None
 }
 
+fn is_no_status(status: &u16) -> bool {
+    *status == 0
+}
+
+/// A short tag for what a server calls an event, for a log line: two lines about the same event
+/// carry the same tag, and nothing of the id, let alone of the event, can be read from it.
+pub fn id_tag(id: &str) -> String {
+    // (FNV-1a, 32 bits: a name for a line of a log, not a secret.)
+    let mut hash: u32 = 0x811C_9DC5;
+    for byte in id.bytes() {
+        hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
+    }
+    format!("{hash:08x}")
+}
+
 impl EventChange {
     /// It is about one occurrence of a series that is known by its series and its time only.
     pub fn of_occurrence(&self) -> bool {
@@ -540,6 +555,30 @@ impl EventFields {
         *self == EventFields::default()
     }
 
+    /// Which of them are said, by the names a server has for them: for a log line, which may
+    /// say what kind of thing was sent and never what it was.
+    pub fn names(&self) -> Vec<&'static str> {
+        let mut names = Vec::new();
+        let mut said = |is: bool, name: &'static str| {
+            if is {
+                names.push(name);
+            }
+        };
+        said(self.title.is_some(), "subject");
+        said(self.location.is_some(), "location");
+        said(self.description.is_some(), "body");
+        said(self.time.is_some(), "start");
+        said(self.time.is_some(), "end");
+        said(self.time.is_some(), "isAllDay");
+        said(self.show_as.is_some(), "showAs");
+        said(self.private.is_some(), "sensitivity");
+        said(self.reminder.is_some(), "reminder");
+        said(self.repeat.is_some(), "recurrence");
+        said(self.attendees.is_some(), "attendees");
+        said(self.categories.is_some(), "categories");
+        names
+    }
+
     /// Cut to the size a server is sent: one-line titles and places, text without control
     /// characters, an end that is not before the start, a reminder of four weeks at most.
     pub fn tidy(&mut self) {
@@ -594,7 +633,9 @@ pub struct EventOp {
     pub series: String,
     #[serde(skip_serializing_if = "is_zero_time")]
     pub occurrence: Timestamp,
-    /// For a new event: the server's calendar it goes into; empty for the account's main one.
+    /// The server's calendar the event is in (for a new event: the one it goes into); empty for
+    /// the account's main one. An event of another calendar is asked for through that calendar:
+    /// one that somebody else shares with the account is not reached any other way.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub calendar: String,
     /// For a deletion: the owner organizes the meeting and people are invited, so it is called
@@ -673,6 +714,17 @@ pub struct EventOutcome {
     /// The iCalendar `UID` the server gave a new event.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub uid: String,
+    /// When the server says the event was last changed, after this (Unix seconds); 0 when the
+    /// answer didn't say.
+    #[serde(skip_serializing_if = "is_zero_time")]
+    pub modified: Timestamp,
+    /// The status of the server's answer; 0 when there was none (it wasn't asked, or couldn't be
+    /// reached).
+    #[serde(skip_serializing_if = "is_no_status")]
+    pub status: u16,
+    /// The time zone the event's times were said in, when any were sent (`UTC` for instants).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub zone: String,
     /// Why not, in words for the owner; never anything that was sent.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub error: String,
@@ -689,6 +741,7 @@ impl EventOutcome {
         self.change_key = key(&self.change_key);
         self.uid = line(&self.uid, MAX_KEY);
         self.error = line(&self.error, MAX_WHY);
+        self.zone = line(&self.zone, 64);
     }
 }
 
@@ -713,6 +766,65 @@ impl EventsUpload {
         self.account = account.id;
         self.email = account.email.trim().to_string();
         self
+    }
+}
+
+/// Most changes that wait to be seen on the server at once ([`crate::Mailbox::event_checks`]).
+pub const MAX_EVENT_CHECKS: usize = 1_000;
+/// How many downloads may show an event otherwise than it was sent before the mailbox stops
+/// taking the server's word that it took the change: a server may answer a question put right
+/// after a change with what it had before.
+pub const MAX_CHECK_TRIES: u32 = 3;
+/// How long a change waits to be seen on the server when no download covers its event (seconds).
+pub const MAX_CHECK_AGE: i64 = 86_400;
+
+/// A change that a server said it took, which the mailbox is yet to see for itself: the next
+/// download of the event's calendar has to show the event as it was sent (or gone, for one that
+/// was deleted). Until it does, or [`MAX_CHECK_TRIES`] downloads didn't, a download leaves the
+/// event as it is here; after that the event is put back to what the server has, and the owner
+/// is told. A "yes" from a server is not taken for the change having arrived.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct EventCheck {
+    pub account: Id,
+    /// What was done: an event made or changed is to be there as it was sent, one that was
+    /// deleted is to be gone.
+    pub kind: EventChangeKind,
+    /// The event in the mailbox; for a deletion, the id it had.
+    pub event: Id,
+    /// What the server calls the event.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub remote: String,
+    /// What was sent of it that a download can show again as it was sent: the times, the title,
+    /// the place, how it shows and whether it is private.
+    pub fields: EventFields,
+    /// The server's mark of the version it had after the change ([`Origin::change_key`]), and
+    /// when it says that was (Unix seconds; 0 when it didn't say).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub change_key: String,
+    #[serde(skip_serializing_if = "is_zero_time")]
+    pub modified: Timestamp,
+    /// How many downloads have shown the event otherwise since.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub tries: u32,
+    /// When the server said yes (Unix seconds, by the clock here).
+    #[serde(skip_serializing_if = "is_zero_time")]
+    pub made: Timestamp,
+    /// For a deletion: the event as it was, which is what comes back should the server still
+    /// have it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<Box<Event>>,
+    /// For the deletion of one occurrence of a series: the series, and when the series had it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub series: String,
+    #[serde(skip_serializing_if = "is_zero_time")]
+    pub occurrence: Timestamp,
+}
+
+impl EventCheck {
+    /// It is about one occurrence of a series that was deleted, known by its series and its time.
+    pub fn of_occurrence(&self) -> bool {
+        self.remote.is_empty() && !self.series.is_empty()
     }
 }
 
