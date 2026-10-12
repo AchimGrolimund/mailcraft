@@ -1,5 +1,7 @@
 # MailCraft
 
+<img src="assets/app-icon/hicolor/128x128/apps/io.github.billsecond.mailcraft.png" width="96" alt="The MailCraft icon: a carrier pigeon with a sealed letter in its beak">
+
 **An open-source mail, calendar, contacts and tasks program, written from scratch in Rust.**
 
 MailCraft is a clean-room reimplementation of the mail client people already know how to use: the ribbon, the folder pane, the message list with its reading pane, conversations, flags, categories, rules, a calendar with recurring meetings, people and to-dos. It is a native, GPU-rendered app (no Electron, no web view), it also runs in a browser tab through WebAssembly, and every action in it is a command that scripts and AI agents can run too.
