@@ -2,12 +2,12 @@
 <!-- AppStream metadata (software centres, Flathub). Template: package.sh and the Flatpak
      manifest substitute @VERSION@ and @DATE@ from Cargo.toml and the build date. -->
 <component type="desktop-application">
-  <id>ai.storyteller.mailcraft</id>
+  <id>io.github.billsecond.mailcraft</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT OR Apache-2.0</project_license>
   <name>MailCraft</name>
   <summary>Read and write mail, keep a calendar, contacts and tasks</summary>
-  <developer id="ai.storyteller">
+  <developer id="io.github.billsecond">
     <name>MailCraft contributors</name>
   </developer>
   <description>
@@ -15,13 +15,13 @@
       MailCraft is a fast, open-source mail program with a familiar ribbon: mail with folders, rules, flags and categories, a calendar with recurring events, contacts and tasks. It talks to IMAP and SMTP servers, reads and writes .eml, .mbox, .ics and .vcf files, and can be driven by AI agents over MCP.
     </p>
   </description>
-  <launchable type="desktop-id">ai.storyteller.mailcraft.desktop</launchable>
-  <icon type="stock">ai.storyteller.mailcraft</icon>
+  <launchable type="desktop-id">io.github.billsecond.mailcraft.desktop</launchable>
+  <icon type="stock">io.github.billsecond.mailcraft</icon>
   <!-- Only url types known to appstream 0.15 (Ubuntu 22.04, where CI validates): no vcs-browser. -->
-  <url type="homepage">https://getartcraft.com/apps/mailcraft</url>
-  <url type="bugtracker">https://github.com/storytold/mailcraft/issues</url>
-  <url type="help">https://github.com/storytold/mailcraft</url>
-  <url type="contact">https://discord.gg/artcraft</url>
+  <url type="homepage">https://github.com/billsecond/mailcraft</url>
+  <url type="bugtracker">https://github.com/billsecond/mailcraft/issues</url>
+  <url type="help">https://github.com/billsecond/mailcraft</url>
+  <url type="contact">https://github.com/billsecond/mailcraft/issues</url>
   <categories>
     <category>Office</category>
     <category>WordProcessor</category>
@@ -35,7 +35,7 @@
   <screenshots>
     <screenshot type="default">
       <caption>The Open Studio Handbook sample with the Navigation pane</caption>
-      <image>https://raw.githubusercontent.com/storytold/mailcraft/main/docs/images/hero.png</image>
+      <image>https://raw.githubusercontent.com/billsecond/mailcraft/main/docs/images/mail-dark.png</image>
     </screenshot>
   </screenshots>
   <branding>

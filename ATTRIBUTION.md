@@ -17,15 +17,15 @@ Generated-in-code art is original and has no file to list: the UI icon set (`cra
 | `assets/app-icon/mailcraft-macos-512.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon, with the margin macOS icons keep |
 | `assets/app-icon/mailcraft.icns` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (macOS) |
 | `assets/app-icon/mailcraft.ico` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Windows) |
-| `assets/app-icon/hicolor/16x16/apps/ai.storyteller.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
-| `assets/app-icon/hicolor/24x24/apps/ai.storyteller.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
-| `assets/app-icon/hicolor/32x32/apps/ai.storyteller.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
-| `assets/app-icon/hicolor/48x48/apps/ai.storyteller.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
-| `assets/app-icon/hicolor/64x64/apps/ai.storyteller.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
-| `assets/app-icon/hicolor/128x128/apps/ai.storyteller.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
-| `assets/app-icon/hicolor/256x256/apps/ai.storyteller.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
-| `assets/app-icon/hicolor/512x512/apps/ai.storyteller.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
-| `assets/app-icon/hicolor/scalable/apps/ai.storyteller.mailcraft.svg` | MailCraft contributors | original artwork, written by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/16x16/apps/io.github.billsecond.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/24x24/apps/io.github.billsecond.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/32x32/apps/io.github.billsecond.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/48x48/apps/io.github.billsecond.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/64x64/apps/io.github.billsecond.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/128x128/apps/io.github.billsecond.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/256x256/apps/io.github.billsecond.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/512x512/apps/io.github.billsecond.mailcraft.png` | MailCraft contributors | original artwork, rendered by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
+| `assets/app-icon/hicolor/scalable/apps/io.github.billsecond.mailcraft.svg` | MailCraft contributors | original artwork, written by `cargo xtask icon` | MIT OR Apache-2.0 | Placeholder app icon (Linux) |
 | `assets/fonts/Inter-Regular.ttf` | Rasmus Andersson / The Inter Project Authors | https://github.com/rsms/inter | OFL-1.1 (`assets/fonts/OFL-Inter.txt`) | Interface font (carried over from WordCraft) |
 | `assets/fonts/Inter-Medium.ttf` | Rasmus Andersson / The Inter Project Authors | https://github.com/rsms/inter | OFL-1.1 (`assets/fonts/OFL-Inter.txt`) | Interface font (carried over from WordCraft) |
 | `assets/fonts/Inter-SemiBold.ttf` | Rasmus Andersson / The Inter Project Authors | https://github.com/rsms/inter | OFL-1.1 (`assets/fonts/OFL-Inter.txt`) | Interface font (carried over from WordCraft) |

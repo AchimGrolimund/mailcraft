@@ -4,13 +4,13 @@
 #
 #   curl -fsSLO https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
 #   python3 flatpak-cargo-generator.py Cargo.lock -o packaging/linux/flatpak/cargo-sources.json
-#   flatpak-builder --user --install --force-clean build-flatpak packaging/linux/flatpak/ai.storyteller.mailcraft.yml
-#   flatpak run ai.storyteller.mailcraft
+#   flatpak-builder --user --install --force-clean build-flatpak packaging/linux/flatpak/io.github.billsecond.mailcraft.yml
+#   flatpak run io.github.billsecond.mailcraft
 #
 # For Flathub, replace the `dir` source with a `git` source pinned to a release tag and commit.
-# The release's .flatpak bundles come from ai.storyteller.mailcraft.bundle.yml instead (see there);
+# The release's .flatpak bundles come from io.github.billsecond.mailcraft.bundle.yml instead (see there);
 # keep runtime, runtime-version, sdk and finish-args identical in both (packaging-lint checks this).
-id: ai.storyteller.mailcraft
+id: io.github.billsecond.mailcraft
 runtime: org.freedesktop.Platform
 runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
@@ -34,7 +34,7 @@ finish-args:
   - --filesystem=xdg-documents
   - --filesystem=xdg-pictures
   # Deliberately not granted: network (the optional --control server listens on 127.0.0.1 in
-  # the sandbox; `flatpak override --user --share=network ai.storyteller.mailcraft` exposes it to
+  # the sandbox; `flatpak override --user --share=network io.github.billsecond.mailcraft` exposes it to
   # host agents) and home/host filesystem access.
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
@@ -49,14 +49,14 @@ modules:
       - cargo --offline build --release --locked -p mailcraft -p mailcraft-cli
       - install -Dm755 target/release/mailcraft /app/bin/mailcraft
       - install -Dm755 target/release/mailcraft-cli /app/bin/mailcraft-cli
-      - install -Dm644 packaging/linux/ai.storyteller.mailcraft.desktop /app/share/applications/ai.storyteller.mailcraft.desktop
-      - install -Dm644 packaging/linux/ai.storyteller.mailcraft.mime.xml /app/share/mime/packages/ai.storyteller.mailcraft.xml
+      - install -Dm644 packaging/linux/io.github.billsecond.mailcraft.desktop /app/share/applications/io.github.billsecond.mailcraft.desktop
+      - install -Dm644 packaging/linux/io.github.billsecond.mailcraft.mime.xml /app/share/mime/packages/io.github.billsecond.mailcraft.xml
       - mkdir -p /app/share/icons && cp -R assets/app-icon/hicolor /app/share/icons/
       - >-
         version=$(awk '/^\[/{p=($0=="[workspace.package]");next} p&&$1=="version"{gsub(/[" ]/,"",$3);print $3;exit}' Cargo.toml);
         install -d /app/share/metainfo;
         sed -e "s/@VERSION@/$version/" -e "s/@DATE@/$(date -u +%Y-%m-%d)/"
-        packaging/linux/ai.storyteller.mailcraft.metainfo.xml.in > /app/share/metainfo/ai.storyteller.mailcraft.metainfo.xml
+        packaging/linux/io.github.billsecond.mailcraft.metainfo.xml.in > /app/share/metainfo/io.github.billsecond.mailcraft.metainfo.xml
     sources:
       - type: dir
         path: ../../..

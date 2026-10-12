@@ -44,7 +44,7 @@ The browser build is the same app with three differences that a browser imposes:
 ## Build and run
 
 ```
-git clone https://github.com/storytold/mailcraft
+git clone https://github.com/billsecond/mailcraft
 cd mailcraft
 cargo run --release -p mailcraft -- --sample
 ```

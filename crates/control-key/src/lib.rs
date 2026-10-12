@@ -59,7 +59,7 @@ mod tests {
         assert_eq!(parse_instance_id("instance-id=a b\n"), None);
         assert_eq!(parse_instance_id("instance-id=..\n"), None);
         assert_eq!(parse_instance_id("instance-id=\n"), None);
-        assert_eq!(parse_instance_id("app=ai.storyteller.mailcraft\n"), None);
+        assert_eq!(parse_instance_id("app=io.github.billsecond.mailcraft\n"), None);
     }
 
     #[test]

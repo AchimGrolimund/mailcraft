@@ -167,7 +167,7 @@ const SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 
 // ---- the owner's artwork, in the Craft tile ----
 
 /// The reverse-DNS name the Linux icon files carry.
-const APP_ID: &str = "ai.storyteller.mailcraft";
+const APP_ID: &str = "io.github.billsecond.mailcraft";
 /// Where the artwork and the note about it are looked for, under `assets/app-icon`.
 const ART: &str = "source/mailcraft-art.png";
 const ART_NOTE: &str = "source/icon.json";
