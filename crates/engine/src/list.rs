@@ -27,6 +27,20 @@ pub fn when(m: &Message) -> Timestamp {
     if m.received != 0 { m.received } else { m.date }
 }
 
+/// The first words of a message on one line, at most `max_chars` characters (and `…` when there
+/// is more): what a message list shows under the subject.
+///
+/// It is what the message says to someone reading it: taken from the HTML when there is HTML
+/// (the opening line a sender hid for message lists included), otherwise from the text, with
+/// markup, character references, invisible padding, rules, quoted text and web addresses left out
+/// ([`mailcraft_html::preview`], [`mailcraft_html::text_preview`]). It is worked out from the
+/// message each time and stored nowhere, so it costs a short read of the body's first words: a
+/// list that draws the same rows again and again keeps what it was given.
+pub fn preview(m: &Message, max_chars: usize) -> String {
+    let said = m.body.html.as_deref().map(|html| mailcraft_html::preview(html, max_chars)).unwrap_or_default();
+    if said.is_empty() { mailcraft_html::text_preview(&m.body.text, max_chars) } else { said }
+}
+
 fn group_label(s: &Session, m: &Message) -> Option<String> {
     if m.pinned {
         return Some("Pinned".into());

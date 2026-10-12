@@ -335,6 +335,50 @@ fn search_filters_the_list_and_can_look_everywhere() {
     assert_eq!(run(&mut s, "mail.findRelated", json!({}))["found"], 1);
 }
 
+/// A list shows what a message says to its reader: the HTML's words when there is HTML, never
+/// the padding, references and addresses a sender's plain-text part is full of. Nothing of it is
+/// kept with the message, so mail that was already here reads the same way.
+#[test]
+fn previews_say_what_a_message_says() {
+    use mailcraft_model::{Body, Message};
+
+    let padding = "&zwnj; &zwnj; &zwnj; &zwnj; &nbsp; &zwnj;";
+    let newsletter = Message {
+        body: Body {
+            text: format!("{padding}\n[image: Fernhollow]\nhttps://click.fernhollow.example/t/v1/9f3a7c?u=88213\nWool layers are back"),
+            html: Some(format!(
+                "<html><head><style>p {{ margin: 0 }}</style></head><body><div style=\"display:none\">Members get first pick this weekend.{}</div>\
+                 <p><a href=\"https://click.fernhollow.example/t/v1/9f3a7c?u=88213\"><img alt=\"Fernhollow\" src=\"cid:mark\"></a></p>\
+                 <p>Wool layers are <b>back</b></p></body></html>",
+                "&zwnj;&nbsp;&#847;".repeat(80)
+            )),
+        },
+        ..Message::default()
+    };
+    assert_eq!(list::preview(&newsletter, 200), "Members get first pick this weekend. Wool layers are back");
+    assert_eq!(list::preview(&newsletter, 20), "Members get first…");
+    // The text part alone, as a message without HTML has it (and as one that came before this did).
+    let text_only = Message { body: Body { text: newsletter.body.text.clone(), html: None }, ..Message::default() };
+    assert_eq!(list::preview(&text_only, 200), "Wool layers are back");
+    // HTML that says nothing in words leaves the text to speak.
+    let pictures = Message { body: Body { text: "See the pictures attached.".into(), html: Some("<p>&nbsp;</p><br>".into()) }, ..Message::default() };
+    assert_eq!(list::preview(&pictures, 200), "See the pictures attached.");
+    assert_eq!(list::preview(&Message::default(), 200), "");
+    // What a script lists is the same line, and the message itself is as it was.
+    let mut s = session();
+    let before = newsletter.clone();
+    let id = s.mailbox.add_message(Message { folder: s.view.folder, ..newsletter }).unwrap();
+    let listed = run(&mut s, "mail.get", json!({"id": id}));
+    assert_eq!(listed["snippet"], "Members get first pick this weekend. Wool layers are back");
+    assert_eq!(s.mailbox.message(id).unwrap().body, before.body);
+    // The sample's own mail reads as one clean line, every message of it.
+    for m in s.mailbox.messages.values() {
+        let line = list::preview(m, 60);
+        assert_eq!(line.is_empty(), m.body.text.trim().is_empty(), "{}", m.subject);
+        assert!(line.chars().count() <= 61 && !line.contains('\n') && !line.contains("  ") && !line.contains("http"), "{line:?}");
+    }
+}
+
 #[test]
 fn calendar_events_recur_move_and_lose_single_days() {
     let mut s = session();

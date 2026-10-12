@@ -78,7 +78,7 @@ pub fn unescape(text: &str) -> String {
 }
 
 /// The character a reference names and the bytes it takes, given the text after its `&`.
-fn reference(s: &str) -> Option<(char, usize)> {
+pub(crate) fn reference(s: &str) -> Option<(char, usize)> {
     if let Some(num) = s.strip_prefix('#') {
         let (digits, radix, skip) = match num.strip_prefix(['x', 'X']) {
             Some(hex) => (hex, 16, 2),
