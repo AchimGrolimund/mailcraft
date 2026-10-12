@@ -34,6 +34,15 @@
 //! server refuses for good is put back as it was, and says so. Until a change has gone through, a
 //! download leaves the event as it is here.
 //!
+//! A server's "yes" is not taken for the change having arrived. Every change it says it took is
+//! noted once more ([`EventCheck`], [`Mailbox::event_checks`]) and looked for in the downloads
+//! that follow ([`check_sent`]): until one shows the event as it was sent, a download leaves it
+//! as it is here (a server may answer a question put right after a change with what it had
+//! before); when [`MAX_CHECK_TRIES`] of them haven't, the event is put back to what the server
+//! has and the owner is told. And no note is ever dropped without a word: one that can't be sent
+//! any more ([`unfit`]) is given up with a line for the owner and one for the log
+//! ([`Dropped`]), and what it changed is put back.
+//!
 //! Undo: a change that hasn't been sent yet is undone like any other, and the note goes with it
 //! (the mailbox is put back whole, the notes included). Once the server has been told, the undo
 //! history is forgotten, as it is when mail was moved on the server: the mailbox of before is
@@ -49,9 +58,10 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use mailcraft_model::remote::{
-    CalendarsDownload, CategoriesDownload, ContactsDownload, EventChange, EventChangeKind, EventFields, EventOp, EventOutcome, EventReminder,
-    EventRepeat, EventResult, EventTime, EventWall, EventsDownload, EventsUpload, EventsUploaded, MAX_CONTACTS, MAX_EVENT_CHANGES, MAX_EVENT_OPS,
-    MAX_EVENTS, MAX_KEY, RemoteContact, RemoteEvent, RemoteEventKind, clean_key,
+    CalendarsDownload, CategoriesDownload, ContactsDownload, EventChange, EventChangeKind, EventCheck, EventFields, EventOp, EventOutcome,
+    EventReminder, EventRepeat, EventResult, EventTime, EventWall, EventsDownload, EventsUpload, EventsUploaded, MAX_CHECK_AGE, MAX_CHECK_TRIES,
+    MAX_CONTACTS, MAX_EVENT_CHANGES, MAX_EVENT_CHECKS, MAX_EVENT_OPS, MAX_EVENTS, MAX_KEY, RemoteContact, RemoteEvent, RemoteEventKind, clean_key,
+    id_tag,
 };
 use mailcraft_model::{Account, Attendee, Calendar, Contact, Event, Id, Mailbox, Origin, Response};
 use mailcraft_time::{Date, DateTime, Timestamp, Weekday};
@@ -76,13 +86,13 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new("sync.eventChanges", "Calendar Changes to Send", "Send / Receive", event_changes_command)
             .pure()
-            .params(r#"{"account": number} — what that account's server is to be told of events made, changed or deleted here: {"account", "email", "ops": [{"kind": "create"|"update"|"delete", "event": number, "remote"?: string, "token"?: string, "fields": {…}}]}"#),
+            .params(r#"{"account": number} — what that account's server is to be told of events made, changed or deleted here: {"account", "email", "ops": [{"kind": "create"|"update"|"delete", "event": number, "remote"?: string, "token"?: string, "calendar"?: string, "fields": {…}}], "dropped": {"count": number, "reasons": [string], "messages": [string]}} — "dropped": the waiting changes that can't be sent any more and were given up just now (what they changed was put back), for a host to log and to tell the owner"#),
         CommandSpec::new("sync.applyEventChanges", "Apply Sent Calendar Changes", "Send / Receive", apply_event_changes_command)
             .pure()
-            .params(r#"{"result": EventsUploaded} — what a host heard from the server: {"account": number, "email"?: string, "outcomes": [{"op": EventOp, "result": "done"|"gone"|"refused"|"denied"|"failed", "remote"?: string, "changeKey"?: string, "error"?: string, "retryAfter"?: seconds}]}"#),
+            .params(r#"{"result": EventsUploaded} — what a host heard from the server: {"account": number, "email"?: string, "outcomes": [{"op": EventOp, "result": "done"|"gone"|"refused"|"denied"|"failed", "remote"?: string, "changeKey"?: string, "modified"?: seconds, "error"?: string, "retryAfter"?: seconds}]} — answers {"done", "refused", "failed", "denied", "waiting", "unverified" (changes the server said it took that no download has shown yet), "messages": [string], "dropped": {"count", "reasons": [string], "messages": [string]}}"#),
         CommandSpec::new("sync.applyEvents", "Apply Downloaded Calendar", "Send / Receive", apply_events_command)
             .pure()
-            .params(r#"{"download": EventsDownload} — what a host brought from the account's server: {"account": number, "email"?: string, "calendar"?: string, "from": seconds, "to": seconds, "complete": bool, "events": [RemoteEvent]}"#),
+            .params(r#"{"download": EventsDownload} — what a host brought from the account's server: {"account": number, "email"?: string, "calendar"?: string, "from": seconds, "to": seconds, "complete": bool, "events": [RemoteEvent]} — answers {"added", "updated", "removed", "unchanged", "skipped", "complete", "calendar", "verified" (changes that were sent and are now seen there), "putBack" (changes the server said it took and doesn't show: the events are as the server has them again), "unverified", "messages": [string], "dropped": {"count", "reasons": [string], "messages": [string]}}"#),
         CommandSpec::new("sync.applyContacts", "Apply Downloaded Contacts", "Send / Receive", apply_contacts_command)
             .pure()
             .params(r#"{"download": ContactsDownload} — what a host brought from the account's server: {"account": number, "email"?: string, "complete": bool, "contacts": [RemoteContact]}"#),
@@ -99,7 +109,7 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 /// What merging a download changed.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Merged {
     pub added: usize,
     pub updated: usize,
@@ -116,12 +126,35 @@ pub struct Merged {
     /// A calendar of the mailbox's own was renamed or removed beside the server's
     /// ([`settle_calendars`]).
     pub settled: bool,
+    /// Changes that were sent and that this download shows on the server ([`EventCheck`]).
+    pub verified: usize,
+    /// Changes the server said it took and doesn't show: the events are as the server has them
+    /// again, and `messages` say so.
+    pub put_back: usize,
+    /// Changes that were sent and that the server doesn't show yet, after this.
+    pub unverified: usize,
+    /// What the owner should hear, a line each.
+    pub messages: Vec<String>,
+    /// Waiting changes that were given up without being sent ([`Dropped`]).
+    pub dropped: Vec<Dropped>,
+    /// What was noted of sent changes is different for the merge.
+    pub checked: bool,
 }
 
 impl Merged {
     /// Whether the mailbox is any different for the merge.
     pub fn changed(&self) -> bool {
-        self.added + self.updated + self.removed > 0 || self.new_calendar || self.settled
+        self.added + self.updated + self.removed + self.put_back + self.verified > 0
+            || self.new_calendar
+            || self.settled
+            || self.checked
+            || !self.dropped.is_empty()
+    }
+
+    fn say(&mut self, line: String) {
+        if self.messages.len() < MAX_MESSAGES {
+            self.messages.push(line);
+        }
     }
 
     fn json(&self, complete: bool) -> Value {
@@ -133,9 +166,55 @@ impl Merged {
             "skipped": self.skipped,
             "complete": complete,
             "calendar": if self.calendar == 0 { Value::Null } else { json!(self.calendar) },
+            "verified": self.verified,
+            "putBack": self.put_back,
+            "unverified": self.unverified,
+            "messages": self.messages,
+            "dropped": dropped_json(&self.dropped),
         })
     }
 }
+
+/// A change that waited for a server and was given up without being sent: it could not go any
+/// more (its event is gone, it would write to people nobody said to write to, it doesn't match
+/// the mailbox). What it changed here is put back to what the server has.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dropped {
+    /// The account whose server the change was for.
+    pub account: Id,
+    pub kind: EventChangeKind,
+    /// Why, in words that say nothing of the event itself: they go to the log.
+    pub reason: &'static str,
+    /// What the owner is told (it names the event); empty when there is nothing to tell.
+    pub message: String,
+}
+
+/// What a command answers of the changes that were given up: how many, why (each reason once),
+/// and what the owner is told. Nothing of the events but their titles, in the messages.
+pub fn dropped_json(dropped: &[Dropped]) -> Value {
+    let mut reasons: Vec<String> = Vec::new();
+    for one in dropped.iter().take(MAX_OUTCOMES) {
+        let reason = format!("{:?}: {}", one.kind, one.reason);
+        if reasons.len() < MAX_MESSAGES && !reasons.contains(&reason) {
+            reasons.push(reason);
+        }
+    }
+    let messages: Vec<&str> = dropped.iter().map(|one| one.message.as_str()).filter(|line| !line.is_empty()).take(MAX_MESSAGES).collect();
+    json!({"count": dropped.len(), "reasons": reasons, "messages": messages})
+}
+
+/// Why a waiting change is given up ([`unfit`]).
+const NO_ACCOUNT: &str = "its account is no longer in the mailbox";
+const NOT_SAID: &str = "it would make the server write to the people invited, and nobody said to send that";
+const NO_EVENT: &str = "the event it is about is no longer in the calendar";
+const NO_SERIES: &str = "the series it is about is no longer in the calendar";
+const NOT_ITS_OWN: &str = "it doesn't match the event it names";
+const NO_NAME: &str = "it doesn't say which event it is about";
+const STILL_HERE: &str = "the event it deletes is still in the calendar";
+const SAID_TWICE: &str = "another change about the same event waits before it";
+const TOO_MANY: &str = "too many changes were waiting";
+/// And why one that was sent is: the server no longer has the event.
+const GONE_THERE: &str = "the server no longer has the event";
 
 /// The account whose server keeps an item of this origin, for as long as the mailbox has that
 /// account. Such an item is a copy of the server's. (When the account is gone nothing will ever
@@ -487,6 +566,31 @@ pub(crate) fn server_calendar(mailbox: &Mailbox) -> Option<&Calendar> {
         .find_map(|account| mailbox.calendars.iter().find(|calendar| calendar.origin.account == account.id && calendar.origin.id.is_empty()))
 }
 
+/// The main calendar of an account's server in the mailbox ([`server_calendar`]), by its id here.
+pub fn server_calendar_id(mailbox: &Mailbox) -> Option<Id> {
+    server_calendar(mailbox).map(|calendar| calendar.id)
+}
+
+/// The calendars of the mailbox's own that hold something while an account's server keeps a
+/// calendar too, each with how many events are in it: what is in them is on this computer only,
+/// and is in nobody's Outlook calendar, however much it looks the part beside the server's.
+/// Nothing when no server keeps a calendar here: then everything is on this computer, and
+/// nobody expects otherwise.
+pub fn only_here(mailbox: &Mailbox) -> Vec<(Id, usize)> {
+    if server_calendar(mailbox).is_none() {
+        return Vec::new();
+    }
+    let own = mailbox.calendars.iter().filter(|calendar| keeper(mailbox, &calendar.origin).is_none());
+    own.map(|calendar| (calendar.id, mailbox.events.values().filter(|event| event.calendar == calendar.id).count())).filter(|(_, n)| *n > 0).collect()
+}
+
+/// Whether the event `id` is kept on this computer only although an account's server keeps a
+/// calendar here ([`only_here`]): a change to it goes nowhere, and whoever makes one is told.
+pub fn stays_here(mailbox: &Mailbox, id: Id) -> bool {
+    let own = |calendar: Id| mailbox.calendar(calendar).is_some_and(|calendar| keeper(mailbox, &calendar.origin).is_none());
+    server_calendar(mailbox).is_some() && mailbox.event(id).is_some_and(|event| own(event.calendar))
+}
+
 /// Whether one more change to an event may be noted for a server: a mailbox that can't reach its
 /// server for a long time doesn't pile them up without end.
 pub(crate) fn room_for_change(mailbox: &Mailbox) -> Result<(), CmdError> {
@@ -632,57 +736,78 @@ pub(crate) fn note_deleted(mailbox: &mut Mailbox, before: &Event) -> Result<(), 
     Ok(())
 }
 
-/// Whether a noted change still hangs together with the mailbox: only such a change is sent. (A
-/// file from elsewhere could otherwise have the server told anything.)
-fn holds(mailbox: &Mailbox, change: &EventChange, here: &HashSet<(Id, &str)>) -> bool {
+/// Why a noted change no longer hangs together with the mailbox, when it doesn't: only one that
+/// does is sent. (A file from elsewhere could otherwise have the server told anything.) One that
+/// doesn't is given up, with a word to the owner ([`tidy_changes`]).
+fn unfit(mailbox: &Mailbox, change: &EventChange, here: &HashSet<(Id, &str)>) -> Option<&'static str> {
     if mailbox.account(change.account).is_none() {
-        return false;
+        return Some(NO_ACCOUNT);
     }
     let of_account = |event: &&Event| event.origin.account == change.account;
     // Mail goes to nobody the owner didn't say yes to.
     if !permitted(mailbox, change) {
-        return false;
+        return Some(NOT_SAID);
     }
+    let named = |name: &str| !name.is_empty() && clean_key(name) == name;
     if change.of_occurrence() {
         // About one occurrence of a series the mailbox has: the event the occurrence is now, for
         // a change; nothing but the series, for a deletion.
-        let named = change.occurrence != 0 && clean_key(&change.series) == change.series;
+        if change.occurrence == 0 || clean_key(&change.series) != change.series {
+            return Some(NO_NAME);
+        }
         let series = || mailbox.events.values().any(|event| event.origin.account == change.account && event.origin.id == change.series);
-        let one = |event: &Event| event.origin.id.is_empty() && event.origin.series == change.series;
-        return named
-            && match change.kind {
-                EventChangeKind::Update => change.base.is_some() && mailbox.event(change.event).filter(of_account).is_some_and(one),
-                EventChangeKind::Delete | EventChangeKind::Respond => series(),
-                EventChangeKind::Create => false,
-            };
+        return match change.kind {
+            EventChangeKind::Update => match mailbox.event(change.event).filter(of_account) {
+                None => Some(NO_EVENT),
+                Some(event) if change.base.is_some() && event.origin.id.is_empty() && event.origin.series == change.series => None,
+                Some(_) => Some(NOT_ITS_OWN),
+            },
+            EventChangeKind::Delete | EventChangeKind::Respond if series() => None,
+            EventChangeKind::Delete | EventChangeKind::Respond => Some(NO_SERIES),
+            EventChangeKind::Create => Some(NO_NAME),
+        };
     }
     match change.kind {
-        EventChangeKind::Create => {
-            !change.token.is_empty() && mailbox.event(change.event).filter(of_account).is_some_and(|event| event.origin.id.is_empty())
-        }
-        EventChangeKind::Update => {
-            let named = !change.remote.is_empty() && clean_key(&change.remote) == change.remote && change.base.is_some();
-            named && mailbox.event(change.event).filter(of_account).is_some_and(|event| event.origin.id == change.remote)
-        }
+        EventChangeKind::Create if change.token.is_empty() => Some(NO_NAME),
+        EventChangeKind::Create => match mailbox.event(change.event).filter(of_account) {
+            None => Some(NO_EVENT),
+            Some(event) if event.origin.id.is_empty() => None,
+            Some(_) => Some(NOT_ITS_OWN),
+        },
+        EventChangeKind::Update if !named(&change.remote) || change.base.is_none() => Some(NO_NAME),
+        EventChangeKind::Update => match mailbox.event(change.event).filter(of_account) {
+            None => Some(NO_EVENT),
+            Some(event) if event.origin.id == change.remote => None,
+            Some(_) => Some(NOT_ITS_OWN),
+        },
+        EventChangeKind::Delete if !named(&change.remote) => Some(NO_NAME),
         EventChangeKind::Delete => {
-            let named = !change.remote.is_empty() && clean_key(&change.remote) == change.remote;
             // The event it deletes is one that was here, and isn't any more.
             let was_here = change.base.as_deref().is_none_or(|base| base.origin.id == change.remote && base.origin.account == change.account);
-            named && was_here && !here.contains(&(change.account, change.remote.as_str()))
+            match (was_here, here.contains(&(change.account, change.remote.as_str()))) {
+                (false, _) => Some(NOT_ITS_OWN),
+                (true, true) => Some(STILL_HERE),
+                (true, false) => None,
+            }
         }
+        EventChangeKind::Respond if !named(&change.remote) => Some(NO_NAME),
         EventChangeKind::Respond => {
             // An answer to somebody else's meeting: one that was declined is gone here, as one
             // that was deleted is; any other is here.
-            let named = !change.remote.is_empty() && clean_key(&change.remote) == change.remote;
-            let here = here.contains(&(change.account, change.remote.as_str()));
-            named
-                && match change.response {
-                    Response::None => false,
-                    Response::Declined => !here,
-                    _ => here,
-                }
+            match (change.response, here.contains(&(change.account, change.remote.as_str()))) {
+                (Response::None, _) => Some(NO_NAME),
+                (Response::Declined, true) => Some(STILL_HERE),
+                (Response::Declined, false) => None,
+                (_, true) => None,
+                (_, false) => Some(NO_EVENT),
+            }
         }
     }
+}
+
+/// Whether a noted change still hangs together with the mailbox ([`unfit`]).
+fn holds(mailbox: &Mailbox, change: &EventChange, here: &HashSet<(Id, &str)>) -> bool {
+    unfit(mailbox, change, here).is_none()
 }
 
 /// Whether a noted change may go to its server as far as mail is concerned: one that makes the
@@ -722,11 +847,14 @@ fn events_here(mailbox: &Mailbox) -> HashSet<(Id, &str)> {
     mailbox.events.values().filter(|event| !event.origin.id.is_empty()).map(|event| (event.origin.account, event.origin.id.as_str())).collect()
 }
 
-/// Drop the noted changes that no longer hang together with the mailbox (their event is gone,
-/// or is the server's under another name), and all but the first about any one event.
-fn tidy_changes(mailbox: &mut Mailbox) {
+/// Give up the noted changes that no longer hang together with the mailbox (their event is gone,
+/// or is the server's under another name), and all but the first about any one event. None of
+/// them goes without a word: what each changed here is put back to what the server has, and
+/// what became of it is said ([`Dropped`]), for the owner and for the log. A note that says
+/// nothing any more (the event is as the server has it again) just goes: there was nothing to send.
+fn tidy_changes(mailbox: &mut Mailbox) -> Vec<Dropped> {
     if mailbox.event_changes.is_empty() {
-        return;
+        return Vec::new();
     }
     /// A new event is known by its id here, anything else by what the server calls it; one
     /// occurrence of a series by the series and its time.
@@ -737,15 +865,133 @@ fn tidy_changes(mailbox: &mut Mailbox) {
             _ => (change.account, change.remote.as_str(), 0, "", 0),
         }
     }
-    let kept: Vec<EventChange> = {
+    let mut kept: Vec<EventChange> = Vec::new();
+    let mut given_up: Vec<(EventChange, &'static str)> = Vec::new();
+    let mut said_nothing = 0usize;
+    {
         let here = events_here(mailbox);
         let mut seen: HashSet<(Id, &str, Id, &str, Timestamp)> = HashSet::new();
-        let all = mailbox.event_changes.iter();
-        all.filter(|change| holds(mailbox, change, &here) && seen.insert(about(change))).take(MAX_EVENT_CHANGES).cloned().collect()
-    };
-    if kept.len() != mailbox.event_changes.len() {
-        mailbox.event_changes = kept;
+        for change in &mailbox.event_changes {
+            let why = unfit(mailbox, change, &here).or_else(|| (!seen.insert(about(change))).then_some(SAID_TWICE));
+            match why {
+                Some(reason) => given_up.push((change.clone(), reason)),
+                None if says_nothing(mailbox, change) => said_nothing += 1,
+                None if kept.len() >= MAX_EVENT_CHANGES => given_up.push((change.clone(), TOO_MANY)),
+                None => kept.push(change.clone()),
+            }
+        }
     }
+    if kept.len() == mailbox.event_changes.len() {
+        return Vec::new();
+    }
+    if said_nothing > 0 {
+        log::debug!("calendar: {said_nothing} waiting changes had nothing left to send");
+    }
+    mailbox.event_changes = kept;
+    given_up.iter().take(MAX_OUTCOMES).map(|(change, reason)| give_up(mailbox, change, reason)).collect()
+}
+
+/// Whether a noted change has nothing to tell the server any more: the event is, in everything
+/// a server is told, as the server has it (it was changed back some other way than by a
+/// command, which would have taken the note away).
+fn says_nothing(mailbox: &Mailbox, change: &EventChange) -> bool {
+    if change.kind != EventChangeKind::Update {
+        return false;
+    }
+    match (change.base.as_deref(), mailbox.event(change.event)) {
+        (Some(base), Some(event)) => changed_fields(base, event, &|_| 0).is_empty(),
+        _ => false,
+    }
+}
+
+/// Take an event that can't be on a server out of the server's calendar and keep it in one of
+/// the mailbox's own (made when there is none): what the owner wrote is never thrown away.
+/// Whether it is kept so.
+fn keep_on_this_computer(mailbox: &mut Mailbox, id: Id) -> bool {
+    if mailbox.event(id).is_none() {
+        return false;
+    }
+    let own = mailbox.calendars.iter().find(|calendar| keeper(mailbox, &calendar.origin).is_none()).map(|calendar| calendar.id);
+    let own = match own {
+        Some(own) => own,
+        None if mailbox.calendars.len() < MAX_CALENDARS => {
+            let (calendar, color) = (mailbox.alloc_id(), super::calendar::next_color(mailbox));
+            mailbox.calendars.push(Calendar { id: calendar, name: LOCAL_CALENDAR.into(), color, visible: true, ..Default::default() });
+            calendar
+        }
+        None => return false,
+    };
+    match mailbox.event_mut(id) {
+        Ok(event) => {
+            event.calendar = own;
+            event.origin = Origin::default();
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Give a waiting change up for `reason`: what it changed here is put back to what the server
+/// has, where that can be told, and what became of it is said, for the owner (who is named the
+/// event) and for the log (which is not).
+fn give_up(mailbox: &mut Mailbox, change: &EventChange, reason: &'static str) -> Dropped {
+    let here = mailbox.event(change.event).filter(|event| event.origin.account == change.account).cloned();
+    let name = called(here.as_ref().or(change.base.as_deref()));
+    let unasked = "it would have made the server write to the people invited, and nobody said to send that";
+    let message = match (reason, change.kind) {
+        // (The first of them still goes; an account that was removed took its calendar along.)
+        (SAID_TWICE | NO_ACCOUNT, _) => String::new(),
+        (NOT_SAID, EventChangeKind::Update) if change.of_occurrence() => {
+            // The day is the series' own again.
+            if let Some(one) = &here {
+                let _ = mailbox.remove_event(one.id);
+                let series = mailbox.events.values().find(|event| event.origin.account == change.account && event.origin.id == change.series);
+                if let (Some(series), Some(day)) = (series.map(|series| series.id), one.origin.occurrence)
+                    && let Ok(series) = mailbox.event_mut(series)
+                {
+                    series.exceptions.retain(|skipped| *skipped != day);
+                }
+            }
+            format!("The change to one day of {name} was not sent: {unasked}. It was put back to what the server has.")
+        }
+        (NOT_SAID, EventChangeKind::Update) => {
+            // As the server has it.
+            if let (Some(base), Some(event)) = (change.base.as_deref(), here.as_ref())
+                && base.origin.id == event.origin.id
+                && let Ok(event) = mailbox.event_mut(event.id)
+            {
+                let (id, calendar) = (event.id, event.calendar);
+                *event = Event { id, calendar, ..base.clone() };
+            }
+            format!("The change to {name} was not sent: {unasked}. It was put back to what the server has.")
+        }
+        (NOT_SAID, EventChangeKind::Create) => {
+            if keep_on_this_computer(mailbox, change.event) {
+                format!("{name} was not sent to the server: {unasked}. It is kept on this computer only.")
+            } else {
+                format!("{name} was not sent to the server: {unasked}.")
+            }
+        }
+        (NOT_SAID, EventChangeKind::Delete) => {
+            format!("Deleting {name} was not sent to the server: {unasked}. It is still there, and comes back into the calendar.")
+        }
+        (NO_EVENT | NO_SERIES, _) => format!("A change to {name} was not sent: it is no longer in the calendar."),
+        _ => "A calendar change that was waiting to be sent no longer matched the calendar. It was not sent.".to_string(),
+    };
+    log::warn!("calendar: a waiting change was given up without being sent ({:?}): {reason}", change.kind);
+    Dropped { account: change.account, kind: change.kind, reason, message }
+}
+
+/// Give up the waiting changes that can't be sent any more ([`tidy_changes`]), outside of an
+/// answer or a download: before a host is told what to send. What was given up, for the host to
+/// tell the owner and to log.
+pub fn settle_changes(s: &mut Session) -> Vec<Dropped> {
+    let before = s.mailbox.event_changes.len();
+    let dropped = tidy_changes(&mut s.mailbox);
+    if s.mailbox.event_changes.len() != before || !dropped.is_empty() {
+        s.mailbox_changed();
+    }
+    dropped
 }
 
 /// How much of an account's calendar waits to go to its server.
@@ -801,10 +1047,14 @@ pub fn event_upload(s: &Session, account: Id) -> Result<EventsUpload, CmdError> 
         if change.kind == EventChangeKind::Update && fields.is_empty() {
             continue;
         }
-        // A new event goes into the server's calendar that the one it is in here follows.
-        let calendar = match (change.kind, event.and_then(|event| mailbox.calendar(event.calendar))) {
-            (EventChangeKind::Create, Some(calendar)) if calendar.origin.account == account => calendar.origin.id.clone(),
-            _ => String::new(),
+        // The server's calendar the event is in (a new one goes into the one that its calendar
+        // here follows): an event of another calendar than the main one is asked for through
+        // that calendar. One that is gone here says where it was.
+        let home = |calendar: Id| mailbox.calendar(calendar).filter(|c| c.origin.account == account).map(|c| c.origin.id.clone()).unwrap_or_default();
+        let calendar = match (event, change.base.as_deref()) {
+            (Some(event), _) => home(event.calendar),
+            (None, Some(base)) => home(base.calendar),
+            (None, None) => String::new(),
         };
         // A meeting the owner called is called off, which tells the people invited; the owner
         // said yes to that, or the change would not be here ([`permitted`]).
@@ -877,20 +1127,88 @@ pub struct EventsApplied {
     pub denied: bool,
     /// What still waits, after this.
     pub waiting: usize,
+    /// Changes the server said it took that no download has shown yet ([`EventCheck`]).
+    pub unverified: usize,
     /// What the owner should hear, a line each.
     pub messages: Vec<String>,
+    /// Changes that were given up without the server taking them: one that could not be sent
+    /// any more, or one about an event the server no longer has ([`Dropped`]).
+    pub dropped: Vec<Dropped>,
 }
 
 impl EventsApplied {
     fn say(&mut self, line: String) {
-        if self.messages.len() < MAX_MESSAGES {
+        if self.messages.len() < MAX_MESSAGES && !line.is_empty() && !self.messages.contains(&line) {
             self.messages.push(line);
         }
     }
 
     fn json(&self) -> Value {
-        json!({"done": self.done, "refused": self.refused, "failed": self.failed, "denied": self.denied, "waiting": self.waiting, "messages": self.messages})
+        json!({
+            "done": self.done,
+            "refused": self.refused,
+            "failed": self.failed,
+            "denied": self.denied,
+            "waiting": self.waiting,
+            "unverified": self.unverified,
+            "messages": self.messages,
+            "dropped": dropped_json(&self.dropped),
+        })
     }
+}
+
+/// What of the fields that were sent a download can show again just as they were sent: when it
+/// is, what it is called, how it shows and whether it is private. (The rest a server may word
+/// its own way: a description comes back as the server laid it out, a place as it knows it.)
+fn seen_again(fields: &EventFields) -> EventFields {
+    EventFields { title: fields.title.clone(), time: fields.time, show_as: fields.show_as, private: fields.private, ..Default::default() }
+}
+
+/// The server said it took a change: note that the downloads that follow are to show it
+/// ([`check_sent`]). What was sent of the same event before, and is yet to be seen, is still to
+/// be seen beside this.
+fn expect(mailbox: &mut Mailbox, mut check: EventCheck) {
+    let same = |other: &EventCheck| {
+        other.account == check.account
+            && other.of_occurrence() == check.of_occurrence()
+            && if check.of_occurrence() { other.series == check.series && other.occurrence == check.occurrence } else { other.remote == check.remote }
+    };
+    if let Some(at) = mailbox.event_checks.iter().position(same) {
+        let earlier = mailbox.event_checks.remove(at);
+        if earlier.kind != EventChangeKind::Delete && check.kind != EventChangeKind::Delete {
+            let now = std::mem::take(&mut check.fields);
+            check.fields = EventFields {
+                title: now.title.or(earlier.fields.title),
+                time: now.time.or(earlier.fields.time),
+                show_as: now.show_as.or(earlier.fields.show_as),
+                private: now.private.or(earlier.fields.private),
+                ..Default::default()
+            };
+            // One that was made and not seen yet is still one that was made here.
+            check.kind = earlier.kind;
+        }
+    }
+    if mailbox.event_checks.len() >= MAX_EVENT_CHECKS {
+        mailbox.event_checks.remove(0);
+    }
+    mailbox.event_checks.push(check);
+}
+
+/// How many changes of `account`'s calendar the server said it took that no download has shown
+/// yet.
+pub fn events_unverified(s: &Session, account: Id) -> usize {
+    s.mailbox.event_checks.iter().filter(|check| check.account == account).count()
+}
+
+/// How long after a change was sent a host asks again soon for the sake of seeing it there
+/// (seconds): after that the ordinary look at the calendar will do.
+const RECHECK_FOR: i64 = 120;
+
+/// Whether a change of `account`'s calendar was sent just now and is yet to be seen on the
+/// server: for a host to ask for the calendar again soon, rather than when it is next due.
+pub fn recheck_due(s: &Session, account: Id) -> bool {
+    let now = s.now();
+    s.mailbox.event_checks.iter().any(|check| check.account == account && now.saturating_sub(check.made) <= RECHECK_FOR)
 }
 
 /// Take in what a server said to an [`EventsUpload`] ([`EventsUploaded`]).
@@ -912,6 +1230,7 @@ pub fn apply_event_outcomes(s: &mut Session, uploaded: &EventsUploaded) -> Resul
     let account = owner(&s.mailbox, uploaded.account, &uploaded.email)?.id;
     let (offset_at, now) = (offset_of(s), s.now());
     let before = s.mailbox.event_changes.clone();
+    let checks_before = s.mailbox.event_checks.clone();
     let mut applied = EventsApplied::default();
     let mut told = false;
     for outcome in uploaded.outcomes.iter().take(MAX_OUTCOMES) {
@@ -926,12 +1245,16 @@ pub fn apply_event_outcomes(s: &mut Session, uploaded: &EventsUploaded) -> Resul
             EventChangeKind::Respond => responded(mailbox, account, &outcome, now, &mut applied, &mut told),
         }
     }
-    tidy_changes(&mut s.mailbox);
+    for dropped in tidy_changes(&mut s.mailbox) {
+        applied.say(dropped.message.clone());
+        applied.dropped.push(dropped);
+    }
     applied.waiting = s.mailbox.event_changes.iter().filter(|change| change.account == account).count();
+    applied.unverified = events_unverified(s, account);
     if told {
         s.forget_history();
     }
-    if told || applied.refused > 0 || s.mailbox.event_changes != before {
+    if told || applied.refused > 0 || !applied.dropped.is_empty() || s.mailbox.event_changes != before || s.mailbox.event_checks != checks_before {
         s.mailbox_changed();
     }
     Ok(applied)
@@ -1016,16 +1339,34 @@ fn created(
             put_fields(&mut sent, &op.fields, offset_at);
             let more = !changed_fields(&sent, event, offset_at).is_empty();
             let (remote, id) = (event.origin.id.clone(), event.id);
-            mailbox.event_changes.remove(at);
+            let made = mailbox.event_changes.remove(at);
+            // The server said so: the downloads that follow are to show it.
+            expect(
+                mailbox,
+                EventCheck {
+                    account,
+                    kind: EventChangeKind::Create,
+                    event: id,
+                    remote: remote.clone(),
+                    fields: seen_again(&op.fields),
+                    change_key: outcome.change_key.clone(),
+                    modified: outcome.modified,
+                    made: now,
+                    ..Default::default()
+                },
+            );
             // A series made here with days left out: the server has it whole so far.
             skip_days_there(mailbox, account, id, offset_at);
             if more {
+                // (With the owner's yes to the mail it makes, when that was given: a change to a
+                // meeting that isn't on the server yet is asked about like any other.)
                 mailbox.event_changes.push(EventChange {
                     account,
                     kind: EventChangeKind::Update,
                     event: id,
                     remote,
                     base: Some(Box::new(sent)),
+                    send: made.send,
                     ..Default::default()
                 });
             }
@@ -1050,11 +1391,8 @@ fn created(
             mailbox.event_changes.remove(at);
             applied.refused += 1;
             // What was written is not thrown away: it stays, in a calendar of the mailbox's own.
-            let own = mailbox.calendars.iter().find(|calendar| keeper(mailbox, &calendar.origin).is_none()).map(|calendar| calendar.id);
             let name = called(event.and_then(|id| mailbox.event(id)));
-            if let (Some(own), Some(Ok(event))) = (own, event.map(|id| mailbox.event_mut(id))) {
-                event.calendar = own;
-                event.origin = Origin::default();
+            if event.is_some_and(|id| keep_on_this_computer(mailbox, id)) {
                 applied.say(format!("The server wouldn't take {name}{}. It is kept on this device only.", because(&outcome.error)));
             } else {
                 applied.say(format!("The server wouldn't take {name}{}.", because(&outcome.error)));
@@ -1236,11 +1574,42 @@ fn one_occurrence(
             *told = true;
             applied.done += 1;
             let change = mailbox.event_changes.remove(at);
+            // A day that was deleted there is to stay deleted in what comes down.
+            if op.kind == EventChangeKind::Delete {
+                expect(
+                    mailbox,
+                    EventCheck {
+                        account,
+                        kind: EventChangeKind::Delete,
+                        event: series.unwrap_or(0),
+                        series: op.series.clone(),
+                        occurrence: op.occurrence,
+                        made: now,
+                        ..Default::default()
+                    },
+                );
+            }
             let Some(Ok(event)) = one.map(|id| mailbox.event_mut(id)) else { return };
             // The occurrence is an event of its own on the server now, under a name of its own.
             event.origin.id = outcome.remote.clone();
             event.origin.change_key = outcome.change_key.clone();
             let here = event.clone();
+            if !seen_again(&op.fields).is_empty() {
+                expect(
+                    mailbox,
+                    EventCheck {
+                        account,
+                        kind: EventChangeKind::Update,
+                        event: here.id,
+                        remote: here.origin.id.clone(),
+                        fields: seen_again(&op.fields),
+                        change_key: outcome.change_key.clone(),
+                        modified: outcome.modified,
+                        made: now,
+                        ..Default::default()
+                    },
+                );
+            }
             let Some(mut sent) = change.base.map(|base| *base) else { return };
             put_fields(&mut sent, &op.fields, offset_at);
             (sent.id, sent.calendar, sent.origin) = (here.id, here.calendar, here.origin.clone());
@@ -1265,7 +1634,10 @@ fn one_occurrence(
                 let name = called(mailbox.event(id));
                 let _ = mailbox.remove_event(id);
                 applied.refused += 1;
-                applied.say(format!("{name} is no longer on the server, so it couldn't be changed there. It was removed here too."));
+                let message = format!("{name} is no longer on the server, so it couldn't be changed there. It was removed here too.");
+                log::warn!("calendar: a change to one occurrence was not taken: {GONE_THERE}");
+                applied.say(message.clone());
+                applied.dropped.push(Dropped { account, kind: op.kind, reason: GONE_THERE, message });
             }
         }
         EventResult::Failed => {
@@ -1381,6 +1753,24 @@ fn updated(
                 // The server has what was sent now; what was changed here since is still to go
                 // (and what is to be put back, should a deletion be refused, is this).
                 Some(at) => {
+                    // The server said so: the downloads that follow are to show it (what of it
+                    // a download can show: [`seen_again`]).
+                    if let Some(id) = event.filter(|_| !seen_again(&op.fields).is_empty()) {
+                        expect(
+                            mailbox,
+                            EventCheck {
+                                account,
+                                kind: EventChangeKind::Update,
+                                event: id,
+                                remote: op.remote.clone(),
+                                fields: seen_again(&op.fields),
+                                change_key: outcome.change_key.clone(),
+                                modified: outcome.modified,
+                                made: now,
+                                ..Default::default()
+                            },
+                        );
+                    }
                     let mut settled = false;
                     if let Some(change) = mailbox.event_changes.get_mut(at) {
                         if let Some(base) = change.base.as_deref_mut() {
@@ -1407,14 +1797,26 @@ fn updated(
                     let mut sent = event.clone();
                     put_fields(&mut sent, &op.fields, offset_at);
                     if !changed_fields(&sent, &event, offset_at).is_empty() {
-                        mailbox.event_changes.push(EventChange {
+                        let back = EventChange {
                             account,
                             kind: EventChangeKind::Update,
                             event: event.id,
                             remote: event.origin.id.clone(),
-                            base: Some(Box::new(sent)),
+                            base: Some(Box::new(sent.clone())),
                             ..Default::default()
-                        });
+                        };
+                        if permitted(mailbox, &back) {
+                            mailbox.event_changes.push(back);
+                        } else if let Ok(here) = mailbox.event_mut(event.id) {
+                            // Taking it back there would be a second update in the mail of
+                            // everyone invited, which nobody said to send: the event is as the
+                            // server has it, and the owner hears why.
+                            let name = called(Some(&event));
+                            *here = sent;
+                            applied.say(format!(
+                                "The change to {name} had already reached the server, and the people invited, when it was taken back here. It is shown as the server has it."
+                            ));
+                        }
                     }
                 }
             }
@@ -1429,7 +1831,10 @@ fn updated(
                 let name = called(mailbox.event(id));
                 let _ = mailbox.remove_event(id);
                 applied.refused += 1;
-                applied.say(format!("{name} is no longer on the server, so it couldn't be changed there. It was removed here too."));
+                let message = format!("{name} is no longer on the server, so it couldn't be changed there. It was removed here too.");
+                log::warn!("calendar: #{}: a change was not taken: {GONE_THERE}", id_tag(&op.remote));
+                applied.say(message.clone());
+                applied.dropped.push(Dropped { account, kind: EventChangeKind::Update, reason: GONE_THERE, message });
             }
         }
         EventResult::Failed => {
@@ -1472,7 +1877,23 @@ fn deleted(mailbox: &mut Mailbox, account: Id, outcome: &EventOutcome, now: Time
             *told |= outcome.result == EventResult::Done;
             applied.done += 1;
             if let Some(at) = at {
-                mailbox.event_changes.remove(at);
+                let change = mailbox.event_changes.remove(at);
+                // It is to stay gone in what comes down (when the server said it deleted it:
+                // one it no longer had is gone for sure).
+                if outcome.result == EventResult::Done {
+                    expect(
+                        mailbox,
+                        EventCheck {
+                            account,
+                            kind: EventChangeKind::Delete,
+                            event: change.event,
+                            remote: op.remote.clone(),
+                            made: now,
+                            base: change.base,
+                            ..Default::default()
+                        },
+                    );
+                }
                 return;
             }
             // Undone while it was on its way: the event is here again and the server no longer
@@ -1588,6 +2009,238 @@ fn settle_calendars(mailbox: &mut Mailbox) {
     mailbox.calendars.retain(|calendar| !(own.contains(&calendar.id) && !in_use.contains(&calendar.id)));
 }
 
+/// What a download makes of the changes that were sent and are yet to be seen ([`check_sent`]).
+#[derive(Default)]
+struct Checked {
+    /// Events the download doesn't show as they were sent yet, by what the server calls them:
+    /// for now they stay as they are here (`Update`), or stay deleted (`Delete`).
+    held: HashMap<String, EventChangeKind>,
+    /// Days of series that were deleted on the server and that the download still has, by series.
+    held_days: HashMap<String, Vec<Timestamp>>,
+}
+
+/// What of an event as a server has it (`theirs`) is not as it was `sent`: empty when the server
+/// shows what it was told.
+fn not_shown(sent: &EventFields, theirs: &Event, offset_at: &dyn Fn(Timestamp) -> i32) -> Vec<&'static str> {
+    let have = fields_of(theirs, offset_at);
+    let mut differs = Vec::new();
+    if sent.time.is_some_and(|time| have.time != Some(time)) {
+        differs.push("its time");
+    }
+    if sent.title.as_deref().is_some_and(|title| have.title.as_deref().map(str::trim) != Some(title.trim())) {
+        differs.push("its title");
+    }
+    if sent.show_as.is_some_and(|show_as| have.show_as != Some(show_as)) {
+        differs.push("how it shows");
+    }
+    if sent.private.is_some_and(|private| have.private != Some(private)) {
+        differs.push("whether it is private");
+    }
+    differs
+}
+
+/// "its time", "its time and its title", "its time, its title and how it shows".
+fn listed(parts: &[&str]) -> String {
+    match parts {
+        [] => "it".to_string(),
+        [one] => (*one).to_string(),
+        [first @ .., last] => format!("{} and {last}", first.join(", ")),
+    }
+}
+
+/// Look in a download of one calendar for the changes that were sent to `account`'s server and
+/// are yet to be seen there ([`EventCheck`]).
+///
+/// - The event is there as it was sent (or gone, when it was deleted): the change has arrived,
+///   and the note goes.
+/// - It isn't, and the server's copy is not the version it said it made of the change: the
+///   answer may be older than the change. The event stays as it is here for now (`held`), up to
+///   [`MAX_CHECK_TRIES`] downloads.
+/// - It isn't, and the server's copy is that version, or enough downloads have gone by: the
+///   server doesn't have what the owner did. The event is as the server has it from here on
+///   (the merge that follows puts it so), the owner is told which event and what of it, and a
+///   line goes to the log. An event that was made here and that the server doesn't have after
+///   all is kept on this computer rather than lost.
+///
+/// A change that still waits for the same event is looked at when it has gone. A download that
+/// can't tell (it isn't complete, the event is outside its stretch or in another calendar) says
+/// nothing.
+#[allow(clippy::too_many_arguments)]
+fn check_sent(
+    mailbox: &mut Mailbox,
+    account: Id,
+    calendar: Id,
+    download: &EventsDownload,
+    series: &[RemoteEvent],
+    rest: &[RemoteEvent],
+    waiting: &HashMap<String, EventChangeKind>,
+    email: &str,
+    offset_at: &dyn Fn(Timestamp) -> i32,
+    merged: &mut Merged,
+) -> Checked {
+    let mut checked = Checked::default();
+    if !mailbox.event_checks.iter().any(|check| check.account == account) {
+        return checked;
+    }
+    let complete = download.complete && download.events.len() <= MAX_EVENTS && download.from < download.to;
+    let asked = |instant: Timestamp| complete && (download.from..download.to).contains(&instant);
+    let covers = |event: &Event| event.calendar == calendar && event.recurrence.is_none() && asked(server_start(event, offset_at));
+    let theirs: HashMap<&str, &RemoteEvent> = series.iter().chain(rest).map(|remote| (remote.id.as_str(), remote)).collect();
+    let mut still: Vec<EventCheck> = Vec::new();
+    // What a log line calls the event: a tag made of its id, the same in every line about it.
+    let tag = |check: &EventCheck| id_tag(if check.of_occurrence() { &check.series } else { &check.remote });
+    let seen = |merged: &mut Merged, check: &EventCheck| {
+        log::info!("calendar: #{} is on the server as it was sent ({:?})", tag(check), check.kind);
+        merged.verified += 1;
+    };
+    let not_yet = |check: &EventCheck| {
+        log::info!("calendar: #{} is not on the server as it was sent yet (look {} of {MAX_CHECK_TRIES})", tag(check), check.tries);
+    };
+    let failed = |merged: &mut Merged, check: &EventCheck, why: &str, line: String| {
+        log::warn!("calendar: #{}: a change the server said it took is not on the server ({:?}): {why}", tag(check), check.kind);
+        merged.put_back += 1;
+        merged.say(line);
+    };
+    for mut check in std::mem::take(&mut mailbox.event_checks) {
+        if check.account != account {
+            still.push(check);
+            continue;
+        }
+        if check.of_occurrence() {
+            // One day of a series that was deleted there: the series is not to have it.
+            let of = mailbox.events.values().find(|event| event.origin.account == account && event.origin.id == check.series);
+            let Some(of) = of.map(|of| of.as_ref().clone()) else { continue };
+            if of.calendar != calendar || !asked(check.occurrence) {
+                still.push(check);
+                continue;
+            }
+            let near = if of.all_day { 12 * 3_600 - 1 } else { 90 };
+            let is_it = |remote: &RemoteEvent| {
+                remote.series == check.series
+                    && remote.kind != RemoteEventKind::Single
+                    && remote.original.unwrap_or(remote.start).saturating_sub(check.occurrence).saturating_abs() <= near
+            };
+            if !rest.iter().any(is_it) {
+                seen(merged, &check);
+                continue;
+            }
+            check.tries = check.tries.saturating_add(1);
+            if check.tries < MAX_CHECK_TRIES {
+                not_yet(&check);
+                checked.held_days.entry(check.series.clone()).or_default().push(check.occurrence);
+                still.push(check);
+            } else {
+                let name = called(Some(&of));
+                let line = format!(
+                    "One day of {name} was deleted here and the server said it deleted it too, but it still has it. That day is back in the calendar."
+                );
+                failed(merged, &check, "the server still has the occurrence", line);
+            }
+            continue;
+        }
+        // A change still waits for it: what it is to be on the server is not settled yet.
+        if waiting.contains_key(&check.remote) {
+            still.push(check);
+            continue;
+        }
+        let here = mailbox.events.values().find(|event| event.origin.account == account && event.origin.id == check.remote);
+        let here = here.map(|event| event.as_ref().clone());
+        match (check.kind, theirs.get(check.remote.as_str())) {
+            (EventChangeKind::Delete, found) => {
+                // Still there, itself or (a series) in one of its days?
+                if found.is_some() || rest.iter().any(|remote| remote.series == check.remote) {
+                    check.tries = check.tries.saturating_add(1);
+                    if check.tries < MAX_CHECK_TRIES {
+                        not_yet(&check);
+                        checked.held.insert(check.remote.clone(), EventChangeKind::Delete);
+                        still.push(check);
+                    } else {
+                        let name = called(check.base.as_deref());
+                        let line = format!(
+                            "{name} was deleted here and the server said it deleted it too, but it still has it. It is back in the calendar."
+                        );
+                        failed(merged, &check, "the server still has the event", line);
+                    }
+                    continue;
+                }
+                // Gone, as far as this download can tell.
+                let told = match check.base.as_deref() {
+                    Some(base) if base.recurrence.is_some() => complete && base.calendar == calendar,
+                    Some(base) => covers(base),
+                    None => complete,
+                };
+                if told {
+                    seen(merged, &check);
+                } else {
+                    still.push(check);
+                }
+            }
+            (_, Some(remote)) => {
+                // (No longer here: there is nothing to compare, and nothing to put back.)
+                let Some(here) = here else { continue };
+                let differs = not_shown(&check.fields, &series_from_remote(remote, email, offset_at), offset_at);
+                // Shown as it was sent: the change has arrived.
+                if differs.is_empty() {
+                    seen(merged, &check);
+                    continue;
+                }
+                // Not the version the server said it made of the change: an answer from before
+                // it, perhaps. Looked for again in the next download, a few times.
+                let their_version = !check.change_key.is_empty() && remote.change_key == check.change_key;
+                if !their_version {
+                    check.tries = check.tries.saturating_add(1);
+                    if check.tries < MAX_CHECK_TRIES {
+                        not_yet(&check);
+                        checked.held.insert(check.remote.clone(), EventChangeKind::Update);
+                        still.push(check);
+                        continue;
+                    }
+                }
+                let (name, what) = (called(Some(&here)), listed(&differs));
+                if their_version {
+                    let line = format!(
+                        "The server took the change to {name} but has {what} otherwise than it was sent. It is shown here as the server has it."
+                    );
+                    failed(merged, &check, "the server shows other values than it was sent", line);
+                } else {
+                    let line = format!(
+                        "{name} was changed here and the server said it took the change, but it still has {what} as before. It was put back to what the server has."
+                    );
+                    failed(merged, &check, "the server still shows the values of before", line);
+                }
+            }
+            (_, None) => {
+                let Some(here) = here else { continue };
+                if !covers(&here) {
+                    still.push(check);
+                    continue;
+                }
+                check.tries = check.tries.saturating_add(1);
+                if check.tries < MAX_CHECK_TRIES {
+                    not_yet(&check);
+                    checked.held.insert(check.remote.clone(), EventChangeKind::Update);
+                    still.push(check);
+                    continue;
+                }
+                let name = called(Some(&here));
+                if check.kind == EventChangeKind::Create && keep_on_this_computer(mailbox, here.id) {
+                    let line = format!(
+                        "{name} was made here and the server said it took it, but it is not in the server's calendar. It is kept on this computer only: it is not in your Outlook calendar."
+                    );
+                    failed(merged, &check, "the server doesn't have the event", line);
+                } else {
+                    let line = format!(
+                        "{name} was changed here and the server said it took the change, but the server's calendar doesn't have it where it is here. It was taken out here; the next Send/Receive shows it where the server has it."
+                    );
+                    failed(merged, &check, "the server doesn't have the event where it was sent to", line);
+                }
+            }
+        }
+    }
+    mailbox.event_checks = still;
+    checked
+}
+
 /// Merge the events a server has in a stretch of one calendar into the mailbox.
 ///
 /// - An event the mailbox doesn't have (by what the server calls it) is added, in the calendar
@@ -1652,6 +2305,14 @@ pub fn merge_events(mailbox: &mut Mailbox, download: &EventsDownload, offset_at:
         } else {
             rest.push(remote);
         }
+    }
+    // What was sent to the server and is yet to be seen there: is it in this download as it was
+    // sent? What isn't yet stays as it is here for now, as what waits to be sent does.
+    let before_checks = mailbox.event_checks.clone();
+    let checked = check_sent(mailbox, account, calendar, download, &series, &rest, &waiting, &email, offset_at, &mut merged);
+    waiting.extend(checked.held);
+    for (name, days) in checked.held_days {
+        waiting_days.entry(name).or_default().extend(days);
     }
     // Each series as it is here from now on (`shapes`): one event that repeats, which its
     // occurrences are told from. A series whose rule can't be said here is passed over, and its
@@ -1859,9 +2520,12 @@ pub fn merge_events(mailbox: &mut Mailbox, download: &EventsDownload, offset_at:
     // its occurrences are: it goes when the server says it is gone.)
     if download.complete && download.events.len() <= MAX_EVENTS && download.from < download.to {
         let within = |event: &Event| event.calendar == calendar && (download.from..download.to).contains(&server_start(event, offset_at));
+        // (Not one that a change waits for, or that was just sent and isn't seen there yet: it
+        // may be elsewhere on the server than it is here, outside what was asked for. The
+        // server says so itself when it is told the change, should it no longer have it.)
         let gone: Vec<Id> = known
             .iter()
-            .filter(|(remote, _)| !seen.contains(*remote))
+            .filter(|(remote, _)| !seen.contains(*remote) && !waiting.contains_key(*remote))
             .filter_map(|(_, id)| mailbox.event(*id))
             .filter(|event| within(event) && event.recurrence.is_none())
             .map(|event| event.id)
@@ -1873,8 +2537,15 @@ pub fn merge_events(mailbox: &mut Mailbox, download: &EventsDownload, offset_at:
             }
         }
     }
-    // A change to an event that the server no longer has is no change any more.
-    tidy_changes(mailbox);
+    // A change that can't be sent any more is given up, and says so.
+    for dropped in tidy_changes(mailbox) {
+        if !dropped.message.is_empty() && !merged.messages.contains(&dropped.message) {
+            merged.say(dropped.message.clone());
+        }
+        merged.dropped.push(dropped);
+    }
+    merged.unverified = mailbox.event_checks.iter().filter(|check| check.account == account).count();
+    merged.checked = mailbox.event_checks != before_checks;
     // And beside the server's calendar, the mailbox's own says where it lives, or goes.
     let listed: Vec<(Id, String)> = mailbox.calendars.iter().map(|calendar| (calendar.id, calendar.name.clone())).collect();
     settle_calendars(mailbox);
@@ -2023,13 +2694,29 @@ pub(crate) fn offset_of(s: &Session) -> impl Fn(Timestamp) -> i32 + use<> {
 /// what came from it. A download that changes nothing leaves the mailbox as it is, unsaved
 /// changes or none.
 pub fn apply_events(s: &mut Session, download: &EventsDownload) -> CmdResult {
-    let offset_at = offset_of(s);
+    Ok(take_in_events(s, download)?.json(download.complete))
+}
+
+/// [`apply_events`], with what the merge came to as it is ([`Merged`]): for a host that tells
+/// the owner what was put back, and logs it.
+pub fn take_in_events(s: &mut Session, download: &EventsDownload) -> Result<Merged, CmdError> {
+    let (offset_at, now) = (offset_of(s), s.now());
+    // A change that no download has been able to say anything about for a day is not waited
+    // for any longer (its event is outside everything that is asked for).
+    // (And no more of them than are ever noted: a file from elsewhere may hold any number.)
+    s.mailbox.event_checks.truncate(MAX_EVENT_CHECKS);
+    let noted = s.mailbox.event_checks.len();
+    s.mailbox.event_checks.retain(|check| check.made != 0 && now.saturating_sub(check.made) <= MAX_CHECK_AGE);
+    let expired = noted - s.mailbox.event_checks.len();
+    if expired > 0 {
+        log::debug!("calendar: {expired} sent changes were not seen in any download for a day");
+    }
     let merged = merge_events(&mut s.mailbox, download, &offset_at)?;
-    if merged.changed() {
+    if merged.changed() || expired > 0 {
         // Not through `run` when the host calls this, so say it here: what is shown is out of date.
         s.mailbox_changed();
     }
-    Ok(merged.json(download.complete))
+    Ok(merged)
 }
 
 /// Take in the contacts a host downloaded ([`merge_contacts`]). Not an undo step, as [`apply_events`].
@@ -2061,6 +2748,7 @@ pub fn forget(s: &mut Session, account: Id) -> CmdResult {
     let unsent = mailbox.event_changes.len();
     mailbox.event_changes.retain(|change| change.account != account);
     let unsent = unsent - mailbox.event_changes.len();
+    mailbox.event_checks.retain(|check| check.account != account);
     let followed = |calendar: &Calendar| calendar.origin.account == account;
     let calendars = mailbox.calendars.iter().filter(|calendar| followed(calendar)).count();
     if calendars > 0 && calendars == mailbox.calendars.len() {
@@ -2144,19 +2832,20 @@ pub fn apply_calendars(s: &mut Session, download: &CalendarsDownload) -> CmdResu
     } else {
         Vec::new()
     };
+    let mut dropped: Vec<Dropped> = Vec::new();
     if !gone.is_empty() {
         let events: Vec<Id> = mailbox.events.values().filter(|event| gone.contains(&event.calendar)).map(|event| event.id).collect();
         for id in events {
             let _ = mailbox.remove_event(id);
         }
         mailbox.calendars.retain(|calendar| !gone.contains(&calendar.id));
-        tidy_changes(mailbox);
+        dropped = tidy_changes(mailbox);
     }
     settle_calendars(mailbox);
     if added + updated + gone.len() > 0 {
         s.mailbox_changed();
     }
-    Ok(json!({"added": added, "updated": updated, "removed": gone.len(), "complete": download.complete}))
+    Ok(json!({"added": added, "updated": updated, "removed": gone.len(), "complete": download.complete, "dropped": dropped_json(&dropped)}))
 }
 
 /// Take in the mailbox's own categories as an account's server has them
@@ -2233,8 +2922,15 @@ fn forget_command(s: &mut Session, v: &Value) -> CmdResult {
 }
 
 fn event_changes_command(s: &mut Session, v: &Value) -> CmdResult {
-    let upload = event_upload(s, p::req_id(v, "account")?)?;
-    serde_json::to_value(upload).map_err(|e| fail(e.to_string()))
+    let account = p::req_id(v, "account")?;
+    // What can't be sent any more is given up first, and said: none of it goes without a word.
+    let dropped = settle_changes(s);
+    let upload = event_upload(s, account)?;
+    let mut answer = serde_json::to_value(upload).map_err(|e| fail(e.to_string()))?;
+    if let Some(answer) = answer.as_object_mut() {
+        answer.insert("dropped".into(), dropped_json(&dropped));
+    }
+    Ok(answer)
 }
 
 fn apply_event_changes_command(s: &mut Session, v: &Value) -> CmdResult {

@@ -1,6 +1,6 @@
 # Calendar: matching Outlook
 
-Status: working list, 2026-10-12 (fourth revision: the third wave is in). The owner's bar for the
+Status: working list, 2026-10-12 (fifth revision: a change that doesn't reach the server can't go unnoticed). The owner's bar for the
 calendar is "behaves exactly like Outlook"; this is the list that bar is checked against.
 Behaviour is written down from using Outlook for Windows (classic) as a black box; nothing of it
 is copied but how it behaves.
@@ -86,6 +86,10 @@ server; what has met the real Microsoft 365 service is only what the owner has u
 |---|---|
 | Shows what is on the server, within moments of a change made elsewhere | Done: every half minute while the calendar is in front, at once when the window comes back, the calendar is switched to, other days come into view or something is changed here; every five minutes otherwise |
 | Everything made or changed here is on the server at once | Done, meetings and series included: a refusal is put back and said, an unreachable server is tried again. Nothing that mails other people goes without the owner's yes. Undo doesn't reach a change the server already has |
+| A change made here is in Outlook, or the owner knows it is not | Done: the server's "yes" is not taken for the change having arrived. Every change it says it took is looked for in what comes down next (asked for again within seconds); what the server doesn't show after three looks, or shows otherwise than it was sent, is put back to what the server has, and the owner is told which item and what of it (status bar and Send/Receive problems). A waiting change that can't be sent any more is never dropped without a word either. An answer that is older than the change it follows (a view asked for right after a write) changes nothing here |
+| What is only on this computer doesn't pass for the Outlook calendar | Done: a calendar of the mailbox's own that holds items beside the account's says "Only on this computer: not in your Outlook calendar" on its block and in the list, a line under the header counts the items and offers "Move to My Account's Calendar" (appointments move, meetings ask about their invitations, a copy of what the account's calendar has already just goes, an emptied calendar goes away), and a change to such an item says in the status bar that it stays here |
+| (none: Outlook is the server's own program) | File › Info › Check Calendar Connection: on the real account, after a question that says exactly what it does, one test appointment a year ahead is made, read back, changed twice (once as an instant, once said in this computer's time zone), read back each time and deleted; the report has the server's status and words for each step, and what was sent beside what the server has |
+| An item of another calendar than the main one, or of one that somebody shares | Done: written through its calendar (`/me/calendars/{id}/events/{id}`), which is the only way the service knows an item of a shared calendar by |
 | Recurring series as series (not only as their occurrences), with exceptions | Done both ways for the rules the mailbox can express; "first weekday of the month" and the like still come down as loose occurrences |
 | Categories with the mailbox's own names and colours | Done on items both ways; the mailbox's own list and colours come once the owner allows reading mailbox settings (asked for at the next Connect) |
 | Every calendar and calendar group of the account; shared calendars; other people's calendars | Done for the account's own calendars and groups (see the list row above): only the account's main calendar is ticked when the list first comes, the rest wait to be ticked, and what the owner ticks stays; Later: shared and other people's |
@@ -113,6 +117,11 @@ server; what has met the real Microsoft 365 service is only what the owner has u
 
 ## Known differences from Outlook in what is done
 
+- Event ids are the service's ordinary ones, which change when an item is moved to another
+  calendar in Outlook: a change that was waiting for such an item is answered "not found", the
+  item goes here and the owner is told; the next download has it in its new calendar. (Asking
+  for immutable ids would change every id the mailbox has kept so far.)
+
 - A copy made by dragging or pasting is a plain appointment; Outlook keeps the attendees as an
   unsent meeting.
 - Cut leaves the item where it is until it is pasted (deleting it first would cancel a meeting on
@@ -139,11 +148,20 @@ server; what has met the real Microsoft 365 service is only what the owner has u
   icons the ribbon had already. Outlook opens a calendar in a window of its own on request;
   that is not offered.
 
+## Proven and not proven
+
+Everything in "Staying in step" is tested against a stand-in that takes only what the documented
+Microsoft Graph v1.0 service takes (`crates/net/src/graph/standin.rs`: addresses, headers, bodies,
+ids with `=`, `/` and `+`, a view that lags behind a change). What only the real service can say
+is what the owner's Check Calendar Connection shows: whether a change of time is taken as it is
+sent, and whether a time said in this computer's zone means the same instant there.
+
 ## Revision history
 
 | Date | Change |
 |---|---|
 | 2026-10-12 | First version, when the owner made the calendar the top priority |
+| 2026-10-12 | After a change of time made here didn't show in the owner's Outlook: sent changes are checked against what comes down, nothing is dropped silently, items that are only on this computer say so and can be moved, events of other calendars go through their calendar, and the owner can check the connection on the real account |
 | 2026-10-12 | The first wave is in: rows marked Done, and rows corrected where the code does something else than the list said (server series, deleting meetings, the calendar list) |
 | 2026-10-12 | The third wave is in: meeting requests in the reading pane, the appointment window's command bar, unsaved-changes question and recurrence dialog, the Scheduling Assistant, calendars by group, side by side and overlaid, working hours from the mailbox |
 | 2026-10-12 | The second wave is in: the grid (resize, copy, keys, navigator, time scales), series as series with the question, meetings and answers through Microsoft 365, every calendar, categories, several appointment windows; a list of known differences |

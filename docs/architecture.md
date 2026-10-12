@@ -1,6 +1,6 @@
 # MailCraft architecture
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-12 · **Change:** patch (`html` makes the line a message list shows) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-12 · **Change:** minor (calendar changes are checked against the server; `html` makes the line a message list shows) · **Target:** Microsoft Outlook (Microsoft 365)
 
 How MailCraft is built today. Rules for working in the code are in [`AGENTS.md`](../AGENTS.md). The
 shape — layers, "everything is a command", the swappable egui front end, the control channel, MCP,
@@ -74,6 +74,14 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
   host first asks Graph to send the Outbox and, every quarter of an hour, for the calendar and
   contacts (`crates/net/src/graph.rs`); the engine merges them as server-kept, read-only items
   (`cmd/remote.rs`, `Origin`). Mail itself still goes over IMAP.
+- **A server's "yes" to a calendar change is checked.** A change made here is noted
+  (`Mailbox::event_changes`), sent by the host, and then noted once more as something to be seen
+  (`Mailbox::event_checks`): the downloads that follow have to show the event as it was sent.
+  Until one does, a download leaves the event as it is here (an answer may be older than the
+  change); after three that don't, the event is put back to what the server has and the owner is
+  told. A waiting change that can't be sent any more is given up with a word, never silently
+  (`cmd/remote.rs`: `check_sent`, `tidy_changes`). The tests hold all of it against
+  `mailcraft_net::graph::standin`, which takes only what the documented service takes.
 - **Two-way sync without a journal of everything.** Flags are compared with what the server last
   said (`Message::synced`): a flag changed here since then goes up, one changed there comes down,
   and here wins when both did. Moves and permanent deletes can't be seen by comparing, so the
@@ -108,3 +116,4 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
 |---|---|---|
 | 2026-10-11 | major | First architecture doc |
 | 2026-10-12 | patch | `html` also makes the line a message list shows (`preview`, `text_preview`) |
+| 2026-10-12 | minor | Calendar changes are checked against what comes down; the strict Graph stand-in |
