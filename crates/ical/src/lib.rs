@@ -4,11 +4,17 @@
 //! [`format_rrule`] turn a recurrence rule into the model's [`Recurrence`](mailcraft_model::Recurrence)
 //! and back.
 //!
-//! The model keeps event times as local wall-clock times, so the reader converts on the way in: a
-//! UTC time (`…Z`) becomes the local time through the caller's `offset_at`, and a date becomes an
-//! all-day event. A time with a `TZID` is taken as local time as written, like a floating one:
-//! `VTIMEZONE` blocks are skipped, not applied (only a `TZID` that names UTC is honoured). The
-//! writer writes floating times.
+//! The model keeps event times as wall-clock times in the zone the calendar is shown in, so the
+//! reader converts on the way in: a UTC time (`…Z`) and a time in a zone (`TZID`) become the time
+//! there through the caller's `offset_at`, and a date becomes an all-day event. What a `TZID`
+//! means comes from the `VTIMEZONE` the text brings, else from the zone of that name (`zones.rs`
+//! has the order, and what happens to a zone nobody knows). An event in a zone with another
+//! clock keeps that zone, and a series repeats by it. A time without any zone is taken as it is
+//! written.
+//!
+//! The writer writes times without a zone ([`write()`]) or, told which zone the calendar is shown
+//! in ([`write_in`]), times with their zone and the `VTIMEZONE` that defines it, which is what
+//! other programs read right.
 //!
 //! Input is hostile. Nothing here panics on any text: line lengths and counts are capped, and a
 //! component that makes no sense is skipped.
@@ -21,13 +27,16 @@ mod rrule;
 mod tests;
 mod values;
 mod write;
+#[cfg(test)]
+mod zone_tests;
+mod zones;
 
 use mailcraft_model::{Event, Task};
 use mailcraft_time::Timestamp;
 
 pub use read::parse;
 pub use rrule::{format_rrule, parse_rrule};
-pub use write::write;
+pub use write::{write, write_in};
 
 /// What an iCalendar text holds.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -36,6 +45,11 @@ pub struct IcsFile {
     pub tasks: Vec<Task>,
     /// `METHOD` (`REQUEST`, `REPLY`, `CANCEL`, `PUBLISH`…), upper-cased; empty when absent.
     pub method: String,
+    /// What there is to tell the owner about how the text was read, in sentences: a time zone
+    /// nobody knows (its times are kept as written, or at the offset its name gives), a zone the
+    /// text defines otherwise than its name says. A few at most; empty when everything was
+    /// taken at its word.
+    pub notes: Vec<String>,
 }
 
 /// What [`write()`] puts around the events and to-dos.

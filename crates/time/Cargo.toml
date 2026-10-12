@@ -3,20 +3,21 @@ name = "mailcraft-time"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "MailCraft dates and times: civil calendar maths, RFC 5322 / ISO 8601 / iCalendar text, the clock and the local offset (wasm-safe)"
+description = "MailCraft dates and times: civil calendar maths, RFC 5322 / ISO 8601 / iCalendar text, time zones (the IANA database, Windows' names for zones), the clock and the system's zone (wasm-safe)"
 
 [lints]
 workspace = true
 
 [dependencies]
 serde = { workspace = true }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-chrono = { workspace = true }
+# The time-zone database and the system's zone. Only this crate depends on it: the rest of the
+# workspace sees `mailcraft_time::Zone`.
+jiff = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # The browser clock and time zone (`SystemTime::now()` panics on wasm32).
 js-sys = "0.3"
+jiff = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

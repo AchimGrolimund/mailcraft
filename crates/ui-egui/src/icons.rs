@@ -532,6 +532,16 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
             pen.circle(10.0, 10.0, 6.5, c);
             pen.line_c(&[(10.0, 6.0), (10.0, 10.0), (13.0, 12.0)], a);
         }
+        // The world with its meridians, and the hour a place on it has.
+        "timeZones" | "globe" => {
+            pen.circle(9.0, 10.0, 6.0, c);
+            pen.line(&[(3.0, 10.0), (15.0, 10.0)]);
+            pen.line(&[(9.0, 4.0), (6.9, 6.6), (6.3, 10.0), (6.9, 13.4), (9.0, 16.0)]);
+            pen.line(&[(9.0, 4.0), (11.1, 6.6), (11.7, 10.0), (11.1, 13.4), (9.0, 16.0)]);
+            pen.fcircle(14.6, 14.6, 3.6, soft);
+            pen.circle(14.6, 14.6, 3.6, a);
+            pen.line_c(&[(14.6, 12.6), (14.6, 14.6), (16.0, 15.4)], a);
+        }
         "notes" | "description" => {
             pen.rect(4.0, 3.0, 16.0, 17.0, c);
             for y in [7.0, 10.0, 13.0] {
@@ -725,6 +735,8 @@ pub const NAMES: &[&str] = &[
     "location",
     "clock",
     "time",
+    "timeZones",
+    "globe",
     "notes",
     "description",
     "work",

@@ -1112,7 +1112,7 @@ mod event {
     use egui::{Ui, vec2};
     use mailcraft_engine::Session;
     use mailcraft_model::{Address, Freq, Id, Recurrence, ShowAs, format_list};
-    use mailcraft_time::{Date, DateTime, Weekday, duration_label, month_name, time_short};
+    use mailcraft_time::{Date, DateTime, Weekday, Zone, duration_label, month_name, time_short};
     use serde_json::{Map, Value, json};
 
     use super::kit::{
@@ -2172,6 +2172,22 @@ mod event {
         /// the occurrence's own day, and the commands are told the series' (which is how
         /// `calendar.edit` takes a change to one occurrence).
         apart: i64,
+        /// Time Zones is on: the start and the end each say which zone their time is by, and
+        /// the date and time fields are by the clocks of those zones.
+        zones: bool,
+        /// The zones of the start and of the end, by name; empty for the zone the calendar is
+        /// shown in.
+        start_zone: String,
+        end_zone: String,
+        /// The event had zones of its own when the form opened (taking them off is then a
+        /// change to send).
+        had_zones: bool,
+        /// What is typed into a zone's list to find a zone.
+        zone_query: String,
+        /// The zones picked in this form, for the list of the ones chosen lately.
+        picked_zones: Vec<String>,
+        /// The zone the calendar is shown in, by name: what an empty zone stands for.
+        shown_zone: String,
     }
 
     impl EventForm {
@@ -2212,8 +2228,16 @@ mod event {
                 private: p.get("private").and_then(Value::as_bool).unwrap_or(false),
                 description: text("description"),
                 focus: true,
+                shown_zone: s.zone().id(),
                 ..Default::default()
             };
+            // Zones it is to have of its own: its times are then by their clocks.
+            let zone = |k: &str| p.get(k).and_then(Value::as_str).and_then(Zone::named).map(Zone::id).unwrap_or_default();
+            (f.start_zone, f.end_zone) = (zone("startZone"), zone("endZone"));
+            if f.end_zone.is_empty() {
+                f.end_zone = f.start_zone.clone();
+            }
+            f.zones = !all_day && !f.start_zone.is_empty();
             f.set_span(start, end, all_day, clock, s.prefs.twelve_hour);
             // What it opened with is nothing to ask about when its window closes.
             f.baseline = f.fields();
@@ -2245,23 +2269,38 @@ mod event {
                 private: e.private,
                 description: e.description.clone(),
                 focus: true,
+                shown_zone: s.zone().id(),
                 ..Default::default()
             };
+            let here = |instant: mailcraft_time::Timestamp| s.offset_at(instant);
             // Which of a series is meant, when that is said: one occurrence shows on its own day.
+            // (The day that is said is the day the occurrence starts on here; the series names
+            // it by a day of its own, which is another on some nights for a series that repeats
+            // by another zone's clock.)
             f.scope = match (p.get("scope").and_then(Value::as_str), e.recurrence.is_some()) {
                 (Some("series"), true) => Some(Scope::Series),
                 (Some("occurrence"), true) => {
                     let said = p.get("occurrence").and_then(Value::as_str).and_then(Date::parse_iso);
                     let day = said.or(s.sel.event_day.filter(|_| s.sel.event == Some(id)));
-                    day.filter(|day| e.occurrences(*day, *day).iter().any(|o| o.start.date == *day)).map(Scope::One)
+                    day.filter(|day| e.series_day_on(*day, &here).is_some()).map(Scope::One)
                 }
                 _ => None,
             };
             f.apart = match f.scope {
-                Some(Scope::One(day)) => e.start.date.days_until(day),
+                Some(Scope::One(day)) => e.start.date.days_until(e.series_day_on(day, &here).unwrap_or(day)),
                 _ => 0,
             };
-            let (start, end) = (e.start.add_days(f.apart), e.end.add_days(f.apart));
+            let (mut start, mut end) = (e.start.add_days(f.apart), e.end.add_days(f.apart));
+            // An event with zones of its own shows its times by their clocks, with the zones
+            // beside them, as Outlook does; and a series counts its days there.
+            if let (false, Some(zone)) = (e.all_day, e.zone()) {
+                let ends_in = e.zone_of_end().unwrap_or(zone);
+                let (begins, ends) = e.instants(&here);
+                let first = zone.wall(begins);
+                (start, end) = (first.add_days(f.apart), ends_in.wall(ends).add_days(f.apart));
+                (f.zones, f.had_zones, f.start_zone, f.end_zone) = (true, true, zone.id(), ends_in.id());
+                f.repeat = Repeat::of(e.recurrence.as_ref(), first.date);
+            }
             let clock = DateTime { hour: s.prefs.work_start.min(23), ..DateTime::at_midnight(start.date) };
             f.set_span(start, end, e.all_day, clock, s.prefs.twelve_hour);
             f.baseline = f.fields();
@@ -2331,13 +2370,19 @@ mod event {
         /// The meeting as the Scheduling Assistant needs to know it.
         pub(crate) fn meeting(&self) -> crate::scheduling::Meeting {
             let people = |line: &str| Address::parse_list(line).into_iter().take(500).collect();
+            // (Everybody's time is drawn by the calendar's clock: so is the meeting's, whatever
+            // zones its own fields are by.)
+            let span = match (self.zones && !self.all_day, self.instants(), Zone::named(&self.shown_zone)) {
+                (true, Some((begins, ends)), Some(here)) => (ends >= begins).then(|| (here.wall(begins), here.wall(ends))),
+                _ => self.span(),
+            };
             crate::scheduling::Meeting {
                 calendar: self.calendar,
                 event: self.id,
                 required: people(&self.required),
                 optional: people(&self.optional),
-                day: self.shown_day(),
-                span: self.span(),
+                day: span.map_or_else(|| self.shown_day(), |(start, _)| start.date),
+                span,
                 all_day: self.all_day,
             }
         }
@@ -2361,9 +2406,16 @@ mod event {
             if self.all_day || end < start {
                 return;
             }
+            let minutes = start.minutes_until(end).max(0);
+            // (It was moved by the calendar's clock; the fields of an event with zones of its
+            // own are by theirs.)
+            let (start, end) = match (self.zones, Zone::named(&self.shown_zone), self.zone_of(&self.start_zone), self.zone_of(&self.end_zone)) {
+                (true, Some(here), Some(starts_in), Some(ends_in)) => (here.wall_in(start, starts_in), here.wall_in(end, ends_in)),
+                _ => (start, end),
+            };
             (self.start_date, self.start_time) = (start.date.iso(), start.time_short(twelve));
             (self.end_date, self.end_time) = (end.date.iso(), end.time_short(twelve));
-            self.minutes = start.minutes_until(end).max(0);
+            self.minutes = minutes;
             if self.apart == 0 {
                 self.repeat.follow(self.last_start, start.date);
             }
@@ -2373,7 +2425,7 @@ mod event {
         /// The Scheduling Assistant's page: when the meeting is, over when everybody is free.
         fn scheduling_page(&mut self, app: &mut MailApp, ui: &mut Ui, pass: &mut Pass, below: f32) {
             let twelve = pass.twelve;
-            self.time_rows(ui, pass, app.session.prefs.default_reminder);
+            self.time_rows(ui, pass, &app.session);
             // In a window of the system the grid has what is left of it; inside the main
             // window it has a height of its own.
             let height =
@@ -2428,7 +2480,12 @@ mod event {
             if self.all_day {
                 self.end_date = start.date.add_days(self.days).iso();
             } else {
-                let end = start.add_minutes(self.minutes);
+                // (By two clocks, the end is so much later, as its own clock shows that.)
+                let zones = self.zone_of(&self.start_zone).zip(self.zone_of(&self.end_zone)).filter(|_| self.two_clocks());
+                let end = match zones {
+                    Some((starts_in, ends_in)) => ends_in.wall(starts_in.instant(start).saturating_add(self.minutes.saturating_mul(60))),
+                    None => start.add_minutes(self.minutes),
+                };
                 self.end_date = end.date.iso();
                 self.end_time = end.time_short(twelve);
             }
@@ -2444,6 +2501,10 @@ mod event {
             let (Some(start), Some(end)) = (self.start(), self.end()) else { return };
             if self.all_day {
                 self.days = start.date.days_until(end.date).max(0);
+            } else if self.two_clocks() {
+                if let Some((begins, ends)) = self.instants().filter(|(begins, ends)| ends >= begins) {
+                    self.minutes = (ends - begins) / 60;
+                }
             } else if start.minutes_until(end) >= 0 {
                 self.minutes = start.minutes_until(end);
             }
@@ -2495,6 +2556,9 @@ mod event {
             if self.all_day {
                 let days = start.date.days_until(end.date);
                 (days >= 0).then(|| duration_label((days + 1) * 24 * 60))
+            } else if self.two_clocks() {
+                let (begins, ends) = self.instants()?;
+                (ends >= begins).then(|| duration_label((ends - begins) / 60))
             } else {
                 let minutes = start.minutes_until(end);
                 (minutes >= 0).then(|| duration_label(minutes))
@@ -2571,7 +2635,98 @@ mod event {
                 m.insert("attendees".into(), json!(""));
                 m.insert("optional".into(), json!(""));
             }
+            // The zones the times above are by, for an event that has (or had) zones of its
+            // own: none for whole days, and none again when Time Zones was turned off.
+            let zoned = self.zones && !self.all_day;
+            if zoned || self.had_zones {
+                let name = |zone: &str| if zoned && !zone.is_empty() { json!(zone) } else { Value::Null };
+                m.insert("startZone".into(), name(&self.start_zone));
+                m.insert("endZone".into(), if self.end_zone == self.start_zone { Value::Null } else { name(&self.end_zone) });
+            }
             m
+        }
+
+        /// The zone a name of this form stands for: the one it names, or for none the zone the
+        /// calendar is shown in.
+        fn zone_of(&self, name: &str) -> Option<Zone> {
+            Zone::named(if self.zones && !name.is_empty() { name } else { &self.shown_zone })
+        }
+
+        /// When the fields say the event starts and ends, as instants: each time by the clock
+        /// of its own zone. `None` when they don't read, or the zones are not known.
+        fn instants(&self) -> Option<(mailcraft_time::Timestamp, mailcraft_time::Timestamp)> {
+            let (start, end) = (self.start()?, self.end()?);
+            Some((self.zone_of(&self.start_zone)?.instant(start), self.zone_of(&self.end_zone)?.instant(end)))
+        }
+
+        /// The start and the end are by the clocks of two zones (a flight): how long it is, and
+        /// where the end is when the start moves, is then a matter of instants.
+        fn two_clocks(&self) -> bool {
+            self.zones && !self.all_day && self.zone_of(&self.start_zone) != self.zone_of(&self.end_zone)
+        }
+
+        /// Turn Time Zones on or off. On, the start and the end say the zone the calendar is
+        /// shown in, to be changed; off, the event has no zones of its own. The times stay as
+        /// they are on the clock either way, as in Outlook.
+        fn set_zones(&mut self, on: bool) {
+            self.zones = on && !self.all_day;
+            let zone = if self.zones { self.shown_zone.clone() } else { String::new() };
+            (self.start_zone, self.end_zone) = (zone.clone(), zone);
+            self.zone_query.clear();
+        }
+
+        /// Another zone was picked for the start (or, with `end`, for the end). The time stays
+        /// as it is on the clock, which is another instant in another zone, as in Outlook; the
+        /// end's zone follows the start's while the two are the same.
+        fn pick_zone(&mut self, zone: Zone, end: bool) {
+            let together = self.end_zone == self.start_zone;
+            if end {
+                self.end_zone = zone.id();
+            } else {
+                self.start_zone = zone.id();
+                if together {
+                    self.end_zone = zone.id();
+                }
+            }
+            self.picked_zones.push(zone.id());
+            self.picked_zones.truncate(16);
+            self.end_moved();
+        }
+
+        /// The zone the calendar is shown in is another one now (the computer was carried
+        /// there while the form stood open). An event without zones of its own had its times
+        /// by the old clock: they are the same instants by the new one, so that saving it
+        /// moves nothing. One with zones of its own reads as it did.
+        pub(crate) fn rezone(&mut self, was: Zone, now: Zone, twelve: bool) {
+            let own = self.zones && !self.all_day;
+            if !own && !self.all_day {
+                let turn = |date: &str, time: &str| {
+                    let day = Date::parse_iso(date)?;
+                    let (h, m) = parse_clock(time)?;
+                    Some(was.wall_in(DateTime::new(day, h, m, 0)?, now))
+                };
+                let fresh = !self.dirty();
+                if let (Some(start), Some(end)) = (turn(&self.start_date, &self.start_time), turn(&self.end_date, &self.end_time)) {
+                    (self.start_date, self.start_time) = (start.date.iso(), start.time_short(twelve));
+                    (self.end_date, self.end_time) = (end.date.iso(), end.time_short(twelve));
+                    self.last_start = Some(start.date);
+                }
+                // What it opened with reads by the new clock too: it is the same event.
+                let stamp_of = |text: &str| {
+                    mailcraft_time::parse_iso(text).map(|(at, _)| stamp(&was.wall_in(at, now).date.iso(), &was.wall_in(at, now).time_short(twelve)))
+                };
+                if fresh {
+                    self.shown_zone = now.id();
+                    self.baseline = self.fields();
+                } else {
+                    for key in ["start", "end"] {
+                        if let Some(turned) = self.baseline.get(key).and_then(Value::as_str).and_then(stamp_of) {
+                            self.baseline.insert(key.into(), json!(turned));
+                        }
+                    }
+                }
+            }
+            self.shown_zone = now.id();
         }
 
         /// Whether anybody is named on the attendee lines.
@@ -2585,7 +2740,8 @@ mod event {
             let mut now = self.fields();
             match self.id {
                 Some(id) => {
-                    let mut m = changes(&self.baseline, &now, &[&["start", "end", "allDay"], &["attendees", "optional"]]);
+                    // (A time goes with the zone it is by.)
+                    let mut m = changes(&self.baseline, &now, &[&["start", "end", "allDay", "startZone", "endZone"], &["attendees", "optional"]]);
                     m.insert("id".into(), json!(id));
                     ("calendar.edit", self.scoped(Value::Object(m)))
                 }
@@ -2733,6 +2889,12 @@ mod event {
             if !self.guest && !one {
                 items.push(bar::Item { checked: self.repeat.freq.is_some(), ..item("recurrence", "recurrence", tl!("Recurrence"), 2, 3) });
             }
+            // (Whole days have no zones.)
+            items.push(bar::Item {
+                checked: self.zones && !self.all_day,
+                on: !self.all_day,
+                ..item("timeZones", "timeZones", tl!("Time Zones"), 2, 4)
+            });
             items.push(bar::Item { menu: true, plain: true, ..item("categorize", "categorize", tl!("Categorize"), 3, 6) });
             items.push(bar::Item { plain: true, checked: self.private, ..item("private", "private", tl!("Private"), 3, 6) });
             if organizes {
@@ -2806,7 +2968,6 @@ mod event {
         fn page_fields(&mut self, ui: &mut Ui, pass: &mut Pass, s: &Session) -> Option<&'static str> {
             let windowed = kit::windowed();
             let (t, twelve) = (pass.t, pass.twelve);
-            let default_reminder = s.prefs.default_reminder;
             let mut asked = None;
             row(ui, tl!("Title"), |ui| {
                 pass.text(ui, "title", &mut self.title, f32::INFINITY, "");
@@ -2819,7 +2980,7 @@ mod event {
                     row(ui, tl!("Optional"), |ui| attendee_line(ui, pass, s, "optional", &mut self.optional, hint));
                 });
             }
-            self.time_rows(ui, pass, default_reminder);
+            self.time_rows(ui, pass, s);
             row(ui, tl!("Location"), |ui| {
                 pass.text(ui, "location", &mut self.location, f32::INFINITY, "");
             });
@@ -2886,6 +3047,11 @@ mod event {
                 row(ui, "", |ui| {
                     ui.checkbox(&mut self.private, tl!("Private"));
                     ui.add_space(12.0);
+                    let mut zones = self.zones && !self.all_day;
+                    if ui.add_enabled(!self.all_day, egui::Checkbox::new(&mut zones, tl!("Time zones"))).changed() {
+                        self.set_zones(zones);
+                    }
+                    ui.add_space(12.0);
                     if !self.guest && ui.link(if self.meeting { tl!("Remove attendees") } else { tl!("Invite attendees") }).clicked() {
                         asked = Some("invite");
                     }
@@ -2916,13 +3082,28 @@ mod event {
             asked
         }
 
-        /// The Start and End rows, with All day.
-        fn time_rows(&mut self, ui: &mut Ui, pass: &mut Pass, default_reminder: Option<u32>) {
+        /// The list a zone is picked from, beside a time: for the start, or with `end` for the end.
+        fn zone_list(&mut self, ui: &mut Ui, s: &Session, end: bool) {
+            let name = if end { &self.end_zone } else { &self.start_zone };
+            let current = self.zone_of(name).unwrap_or(Zone::LOCAL);
+            let key = if end { "end_zone" } else { "start_zone" };
+            if let Some(zone) = crate::zones::picker(ui, kit::field_id(key), s, current, &mut self.zone_query, 200.0) {
+                self.pick_zone(zone, end);
+            }
+        }
+
+        /// The Start and End rows, with All day; and with Time Zones on, the zone of each.
+        fn time_rows(&mut self, ui: &mut Ui, pass: &mut Pass, s: &Session) {
             let (t, twelve) = (pass.t, pass.twelve);
+            let default_reminder = s.prefs.default_reminder;
+            let zoned = self.zones && !self.all_day;
             row(ui, tl!("Start"), |ui| {
                 let mut changed = pass.date(ui, "start_date", &mut self.start_date, true);
                 if !self.all_day {
                     changed |= pass.time(ui, "start_time", &mut self.start_time, true, None);
+                }
+                if zoned {
+                    self.zone_list(ui, s, false);
                 }
                 if changed {
                     self.start_moved(twelve);
@@ -2938,8 +3119,13 @@ mod event {
                 let mut changed = pass.date(ui, "end_date", &mut self.end_date, true);
                 if !self.all_day {
                     // On the start's own day the menu lists what comes after the start.
-                    let after = self.start().filter(|s| Date::parse_iso(&self.end_date) == Some(s.date)).map(|s| s.minutes_of_day());
+                    // (By two clocks, any time of the day may come after the start.)
+                    let after =
+                        self.start().filter(|s| Date::parse_iso(&self.end_date) == Some(s.date) && !self.two_clocks()).map(|s| s.minutes_of_day());
                     changed |= pass.time(ui, "end_time", &mut self.end_time, true, after);
+                }
+                if zoned {
+                    self.zone_list(ui, s, true);
                 }
                 if changed {
                     self.end_moved();
@@ -2964,6 +3150,10 @@ mod event {
 
         fn lay_out(&mut self, app: &mut MailApp, ui: &mut Ui, ask: Option<Ask>) -> Verdict {
             let windowed = kit::windowed();
+            // The zones that were picked in the form are listed near the top from now on.
+            for zone in std::mem::take(&mut self.picked_zones) {
+                let _ = app.execute("calendar.timeZones", json!({"used": zone, "limit": 1}));
+            }
             // What came of a question that stood before a command of this form.
             match self.settle(app) {
                 Verdict::Stay => {}
@@ -3021,6 +3211,7 @@ mod event {
                 Some("appointment") => self.page = Page::Appointment,
                 Some("scheduling") => self.page = Page::Scheduling,
                 Some("recurrence") => self.open_recurrence(),
+                Some("timeZones") => self.set_zones(!self.zones),
                 Some("private") => self.private = !self.private,
                 Some("invite") => {
                     self.meeting = !self.meeting;
@@ -3360,6 +3551,138 @@ mod event {
             let (command, params) = f.command();
             assert_eq!(s.run(command, &params).unwrap_err().to_string(), "\"maya\" isn't an e-mail address");
             assert_eq!(s.mailbox.events.len(), before);
+        }
+
+        #[test]
+        fn time_zones_keep_the_clock_time_and_go_with_the_times_they_are_for() {
+            let zone = |name: &str| Zone::named(name).unwrap();
+            // The calendar is shown in Chicago's time.
+            let mut s = Session::in_zone(mailcraft_model::Mailbox::with_local_account("", ""), NOW, zone("America/Chicago"));
+            let mut f = EventForm::new(&s, &json!({"title": "Call", "start": "2026-10-13T15:00", "end": "2026-10-13T16:00"}), false);
+            // Without Time Zones nothing is said of zones, as ever.
+            assert!(!f.zones && f.command().1.get("startZone").is_none());
+            assert!(f.bar_items().iter().any(|item| item.key == "timeZones" && !item.checked && item.on));
+            // Turned on, the start and the end say the calendar's own zone.
+            f.set_zones(true);
+            assert_eq!((f.start_zone.as_str(), f.end_zone.as_str()), ("America/Chicago", "America/Chicago"));
+            assert!(f.bar_items().iter().any(|item| item.key == "timeZones" && item.checked));
+            // Another zone for the start: the time on the clock stays (and so the event moves),
+            // and the end's zone goes with the start's.
+            f.pick_zone(zone("America/New_York"), false);
+            assert_eq!(span(&f), ("2026-10-13", "3:00 PM", "2026-10-13", "4:00 PM"));
+            let (command, params) = f.command();
+            assert_eq!(command, "calendar.new");
+            assert_eq!(
+                (params["start"].as_str(), params["startZone"].as_str(), params["endZone"].is_null()),
+                (Some("2026-10-13T15:00"), Some("America/New_York"), true)
+            );
+            let id = s.run(command, &params).unwrap()["id"].as_u64().unwrap();
+            let made = s.mailbox.event(id).unwrap().clone();
+            assert_eq!((made.start.iso(), made.start_zone.as_str()), ("2026-10-13T14:00:00".to_string(), "America/New_York"));
+            assert_eq!(s.prefs.recent_zones, Vec::<String>::new());
+
+            // Opened again, it shows its own clock and its zones, and nothing is to be sent.
+            let mut f = EventForm::edit(&s, &json!({"id": id})).unwrap();
+            assert!(f.zones && f.had_zones);
+            assert_eq!(
+                (span(&f), f.start_zone.as_str(), f.end_zone.as_str()),
+                (("2026-10-13", "3:00 PM", "2026-10-13", "4:00 PM"), "America/New_York", "America/New_York")
+            );
+            assert_eq!(f.command(), ("calendar.edit", json!({"id": id})));
+            // Another title is only that.
+            f.title = "Call with Bo".into();
+            assert_eq!(f.command().1, json!({"id": id, "title": "Call with Bo"}));
+            // Another time goes with the zone it is by.
+            f.start_time = "5:00 PM".into();
+            f.start_moved(true);
+            assert_eq!(
+                f.command().1,
+                json!({"id": id, "title": "Call with Bo", "start": "2026-10-13T17:00", "end": "2026-10-13T18:00", "allDay": false, "startZone": "America/New_York", "endZone": null})
+            );
+            // The end in a zone of its own: how long it is, is counted in instants; and moving
+            // the start keeps that length.
+            // (Six in the evening in Berlin is before five in New York: no length to keep yet.)
+            f.pick_zone(zone("Europe/Berlin"), true);
+            assert_eq!((f.start_zone.as_str(), f.end_zone.as_str(), f.minutes, f.length()), ("America/New_York", "Europe/Berlin", 60, None));
+            f.end_date = "2026-10-14".into();
+            f.end_time = "7:00 AM".into();
+            f.end_moved();
+            assert_eq!((f.minutes, f.length().as_deref()), (8 * 60, Some("8 hours")));
+            f.start_time = "6:00 PM".into();
+            f.start_moved(true);
+            assert_eq!(span(&f), ("2026-10-13", "6:00 PM", "2026-10-14", "8:00 AM"));
+            let params = f.command().1;
+            assert_eq!((params["startZone"].as_str(), params["endZone"].as_str()), (Some("America/New_York"), Some("Europe/Berlin")));
+            s.run("calendar.edit", &params).unwrap();
+            let flight = s.mailbox.event(id).unwrap().clone();
+            assert_eq!((flight.start.iso(), flight.end.iso()), ("2026-10-13T17:00:00".to_string(), "2026-10-14T01:00:00".to_string()));
+            // Time Zones turned off: no zones any more, and the times as they stand on the clock.
+            let mut f = EventForm::edit(&s, &json!({"id": id})).unwrap();
+            f.set_zones(false);
+            let params = f.command().1;
+            assert_eq!(
+                (params["start"].as_str(), params["startZone"].is_null(), params["endZone"].is_null()),
+                (Some("2026-10-13T18:00"), true, true)
+            );
+            s.run("calendar.edit", &params).unwrap();
+            let plain = s.mailbox.event(id).unwrap().clone();
+            assert_eq!(
+                (plain.start.iso(), plain.end.iso(), plain.start_zone.as_str()),
+                ("2026-10-13T18:00:00".to_string(), "2026-10-14T08:00:00".to_string(), "")
+            );
+            // Whole days have no zones: the button is off, and none are sent.
+            let mut f = EventForm::edit(&s, &json!({"id": id})).unwrap();
+            f.set_zones(true);
+            f.set_all_day(true, None, true);
+            assert!(f.bar_items().iter().any(|item| item.key == "timeZones" && !item.checked && !item.on));
+            assert!(f.command().1.get("startZone").is_none());
+        }
+
+        #[test]
+        fn an_open_form_follows_the_calendar_to_another_zone() {
+            let zone = |name: &str| Zone::named(name).unwrap();
+            let (chicago, london) = (zone("America/Chicago"), zone("Europe/London"));
+            let mut s = Session::in_zone(mailcraft_model::Mailbox::with_local_account("", ""), NOW, chicago);
+            let id = s.run("calendar.new", &json!({"title": "Lunch", "start": "2026-10-13T12:00", "end": "2026-10-13T13:00"})).unwrap()["id"]
+                .as_u64()
+                .unwrap();
+            let abroad = s.run("calendar.new", &json!({"title": "Call", "start": "2026-10-13T15:00", "startZone": "Asia/Tokyo"})).unwrap()["id"]
+                .as_u64()
+                .unwrap();
+            let (mut lunch, mut call) = (EventForm::edit(&s, &json!({"id": id})).unwrap(), EventForm::edit(&s, &json!({"id": abroad})).unwrap());
+            let mut typed = EventForm::edit(&s, &json!({"id": id})).unwrap();
+            typed.title = "Long lunch".into();
+            typed.end_time = "2:00 PM".into();
+            typed.end_moved();
+            // The computer is in London now; the mailbox and the forms are told.
+            s.clock.zone = Some(london);
+            assert!(s.settle_zone());
+            for form in [&mut lunch, &mut call, &mut typed] {
+                form.rezone(chicago, london, true);
+            }
+            // Lunch reads by London's clock, as the calendar shows it, and saving it changes nothing.
+            assert_eq!(span(&lunch), ("2026-10-13", "6:00 PM", "2026-10-13", "7:00 PM"));
+            assert!(!lunch.dirty());
+            assert_eq!(lunch.command(), ("calendar.edit", json!({"id": id})));
+            // The call is by Tokyo's clock, here as there.
+            assert_eq!((span(&call), call.start_zone.as_str()), (("2026-10-13", "3:00 PM", "2026-10-13", "3:30 PM"), "Asia/Tokyo"));
+            assert_eq!(call.command(), ("calendar.edit", json!({"id": abroad})));
+            // What was typed stays typed, at the instant it was typed for.
+            assert_eq!(span(&typed), ("2026-10-13", "6:00 PM", "2026-10-13", "8:00 PM"));
+            let params = typed.command().1;
+            assert_eq!(
+                (params["title"].as_str(), params["start"].as_str(), params["end"].as_str()),
+                (Some("Long lunch"), Some("2026-10-13T18:00"), Some("2026-10-13T20:00"))
+            );
+            s.run("calendar.edit", &params).unwrap();
+            let saved = s.mailbox.event(id).unwrap();
+            assert_eq!(
+                (london.instant(saved.start), london.instant(saved.end)),
+                (
+                    chicago.instant(DateTime::new(day(2026, 10, 13), 12, 0, 0).unwrap()),
+                    chicago.instant(DateTime::new(day(2026, 10, 13), 14, 0, 0).unwrap())
+                )
+            );
         }
 
         #[test]

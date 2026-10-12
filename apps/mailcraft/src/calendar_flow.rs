@@ -8,11 +8,11 @@
 //! takes its answer in: what the owner does in between is done while it is under way.
 
 use mailcraft_engine::Session;
-use mailcraft_model::remote::{CalendarsDownload, EventChangeKind};
+use mailcraft_model::remote::{CalendarsDownload, EventChangeKind, RemoteEventKind};
 use mailcraft_model::sync::Tokens;
 use mailcraft_model::{Event, Id, Mailbox};
 use mailcraft_net::graph::standin::{Routed, StandIn, Stored, TOKEN, zone_offset};
-use mailcraft_time::{Date, DateTime};
+use mailcraft_time::{Date, DateTime, Zone};
 use mailcraft_ui_egui::{CalendarCheckRequest, GraphRequest, MailApp, Services};
 use serde_json::{Value, json};
 
@@ -54,14 +54,20 @@ impl Flow {
     /// [`Flow::start`], with what `before` does to the app before its account's calendar first
     /// comes down (what was in the mailbox before the account was connected).
     fn start_after(before: impl FnOnce(&mut MailApp)) -> Flow {
-        let server = StandIn::start().unwrap();
-        let main = server.state().main_calendar();
-        server.state().owner = "avery@mail.example".into();
-        server.state().add_event(&main, "Budget review", utc(10, 12, 13, 0));
-        let route = server.route();
-        let mut app = MailApp::new(Session::at(Mailbox::with_local_account("", ""), NOW, OFFSET), Services::default());
+        Flow::start_with(Session::at(Mailbox::with_local_account("", ""), NOW, OFFSET), before)
+    }
+
+    /// [`Flow::start`] on a computer whose clock is New York's, with its changes of the clock
+    /// (the others stand four hours behind UTC all year).
+    fn start_in_new_york() -> Flow {
+        Flow::start_with(Session::in_zone(Mailbox::with_local_account("", ""), NOW, Zone::named("America/New_York").unwrap()), |_| {})
+    }
+
+    /// The window over `session`, with the host's own jobs as the app runs them, in the owner's
+    /// zone, and the calendar in front.
+    fn window(session: Session) -> MailApp {
+        let mut app = MailApp::new(session, Services::default());
         app.autosave = false;
-        // The host's own job, as the app runs it, in the owner's zone.
         app.services.graph = Some(Box::new(|request: GraphRequest| {
             let (tx, rx) = std::sync::mpsc::channel();
             let _ = tx.send(super::graph_in(request, EASTERN));
@@ -72,6 +78,44 @@ impl Flow {
             let _ = tx.send(super::check_calendar_in(request, EASTERN, &|instant| zone_offset(EASTERN, instant).unwrap_or(0)));
             rx
         }));
+        app
+    }
+
+    /// The mailbox is closed and opened again, as `mailbox` (what a file had of it) and on a
+    /// computer in `zone`; the account is signed in as it was.
+    fn reopen(&mut self, mailbox: Mailbox, zone: Zone) {
+        self.app = Flow::window(Session::in_zone(mailbox, NOW, zone));
+        let fresh = Tokens { access: TOKEN.into(), refresh: "ref".into(), expires_at: mailcraft_time::now() + 3_600, ..Default::default() };
+        self.app.seed_graph_token(self.account, fresh);
+        self.app.execute("view.calendar", json!({})).unwrap();
+        self.at = mailcraft_ui_egui::now_ms();
+    }
+
+    /// When every event here is, as the server counts it, by what the server calls it.
+    fn moments(&self) -> Vec<(String, i64, i64)> {
+        let s = &self.app.session;
+        let here = |instant: i64| s.offset_at(instant);
+        let mut all: Vec<(String, i64, i64)> = s
+            .mailbox
+            .events
+            .values()
+            .map(|e| {
+                let time = mailcraft_engine::cmd::remote::server_time(e, &here);
+                (e.origin.id.clone(), time.start, time.end)
+            })
+            .collect();
+        all.sort();
+        all
+    }
+
+    /// [`Flow::start_after`], over `session`.
+    fn start_with(session: Session, before: impl FnOnce(&mut MailApp)) -> Flow {
+        let server = StandIn::start().unwrap();
+        let main = server.state().main_calendar();
+        server.state().owner = "avery@mail.example".into();
+        server.state().add_event(&main, "Budget review", utc(10, 12, 13, 0));
+        let route = server.route();
+        let mut app = Flow::window(session);
         let added = app.execute(
             "account.add",
             json!({"email": "avery@mail.example", "auth": "oauth2", "provider": "microsoft", "incoming": {"host": "imap.mail.example"}}),
@@ -518,4 +562,219 @@ fn the_connection_check_runs_on_the_account_and_reports_every_step() {
     );
     assert_eq!(flow.status(), "The calendar connection check found a problem: see its report");
     assert_eq!(flow.server.state().events, before);
+}
+
+#[test]
+fn an_appointment_made_in_another_zone_is_the_same_moment_on_the_server_and_here() {
+    let mut flow = Flow::start_in_new_york();
+    // A call at half past six in the evening in Pune, typed by Pune's clock: nine in the morning here.
+    let made = flow
+        .run("calendar.new", json!({"title": "Call with Pune", "start": "2026-10-15T18:30", "end": "2026-10-15T19:30", "startZone": "Asia/Kolkata"}));
+    let call = made["id"].as_u64().unwrap();
+    assert_eq!(flow.here("Call with Pune").start, clock(10, 15, 9, 0));
+    flow.sync();
+    // The server has it in the zone it was made in, by the name it has for that zone, at the moment it is.
+    let there = flow.there("Call with Pune");
+    assert_eq!(
+        (there.start, there.end, there.zone.as_str(), there.end_zone()),
+        (utc(10, 15, 13, 0), utc(10, 15, 14, 0), "India Standard Time", "India Standard Time")
+    );
+    // It comes back as it went, and is seen to have arrived.
+    let here = flow.here("Call with Pune");
+    assert_eq!(
+        (here.start, here.end, here.start_zone.as_str(), here.origin.id.as_str(), flow.all_here("Call with Pune").len()),
+        (clock(10, 15, 9, 0), clock(10, 15, 10, 0), "Asia/Kolkata", there.id.as_str(), 1)
+    );
+    assert!(flow.settled(), "{}", flow.status());
+    // Another look brings the same, and changes nothing.
+    let before = flow.app.session.mailbox.events.clone();
+    flow.sync();
+    assert!(flow.app.session.mailbox.events == before && flow.settled());
+
+    // Its zone is changed to Tokyo's: the clock time stays, the moment moves, here and there.
+    flow.run("calendar.edit", json!({"id": call, "startZone": "Asia/Tokyo"}));
+    assert_eq!(flow.here("Call with Pune").start, clock(10, 15, 5, 30));
+    flow.sync();
+    let there = flow.there("Call with Pune");
+    assert_eq!((there.start, there.end, there.zone.as_str()), (utc(10, 15, 9, 30), utc(10, 15, 10, 30), "Tokyo Standard Time"));
+    assert_eq!((flow.here("Call with Pune").start, flow.here("Call with Pune").start_zone.as_str()), (clock(10, 15, 5, 30), "Asia/Tokyo"));
+    assert!(flow.settled(), "{}", flow.status());
+
+    // A flight that leaves London at ten and lands in Berlin at one: each end by its own clock.
+    let made = flow.run(
+        "calendar.new",
+        json!({"title": "Flight", "start": "2026-10-16T10:00", "end": "2026-10-16T13:00", "startZone": "Europe/London", "endZone": "Europe/Berlin"}),
+    );
+    let flight = made["id"].as_u64().unwrap();
+    flow.sync();
+    let there = flow.there("Flight");
+    assert_eq!(
+        (there.start, there.end, there.zone.as_str(), there.end_zone()),
+        (utc(10, 16, 9, 0), utc(10, 16, 11, 0), "GMT Standard Time", "W. Europe Standard Time")
+    );
+    let here = flow.here("Flight");
+    assert_eq!(
+        (here.start, here.end, here.start_zone.as_str(), here.end_zone.as_str()),
+        (clock(10, 16, 5, 0), clock(10, 16, 7, 0), "Europe/London", "Europe/Berlin")
+    );
+    assert!(flow.settled(), "{}", flow.status());
+    // Dragged an hour later in the calendar here: an hour later there, in the zones it has.
+    flow.run("calendar.move", json!({"id": flight, "start": "2026-10-16T06:00"}));
+    flow.sync();
+    let there = flow.there("Flight");
+    assert_eq!(
+        (there.start, there.end, there.zone.as_str(), there.end_zone()),
+        (utc(10, 16, 10, 0), utc(10, 16, 12, 0), "GMT Standard Time", "W. Europe Standard Time")
+    );
+    assert!(flow.settled(), "{}", flow.status());
+    // Not one request was anything the service doesn't take.
+    assert_eq!(flow.refusals(), []);
+}
+
+#[test]
+fn a_series_keeps_its_hour_across_a_change_of_the_clock_here_and_on_the_server() {
+    let mut flow = Flow::start_in_new_york();
+    let weekly = json!({"freq": "weekly", "byDay": ["mon"]});
+    // Mondays at nine by the clock here, where the clocks go back on 1 November…
+    let made = flow.run("calendar.new", json!({"title": "Stand-up", "start": "2026-10-19T09:00", "end": "2026-10-19T09:30", "recurrence": weekly}));
+    let ours = made["id"].as_u64().unwrap();
+    // …and Mondays at nine in Berlin, where they go back a week earlier.
+    let berlin = json!({"title": "Berlin stand-up", "start": "2026-10-19T09:00", "end": "2026-10-19T09:30", "startZone": "Europe/Berlin", "recurrence": weekly});
+    let theirs = flow.run("calendar.new", berlin)["id"].as_u64().unwrap();
+    // (The weeks in view are the ones around both changes of the clock: what comes down is those.)
+    flow.run("view.goToDate", json!({"date": "2026-10-28"}));
+    flow.sync();
+    assert!(flow.settled(), "{}", flow.status());
+    let (master, abroad) = (flow.there("Stand-up"), flow.there("Berlin stand-up"));
+    assert_eq!((master.zone.as_str(), abroad.zone.as_str()), (EASTERN, "W. Europe Standard Time"));
+
+    // On the server: each at nine by its own clock every week, whatever that is in UTC.
+    let on_server = |title: &str| -> Vec<i64> {
+        let query = mailcraft_net::graph::EventsQuery { calendar: String::new(), from: utc(10, 18, 0, 0), to: utc(11, 10, 0, 0), series: Vec::new() };
+        let down = mailcraft_net::graph::events_in(TOKEN, &query).unwrap();
+        let mut starts: Vec<i64> =
+            down.events.iter().filter(|e| e.title == title && e.kind == RemoteEventKind::Occurrence).map(|e| e.start).collect();
+        starts.sort();
+        starts
+    };
+    assert_eq!(on_server("Stand-up"), [utc(10, 19, 13, 0), utc(10, 26, 13, 0), utc(11, 2, 14, 0), utc(11, 9, 14, 0)]);
+    assert_eq!(on_server("Berlin stand-up"), [utc(10, 19, 7, 0), utc(10, 26, 8, 0), utc(11, 2, 8, 0), utc(11, 9, 8, 0)]);
+    // Here: nine every Monday; and Berlin's nine, which is three in the morning but for the
+    // week in which Berlin has put its clocks back and New York hasn't.
+    let here = |flow: &mut Flow, title: &str| -> Vec<String> {
+        let listed = flow.run("calendar.list", json!({"from": "2026-10-18", "to": "2026-11-10"}));
+        let mut starts: Vec<String> =
+            listed["events"].as_array().unwrap().iter().filter(|e| e["title"] == title).map(|e| e["start"].as_str().unwrap().to_string()).collect();
+        starts.sort();
+        starts
+    };
+    assert_eq!(here(&mut flow, "Stand-up"), ["2026-10-19T09:00:00", "2026-10-26T09:00:00", "2026-11-02T09:00:00", "2026-11-09T09:00:00"]);
+    assert_eq!(here(&mut flow, "Berlin stand-up"), ["2026-10-19T03:00:00", "2026-10-26T04:00:00", "2026-11-02T03:00:00", "2026-11-09T03:00:00"]);
+    // Each is one event here that skips nothing: every day the server has is the series' own.
+    for title in ["Stand-up", "Berlin stand-up"] {
+        let all = flow.all_here(title);
+        assert_eq!((all.len(), all[0].exceptions.len(), all[0].recurrence.is_some()), (1, 0, true), "{title}");
+    }
+    assert_eq!(flow.here("Berlin stand-up").start_zone, "Europe/Berlin");
+    // Another look changes nothing.
+    let before = flow.app.session.mailbox.events.clone();
+    flow.sync();
+    assert!(flow.app.session.mailbox.events == before && flow.settled());
+
+    // One day of Berlin's is deleted, the one after its clocks went back: that day on the server.
+    flow.run("calendar.delete", json!({"id": theirs, "occurrence": "2026-10-26"}));
+    flow.sync();
+    assert_eq!(flow.there("Berlin stand-up").gone, [utc(10, 26, 8, 0)]);
+    assert_eq!(on_server("Berlin stand-up"), [utc(10, 19, 7, 0), utc(11, 2, 8, 0), utc(11, 9, 8, 0)]);
+    assert!(flow.settled(), "{}", flow.status());
+    // Ours is moved half an hour later as a whole: half past nine every week, across the change.
+    flow.run("calendar.move", json!({"id": ours, "start": "2026-10-19T09:30", "scope": "series"}));
+    flow.sync();
+    assert_eq!(on_server("Stand-up"), [utc(10, 19, 13, 30), utc(10, 26, 13, 30), utc(11, 2, 14, 30), utc(11, 9, 14, 30)]);
+    assert!(flow.settled(), "{}", flow.status());
+    assert_eq!(flow.all_here("Stand-up").len(), 1);
+    assert_eq!(flow.refusals(), []);
+}
+
+#[test]
+fn a_mailbox_from_before_time_zones_is_opened_and_carried_abroad_and_nothing_is_sent() {
+    let mut flow = Flow::start_in_new_york();
+    // A calendar as the program left one before it kept zones: an appointment, a whole day and
+    // a series with one day moved and one deleted, all of them the server's too.
+    flow.run("calendar.new", json!({"title": "Lunch", "start": "2026-10-15T12:00"}));
+    flow.run("calendar.new", json!({"title": "Offsite", "start": "2026-10-20", "allDay": true}));
+    let rule = json!({"freq": "weekly", "byDay": ["mon", "wed", "fri"]});
+    let made = flow.run("calendar.new", json!({"title": "Stand-up", "start": "2026-10-05T09:00", "end": "2026-10-05T09:30", "recurrence": rule}));
+    let series = made["id"].as_u64().unwrap();
+    flow.sync();
+    flow.run("calendar.move", json!({"id": series, "start": "2026-10-05T10:00", "occurrence": "2026-10-16"}));
+    flow.run("calendar.delete", json!({"id": series, "occurrence": "2026-10-12"}));
+    flow.sync();
+    assert!(flow.settled(), "{}", flow.status());
+    // The file of before says nothing of zones: not the mailbox, and none of its events.
+    let mut old = flow.app.session.mailbox.clone();
+    old.zone.clear();
+    for event in old.events.values_mut() {
+        let event = std::sync::Arc::make_mut(event);
+        (event.start_zone, event.end_zone, event.start_repeated, event.end_repeated) = (String::new(), String::new(), false, false);
+    }
+    let text = serde_json::to_string(&old).unwrap();
+    assert!(!text.to_lowercase().contains("zone") && !text.contains("Repeated"), "{text}");
+    let old: Mailbox = serde_json::from_str(&text).unwrap();
+    let on_server: Vec<Stored> = flow.server.state().events.clone();
+    let (written, moments) = (flow.server.state().writes().len(), flow.moments());
+    assert_eq!(moments.len(), 5);
+
+    // Opened by this version on the same computer: it is the same mailbox, but that it now says
+    // which zone its times are by. Nothing waits for the server.
+    let new_york = Zone::named("America/New_York").unwrap();
+    flow.reopen(old.clone(), new_york);
+    let mut unstamped = flow.app.session.mailbox.clone();
+    assert_eq!(unstamped.zone, "America/New_York");
+    unstamped.zone.clear();
+    assert!(unstamped == old && flow.app.session.mailbox.event_changes.is_empty());
+    assert_eq!(flow.moments(), moments);
+    // Two rounds with the server: the calendar comes down, and not one change goes up.
+    let nothing_is_sent = |flow: &mut Flow, place: &str| {
+        for _ in 0..2 {
+            flow.sync();
+            assert!(flow.settled(), "{place}: {}", flow.status());
+            assert_eq!(flow.server.state().writes().len(), written, "{place}: {:?}", flow.server.state().writes().last());
+            assert!(flow.server.state().events == on_server, "{place}");
+            assert_eq!(flow.moments(), moments, "{place}");
+        }
+        // One series, the day of it that was moved, and nothing put back that was deleted.
+        let all = flow.all_here("Stand-up");
+        assert_eq!((all.len(), all.iter().filter(|e| e.recurrence.is_some()).map(|e| e.exceptions.len()).sum::<usize>()), (2, 2), "{place}");
+    };
+    nothing_is_sent(&mut flow, "New York");
+    assert_eq!((flow.here("Lunch").start, flow.here("Offsite").start), (clock(10, 15, 12, 0), clock(10, 20, 0, 0)));
+
+    // The computer is carried to Berlin, and then far east, where New York's Monday morning is
+    // Tuesday already: every timed event is at its moment by the clock there, the whole day is
+    // the same day, and still nothing goes to the server.
+    for (place, lunch, moved_day) in
+        [("Europe/Berlin", clock(10, 15, 18, 0), clock(10, 16, 16, 0)), ("Pacific/Kiritimati", clock(10, 16, 6, 0), clock(10, 17, 4, 0))]
+    {
+        let closed = flow.app.session.mailbox.clone();
+        flow.reopen(closed, Zone::named(place).unwrap());
+        assert_eq!(flow.app.session.mailbox.zone, place);
+        assert!(flow.app.session.mailbox.event_changes.is_empty(), "{place}");
+        assert_eq!(flow.moments(), moments, "{place}");
+        nothing_is_sent(&mut flow, place);
+        assert_eq!(
+            (flow.here("Lunch").start, flow.here("Offsite").start, flow.here("Offsite").end),
+            (lunch, clock(10, 20, 0, 0), clock(10, 21, 0, 0)),
+            "{place}"
+        );
+        let one = flow.all_here("Stand-up").into_iter().find(|e| e.recurrence.is_none()).unwrap();
+        assert_eq!(one.start, moved_day, "{place}");
+        assert_eq!(flow.all_here("Stand-up").iter().find(|e| e.recurrence.is_some()).unwrap().start_zone, "America/New_York", "{place}");
+    }
+    // Home again, it is as it was when it left.
+    let closed = flow.app.session.mailbox.clone();
+    flow.reopen(closed, new_york);
+    nothing_is_sent(&mut flow, "home");
+    assert_eq!((flow.here("Lunch").start, flow.here("Offsite").start), (clock(10, 15, 12, 0), clock(10, 20, 0, 0)));
+    assert_eq!(flow.refusals(), []);
 }

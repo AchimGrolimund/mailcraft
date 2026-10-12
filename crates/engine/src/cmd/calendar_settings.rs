@@ -374,8 +374,13 @@ fn mailbox_hours(s: &Session) -> Option<WorkHours> {
     s.mailbox.accounts.iter().take(50).find(whose)?;
     let (start, length) = (i64::from(hours.start), i64::from(hours.end) - i64::from(hours.start));
     // A mailbox whose hours are in another zone: when it is that time there, it is this time
-    // here. (What then runs past midnight stops there.)
-    let shift = hours.offset.map_or(0, |offset| i64::from(s.offset_at(s.now())).saturating_sub(i64::from(offset)));
+    // here. (What then runs past midnight stops there.) The zone is the one the mailbox names,
+    // when that is one that is known (it is looked up as it is now, so the hours stay right
+    // when only one of the two zones changes its clocks); else the offset a host gave; else
+    // the times are taken as they are.
+    let now = s.now();
+    let theirs = mailcraft_time::Zone::named(&hours.zone).map(|zone| zone.offset_at(now)).or(hours.offset);
+    let shift = theirs.map_or(0, |offset| i64::from(s.offset_at(now)).saturating_sub(i64::from(offset)));
     let start = start.saturating_add(shift).rem_euclid(DAY_MINUTES);
     Some(WorkHours { days: hours.days, start, end: (start + length).min(DAY_MINUTES), from_mailbox: true })
 }

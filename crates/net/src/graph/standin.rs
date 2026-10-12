@@ -102,8 +102,10 @@ pub struct Stored {
     pub start: Timestamp,
     pub end: Timestamp,
     pub all_day: bool,
-    /// The zone it was written in.
+    /// The zone its start was written in.
     pub zone: String,
+    /// The zone its end was written in, when that is another ([`Stored::end_zone`]).
+    pub ends_in: String,
     pub show_as: String,
     pub sensitivity: String,
     pub reminder_on: bool,
@@ -273,8 +275,130 @@ const WRITABLE: &[&str] = &[
     "hideAttendees",
 ];
 
+/// The names a `dateTimeTimeZone` is documented to take beside the ones Windows has for its
+/// zones: the "additional time zones" of the reference, as it lists them. (Where it gives two
+/// spellings of a name, both are here.)
+const ADDITIONAL_ZONES: &[&str] = &[
+    "Etc/GMT+12",
+    "Etc/GMT+11",
+    "Pacific/Honolulu",
+    "America/Anchorage",
+    "America/Santa_Isabel",
+    "America/Los_Angeles",
+    "America/Phoenix",
+    "America/Chihuahua",
+    "America/Denver",
+    "America/Guatemala",
+    "America/Chicago",
+    "America/Mexico_City",
+    "America/Regina",
+    "America/Bogota",
+    "America/New_York",
+    "America/Indiana/Indianapolis",
+    "America/Caracas",
+    "America/Asuncion",
+    "America/Halifax",
+    "America/Cuiaba",
+    "America/La_Paz",
+    "America/Santiago",
+    "America/St_Johns",
+    "America/Sao_Paulo",
+    "America/Argentina/Buenos_Aires",
+    "America/Cayenne",
+    "America/Godthab",
+    "America/Montevideo",
+    "America/Bahia",
+    "Etc/GMT+2",
+    "Atlantic/Azores",
+    "Atlantic/Cape_Verde",
+    "Africa/Casablanca",
+    "Etc/GMT",
+    "Europe/London",
+    "Atlantic/Reykjavik",
+    "Europe/Berlin",
+    "Europe/Budapest",
+    "Europe/Paris",
+    "Europe/Warsaw",
+    "Africa/Lagos",
+    "Africa/Windhoek",
+    "Europe/Bucharest",
+    "Asia/Beirut",
+    "Africa/Cairo",
+    "Asia/Damascus",
+    "Africa/Johannesburg",
+    "Europe/Kyiv",
+    "Europe/Istanbul",
+    "Asia/Jerusalem",
+    "Asia/Amman",
+    "Asia/Baghdad",
+    "Europe/Kaliningrad",
+    "Asia/Riyadh",
+    "Africa/Nairobi",
+    "Asia/Tehran",
+    "Asia/Dubai",
+    "Asia/Baku",
+    "Europe/Moscow",
+    "Indian/Mauritius",
+    "Asia/Tbilisi",
+    "Asia/Yerevan",
+    "Asia/Kabul",
+    "Asia/Karachi",
+    "Asia/Toshkent",
+    "Asia/Tashkent",
+    "Asia/Kolkata",
+    "Asia/Colombo",
+    "Asia/Kathmandu",
+    "Asia/Astana",
+    "Asia/Almaty",
+    "Asia/Dhaka",
+    "Asia/Yekaterinburg",
+    "Asia/Yangon",
+    "Asia/Rangoon",
+    "Asia/Bangkok",
+    "Asia/Novosibirsk",
+    "Asia/Shanghai",
+    "Asia/Krasnoyarsk",
+    "Asia/Singapore",
+    "Australia/Perth",
+    "Asia/Taipei",
+    "Asia/Ulaanbaatar",
+    "Asia/Irkutsk",
+    "Asia/Tokyo",
+    "Asia/Seoul",
+    "Australia/Adelaide",
+    "Australia/Darwin",
+    "Australia/Brisbane",
+    "Australia/Sydney",
+    "Pacific/Port_Moresby",
+    "Australia/Hobart",
+    "Asia/Yakutsk",
+    "Pacific/Guadalcanal",
+    "Asia/Vladivostok",
+    "Pacific/Auckland",
+    "Etc/GMT-12",
+    "Pacific/Fiji",
+    "Asia/Magadan",
+    "Pacific/Tongatapu",
+    "Pacific/Apia",
+    "Pacific/Kiritimati",
+];
+
+/// The zone a name stands for, when it is a name the reference says a time can be told in: the
+/// one Windows has for a zone, written as Windows writes it, or one of [`ADDITIONAL_ZONES`]. Any
+/// other name of the IANA database (`Europe/Amsterdam`) is not one the service is documented to
+/// take, and neither is an offset or a name Windows once had.
+fn documented_zone(zone: &str) -> Option<mailcraft_time::Zone> {
+    if zone.len() > 64 {
+        return None;
+    }
+    let known = mailcraft_time::Zone::named(zone)?;
+    (known.windows_name() == Some(zone) || ADDITIONAL_ZONES.contains(&zone)).then_some(known)
+}
+
 /// How far east of UTC a zone is at an instant (minutes), for the zones the stand-in knows:
-/// UTC, and a few with daylight saving by the rules of the United States and of Europe.
+/// UTC, a few with daylight saving by the rules of the United States and of Europe as they are
+/// written out here (so that they are not this program's own tables that say when it is), and
+/// every other name the reference lists ([`documented_zone`]).
 pub fn zone_offset(zone: &str, instant: Timestamp) -> Option<i32> {
     #[derive(Clone, Copy)]
     enum Rule {
@@ -292,7 +416,7 @@ pub fn zone_offset(zone: &str, instant: Timestamp) -> Option<i32> {
         "W. Europe Standard Time" | "Europe/Berlin" => (60, Rule::Europe),
         "India Standard Time" | "Asia/Kolkata" => (330, Rule::None),
         "Tokyo Standard Time" | "Asia/Tokyo" => (540, Rule::None),
-        _ => return None,
+        _ => return documented_zone(zone).map(|known| known.offset_at(instant)),
     };
     let year = DateTime::from_timestamp(instant, 0).date.year;
     // The `n`th Sunday of a month (the last one for 0), at midnight UTC.
@@ -379,6 +503,11 @@ fn instant_text(instant: Timestamp) -> String {
 }
 
 impl Stored {
+    /// The zone its end was written in: the one of its start unless it was told in another.
+    pub fn end_zone(&self) -> &str {
+        if self.ends_in.is_empty() { &self.zone } else { &self.ends_in }
+    }
+
     fn change_key(&self) -> String {
         format!("CQAAABYAAAAiIsqMbYjsT5e/T7KzowPTAAA{:05}+A==", self.version)
     }
@@ -572,6 +701,13 @@ impl State {
             })
             .collect();
         let kind = if look.occurrence { "occurrence" } else { event.kind() };
+        // A range that names no zone of its own is in the zone of the event, and says so.
+        let mut recurrence = event.recurrence.clone().unwrap_or(Value::Null);
+        if let Some(range) = recurrence.get_mut("range").and_then(Value::as_object_mut)
+            && !range.contains_key("recurrenceTimeZone")
+        {
+            range.insert("recurrenceTimeZone".into(), json!(event.zone));
+        }
         let mut all = json!({
             "@odata.etag": format!("W/\"{}\"", event.change_key()),
             "id": event.id,
@@ -580,7 +716,7 @@ impl State {
             "changeKey": event.change_key(),
             "categories": event.categories,
             "originalStartTimeZone": event.zone,
-            "originalEndTimeZone": event.zone,
+            "originalEndTimeZone": event.end_zone(),
             "iCalUId": event.uid,
             "reminderMinutesBeforeStart": event.reminder_minutes,
             "isReminderOn": event.reminder_on,
@@ -605,7 +741,7 @@ impl State {
             "end": time(event.end),
             "location": {"displayName": event.location, "locationType": "default", "uniqueIdType": "unknown", "address": {}, "coordinates": {}},
             "locations": [],
-            "recurrence": event.recurrence.clone().unwrap_or(Value::Null),
+            "recurrence": recurrence,
             "attendees": attendees,
             "organizer": person(if event.is_organizer { &self.owner } else { "bo@example.org" }),
         });
@@ -629,9 +765,9 @@ impl State {
     }
 
     /// What a body says of when an event is, checked against what Graph takes: the instants of
-    /// its start and its end, whether it is a whole day, and its zone. `now` is the event as it
-    /// is, for a change that doesn't say everything.
-    fn times_of(body: &Map<String, Value>, now: Option<&Stored>) -> Result<(Timestamp, Timestamp, bool, String), Refusal> {
+    /// its start and its end, whether it is a whole day, and the zones its start and its end are
+    /// told in. `now` is the event as it is, for a change that doesn't say everything.
+    fn times_of(body: &Map<String, Value>, now: Option<&Stored>) -> Result<(Timestamp, Timestamp, bool, String, String), Refusal> {
         let invalid = |message: &str| refuse(400, "ErrorPropertyValidationFailure", message.to_string());
         let read = |name: &str| -> Result<Option<(DateTime, String)>, Refusal> {
             let Some(value) = body.get(name) else { return Ok(None) };
@@ -662,7 +798,7 @@ impl State {
         };
         let end = match (end, now) {
             (Some(end), _) => end,
-            (None, Some(now)) => kept(now.end, &now.zone),
+            (None, Some(now)) => kept(now.end, now.end_zone()),
             (None, None) => return Err(invalid("The End property is required.")),
         };
         let instants = instant_in(start.0, &start.1).zip(instant_in(end.0, &end.1));
@@ -684,7 +820,7 @@ impl State {
                 return Err(invalid("The duration of an all-day event must be at least 24 hours."));
             }
         }
-        Ok((from, to, all_day, start.1))
+        Ok((from, to, all_day, start.1, end.1))
     }
 
     /// A recurrence as Graph takes one, for an event that starts on `first` (the day of its
@@ -805,13 +941,14 @@ impl State {
             event.location = name.to_string();
         }
         if body.contains_key("start") || body.contains_key("end") || body.contains_key("isAllDay") || making {
-            let (start, end, all_day, zone) = State::times_of(body, (!making).then_some(&*event))?;
-            if (start, end, all_day) != (event.start, event.end, event.all_day) {
-                seen = true;
-                // (A server that says yes and keeps the time it had: what no client may take for done.)
-                if !self.keeps_times || making {
-                    (event.start, event.end, event.all_day, event.zone) = (start, end, all_day, zone);
-                }
+            let (start, end, all_day, zone, ends_in) = State::times_of(body, (!making).then_some(&*event))?;
+            seen |= (start, end, all_day) != (event.start, event.end, event.all_day);
+            // (A server that says yes and keeps the time it had: what no client may take for done.)
+            // The zones a time was told in are the event's from then on, the instant the same or not.
+            if !self.keeps_times || making {
+                (event.start, event.end, event.all_day) = (start, end, all_day);
+                event.ends_in = if ends_in == zone { String::new() } else { ends_in };
+                event.zone = zone;
             }
         }
         if let Some(show_as) = one_of("showAs", &["free", "tentative", "busy", "oof", "workingElsewhere", "unknown"])? {

@@ -458,11 +458,13 @@ fn weight(show_as: ShowAs) -> u8 {
 fn own_day(app: &MailApp, day: Date, without: Option<Id>) -> Vec<(u32, u32, ShowAs)> {
     let midnight = DateTime::at_midnight(day);
     let mailbox = &app.session.mailbox;
+    // (A series by another zone's clock is wherever that clock puts it on this day.)
+    let here = |instant: mailcraft_time::Timestamp| app.session.offset_at(instant);
     let mut busy: Vec<(u32, u32, ShowAs)> = mailbox
         .events
         .values()
         .filter(|e| Some(e.id) != without && !e.cancelled && e.show_as != ShowAs::Free)
-        .flat_map(|e| e.occurrences(day, day).into_iter().map(move |o| (o, e.show_as)))
+        .flat_map(|e| e.occurrences_in(day, day, &here).into_iter().map(move |o| (o, e.show_as)))
         .take(2_000)
         .filter_map(|(o, show_as)| {
             let from = u32::try_from(midnight.minutes_until(o.start).clamp(0, i64::from(DAY))).ok()?;

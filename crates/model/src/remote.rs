@@ -113,6 +113,14 @@ pub struct RemoteEvent {
     pub start: Timestamp,
     pub end: Timestamp,
     pub all_day: bool,
+    /// The time zones the event was made in, as the server names them (`Pacific Standard Time`,
+    /// `Europe/Berlin`, `UTC`): for its start and for its end; for a series, the zone its rule
+    /// counts by. Empty when the server didn't say. The times above are instants either way;
+    /// these say where the event's own clock is ([`Event::start_zone`]).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub start_zone: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub end_zone: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub organizer: Option<Address>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -177,6 +185,8 @@ impl RemoteEvent {
             .collect();
         self.reminder_minutes = self.reminder_minutes.map(|minutes| minutes.min(MAX_REMINDER));
         self.end = self.end.max(self.start);
+        self.start_zone = line(&self.start_zone, crate::zoned::MAX_ZONE);
+        self.end_zone = line(&self.end_zone, crate::zoned::MAX_ZONE);
         self.recurrence = self.recurrence.take().map(tidy_rule);
         self.series_day = self.series_day.and_then(|day| Date::new(day.year, day.month, day.day));
         self.categories = names(std::mem::take(&mut self.categories));
@@ -514,10 +524,16 @@ pub struct EventFields {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reminder: Option<EventReminder>,
     /// For a series, with `time`: the start and the end of its first occurrence by the clock
-    /// here. A series repeats by the clock (nine is nine on both sides of a daylight-saving
+    /// it repeats by: the clock of its own zone when it has one (`zones`), else the clock here.
+    /// A series repeats by the clock (nine is nine on both sides of a daylight-saving
     /// change), which instants can't say: the server is told the clock times and the zone.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wall: Option<EventWall>,
+    /// With `time`, for a timed event that has zones of its own ([`Event::start_zone`]): their
+    /// names, for the server to keep the event in. `None` for an event without: it is told as
+    /// it always was (instants, and for a series the clock here).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zones: Option<EventZones>,
     /// How it repeats: for a new series, and for one whose rule or first day changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repeat: Option<EventRepeat>,
@@ -536,6 +552,16 @@ pub struct EventFields {
 pub struct EventWall {
     pub start: DateTime,
     pub end: DateTime,
+}
+
+/// The zones a timed event has of its own, by name ([`EventFields::zones`]): the names of the
+/// IANA database, `UTC`, or an offset (`UTC+05:30`), as [`Event::start_zone`] has them. The end's
+/// is the start's when the event names none for it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EventZones {
+    pub start: String,
+    pub end: String,
 }
 
 /// How an event repeats, as a server is told ([`EventFields::repeat`]).
@@ -594,6 +620,13 @@ impl EventFields {
         if let Some(wall) = &mut self.wall {
             wall.end = wall.end.max(wall.start);
         }
+        // (A name that is no zone stays a name: the times beside it were worked out for it, and
+        // whoever sends them has to see that it can't be sent.)
+        self.zones = self
+            .zones
+            .take()
+            .map(|zones| EventZones { start: line(&zones.start, crate::zoned::MAX_ZONE), end: line(&zones.end, crate::zoned::MAX_ZONE) });
+        self.zones = self.zones.take().filter(|zones| !zones.start.is_empty());
         if let Some(repeat) = &mut self.repeat {
             repeat.rule = repeat.rule.take().map(tidy_rule);
         }
@@ -679,6 +712,12 @@ pub struct EventsUpload {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub email: String,
     pub ops: Vec<EventOp>,
+    /// The zone the calendar is shown in, by its name (`Europe/Berlin`): the zone the days of a
+    /// whole-day event are days in, and the zone whose clock a series without a zone of its own
+    /// is told by ([`EventFields::wall`]). Empty when it has no name; whoever carries the upload
+    /// out then uses what it knows of this computer's zone.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub zone: String,
 }
 
 /// What a server made of one [`EventOp`].

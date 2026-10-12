@@ -57,14 +57,16 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use mailcraft_model::remote::EventZones;
 use mailcraft_model::remote::{
     CalendarsDownload, CategoriesDownload, ContactsDownload, EventChange, EventChangeKind, EventCheck, EventFields, EventOp, EventOutcome,
     EventReminder, EventRepeat, EventResult, EventTime, EventWall, EventsDownload, EventsUpload, EventsUploaded, MAX_CHECK_AGE, MAX_CHECK_TRIES,
     MAX_CONTACTS, MAX_EVENT_CHANGES, MAX_EVENT_CHECKS, MAX_EVENT_OPS, MAX_EVENTS, MAX_KEY, RemoteContact, RemoteEvent, RemoteEventKind, clean_key,
     id_tag,
 };
+use mailcraft_model::zoned;
 use mailcraft_model::{Account, Attendee, Calendar, Contact, Event, Id, Mailbox, Origin, Response};
-use mailcraft_time::{Date, DateTime, Timestamp, Weekday};
+use mailcraft_time::{Date, DateTime, Timestamp, Weekday, Zone};
 use serde_json::{Value, json};
 
 use super::{bad, fail};
@@ -239,9 +241,36 @@ pub(crate) fn changeable(mailbox: &Mailbox, origin: &Origin, what: &str) -> Resu
 
 /// The instant of a wall-clock time here, in a zone whose offset at an instant is `offset_at`.
 /// Asked twice, so a time near a daylight-saving change still gets its own offset.
+#[allow(dead_code)] // (An event's own times are read through `Event::instants`, which knows which of two it is.)
 fn instant_of(wall: DateTime, offset_at: &dyn Fn(Timestamp) -> i32) -> Timestamp {
-    let guess = wall.to_timestamp(offset_at(wall.to_timestamp(0)));
-    wall.to_timestamp(offset_at(guess))
+    // As everything that reads a wall-clock time reads it (`mailcraft_model::zoned`): the first
+    // of two instants the clocks show a time at, in whichever zone.
+    zoned::instant_at(wall, offset_at)
+}
+
+/// The zones an event of the mailbox keeps as its own for what a server says its zones are
+/// (`start`, `end`: names as the server gives them), when it is at the instants `at`.
+fn zones_from_remote(start: &str, end: &str, at: (Timestamp, Timestamp), repeats: bool, offset_at: &dyn Fn(Timestamp) -> i32) -> (String, String) {
+    zoned::own_zones(Zone::named(start), Zone::named(end), at, repeats, offset_at)
+}
+
+/// The day of `series` that an occurrence at `instant` is, as the series names its days
+/// ([`mailcraft_model::zoned`]): for a series that repeats in a zone of its own, by that zone.
+fn series_day_at(series: &Event, instant: Timestamp, offset_at: &dyn Fn(Timestamp) -> i32) -> Date {
+    if series.all_day { occurrence_day(true, instant, offset_at) } else { series.occurrence_day(instant, offset_at) }
+}
+
+/// The occurrence of a series on its day `day` as an event of its own, in a calendar whose
+/// offset is `offset_at`: [`occurrence_of`], for a series that may repeat in a zone of its own
+/// (the occurrence is then at that zone's clock time, whatever that is here on that day).
+pub fn occurrence_in(series: &Event, day: Date, offset_at: &dyn Fn(Timestamp) -> i32) -> Event {
+    let mut one = occurrence_of(series, day);
+    if !series.all_day && series.zone().is_some() {
+        let start = series.occurrence_instant(day, offset_at);
+        let (begins, ends) = series.instants(offset_at);
+        one.set_instants(start, start.saturating_add(ends.saturating_sub(begins)), offset_at);
+    }
+    one
 }
 
 /// The wall-clock times here of a server's instants ([`event_from_remote`] says how).
@@ -266,6 +295,34 @@ fn local_times(start: Timestamp, end: Timestamp, all_day: bool, offset_at: &dyn 
     }
 }
 
+/// The day a whole-day event is on that a server has at `instant`. A server names the day by a
+/// midnight: UTC's (the day is the one that reads), or the midnight of the zone the event was
+/// made in (`zone`, by the name the server gives it), and the day is then the one it is there,
+/// wherever this computer is. When neither says, it is the midnight nearest to the instant here.
+fn whole_day(instant: Timestamp, zone: &str, offset_at: &dyn Fn(Timestamp) -> i32) -> Date {
+    let named = DateTime::from_timestamp(instant, 0);
+    if named.seconds_of_day() == 0 {
+        return named.date;
+    }
+    if let Some(there) = Zone::named(zone).map(|zone| zone.wall(instant)).filter(|there| there.seconds_of_day() == 0) {
+        return there.date;
+    }
+    local_times(instant, instant, true, offset_at).0.date
+}
+
+/// The wall-clock times here of an event as a server has it: [`local_times`], with the days of a
+/// whole-day event read by the zone it was made in ([`whole_day`]).
+fn remote_times(remote: &RemoteEvent, offset_at: &dyn Fn(Timestamp) -> i32) -> (DateTime, DateTime) {
+    if !remote.all_day {
+        return local_times(remote.start, remote.end, false, offset_at);
+    }
+    let ends_in = if remote.end_zone.is_empty() { &remote.start_zone } else { &remote.end_zone };
+    let first = whole_day(remote.start, &remote.start_zone, offset_at);
+    // At least one day; the end is the midnight after the last.
+    let after = whole_day(remote.end, ends_in, offset_at).max(first.add_days(1));
+    (DateTime::at_midnight(first), DateTime::at_midnight(after))
+}
+
 /// When an event of the mailbox is, as the server counts it: the instants of its wall-clock
 /// times here, each with the offset of its own moment; for a whole-day event the midnights (UTC)
 /// of its first day and of the day after its last.
@@ -274,12 +331,24 @@ pub fn server_time(event: &Event, offset_at: &dyn Fn(Timestamp) -> i32) -> Event
         let start = event.start.to_timestamp(0);
         return EventTime { start, end: event.end.to_timestamp(0).max(start.saturating_add(mailcraft_time::DAY)), all_day: true };
     }
-    let start = instant_of(event.start, offset_at);
-    EventTime { start, end: instant_of(event.end, offset_at).max(start), all_day: false }
+    // (Which of two instants a time in an hour that comes twice is, the event says.)
+    let (start, end) = event.instants(offset_at);
+    EventTime { start, end, all_day: false }
 }
 
 /// Everything of an event that a server is told ([`EventFields`]), as a new event is sent.
 pub fn fields_of(event: &Event, offset_at: &dyn Fn(Timestamp) -> i32) -> EventFields {
+    // By the clock of its own zone, for an event that has one: that is the clock a series
+    // repeats by and counts its days by, and the zone the server is to keep the event in.
+    let own = event.zone().map(|zone| {
+        let (start, end) = event.instants(offset_at);
+        let ends_in = event.zone_of_end().unwrap_or(zone);
+        (EventWall { start: zone.wall(start), end: ends_in.wall(end) }, EventZones { start: zone.id(), end: ends_in.id() })
+    });
+    let (wall, zones) = match own {
+        Some((wall, zones)) => (wall, Some(zones)),
+        None => (EventWall { start: event.start, end: event.end.max(event.start) }, None),
+    };
     let mut fields = EventFields {
         title: Some(event.title.clone()),
         location: Some(event.location.clone()),
@@ -288,9 +357,14 @@ pub fn fields_of(event: &Event, offset_at: &dyn Fn(Timestamp) -> i32) -> EventFi
         show_as: Some(event.show_as),
         private: Some(event.private),
         reminder: Some(EventReminder { on: event.reminder_minutes.is_some(), minutes: event.reminder_minutes.unwrap_or(0) }),
-        // A series repeats by the clock here, which the server is told beside the instants.
-        wall: event.recurrence.as_ref().filter(|_| !event.all_day).map(|_| EventWall { start: event.start, end: event.end.max(event.start) }),
-        repeat: event.recurrence.clone().map(|rule| EventRepeat { rule: Some(rule), first: event.start.date }),
+        // A series repeats by the clock (here, or in its own zone), which the server is told
+        // beside the instants.
+        wall: event.recurrence.as_ref().filter(|_| !event.all_day).map(|_| wall),
+        zones,
+        repeat: event
+            .recurrence
+            .clone()
+            .map(|rule| EventRepeat { rule: Some(rule), first: if event.all_day { event.start.date } else { wall.start.date } }),
         // Who is invited, not what they answered: that is the server's to say.
         attendees: (!event.attendees.is_empty()).then(|| invited(event)),
         categories: (!event.categories.is_empty()).then(|| event.categories.clone()),
@@ -315,7 +389,11 @@ pub fn changed_fields(base: &Event, now: &Event, offset_at: &dyn Fn(Timestamp) -
     let (was, all) = (fields_of(base, offset_at), fields_of(now, offset_at));
     // A rule goes with the times it counts from: a series is told when it is by the clock.
     let repeats = was.repeat != all.repeat;
-    let retimed = was.time != all.time || (repeats && all.repeat.is_some());
+    // (A series that is by another clock than it was is another series, also when its first
+    // occurrence is at the same instant. Zones are not compared by name: a series made here
+    // and the same series as its server names its zone are the same.)
+    let another_clock = was.wall.is_some() && all.wall.is_some() && was.wall != all.wall;
+    let retimed = was.time != all.time || another_clock || (repeats && all.repeat.is_some());
     // Who is invited is who it is by address: a name the server spells its own way is no change.
     let people = |list: &Option<Vec<Attendee>>| {
         let mut people: Vec<(String, bool)> = list.iter().flatten().map(|who| (who.address.email.to_lowercase(), who.optional)).collect();
@@ -332,6 +410,7 @@ pub fn changed_fields(base: &Event, now: &Event, offset_at: &dyn Fn(Timestamp) -
         private: all.private.filter(|private| was.private != Some(*private)),
         reminder: all.reminder.filter(|reminder| was.reminder != Some(*reminder)),
         wall: all.wall.filter(|_| retimed),
+        zones: all.zones.filter(|_| retimed),
         repeat: repeats.then(|| all.repeat.unwrap_or(EventRepeat { rule: None, first: now.start.date })),
         attendees: reinvited.then(|| all.attendees.unwrap_or_default()),
         categories: (was.categories != all.categories).then(|| all.categories.unwrap_or_default()),
@@ -360,6 +439,13 @@ fn put_fields(event: &mut Event, fields: &EventFields, offset_at: &dyn Fn(Timest
     if let Some(time) = fields.time {
         (event.start, event.end) = local_times(time.start, time.end, time.all_day, offset_at);
         event.all_day = time.all_day;
+        (event.start_repeated, event.end_repeated) = (false, false);
+        if !time.all_day {
+            event.set_instants(time.start, time.end, offset_at);
+        }
+        // Its zones went with its times: the ones that were named, or none.
+        let zones = fields.zones.clone().filter(|_| !time.all_day).unwrap_or_default();
+        (event.start_zone, event.end_zone) = (zones.start.clone(), if zones.end == zones.start { String::new() } else { zones.end });
     }
     if let Some(show_as) = fields.show_as {
         event.show_as = show_as;
@@ -407,7 +493,7 @@ fn owner<'a>(mailbox: &'a Mailbox, account: Id, email: &str) -> Result<&'a Accou
 /// sides of a daylight-saving change. A whole-day event keeps the days the server names: they
 /// are the same days everywhere.
 pub fn event_from_remote(remote: &RemoteEvent, owner: &str, offset_at: &dyn Fn(Timestamp) -> i32) -> Event {
-    let (start, end) = local_times(remote.start, remote.end, remote.all_day, offset_at);
+    let (start, end) = remote_times(remote, offset_at);
     // Somebody else's meeting: the server says so, or else the organizer's address does.
     let other =
         |organizer: &mailcraft_model::Address| !organizer.email.trim().is_empty() && !organizer.email.trim().eq_ignore_ascii_case(owner.trim());
@@ -422,6 +508,13 @@ pub fn event_from_remote(remote: &RemoteEvent, owner: &str, offset_at: &dyn Fn(T
             attendee.response = remote.response;
         }
     }
+    // Where it was made, when the clock there shows another time than the one here.
+    let (start_zone, end_zone) = match remote.all_day {
+        true => (String::new(), String::new()),
+        false => zones_from_remote(&remote.start_zone, &remote.end_zone, (remote.start, remote.end.max(remote.start)), false, offset_at),
+    };
+    // (And which of two instants it is, in an hour the clocks here show twice.)
+    let again = |instant: Timestamp| !remote.all_day && zoned::wall_of(instant, offset_at).1;
     Event {
         uid: remote.uid.clone(),
         title: remote.title.clone(),
@@ -430,6 +523,10 @@ pub fn event_from_remote(remote: &RemoteEvent, owner: &str, offset_at: &dyn Fn(T
         start,
         end,
         all_day: remote.all_day,
+        start_zone,
+        end_zone,
+        start_repeated: again(remote.start),
+        end_repeated: again(remote.end.max(remote.start)),
         organizer: remote.organizer.clone(),
         attendees,
         reminder_minutes: remote.reminder_minutes,
@@ -455,8 +552,17 @@ pub fn event_from_remote(remote: &RemoteEvent, owner: &str, offset_at: &dyn Fn(T
 pub fn series_from_remote(remote: &RemoteEvent, owner: &str, offset_at: &dyn Fn(Timestamp) -> i32) -> Event {
     let mut event = event_from_remote(remote, owner, offset_at);
     let Some(mut rule) = remote.recurrence.clone() else { return event };
-    // The rule counts its days where the series was made. Here, the first of them may be the
-    // day before or the day after, and so then is every other.
+    // A series whose zone is known repeats by that zone's clock, and its rule counts that
+    // zone's days as it stands (`mailcraft_model::zoned`): nothing of it is shifted.
+    if !remote.all_day {
+        (event.start_zone, event.end_zone) = zones_from_remote(&remote.start_zone, "", (remote.start, remote.end.max(remote.start)), true, offset_at);
+    }
+    if event.zone().is_some() {
+        event.recurrence = Some(rule);
+        return event;
+    }
+    // Of a series whose zone nobody says, the rule counts its days where the series was made.
+    // Here, the first of them may be the day before or the day after, and so then is every other.
     let shift = remote.series_day.map_or(0, |day| day.days_until(event.start.date));
     if shift == 1 || shift == -1 {
         rule.by_day = rule.by_day.iter().map(|day| Weekday::from_index((i64::from(day.index()) + shift).rem_euclid(7))).collect();
@@ -469,7 +575,7 @@ pub fn series_from_remote(remote: &RemoteEvent, owner: &str, offset_at: &dyn Fn(
 
 /// When a series has its occurrence of `day`, as the server counts it ([`server_time`]).
 pub fn occurrence_instant(series: &Event, day: Date, offset_at: &dyn Fn(Timestamp) -> i32) -> Timestamp {
-    if series.all_day { DateTime::at_midnight(day).to_timestamp(0) } else { instant_of(DateTime { date: day, ..series.start }, offset_at) }
+    if series.all_day { DateTime::at_midnight(day).to_timestamp(0) } else { series.occurrence_instant(day, offset_at) }
 }
 
 /// The day here that an occurrence falls on which its series has at `instant`.
@@ -491,7 +597,12 @@ fn covered(series: &Event, days: &HashSet<Date>, instance: &RemoteEvent, offset_
     if instance.kind != RemoteEventKind::Occurrence || instance.all_day != series.all_day || instance.cancelled != series.cancelled {
         return None;
     }
-    let (start, end) = local_times(instance.start, instance.end, instance.all_day, offset_at);
+    let (start, end) = remote_times(instance, offset_at);
+    if series.zone().is_some() {
+        // By the clock of the series' own zone: where that puts the occurrence of its day.
+        let day = series.occurrence_day(instance.start, offset_at);
+        return (series.occurrence_times(day, offset_at) == (start, end) && days.contains(&day)).then_some(day);
+    }
     let as_the_series = start == DateTime { date: start.date, ..series.start } && start.minutes_until(end) == series.duration_minutes();
     (as_the_series && days.contains(&start.date)).then_some(start.date)
 }
@@ -523,7 +634,7 @@ fn skipped_days(
     let mut skipped: BTreeSet<Date> = before.iter().copied().filter(|day| !asked(*day) && !is_own(day)).collect();
     skipped.extend(days.iter().copied().filter(|day| asked(*day) && !is_own(day)));
     skipped.extend(loose.into_iter().flatten().copied());
-    skipped.extend(waiting.into_iter().flatten().map(|instant| occurrence_day(series.all_day, *instant, offset_at)));
+    skipped.extend(waiting.into_iter().flatten().map(|instant| series_day_at(series, *instant, offset_at)));
     skipped.into_iter().take(MAX_SKIPPED).collect()
 }
 
@@ -553,7 +664,7 @@ pub fn contact_from_remote(remote: &RemoteContact) -> Contact {
 /// When an event of the mailbox starts, as the server counts it: the instant of its wall-clock
 /// time here, or for a whole-day event the midnight (UTC) of its first day.
 fn server_start(event: &Event, offset_at: &dyn Fn(Timestamp) -> i32) -> Timestamp {
-    if event.all_day { event.start.to_timestamp(0) } else { instant_of(event.start, offset_at) }
+    if event.all_day { event.start.to_timestamp(0) } else { event.instants(offset_at).0 }
 }
 
 /// The main calendar of an account's server in the mailbox, when a download has brought one and
@@ -1079,7 +1190,9 @@ pub fn event_upload(s: &Session, account: Id) -> Result<EventsUpload, CmdError> 
             comment: if said { change.comment.clone() } else { String::new() },
         });
     }
-    Ok(EventsUpload { ops, ..Default::default() }.for_account(owner))
+    // (The zone the calendar is shown in: whole days are days there, and a series without a
+    // zone of its own is told by its clock.)
+    Ok(EventsUpload { ops, zone: s.zone().id(), ..Default::default() }.for_account(owner))
 }
 
 /// The sign-in of `account` changed (the owner gave a permission, say): what was held back
@@ -1661,7 +1774,7 @@ fn one_occurrence(
             }
             // The day is the series' own again.
             if let Some(Ok(series)) = series.map(|id| mailbox.event_mut(id)) {
-                let day = occurrence_day(series.all_day, op.occurrence, offset_at);
+                let day = series_day_at(series, op.occurrence, offset_at);
                 series.exceptions.retain(|skipped| *skipped != day);
             }
             let what = match op.kind {
@@ -2368,7 +2481,7 @@ pub fn merge_events(mailbox: &mut Mailbox, download: &EventsDownload, offset_at:
     let days: HashMap<String, HashSet<Date>> = shapes
         .iter()
         .map(|(name, shape)| {
-            let on = shape.recurrence.as_ref().map(|rule| rule.dates(shape.start.date, first_day, last_day, &[])).unwrap_or_default();
+            let on = shape.series_days(first_day, last_day, offset_at);
             (name.clone(), on.into_iter().collect())
         })
         .collect();
@@ -2394,7 +2507,11 @@ pub fn merge_events(mailbox: &mut Mailbox, download: &EventsDownload, offset_at:
                     own.entry(remote.series.clone()).or_default().insert(day);
                     continue;
                 }
-                let day = own_day.unwrap_or_else(|| occurrence_day(remote.all_day, remote.original.unwrap_or(remote.start), offset_at));
+                let was_at = remote.original.unwrap_or(remote.start);
+                let day = own_day.unwrap_or_else(|| match shape.all_day {
+                    true => whole_day(was_at, &remote.start_zone, offset_at),
+                    false => series_day_at(shape, was_at, offset_at),
+                });
                 loose.entry(remote.series.clone()).or_default().insert(day);
                 stands_for = Some(day);
             }
@@ -2685,8 +2802,9 @@ pub fn merge_contacts(mailbox: &mut Mailbox, download: &ContactsDownload) -> Res
 
 /// The local zone's offset at an instant, as the session's clock has it.
 pub(crate) fn offset_of(s: &Session) -> impl Fn(Timestamp) -> i32 + use<> {
-    let clock = s.clock;
-    move |instant| clock.offset.unwrap_or_else(|| mailcraft_time::local_offset_minutes(instant))
+    // The zone the calendar is shown in, which is the one the mailbox's times are by.
+    let (fixed, zone) = (s.clock.offset, s.zone());
+    move |instant| fixed.unwrap_or_else(|| zone.offset_at(instant))
 }
 
 /// Take in the events a host downloaded ([`merge_events`]), with times in the session's zone.
@@ -2888,7 +3006,7 @@ pub fn expected_series(s: &Session, account: Id, calendar: &str, from: Timestamp
             && !event.origin.id.is_empty()
             && event.recurrence.is_some()
             && here.contains(&event.calendar)
-            && !event.occurrences(first, last).is_empty()
+            && !event.occurrences_in(first, last, &offset_at).is_empty()
     };
     s.mailbox.events.values().filter(expected).map(|event| event.origin.id.clone()).take(MAX_SERIES).collect()
 }

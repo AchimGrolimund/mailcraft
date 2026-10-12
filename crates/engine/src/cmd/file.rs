@@ -181,9 +181,12 @@ fn with(mut r: Value, key: &str, value: Value) -> Value {
 
 fn export_calendar(s: &mut Session, v: &Value) -> CmdResult {
     let opts = mailcraft_ical::WriteOptions { method: String::new(), now: s.now() };
+    // Each time in its zone, with the zone's definition: what another program reads right
+    // wherever it is. (Floating, as before, when the system can't say which zone this is.)
+    let zone = Some(s.zone());
     if let Some(id) = p::id(v, "id") {
         let e = s.mailbox.event(id).ok_or_else(|| fail(format!("no event with id {id}")))?;
-        let text = mailcraft_ical::write(&[e], &[], &opts);
+        let text = mailcraft_ical::write_in(&[e], &[], &opts, zone);
         return deliver(v, &file_name(if e.title.is_empty() { "event" } else { &e.title }, "ics"), text.into_bytes());
     }
     let calendar = p::id(v, "calendar");
@@ -196,7 +199,7 @@ fn export_calendar(s: &mut Session, v: &Value) -> CmdResult {
         s.mailbox.events.values().map(|e| e.as_ref()).filter(|e| calendar.is_none_or(|c| e.calendar == c)).collect();
     let tasks: Vec<&mailcraft_model::Task> = if calendar.is_none() { s.mailbox.tasks.values().map(|t| t.as_ref()).collect() } else { Vec::new() };
     let name = calendar.and_then(|c| s.mailbox.calendar(c)).map_or("calendar", |c| c.name.as_str());
-    let r = deliver(v, &file_name(name, "ics"), mailcraft_ical::write(&events, &tasks, &opts).into_bytes())?;
+    let r = deliver(v, &file_name(name, "ics"), mailcraft_ical::write_in(&events, &tasks, &opts, zone).into_bytes())?;
     Ok(with(with(r, "events", json!(events.len())), "tasks", json!(tasks.len())))
 }
 

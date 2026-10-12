@@ -1,8 +1,12 @@
 //! Calendars, events and recurrence.
 //!
-//! Event times are wall-clock times in the user's zone ("floating"): a 9:00 meeting stays at 9:00
-//! across a daylight-saving change, which is what a recurring series needs. Readers convert UTC
-//! and zoned times to local wall-clock times on the way in.
+//! Event times are wall-clock times in the zone the calendar is shown in, which the mailbox names
+//! ([`Mailbox::zone`](crate::Mailbox::zone)): a 9:00 meeting stays at 9:00 across a daylight-saving
+//! change, which is what a recurring series needs. Readers convert UTC and zoned times to those
+//! wall-clock times on the way in, and when the zone the calendar is shown in changes (the owner
+//! travels), every timed event is rewritten to the clock of the new one
+//! ([`Mailbox::rebase`](crate::Mailbox::rebase)). An event may have a zone of its own
+//! ([`Event::start_zone`]); `zoned.rs` has what that means.
 
 use mailcraft_time::{Date, DateTime, Weekday, month_name};
 use serde::{Deserialize, Serialize};
@@ -349,6 +353,12 @@ pub struct Occurrence {
     pub event: Id,
     pub start: DateTime,
     pub end: DateTime,
+    /// The day of its series that it is: what [`Event::exceptions`] names it by, and what a
+    /// command about "this occurrence" is told. It is the day it starts on, but for a series
+    /// that repeats in another zone, where a change of clocks there or here can carry an
+    /// occurrence across midnight ([`Event::occurrences_in`]).
+    #[serde(default)]
+    pub day: Date,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,6 +376,26 @@ pub struct Event {
     /// Exclusive: an all-day event on one day ends at the next midnight.
     pub end: DateTime,
     pub all_day: bool,
+    /// The time zone the start is in, when the event has one of its own: the name of a zone of
+    /// the IANA database (`Europe/Berlin`), `UTC`, or an offset (`UTC+05:30`). Empty for none,
+    /// which is the zone the calendar is shown in. `start` and `end` are by the clock of the zone
+    /// the calendar is shown in either way; a zone of its own says where the event was made, and
+    /// for a series by whose clock it repeats ([`Event::occurrences_in`]). A whole-day event has
+    /// no zone: its days are the same days everywhere.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub start_zone: String,
+    /// The same for the end (a flight lands in another zone than it took off in).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub end_zone: String,
+    /// The start is in the hour the clocks show twice (the night they are put back), and is the
+    /// second time they show it. A wall-clock time alone can't say which of the two it is;
+    /// without this it is the first. ([`Event::instants`] reads it, [`Event::set_instants`]
+    /// writes it; it means nothing for a time the clocks show once.)
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub start_repeated: bool,
+    /// The same for the end.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub end_repeated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub organizer: Option<Address>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -400,7 +430,9 @@ impl Event {
         !self.attendees.is_empty()
     }
 
-    /// Every time the event happens on the days `from`–`to` (inclusive), in order.
+    /// Every time the event happens on the days `from`–`to` (inclusive), in order, for an event
+    /// that repeats by the clock its times are written in. A series with a zone of its own is
+    /// asked through [`Event::occurrences_in`], which this is without one.
     pub fn occurrences(&self, from: Date, to: Date) -> Vec<Occurrence> {
         let minutes = self.duration_minutes();
         // An occurrence that started before `from` may still be running then.
@@ -414,7 +446,7 @@ impl Event {
         days.into_iter()
             .map(|day| {
                 let start = DateTime { date: day, ..self.start };
-                Occurrence { event: self.id, start, end: start.add_minutes(minutes) }
+                Occurrence { event: self.id, start, end: start.add_minutes(minutes), day }
             })
             // Overlap; an event without a length still shows at its start.
             .filter(|o| o.start < window_end && (o.end > window_start || o.start >= window_start))

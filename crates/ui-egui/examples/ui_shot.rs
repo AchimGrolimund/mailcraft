@@ -9,7 +9,9 @@
 //! window is 1440×900 pt at 2× (override with `{"width": w, "height": h}` and `{"scale": s}` on
 //! any line; `{"scale": 1}` is a screen at 100 %, where the fonts' hinting shows) and opens the
 //! sample mailbox, as of a fixed Wednesday afternoon so shots compare, unless the first line is
-//! `{"empty": true}`.
+//! `{"empty": true}`. The computer is in UTC unless a line says where it is (`{"zone":
+//! "America/Chicago"}`: the calendar is then shown in that zone, and `view.timeZone` can show it
+//! in another).
 
 use mailcraft_engine::Session;
 use mailcraft_ui_egui::{ControlRequest, MailApp, Services};
@@ -25,12 +27,19 @@ fn main() {
     let (tx, rx) = std::sync::mpsc::channel::<ControlRequest>();
     let lines: Vec<serde_json::Value> =
         script.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).expect("json line")).collect();
+    // Where the computer is, when a line says: a zone with a name, so that it has daylight saving.
+    let zone = lines.iter().find_map(|l| l.get("zone").and_then(|v| v.as_str())).and_then(mailcraft_time::Zone::named);
+    let offset = zone.map_or(0, |zone| zone.offset_at(NOW));
     let mailbox = if lines.first().is_some_and(|l| l.get("empty").is_some()) {
         mailcraft_model::Mailbox::with_local_account("", "")
     } else {
-        mailcraft_engine::sample::mailbox(NOW, 0)
+        mailcraft_engine::sample::mailbox(NOW, offset)
     };
-    let mut app = MailApp::new(Session::at(mailbox, NOW, 0), Services::default()).with_control(rx);
+    let session = match zone {
+        Some(zone) => Session::in_zone(mailbox, NOW, zone),
+        None => Session::at(mailbox, NOW, 0),
+    };
+    let mut app = MailApp::new(session, Services::default()).with_control(rx);
     app.autosave = false;
     let w = lines.iter().find_map(|l| l.get("width").and_then(|v| v.as_f64())).unwrap_or(1440.0) as f32;
     let h = lines.iter().find_map(|l| l.get("height").and_then(|v| v.as_f64())).unwrap_or(900.0) as f32;

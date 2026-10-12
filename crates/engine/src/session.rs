@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use mailcraft_model::{Attachment, Id, Importance, Mailbox, Message};
-use mailcraft_time::{Date, DateTime, Timestamp, Weekday};
+use mailcraft_time::{Date, DateTime, Timestamp, Weekday, Zone};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -338,6 +338,24 @@ pub struct Prefs {
     /// (`sync.applyMailboxSettings`); they are the ones in effect unless `own_work_hours`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mailbox_hours: Option<crate::cmd::calendar_settings::MailboxHours>,
+    /// The time zone the calendar is shown in, by name (`Europe/Berlin`; `view.timeZone`).
+    /// Empty: this computer's own, followed when it changes.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub time_zone: String,
+    /// A second time zone the calendar's time bar shows beside the first (`view.timeZone`
+    /// with `"second"`); empty for none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub second_zone: String,
+    /// What the time bar calls the two zones, when the owner gave them names; else the zones'
+    /// own.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub zone_label: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub second_zone_label: String,
+    /// The zones the owner chose lately, the latest first: a zone picker lists them after the
+    /// computer's own.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub recent_zones: Vec<String>,
 }
 
 impl Default for Prefs {
@@ -359,6 +377,11 @@ impl Default for Prefs {
             delete_answered_requests: false,
             own_work_hours: false,
             mailbox_hours: None,
+            time_zone: String::new(),
+            second_zone: String::new(),
+            zone_label: String::new(),
+            second_zone_label: String::new(),
+            recent_zones: Vec::new(),
         }
     }
 }
@@ -370,6 +393,10 @@ pub struct Clock {
     pub now: Option<Timestamp>,
     /// A fixed zone offset (minutes east of UTC) instead of the system's zone.
     pub offset: Option<i32>,
+    /// A zone instead of the system's: this computer as it would be there. (The calendar is
+    /// shown in it unless the options name another, [`Prefs::time_zone`].) `offset` goes before
+    /// both.
+    pub zone: Option<Zone>,
 }
 
 struct Undo {
@@ -402,6 +429,12 @@ pub struct Session {
 
 impl Session {
     pub fn new(mailbox: Mailbox) -> Self {
+        Session::with_clock(mailbox, Clock::default())
+    }
+
+    /// A session that reads the time and the zone from `clock`. (The clock is there before the
+    /// mailbox is looked at: what zone its times are in is settled by it, [`Session::settle_zone`].)
+    pub fn with_clock(mailbox: Mailbox, clock: Clock) -> Self {
         let mut s = Session {
             mailbox,
             view: ViewState::default(),
@@ -411,7 +444,7 @@ impl Session {
             registry: Arc::new(crate::cmd::registry()),
             path: None,
             dirty: false,
-            clock: Clock::default(),
+            clock,
             sync_status: String::new(),
             history: Vec::new(),
             redo: Vec::new(),
@@ -430,10 +463,12 @@ impl Session {
 
     /// A session whose clock stands still at `now`, in a zone `offset` minutes east of UTC.
     pub fn at(mailbox: Mailbox, now: Timestamp, offset: i32) -> Self {
-        let mut s = Session::new(mailbox);
-        s.clock = Clock { now: Some(now), offset: Some(offset) };
-        s.view.date = s.today();
-        s
+        Session::with_clock(mailbox, Clock { now: Some(now), offset: Some(offset), zone: None })
+    }
+
+    /// A session whose clock stands still at `now`, with this computer in `zone`.
+    pub fn in_zone(mailbox: Mailbox, now: Timestamp, zone: Zone) -> Self {
+        Session::with_clock(mailbox, Clock { now: Some(now), offset: None, zone: Some(zone) })
     }
 
     // ---- time ----
@@ -442,9 +477,71 @@ impl Session {
         self.clock.now.unwrap_or_else(mailcraft_time::now)
     }
 
-    /// The local zone's offset at `ts`, in minutes east of UTC.
+    /// The zone the calendar is shown in, which is the one the mailbox's wall-clock times are
+    /// by: the one the options name ([`Prefs::time_zone`]), else this computer's (followed when
+    /// it changes). A clock that is pinned ([`Clock`]) says otherwise.
+    pub fn zone(&self) -> Zone {
+        if let Some(zone) = self.clock.offset.and_then(|offset| Zone::fixed(offset.clamp(-18 * 60, 18 * 60))) {
+            return zone;
+        }
+        Zone::named(&self.prefs.time_zone).filter(|zone| !zone.is_local()).unwrap_or_else(|| self.system_zone())
+    }
+
+    /// This computer's own zone, whatever zone the calendar is shown in.
+    pub fn system_zone(&self) -> Zone {
+        if let Some(zone) = self.clock.offset.and_then(|offset| Zone::fixed(offset.clamp(-18 * 60, 18 * 60))) {
+            return zone;
+        }
+        self.clock.zone.unwrap_or_else(Zone::system)
+    }
+
+    /// The offset at `ts` of the zone the calendar is shown in, in minutes east of UTC.
     pub fn offset_at(&self, ts: Timestamp) -> i32 {
-        self.clock.offset.unwrap_or_else(|| mailcraft_time::local_offset_minutes(ts))
+        match self.clock.offset {
+            Some(offset) => offset,
+            None => self.zone().offset_at(ts),
+        }
+    }
+
+    /// Have the mailbox's wall-clock times be by the clock of the zone the calendar is shown in
+    /// ([`Session::zone`]); returns whether anything in the mailbox reads differently for it.
+    ///
+    /// A mailbox whose times are in that zone already is left alone, which is nearly always. One
+    /// that names no zone yet (it was written before zones were kept, or has just got its first
+    /// event) is stamped with it, and nothing else changes. One that names another (this
+    /// computer was carried to another zone, the owner chose another one in the options, the
+    /// file comes from another machine) has its timed events moved to this zone's clock
+    /// ([`Mailbox::rebase`](mailcraft_model::Mailbox::rebase)): they stay at their instants,
+    /// whole-day events stay on their days, and nothing is noted for a server to be told.
+    ///
+    /// Called wherever the mailbox or the zone may have changed: when a session is made, before
+    /// and after every command, when a mailbox is opened or an undo step brings an older one
+    /// back; a front end calls it when it draws, so that the calendar follows the computer's
+    /// zone while the program runs.
+    pub fn settle_zone(&mut self) -> bool {
+        if !self.mailbox.has_times() {
+            return false;
+        }
+        let zone = self.zone();
+        if zone.is_local() || self.mailbox.zone == zone.id() {
+            return false;
+        }
+        let stamped = self.mailbox.zone.clone();
+        let moved = self.mailbox.rebase(zone);
+        if self.mailbox.zone == stamped {
+            // A name this program doesn't know: the times stay as they are written.
+            return false;
+        }
+        if moved == 0 && stamped.is_empty() {
+            // Only the stamp, which rides along with the next save.
+            return false;
+        }
+        log::info!("calendar: the times of {moved} events are now by the clock of {} (they were by {stamped})", self.mailbox.zone);
+        // The day an occurrence was picked by is another day's name now.
+        self.sel.event_day = self.sel.event.and_then(|id| self.mailbox.event(id)).map(|event| event.start.date);
+        self.rev += 1;
+        self.dirty = true;
+        true
     }
 
     pub fn local(&self, ts: Timestamp) -> DateTime {
@@ -507,6 +604,8 @@ impl Session {
         {
             c.account = mb.default_account().map_or(0, |a| a.id);
         }
+        // And its times are by the clock of the zone the calendar is shown in.
+        self.settle_zone();
     }
 
     /// The mailbox was changed outside a command (mail arriving from a server): everything worked
@@ -610,6 +709,9 @@ impl Session {
         }
         // Undo and redo manage the history themselves.
         let history = spec.mutates && !matches!(id, "edit.undo" | "edit.redo");
+        // The computer may have been carried to another zone since the last command: the
+        // mailbox is put by that zone's clock first, and that is not this command's to undo.
+        self.settle_zone();
         let before = self.snapshot(spec.label);
         let compose = self.compose.clone();
         let view = self.view.clone();

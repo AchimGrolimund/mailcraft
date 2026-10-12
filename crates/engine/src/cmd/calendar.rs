@@ -65,7 +65,7 @@ fn own_specs() -> Vec<CommandSpec> {
     ]
 }
 
-const EVENT: &str = r#"{"title": string, "start"?: "YYYY-MM-DDTHH:MM" (default: the next half hour on the day in view), "end"?: same (default: 30 minutes), "allDay"?: bool, "location"?: string, "description"?: string, "attendees"?: "a@x; b@y", "optional"?: "c@z", "recurrence"?: {"freq": "daily"|"weekly"|"monthly"|"yearly", "interval"?: n, "byDay"?: ["mon",…], "nth"?: 1-5|-1, "count"?: n, "until"?: "YYYY-MM-DD"} | null, "reminder"?: minutes | null, "showAs"?: string, "categories"?: [string], "private"?: bool, "calendar"?: number (default: the calendar being worked in, calendar.setCurrent), "send"?: bool} — a meeting with people invited that goes into a calendar an account's server keeps makes that server send the invitations by mail, so it has to say which is meant: "send": true invites them, "send": false keeps the meeting in a calendar on this computer and invites nobody (the answer then says "keptHere": true); without either the command refuses"#;
+const EVENT: &str = r#"{"title": string, "start"?: "YYYY-MM-DDTHH:MM" (default: the next half hour on the day in view), "end"?: same (default: 30 minutes), "startZone"?: zone | null, "endZone"?: zone | null (the time zones the event has of its own, by a name `calendar.timeZones` lists: `Europe/Berlin`, `Eastern Standard Time`, `UTC+05:30`; a time given together with its zone is a time by that zone's clock, a zone given alone keeps the event's time on the clock and moves it; times given without a zone, and all times in answers, are by the clock of the zone the calendar is shown in, `view.timeZone`), "allDay"?: bool, "location"?: string, "description"?: string, "attendees"?: "a@x; b@y", "optional"?: "c@z", "recurrence"?: {"freq": "daily"|"weekly"|"monthly"|"yearly", "interval"?: n, "byDay"?: ["mon",…], "nth"?: 1-5|-1, "count"?: n, "until"?: "YYYY-MM-DD"} | null, "reminder"?: minutes | null, "showAs"?: string, "categories"?: [string], "private"?: bool, "calendar"?: number (default: the calendar being worked in, calendar.setCurrent), "send"?: bool} — a meeting with people invited that goes into a calendar an account's server keeps makes that server send the invitations by mail, so it has to say which is meant: "send": true invites them, "send": false keeps the meeting in a calendar on this computer and invites nobody (the answer then says "keptHere": true); without either the command refuses"#;
 
 /// How long before its first day a new whole-day event reminds, when reminders are on: 18
 /// hours, which is six in the evening of the day before.
@@ -138,12 +138,16 @@ fn part(s: &Session, e: &Event, v: &Value) -> Result<Part, CmdError> {
         return Ok(Part::Series);
     }
     let day = day.or(s.sel.event_day.filter(|_| s.sel.event == Some(e.id)));
-    day.map(Part::One).ok_or_else(|| bad("`occurrence` (a day, YYYY-MM-DD) says which occurrence is meant"))
+    let day = day.ok_or_else(|| bad("`occurrence` (a day, YYYY-MM-DD) says which occurrence is meant"))?;
+    // The day is the one the occurrence starts on here. That is the day the series names it
+    // by, but for a series that repeats in another zone on a night when the clocks change.
+    Ok(Part::One(e.series_day_on(day, &remote::offset_of(s)).unwrap_or(day)))
 }
 
-/// Whether a series happens on `day`.
-fn happens_on(e: &Event, day: Date) -> bool {
-    e.occurrences(day, day).iter().any(|o| o.start.date == day)
+/// Whether a series has an occurrence of its day `day` (and doesn't skip it), in the calendar
+/// of `s`.
+fn happens_on(s: &Session, e: &Event, day: Date) -> bool {
+    e.occurrences_in(day.add_days(-1), day.add_days(1), &remote::offset_of(s)).iter().any(|o| o.day == day)
 }
 
 /// How many people an account's server would write to when the event is made, changed or
@@ -286,6 +290,8 @@ fn apply(s: &Session, e: &mut Event, v: &Value) -> Result<(), CmdError> {
     }
     let length = e.duration_minutes();
     let was_all_day = e.all_day;
+    // (Its times by the clocks of its own zones, for `startZone` and `endZone` below.)
+    let own_times = super::zones::Times::of(s, e);
     if let Some(all_day) = p::bool(v, "allDay") {
         e.all_day = all_day;
     }
@@ -327,6 +333,7 @@ fn apply(s: &Session, e: &mut Event, v: &Value) -> Result<(), CmdError> {
             return Err(fail("the end is before the start"));
         }
     }
+    own_times.apply(s, e, v, (start.is_some(), end.is_some()))?;
     if v.get("attendees").is_some() || v.get("optional").is_some() {
         let mut list = parse_attendees(p::str(v, "attendees").unwrap_or(""), false)?;
         list.extend(parse_attendees(p::str(v, "optional").unwrap_or(""), true)?);
@@ -472,7 +479,7 @@ fn may_change(s: &Session, v: &Value, before: &Event, e: &Event) -> Result<bool,
 /// the change would leave it; the occurrence is changed by as much (an hour later, another
 /// title), on its own day.
 fn change_one(s: &mut Session, v: &Value, series: &Event, day: Date, changed: Event) -> CmdResult {
-    if !happens_on(series, day) {
+    if !happens_on(s, series, day) {
         return Err(fail(format!("the series doesn't happen on {}", day.iso())));
     }
     if series.exceptions.len() >= 5000 {
@@ -496,8 +503,9 @@ fn change_one(s: &mut Session, v: &Value, series: &Event, day: Date, changed: Ev
     };
     // An event of its own has a name of its own (the server gives one it keeps the series' own).
     let uid = String::new();
-    let was = Event { origin: origin.clone(), uid: uid.clone(), ..remote::occurrence_of(series, day) };
-    let one = Event {
+    let here = remote::offset_of(s);
+    let was = Event { origin: origin.clone(), uid: uid.clone(), ..remote::occurrence_in(series, day, &here) };
+    let mut one = Event {
         id: 0,
         start: changed.start.add_days(apart),
         end: changed.end.add_days(apart),
@@ -507,6 +515,13 @@ fn change_one(s: &mut Session, v: &Value, series: &Event, day: Date, changed: Ev
         uid,
         ..changed
     };
+    if series.zone().is_some() && !series.all_day && !one.all_day {
+        // A series by another zone's clock has this occurrence wherever that clock puts it
+        // here: it is changed by as long as the series was (an hour later is an hour later).
+        let instant = |wall: DateTime| mailcraft_model::zoned::instant_at(wall.add_days(-apart), &here);
+        let (from, to, at) = (series.instants(&here), (instant(one.start), instant(one.end)), was.instants(&here));
+        one.set_instants(at.0.saturating_add(to.0.saturating_sub(from.0)), at.1.saturating_add(to.1.saturating_sub(from.1)), &here);
+    }
     if one == was {
         return Ok(json!({"id": series.id}));
     }
@@ -633,6 +648,8 @@ fn move_event(s: &mut Session, v: &Value) -> CmdResult {
     let start = p::datetime(v, "start")?.ok_or_else(|| bad("`start` is required"))?;
     let mut e = before.clone();
     let length = e.duration_minutes();
+    // (A time that is given is a time the clock shows once.)
+    (e.start_repeated, e.end_repeated) = (false, false);
     e.start = if e.all_day { DateTime::at_midnight(start.date) } else { start };
     e.end = match p::datetime(v, "end")? {
         // For whole days, `end` names the last day.
@@ -671,7 +688,7 @@ fn delete(s: &mut Session, v: &Value) -> CmdResult {
         if before.exceptions.contains(&day) {
             return Ok(json!({"id": id, "occurrence": day.iso()}));
         }
-        if !happens_on(&before, day) {
+        if !happens_on(s, &before, day) {
             return Err(fail(format!("the series doesn't happen on {}", day.iso())));
         }
         if before.exceptions.len() >= 5000 {
@@ -737,6 +754,10 @@ fn event_json(s: &Session, e: &Event) -> Value {
         "exceptions": e.exceptions.iter().map(|d| d.iso()).collect::<Vec<_>>(),
         "reminder": e.reminder_minutes, "showAs": e.show_as, "categories": e.categories, "private": e.private, "cancelled": e.cancelled,
         "time": e.time_label(s.prefs.twelve_hour),
+        // The zones it has of its own (`start` and `end` are by the calendar's clock either
+        // way), and its times by their clock when that shows another time.
+        "startZone": e.zone().map(mailcraft_time::Zone::id), "endZone": e.zone_of_end().map(mailcraft_time::Zone::id),
+        "ownTime": mailcraft_model::zoned::own_time_label(e, &remote::offset_of(s), s.prefs.twelve_hour),
         // An account's server keeps it; somebody else organizes it; it is one occurrence of a
         // series that was changed on its own (the day it stands for).
         "onServer": kept_by(s, e).is_some(), "guest": e.origin.guest, "occurrenceOf": e.origin.occurrence.map(|day| day.iso()),
@@ -752,8 +773,10 @@ fn get(s: &mut Session, v: &Value) -> CmdResult {
 /// What happens on the days `from`–`to` in the calendars that are shown, in order.
 pub fn occurrences(s: &Session, from: Date, to: Date) -> Vec<mailcraft_model::Occurrence> {
     let shown: Vec<Id> = s.mailbox.calendars.iter().filter(|c| c.visible).map(|c| c.id).collect();
+    // (A series by another zone's clock is wherever that clock puts each occurrence here.)
+    let here = remote::offset_of(s);
     let mut out: Vec<mailcraft_model::Occurrence> =
-        s.mailbox.events.values().filter(|e| shown.contains(&e.calendar)).flat_map(|e| e.occurrences(from, to)).collect();
+        s.mailbox.events.values().filter(|e| shown.contains(&e.calendar)).flat_map(|e| e.occurrences_in(from, to, &here)).collect();
     out.sort_by_key(|o| (o.start, o.end, o.event));
     out
 }
@@ -799,7 +822,7 @@ fn respond(s: &mut Session, v: &Value) -> CmdResult {
         let (send, note) = (p::bool(v, "send") == Some(true), comment(v));
         match part(s, &before, v)? {
             Part::One(day) => {
-                if !happens_on(&before, day) {
+                if !happens_on(s, &before, day) {
                     return Err(fail(format!("the series doesn't happen on {}", day.iso())));
                 }
                 // Declined, that day is out of the calendar; otherwise the server makes the

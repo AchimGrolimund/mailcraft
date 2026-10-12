@@ -39,6 +39,7 @@ pub mod theme;
 pub mod widgets;
 pub mod window_geometry;
 pub mod windows;
+mod zones;
 
 use std::sync::mpsc::Receiver;
 
@@ -571,6 +572,9 @@ pub struct MailApp {
     pub(crate) file_dialog: Option<files::PendingDialog>,
     /// Web: what the file the picker will deliver is for.
     pub(crate) pending_open: Option<String>,
+    /// The time zone the calendar was shown in when the window was last laid out: what the
+    /// appointments that stand open were read by ([`MailApp::follow_zone`]).
+    shown_zone: Option<mailcraft_time::Zone>,
     /// Where each calendar occurrence was drawn (for clicks injected by tests and agents).
     pub(crate) hit: control::HitMap,
     /// The reminders window: what is due, what was put off.
@@ -630,6 +634,7 @@ impl MailApp {
             fonts_frames: 0,
             frame_ms: 0.0,
             sent_title: String::new(),
+            shown_zone: None,
             quit_requested: false,
             autosave: true,
             offer_setup: false,
@@ -1725,6 +1730,24 @@ impl MailApp {
         raw.events.extend(self.synthetic.drain(..n));
     }
 
+    /// Have the mailbox, and the appointments that stand open, read by the clock of the zone the
+    /// calendar is shown in now ([`Session::settle_zone`](mailcraft_engine::Session::settle_zone)):
+    /// nothing to do but when that zone has changed. Called with every frame, and by whatever
+    /// changes the zone.
+    pub fn follow_zone(&mut self) {
+        let was = self.session.mailbox.written_in();
+        let shown = self.session.zone();
+        if was == Some(shown) && self.shown_zone == Some(shown) {
+            return;
+        }
+        // (The forms are told also when the mailbox had nothing in it for a zone to matter to.)
+        let before = self.shown_zone.replace(shown).or(was);
+        self.session.settle_zone();
+        if let Some(before) = before.filter(|before| *before != shown && !shown.is_local()) {
+            windows::rezone(self, before);
+        }
+    }
+
     /// Lay out the window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let t0 = now_ms();
@@ -1738,6 +1761,10 @@ impl MailApp {
         }
         let t = theme::Tokens::get(&ctx);
         self.hit.clear();
+        // The computer may have been carried to another time zone since the last frame: the
+        // mailbox's times are put by the new clock before anything of it is drawn, and so are
+        // the appointments that stand open.
+        self.follow_zone();
         // Windows of their own (a message, an appointment), before the shortcuts: Escape closes
         // the one in front where they are inside this window.
         windows::show(self, &ctx);

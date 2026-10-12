@@ -53,7 +53,7 @@ fn delete(remote: &str) -> EventOp {
 
 /// Send `ops` to the stand-in, in the owner's zone `zone`.
 fn push(server: &StandIn, ops: Vec<EventOp>, zone: &str) -> Vec<EventOutcome> {
-    let upload = EventsUpload { account: 3, email: "owner@example.org".into(), ops };
+    let upload = EventsUpload { account: 3, email: "owner@example.org".into(), ops, ..Default::default() };
     let uploaded = push_events_at(&server.url(), TOKEN, &upload, &EventOptions { zone: zone.into() });
     assert!(!uploaded.token_refused);
     uploaded.outcomes
@@ -601,4 +601,155 @@ fn the_zones_of_the_stand_in_keep_the_clock() {
     assert_eq!(zone_offset("Europe/Berlin", at(2026, 3, 29, 1, 0)), Some(120));
     assert_eq!(zone_offset("W. Europe Standard Time", at(2026, 10, 25, 1, 0)), Some(60));
     assert_eq!((zone_offset("UTC", 0), zone_offset("Mars/Olympus", 0)), (Some(0), None));
+}
+
+/// An event with zones of its own, as the mailbox sends one.
+fn in_zones(fields: EventFields, start: &str, end: &str) -> EventFields {
+    EventFields { zones: Some(mailcraft_model::remote::EventZones { start: start.into(), end: end.into() }), ..fields }
+}
+
+#[test]
+fn the_stand_in_takes_the_zone_names_the_reference_lists_and_no_others() {
+    // The names Windows has, and the additional ones of the reference.
+    for name in ["UTC", "AUS Eastern Standard Time", "Nepal Standard Time", "Australia/Sydney", "Asia/Kathmandu", "Pacific/Apia", "Europe/Kyiv"] {
+        assert!(zone_offset(name, 0).is_some(), "{name}");
+    }
+    // Any other name of the IANA database, an offset, another spelling, nonsense: not documented.
+    for name in
+        ["Europe/Amsterdam", "America/Detroit", "UTC+05:30", "+02:00", "eastern standard time", "Mars/Olympus", "", "tzone://Microsoft/Custom"]
+    {
+        assert!(zone_offset(name, 0).is_none(), "{name}");
+    }
+    assert!(zone_offset(&"A".repeat(1_000_000), 0).is_none());
+    // Both tables say the same of the zones that are written out here: around both changes of
+    // the clock in both years, and in the middle of each season.
+    for (windows, iana) in
+        [("Eastern Standard Time", "America/New_York"), ("W. Europe Standard Time", "Europe/Berlin"), ("GMT Standard Time", "Europe/London")]
+    {
+        let known = mailcraft_time::Zone::named(iana).unwrap();
+        let mut instant = at(2026, 1, 1, 0, 0);
+        while instant < at(2028, 1, 1, 0, 0) {
+            assert_eq!(zone_offset(windows, instant), Some(known.offset_at(instant)), "{windows} at {instant}");
+            instant += 1_800;
+        }
+    }
+    // Half and three quarters of an hour, and the south.
+    assert_eq!(zone_offset("Nepal Standard Time", at(2026, 10, 15, 0, 0)), Some(345));
+    assert_eq!(
+        (zone_offset("Australia/Sydney", at(2026, 7, 1, 0, 0)), zone_offset("Australia/Sydney", at(2026, 12, 1, 0, 0))),
+        (Some(600), Some(660))
+    );
+}
+
+#[test]
+fn an_event_in_zones_of_its_own_is_kept_in_them_at_the_same_moment() {
+    let server = StandIn::start().unwrap();
+    // A call at half past six in the evening in Pune: one o'clock in UTC, nine in New York.
+    let call = in_zones(appointment("Call with Pune", at(2026, 10, 15, 13, 0), 60), "Asia/Kolkata", "");
+    let made = done(&server, create(MARK, call), EASTERN);
+    assert_eq!(made.zone, "India Standard Time");
+    let sent = server.state().requests.last().unwrap().json();
+    assert_eq!(sent["start"], json!({"dateTime": "2026-10-15T18:30:00", "timeZone": "India Standard Time"}));
+    assert_eq!(sent["end"], json!({"dateTime": "2026-10-15T19:30:00", "timeZone": "India Standard Time"}));
+    let have = server.state().event("Call with Pune").cloned().unwrap();
+    assert_eq!(
+        (have.start, have.end, have.zone.as_str(), have.end_zone()),
+        (at(2026, 10, 15, 13, 0), at(2026, 10, 15, 14, 0), "India Standard Time", "India Standard Time")
+    );
+    // A flight that leaves London at ten and lands in Berlin at one: each end by its own clock.
+    let flight = in_zones(appointment("Flight", at(2026, 10, 16, 9, 0), 120), "Europe/London", "Europe/Berlin");
+    done(&server, create("22222222-d9cb-469f-a165-70867728950e", flight), EASTERN);
+    let sent = server.state().requests.last().unwrap().json();
+    assert_eq!(sent["start"], json!({"dateTime": "2026-10-16T10:00:00", "timeZone": "GMT Standard Time"}));
+    assert_eq!(sent["end"], json!({"dateTime": "2026-10-16T13:00:00", "timeZone": "W. Europe Standard Time"}));
+    let have = server.state().event("Flight").cloned().unwrap();
+    assert_eq!(
+        (have.start, have.end, have.zone.as_str(), have.end_zone()),
+        (at(2026, 10, 16, 9, 0), at(2026, 10, 16, 11, 0), "GMT Standard Time", "W. Europe Standard Time")
+    );
+
+    // What comes down: the same moments, and the zones they were told in, as the service names them.
+    let down = october(&server, "");
+    let of = |title: &str| down.events.iter().find(|event| event.title == title).unwrap();
+    assert_eq!(
+        (of("Call with Pune").start, of("Call with Pune").start_zone.as_str(), of("Call with Pune").end_zone.as_str()),
+        (at(2026, 10, 15, 13, 0), "India Standard Time", "India Standard Time")
+    );
+    assert_eq!((of("Flight").start, of("Flight").end), (at(2026, 10, 16, 9, 0), at(2026, 10, 16, 11, 0)));
+    assert_eq!((of("Flight").start_zone.as_str(), of("Flight").end_zone.as_str()), ("GMT Standard Time", "W. Europe Standard Time"));
+
+    // Moved to another zone (the clock time stays, the moment moves): the zone is the event's.
+    let later = in_zones(EventFields { time: timed(at(2026, 10, 15, 9, 30), 60), ..Default::default() }, "Asia/Tokyo", "");
+    done(&server, update(&made.remote, later), EASTERN);
+    let have = server.state().event("Call with Pune").cloned().unwrap();
+    assert_eq!((have.start, have.zone.as_str(), have.end_zone()), (at(2026, 10, 15, 9, 30), "Tokyo Standard Time", "Tokyo Standard Time"));
+    assert_eq!(refusals(&server), []);
+}
+
+#[test]
+fn a_series_in_a_zone_of_its_own_keeps_its_hour_there_across_a_change_of_the_clock() {
+    let server = StandIn::start().unwrap();
+    // Mondays at nine in Berlin, from the owner's desk in New York. Europe's clocks go back on
+    // 25 October, a week before New York's.
+    let first = Date::new(2026, 10, 19).unwrap();
+    let rule = Recurrence { by_day: vec![Weekday::Mon], ..Recurrence::every(Freq::Weekly) };
+    let series = in_zones(
+        EventFields {
+            wall: Some(EventWall { start: clock(2026, 10, 19, 9, 0), end: clock(2026, 10, 19, 9, 30) }),
+            repeat: Some(EventRepeat { rule: Some(rule.clone()), first }),
+            ..appointment("Berlin stand-up", at(2026, 10, 19, 7, 0), 30)
+        },
+        "Europe/Berlin",
+        "",
+    );
+    let made = done(&server, create(MARK, series), EASTERN);
+    assert_eq!(made.zone, "W. Europe Standard Time");
+    let sent = server.state().requests.last().unwrap().json();
+    assert_eq!(sent["start"], json!({"dateTime": "2026-10-19T09:00:00", "timeZone": "W. Europe Standard Time"}));
+    assert_eq!(sent["recurrence"]["range"]["startDate"], json!("2026-10-19"));
+    assert_eq!(sent["recurrence"]["range"]["recurrenceTimeZone"], json!("W. Europe Standard Time"));
+    let query = EventsQuery { calendar: String::new(), from: at(2026, 10, 18, 0, 0), to: at(2026, 11, 10, 0, 0), series: Vec::new() };
+    let down = events_in_at(&server.url(), TOKEN, &query).unwrap();
+    let starts: Vec<Timestamp> =
+        down.events.iter().filter(|e| e.kind == RemoteEventKind::Occurrence && e.series == made.remote).map(|e| e.start).collect();
+    // Seven in UTC while Berlin has summer time, eight after.
+    assert_eq!(starts, [at(2026, 10, 19, 7, 0), at(2026, 10, 26, 8, 0), at(2026, 11, 2, 8, 0), at(2026, 11, 9, 8, 0)]);
+    let itself = down.events.iter().find(|e| e.kind == RemoteEventKind::SeriesMaster).unwrap();
+    assert_eq!((itself.start_zone.as_str(), itself.recurrence.as_ref(), itself.series_day), ("W. Europe Standard Time", Some(&rule), Some(first)));
+    assert_eq!(refusals(&server), []);
+}
+
+#[test]
+fn a_zone_the_service_has_no_name_for_costs_the_name_and_never_the_moment() {
+    let server = StandIn::start().unwrap();
+    // Amsterdam has no name of Windows' own and is not among the additional ones: the service
+    // says no, and the event goes as the moment it is, in UTC.
+    let visit = in_zones(appointment("Visit", at(2026, 10, 15, 8, 0), 60), "Europe/Amsterdam", "");
+    let made = done(&server, create(MARK, visit), EASTERN);
+    assert_eq!(made.zone, "UTC");
+    let have = server.state().event("Visit").cloned().unwrap();
+    assert_eq!((have.start, have.end, have.zone.as_str()), (at(2026, 10, 15, 8, 0), at(2026, 10, 15, 9, 0), "UTC"));
+    assert_eq!(refusals(&server).iter().map(|(method, _, status)| (method.as_str(), *status)).collect::<Vec<_>>(), [("POST", 400)]);
+    // A zone that is no zone at all, and an offset: never asked about by name.
+    for (mark, zone) in [("22222222-d9cb-469f-a165-70867728950e", "Mars/Olympus"), ("33333333-d9cb-469f-a165-70867728950e", "UTC+05:30")] {
+        let odd = in_zones(appointment(zone, at(2026, 10, 16, 8, 0), 60), zone, "");
+        assert_eq!(done(&server, create(mark, odd), EASTERN).zone, "UTC");
+        assert_eq!(server.state().event(zone).map(|e| (e.start, e.zone.clone())), Some((at(2026, 10, 16, 8, 0), "UTC".to_string())));
+    }
+    assert_eq!(refusals(&server).len(), 1);
+    // A series by that zone's clock is not sent by another clock: in UTC it would be another
+    // series half the year. It is refused, and the mailbox keeps it.
+    let rule = Recurrence { by_day: vec![Weekday::Thu], ..Recurrence::every(Freq::Weekly) };
+    let series = in_zones(
+        EventFields {
+            wall: Some(EventWall { start: clock(2026, 10, 15, 10, 0), end: clock(2026, 10, 15, 11, 0) }),
+            repeat: Some(EventRepeat { rule: Some(rule), first: Date::new(2026, 10, 15).unwrap() }),
+            ..appointment("Weekly visit", at(2026, 10, 15, 8, 0), 60)
+        },
+        "Europe/Amsterdam",
+        "",
+    );
+    let refused = push(&server, vec![create("44444444-d9cb-469f-a165-70867728950e", series)], EASTERN).remove(0);
+    assert_eq!(refused.result, EventResult::Refused);
+    assert!(server.state().event("Weekly visit").is_none());
 }

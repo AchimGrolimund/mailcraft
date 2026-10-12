@@ -49,5 +49,12 @@ image-webp (the WebP decoder of the image crate; MIT OR Apache-2.0) and flate2 w
 (gzip and deflate, for a picture a web server sends packed; MIT OR Apache-2.0, and MIT OR Zlib OR
 Apache-2.0). Both are written in Rust throughout; no picture is decoded by anything else.
 
+For time zones: jiff, jiff-core and jiff-tzdb (the Unlicense OR MIT), which carry the IANA Time
+Zone Database (in the public domain) into every build, the browser's included. The names Windows
+has for time zones beside their IANA names (crates/time/src/zone/windows.rs) restate the "001"
+rows of windowsZones in the Unicode CLDR supplemental data: Copyright (c) Unicode, Inc., under
+the Unicode License v3 (https://www.unicode.org/license.txt). They are identifiers; nothing else
+of Windows is included.
+
 No Microsoft, Google, Apple, Mozilla or other vendor's icons, images, templates, sounds or artwork
 are included.
