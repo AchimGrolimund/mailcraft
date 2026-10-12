@@ -56,6 +56,8 @@ pub enum Dialog {
     },
     About,
     Form(Form),
+    /// Propose New Time, Forward, or the list of what was proposed ([`crate::meeting_dialogs`]).
+    Meeting(crate::meeting_dialogs::MeetingDialog),
 }
 
 /// What a [`Dialog::Confirm`] asks.
@@ -106,6 +108,7 @@ impl Dialog {
             Dialog::Report { .. } => "syncProblems",
             Dialog::About => "about",
             Dialog::Form(f) => f.name(),
+            Dialog::Meeting(d) => d.name(),
         }
     }
 
@@ -146,6 +149,15 @@ impl Dialog {
             }
             other => Dialog::Form(Form::open(other, app, params)?),
         })
+    }
+}
+
+/// [`Dialog::open`], and the dialogs of a meeting beside it (`proposeTime`, `forwardMeeting`,
+/// `proposals`), which ask the engine what they are about.
+pub(crate) fn open_dialog(app: &mut MailApp, name: &str, params: &Value) -> Option<Dialog> {
+    match crate::meeting_dialogs::MeetingDialog::open(name, app, params) {
+        Some(dialog) => Some(Dialog::Meeting(dialog)),
+        None => Dialog::open(name, app, params),
     }
 }
 
@@ -222,6 +234,9 @@ pub fn confirmation(app: &MailApp, id: &str, params: &Value) -> Option<Question>
         | "calendar.edit"
         | "calendar.delete"
         | "calendar.private"
+        | "calendar.importance"
+        | "calendar.responseOptions"
+        | "calendar.teamsMeeting"
         | "calendar.respond"
         | "ui.openWindow" => calendar_question(app, id, params),
         _ => None,
@@ -474,6 +489,11 @@ pub fn input_dialog(id: &str, params: &Value) -> Option<&'static str> {
         "calendar.edit" if empty || params.as_object().is_some_and(|m| m.keys().all(|key| matches!(key.as_str(), "scope" | "occurrence"))) => {
             Some("editEvent")
         }
+        // What writes to other people asks who and what in a dialog of its own, and sends from
+        // that dialog's button alone; what was proposed is a list to look at.
+        "calendar.propose" if !has("start") => Some("proposeTime"),
+        "calendar.forward" if !has("to") => Some("forwardMeeting"),
+        "calendar.proposals" => Some("proposals"),
         "people.new" if empty => Some("contact"),
         "people.edit" if empty => Some("editContact"),
         "tasks.new" if !has("title") => Some("task"),
@@ -559,7 +579,7 @@ fn score(query: &str, label: &str, location: &str, id: &str) -> Option<u32> {
 
 /// The frame shared by the dialogs: a centred window with a title. Returns `false` when it was
 /// closed with its close button.
-fn window(ctx: &egui::Context, title: &str, width: f32, add: impl FnOnce(&mut Ui)) -> bool {
+pub(crate) fn window(ctx: &egui::Context, title: &str, width: f32, add: impl FnOnce(&mut Ui)) -> bool {
     let mut open = true;
     egui::Window::new(egui::RichText::new(title).font(semibold(14.0)))
         .id(egui::Id::new("dialog"))
@@ -884,6 +904,12 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
             let title = form.title();
             let mut done = false;
             let open = window(ctx, &title, form.width(), |ui| done = form.show(app, ui));
+            close |= !open || done;
+        }
+        // (Enter is nobody's in these: what they send, they send from a button.)
+        Dialog::Meeting(dialog) => {
+            let mut done = false;
+            let open = window(ctx, dialog.title(), dialog.width(), |ui| done = dialog.show(app, ui));
             close |= !open || done;
         }
     }

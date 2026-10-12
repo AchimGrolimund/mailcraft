@@ -522,8 +522,14 @@ pub(crate) mod testing {
         pub say: Option<EventResult>,
         /// The mail it sent to other people, as a real server would on being told these
         /// things: `invitation:Title:people`, `update:Title:people`, `cancellation:Title:people:note`,
-        /// `response:Title:answer:note`.
+        /// `response:Title:answer:note`, `proposal:Title:start-end` (after the response it came
+        /// with), `forward:Title:people:note`.
         pub mail: Vec<String>,
+        /// Its account can't make Teams meetings: an event that was to be one is made without.
+        pub no_teams: bool,
+        /// The calendar each event is in that isn't in the account's main one (by the event's
+        /// id; what the server calls the calendar).
+        pub placed: std::collections::HashMap<String, String>,
         /// The occurrences of series that are no longer the series' own: deleted, or changed
         /// into events of their own (the series, and the day of the occurrence, counted from 1970).
         pub taken: HashSet<(String, i64)>,
@@ -577,13 +583,39 @@ pub(crate) mod testing {
                 if let Some(categories) = &fields.categories {
                     event.categories = categories.clone();
                 }
+                if let Some(importance) = fields.importance {
+                    event.importance = importance;
+                }
+                if let Some(asked) = fields.request_responses {
+                    event.options.request_responses = asked;
+                }
+                if let Some(allowed) = fields.allow_proposals {
+                    event.options.allow_proposals = allowed;
+                }
                 event.change_key = version.clone();
+            };
+            // An event that is to be held online: made so, with a link to join by, or (an
+            // account that can't) left as it is, which the answer then says.
+            let no_teams = self.no_teams;
+            let online = |event: &mut RemoteEvent, outcome: &mut EventOutcome| {
+                let Some(provider) = op.fields.online else { return };
+                if no_teams {
+                    (outcome.online, outcome.error) = (Some(false), "the stand-in has no Teams".into());
+                } else {
+                    let join_url = format!("https://teams.example.org/l/meetup-join/{}", event.id);
+                    event.online = Some(mailcraft_model::OnlineMeeting { provider, join_url: join_url.clone() });
+                    (outcome.online, outcome.join_url) = (Some(true), join_url);
+                }
             };
             // What the people invited are written to about: anything but how it shows to the owner.
             let seen = {
                 let f = &op.fields;
                 f.title.is_some() || f.location.is_some() || f.description.is_some() || f.time.is_some() || f.private.is_some() || f.repeat.is_some()
-            } || op.fields.attendees.is_some();
+            } || op.fields.attendees.is_some()
+                || op.fields.importance.is_some()
+                || op.fields.request_responses.is_some()
+                || op.fields.allow_proposals.is_some()
+                || op.fields.online.is_some();
             // One occurrence of a series, known by its series and its time.
             if op.of_occurrence() {
                 let Some(series) = self.events.iter().find(|event| event.id == op.series && event.recurrence.is_some()).cloned() else {
@@ -618,7 +650,15 @@ pub(crate) mod testing {
                     EventChangeKind::Delete if meeting(&series) => {
                         self.mail.push(format!("cancellation:{}:{}:{}", series.title, series.attendees.len(), op.comment))
                     }
-                    EventChangeKind::Respond if op.send => self.mail.push(format!("response:{}:{:?}:{}", series.title, op.response, op.comment)),
+                    EventChangeKind::Respond if op.send => {
+                        self.mail.push(format!("response:{}:{:?}:{}", series.title, op.response, op.comment));
+                        if let Some(time) = op.proposed {
+                            self.mail.push(format!("proposal:{}:{}-{}", series.title, time.start, time.end));
+                        }
+                    }
+                    EventChangeKind::Forward if op.send && !op.to.is_empty() => {
+                        self.mail.push(format!("forward:{}:{}:{}", series.title, op.to.len(), op.comment))
+                    }
                     _ => {}
                 }
                 outcome.change_key = version;
@@ -630,8 +670,12 @@ pub(crate) mod testing {
                     let mut event =
                         RemoteEvent { id: format!("made-{}", self.made), token: op.token.clone(), is_organizer: Some(true), ..Default::default() };
                     put(&mut event);
+                    online(&mut event, &mut outcome);
                     if meeting(&event) {
                         self.mail.push(format!("invitation:{}:{}", event.title, event.attendees.len()));
+                    }
+                    if !op.calendar.is_empty() {
+                        self.placed.insert(event.id.clone(), op.calendar.clone());
                     }
                     outcome.remote = event.id.clone();
                     self.events.push(event);
@@ -640,6 +684,7 @@ pub(crate) mod testing {
                     Some(event) => {
                         let before = event.attendees.len();
                         put(event);
+                        online(event, &mut outcome);
                         if (meeting(event) || before > 0) && event.is_organizer != Some(false) && seen {
                             let (title, people) = (event.title.clone(), event.attendees.len().max(before));
                             self.mail.push(format!("update:{title}:{people}"));
@@ -665,6 +710,10 @@ pub(crate) mod testing {
                         let title = self.events.get(at).map(|event| event.title.clone()).unwrap_or_default();
                         if op.send {
                             self.mail.push(format!("response:{title}:{:?}:{}", op.response, op.comment));
+                            // Another time, proposed with the answer.
+                            if let Some(time) = op.proposed {
+                                self.mail.push(format!("proposal:{title}:{}-{}", time.start, time.end));
+                            }
                         }
                         if op.response == Response::Declined {
                             self.events.remove(at);
@@ -673,6 +722,13 @@ pub(crate) mod testing {
                             event.change_key = version.clone();
                         }
                     }
+                    None => outcome.result = EventResult::Gone,
+                },
+                // Sent on: mail to the people named, and nothing else. (Never without the yes
+                // that an upload carries, which is what a real server is never asked without.)
+                EventChangeKind::Forward => match self.events.iter().find(|event| event.id == op.remote) {
+                    Some(event) if op.send && !op.to.is_empty() => self.mail.push(format!("forward:{}:{}:{}", event.title, op.to.len(), op.comment)),
+                    Some(_) => outcome.result = EventResult::Refused,
                     None => outcome.result = EventResult::Gone,
                 },
             }
@@ -686,7 +742,8 @@ pub(crate) mod testing {
         fn stretch(&self, from: i64, to: i64) -> Vec<RemoteEvent> {
             let mut out = Vec::new();
             let day = |instant: i64| DateTime::from_timestamp(instant.clamp(0, 4_000_000_000), 0).date;
-            for event in &self.events {
+            // (Of the account's main calendar: what was put into another one is that one's.)
+            for event in self.events.iter().filter(|event| !self.placed.contains_key(&event.id)) {
                 let Some(rule) = &event.recurrence else {
                     out.push(event.clone());
                     continue;
@@ -759,9 +816,32 @@ pub(crate) mod testing {
             if let Some((from, to)) = stretch {
                 // A series that was asked for by name and is no longer here is said to be gone.
                 let gone = series.into_iter().filter(|name| !self.events.iter().any(|event| event.id == *name)).collect();
-                let all =
-                    EventsDownload { from, to, complete: true, events: self.stretch(from, to), gone, has_categories: true, ..Default::default() };
+                let all = EventsDownload {
+                    from,
+                    to,
+                    complete: true,
+                    events: self.stretch(from, to),
+                    gone,
+                    has_categories: true,
+                    has_options: true,
+                    ..Default::default()
+                };
                 out.events = Some(all.for_account(&request.account));
+                // The account's other calendars that were asked for: what was put into each.
+                for ask in request.asks.iter().filter(|ask| !ask.calendar.is_empty()) {
+                    let there = |event: &&RemoteEvent| self.placed.get(&event.id) == Some(&ask.calendar) && (from..to).contains(&event.start);
+                    let other = EventsDownload {
+                        calendar: ask.calendar.clone(),
+                        from,
+                        to,
+                        complete: true,
+                        events: self.events.iter().filter(there).cloned().collect(),
+                        has_categories: true,
+                        has_options: true,
+                        ..Default::default()
+                    };
+                    out.more_events.push(other.for_account(&request.account));
+                }
             }
             if request.directory {
                 out.contacts = Some(ContactsDownload { complete: true, ..Default::default() }.for_account(&request.account));

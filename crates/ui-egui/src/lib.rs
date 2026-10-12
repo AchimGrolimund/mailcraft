@@ -28,6 +28,7 @@ pub mod i18n;
 pub mod icons;
 pub mod keys;
 pub mod mail_view;
+mod meeting_dialogs;
 pub mod nav;
 pub mod people_view;
 pub mod reading;
@@ -307,7 +308,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "ui.dialog",
         "Open Dialog",
         "Window",
-        r#"{"name": "commands"|"event"|"meeting"|"editEvent"|"contact"|"editContact"|"task"|"editTask"|"folder"|"goToDate"|"account"|"categories"|"rules"|"about", …} (account: "email"?: string to start with, or "id": number for that account's settings)"#,
+        r#"{"name": "commands"|"event"|"meeting"|"editEvent"|"contact"|"editContact"|"task"|"editTask"|"folder"|"goToDate"|"account"|"categories"|"rules"|"about"|"proposeTime"|"forwardMeeting"|"proposals", …} (account: "email"?: string to start with, or "id": number for that account's settings; proposeTime: "id"?: number (an item of the calendar) | "message": number (an invitation in the mail); forwardMeeting: "id"?: number; proposals: "id"?: number | "message": number — the first two write to other people only from their own Propose and Send buttons)"#,
     ),
     ("ui.closeDialog", "Close Dialog", "Window", "{}"),
     ("ui.theme", "Interface Theme", "File › Options", r#"{"value": "light"|"dark"|"system"}"#),
@@ -339,7 +340,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "ui.openWindow",
         "Open in a Window of Its Own",
         "Window",
-        r#"{"message": number} | {"event": number} | {"new": "appointment"|"meeting", "start"?: "YYYY-MM-DDTHH:MM", "end"?: same, "allDay"?: bool, "calendar"?: number, "title"?: string, …the other fields of calendar.new} — a draft opens in the composer instead; a new appointment or meeting is made when its window is saved"#,
+        r#"{"message": number} | {"event": number, "proposed"?: {"start": "YYYY-MM-DDTHH:MM", "end": same} (another time, as somebody proposed it, put into the fields: nothing is changed or sent until the window sends it)} | {"new": "appointment"|"meeting", "start"?: "YYYY-MM-DDTHH:MM", "end"?: same, "allDay"?: bool, "calendar"?: number, "title"?: string, …the other fields of calendar.new} — a draft opens in the composer instead; a new appointment or meeting is made when its window is saved"#,
     ),
     (
         "ui.closeWindow",
@@ -351,7 +352,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "ui.eventWindow",
         "Appointment Window",
         "Window",
-        r#"{"window"?: number (default: the appointment or meeting window in front), "page"?: "appointment"|"scheduling" (a meeting's Scheduling Assistant), "recurrence"?: bool (open or close its Appointment Recurrence dialog), "do"?: "save"|"saveAndClose"|"send"|"close" — as its keys and its close button do: closing asks first when something isn't saved, and nothing is sent to anybody without the owner's yes; "freeBusy"?: {"people": [{"email", "busy": [{"start": seconds, "end": seconds, "showAs"}], "error"?: string}]} — a stand-in for the server's answer about the people invited, for the Scheduling Assistant} — answers {"window", "event", "page", "meeting", "dirty", "recurrence", "asking", "scheduling"?: {"day", "start", "end", "rows", "known", "unknown", "bars", "pending", "note"}}"#,
+        r#"{"window"?: number (default: the appointment or meeting window in front), "page"?: "appointment"|"scheduling" (a meeting's Scheduling Assistant), "recurrence"?: bool (open or close its Appointment Recurrence dialog), "do"?: "save"|"saveAndClose"|"send"|"close" — as its keys and its close button do: closing asks first when something isn't saved, and nothing is sent to anybody without the owner's yes; "freeBusy"?: {"people": [{"email", "busy": [{"start": seconds, "end": seconds, "showAs"}], "error"?: string}]} — a stand-in for the server's answer about the people invited, for the Scheduling Assistant} — answers {"window", "event", "page", "meeting", "dirty", "recurrence", "asking", "importance": "low"|"normal"|"high", "online": bool (it is, or is to be, a Teams meeting), "joinUrl": string (the link to join by, when its server gave one: data, never followed by itself), "scheduling"?: {"day", "start", "end", "rows", "known", "unknown", "bars", "pending", "note"}}"#,
     ),
     (
         "ui.downloadPictures",
@@ -384,6 +385,12 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "Expand or Collapse Calendar Group",
         "Calendar",
         r#"{"group": string (its heading in the list of calendars), "value"?: bool (true: folded away; default: the other way than it is)}"#,
+    ),
+    (
+        "ui.joinMeeting",
+        "Join Online Meeting",
+        "Meeting › Teams Meeting",
+        r#"{"event"?: number (default: the selected item)} — opens the link to join an online meeting by in the system's browser. The link comes from the meeting's server: only an https address is opened, and only on this command"#,
     ),
     (
         "ui.findInvitation",
@@ -631,7 +638,7 @@ impl MailApp {
             if let Some(opened) = windows::open_form(self, name, &params) {
                 return opened;
             }
-            self.dialog = dialogs::Dialog::open(name, self, &params);
+            self.dialog = dialogs::open_dialog(self, name, &params);
             return Ok(json!({"pending": name}));
         }
         if let Some(r) = files::intercept(self, id, &params) {
@@ -741,7 +748,7 @@ impl MailApp {
             },
             "ui.dialog" => {
                 let Some(name) = s("name") else { return Some(Err("missing `name`".into())) };
-                match dialogs::Dialog::open(name, self, p) {
+                match dialogs::open_dialog(self, name, p) {
                     Some(d) => {
                         self.dialog = Some(d);
                         Ok(json!({"dialog": name}))
@@ -866,7 +873,8 @@ impl MailApp {
             _ => {
                 return windows::ui_command(self, id, p)
                     .or_else(|| reading::remote::ui_command(self, id, p))
-                    .or_else(|| calendar_view::ui_command(self, id, p));
+                    .or_else(|| calendar_view::ui_command(self, id, p))
+                    .or_else(|| meeting_dialogs::ui_command(self, id, p));
             }
         })
     }
@@ -1793,6 +1801,11 @@ fn feedback(id: &str, v: &Value) -> Option<String> {
         }
         "people.fromMessage" if v.get("existing").and_then(Value::as_bool) == Some(true) => Some(tl!("Already in your contacts").to_string()),
         "folder.empty" => n("removed").map(|c| plural(c, tl!("message removed"), tl!("messages removed"))),
+        // An appointment that goes into another calendar of its account is made there first, and
+        // taken out of the one it was in once that is done: said, as it takes a moment.
+        "calendar.edit" if v.get("moved").and_then(Value::as_bool) == Some(true) => {
+            Some(tl!("Moving it to the other calendar: the account's server makes it there, then takes it out of this one").to_string())
+        }
         _ => None,
     }
 }

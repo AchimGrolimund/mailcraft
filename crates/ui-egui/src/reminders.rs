@@ -131,6 +131,7 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
     let twelve = app.session.prefs.twelve_hour;
     let rows = app.reminders.showing.clone();
     let (mut dismissed, mut snoozed, mut opened) = (None, None, None);
+    let mut joined: Option<u64> = None;
     let (mut dismiss_all, mut closed) = (false, false);
     let title = if rows.len() == 1 { tl!("1 Reminder").to_string() } else { format!("{} {}", rows.len(), tl!("Reminders")) };
     let height = (rows.len().clamp(1, 6) as f32) * 46.0 + 96.0;
@@ -169,10 +170,13 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
                         t.accent,
                     );
                     let name = if r.title.trim().is_empty() { tl!("(no title)") } else { r.title.as_str() };
+                    // An online meeting that has a link to join by gets a Join button beside Dismiss.
+                    let join = app.session.mailbox.event(r.event).and_then(|e| e.join_link()).and_then(mailcraft_model::OnlineMeeting::clean_link);
+                    let aside = if join.is_some() { 56.0 } else { 0.0 };
                     crate::theme::paint_clipped(
                         ui.painter(),
                         egui::pos2(rect.min.x + 34.0, rect.min.y + 15.0),
-                        rect.width() - 130.0,
+                        rect.width() - 130.0 - aside,
                         name,
                         semibold(12.5),
                         t.text,
@@ -182,17 +186,29 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
                     crate::theme::paint_clipped(
                         ui.painter(),
                         egui::pos2(rect.min.x + 34.0, rect.min.y + 32.0),
-                        rect.width() - 130.0,
+                        rect.width() - 130.0 - aside,
                         &detail,
                         regular(11.5),
                         t.text_dim,
                     );
                     let color = if r.minutes <= 0 { t.red } else { t.text_dim };
-                    ui.painter().text(egui::pos2(rect.max.x - 78.0, rect.min.y + 15.0), Align2::RIGHT_CENTER, when(r.minutes), regular(11.5), color);
+                    let said = egui::pos2(rect.max.x - 78.0 - aside, rect.min.y + 15.0);
+                    ui.painter().text(said, Align2::RIGHT_CENTER, when(r.minutes), regular(11.5), color);
                     let button = egui::Rect::from_min_size(egui::pos2(rect.max.x - 70.0, rect.center().y - 12.0), vec2(64.0, 24.0));
+                    // The link is shown where it leads, and followed only on the click.
+                    let mut pressed = false;
+                    if let Some(link) = &join {
+                        let place = egui::Rect::from_min_size(egui::pos2(button.min.x - aside, button.min.y), vec2(aside - 6.0, 24.0));
+                        let joins = ui.put(place, egui::Button::new(tl!("Join"))).on_hover_text(link.as_str());
+                        app.hit.add("reminderJoin", r.event, joins.rect);
+                        if joins.clicked() {
+                            joined = Some(r.event);
+                            pressed = true;
+                        }
+                    }
                     if ui.put(button, egui::Button::new(tl!("Dismiss"))).clicked() {
                         dismissed = Some((r.event, r.start.iso()));
-                    } else if resp.double_clicked() {
+                    } else if resp.double_clicked() && !pressed {
                         opened = Some((r.event, r.start));
                     }
                     app.hit.add("reminder", r.event, rect);
@@ -229,6 +245,11 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
     }
     if let Some((event, start)) = opened {
         open(app, event, start);
+    }
+    if let Some(event) = joined
+        && let Err(e) = app.execute("ui.joinMeeting", json!({"event": event}))
+    {
+        app.status(e);
     }
     // Closing the window puts what is showing off for a while; it comes back, as a reminder should.
     if closed {

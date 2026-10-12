@@ -1111,7 +1111,7 @@ pub(crate) mod kit {
 mod event {
     use egui::{Ui, vec2};
     use mailcraft_engine::Session;
-    use mailcraft_model::{Address, Freq, Id, Recurrence, ShowAs, format_list};
+    use mailcraft_model::{Address, Freq, Id, Importance, Recurrence, ResponseOptions, ShowAs, format_list};
     use mailcraft_time::{Date, DateTime, Weekday, duration_label, month_name, time_short};
     use serde_json::{Map, Value, json};
 
@@ -2172,6 +2172,19 @@ mod event {
         /// the occurrence's own day, and the commands are told the series' (which is how
         /// `calendar.edit` takes a change to one occurrence).
         apart: i64,
+        /// How much it matters: the High and Low Importance buttons.
+        importance: Importance,
+        /// What the people invited are asked for (Response Options).
+        options: ResponseOptions,
+        /// It is (to be) a Teams meeting.
+        online: bool,
+        /// The account's server has made it one already, which it then stays.
+        online_made: bool,
+        /// The link to join it by, when its server has given one.
+        join_url: String,
+        /// How many of the people invited have proposed another time (a meeting the owner
+        /// organizes): the form says so, with a way to look at them.
+        proposals: usize,
     }
 
     impl EventForm {
@@ -2212,6 +2225,12 @@ mod event {
                 private: p.get("private").and_then(Value::as_bool).unwrap_or(false),
                 description: text("description"),
                 focus: true,
+                importance: p.get("importance").and_then(Value::as_str).and_then(Importance::parse).unwrap_or_default(),
+                options: ResponseOptions {
+                    request_responses: p.get("requestResponses").and_then(Value::as_bool).unwrap_or(true),
+                    allow_proposals: p.get("allowProposals").and_then(Value::as_bool).unwrap_or(true),
+                },
+                online: p.get("online").and_then(Value::as_bool).unwrap_or(false),
                 ..Default::default()
             };
             f.set_span(start, end, all_day, clock, s.prefs.twelve_hour);
@@ -2245,6 +2264,13 @@ mod event {
                 private: e.private,
                 description: e.description.clone(),
                 focus: true,
+                importance: e.importance,
+                options: e.response_options,
+                online: e.online.is_some(),
+                // (Made by its server: one that is still on its way there can be taken back.)
+                online_made: e.online.is_some() && !e.origin.id.is_empty() && mailcraft_engine::cmd::remote::keeper(&s.mailbox, &e.origin).is_some(),
+                join_url: e.join_link().unwrap_or_default().to_string(),
+                proposals: e.proposals.len(),
                 ..Default::default()
             };
             // Which of a series is meant, when that is said: one occurrence shows on its own day.
@@ -2265,7 +2291,31 @@ mod event {
             let clock = DateTime { hour: s.prefs.work_start.min(23), ..DateTime::at_midnight(start.date) };
             f.set_span(start, end, e.all_day, clock, s.prefs.twelve_hour);
             f.baseline = f.fields();
+            // Opened to take up another time somebody proposed: that time is in its fields, for
+            // the owner to send as an update (or not). Nothing is changed by opening it.
+            if let Some(proposed) = p.get("proposed") {
+                let time = |key: &str| proposed.get(key).and_then(Value::as_str).and_then(|text| mailcraft_time::parse_iso(text).map(|(at, _)| at));
+                if let (Some(start), Some(end)) = (time("start"), time("end")) {
+                    f.take_proposal(start, end, s.prefs.twelve_hour);
+                }
+            }
             Some(f)
+        }
+
+        /// Put another time into the fields: the one somebody proposed for the meeting. The
+        /// form is then one with a change that isn't sent yet.
+        pub(crate) fn take_proposal(&mut self, start: DateTime, end: DateTime, twelve: bool) {
+            if end <= start || self.guest {
+                return;
+            }
+            let clock = DateTime::at_midnight(start.date);
+            self.set_span(start, end, false, clock, twelve);
+            self.page = Page::Appointment;
+        }
+
+        /// How much it matters, whether it is (to be) a Teams meeting, and the link to join by.
+        pub(crate) fn meeting_state(&self) -> (Importance, bool, &str) {
+            (self.importance, self.online, self.join_url.as_str())
         }
 
         /// Fill the date and time fields from a start and an end as an event keeps them. `clock`
@@ -2560,6 +2610,7 @@ mod event {
                 "showAs": self.show_as.code(),
                 "categories": self.categories,
                 "private": self.private,
+                "importance": self.importance.code(),
             }));
             if self.calendar != 0 {
                 m.insert("calendar".into(), json!(self.calendar));
@@ -2567,6 +2618,11 @@ mod event {
             if self.meeting {
                 m.insert("attendees".into(), json!(self.required));
                 m.insert("optional".into(), json!(self.optional));
+                // What a meeting has beyond an appointment: what the people invited are asked
+                // for, and whether it is held online.
+                m.insert("requestResponses".into(), json!(self.options.request_responses));
+                m.insert("allowProposals".into(), json!(self.options.allow_proposals));
+                m.insert("online".into(), json!(self.online));
             } else if self.was_meeting {
                 m.insert("attendees".into(), json!(""));
                 m.insert("optional".into(), json!(""));
@@ -2716,6 +2772,10 @@ mod event {
                 items.push(bar::Item { primary: true, ..item("save", "save", tl!("Save & Close"), 0, 1) });
             }
             items.push(bar::Item { plain: true, ..item("delete", "delete", if sent { tl!("Cancel Meeting") } else { tl!("Delete") }, 0, 3) });
+            // (Sending it on is for an item that is saved: what goes is what the calendar has.)
+            if self.id.is_some() {
+                items.push(bar::Item { plain: true, ..item("forward", "forward", tl!("Forward"), 0, 7) });
+            }
             if organizes {
                 items.push(bar::Item { checked: self.page == Page::Appointment, ..item("appointment", "appointment", tl!("Appointment"), 1, 5) });
                 items.push(bar::Item {
@@ -2735,7 +2795,32 @@ mod event {
             }
             items.push(bar::Item { menu: true, plain: true, ..item("categorize", "categorize", tl!("Categorize"), 3, 6) });
             items.push(bar::Item { plain: true, checked: self.private, ..item("private", "private", tl!("Private"), 3, 6) });
+            // How much it matters: each of the two is on or off, and at most one of them is on.
+            items.push(bar::Item {
+                plain: true,
+                checked: self.importance == Importance::High,
+                ..item("importanceHigh", "importanceHigh", tl!("High Importance"), 3, 6)
+            });
+            items.push(bar::Item {
+                plain: true,
+                checked: self.importance == Importance::Low,
+                ..item("importanceLow", "importanceLow", tl!("Low Importance"), 3, 6)
+            });
             if organizes {
+                // A Teams meeting is made by the calendar's server: where there is none to make
+                // it, and once one is made (which it then stays), the button is there and says why
+                // it can't be pressed.
+                items.push(bar::Item {
+                    checked: self.online,
+                    on: !self.online_made,
+                    tip: if self.online_made {
+                        tl!("The account's server has made this a Teams meeting, and it stays one").to_string()
+                    } else {
+                        tl!("Teams Meeting").to_string()
+                    },
+                    ..item("teams", "onlineMeeting", tl!("Teams Meeting"), 4, 3)
+                });
+                items.push(bar::Item { menu: true, plain: true, ..item("responseOptions", "responseOptions", tl!("Response Options"), 4, 6) });
                 items.push(bar::Item { plain: true, ..item("checkNames", "checkNames", tl!("Check Names"), 4, 6) });
                 items.push(item("invite", "cancel", tl!("Cancel Invitation"), 4, 4));
             } else if !self.guest {
@@ -2796,6 +2881,14 @@ mod event {
                         }
                     }
                 }
+                "responseOptions" => {
+                    if check_item(ui, tl!("Request Responses"), self.options.request_responses) {
+                        self.options.request_responses = !self.options.request_responses;
+                    }
+                    if check_item(ui, tl!("Allow New Time Proposals"), self.options.allow_proposals) {
+                        self.options.allow_proposals = !self.options.allow_proposals;
+                    }
+                }
                 _ => {}
             };
             bar::show(ui, &mut app.hit, kit::window(), &items, &mut menu)
@@ -2823,6 +2916,43 @@ mod event {
             row(ui, tl!("Location"), |ui| {
                 pass.text(ui, "location", &mut self.location, f32::INFINITY, "");
             });
+            // A Teams meeting: the link to join it by, as its server gave it. It is shown as it
+            // is (where it really leads), copied on request, and followed only on a click.
+            if self.online {
+                row(ui, tl!("Teams meeting"), |ui| match mailcraft_model::OnlineMeeting::clean_link(&self.join_url) {
+                    Some(link) => {
+                        if ui.button(tl!("Join")).on_hover_text(link.as_str()).clicked() {
+                            asked = Some("join");
+                        }
+                        if ui.button(tl!("Copy Link")).on_hover_text(link.as_str()).clicked() {
+                            ui.ctx().copy_text(link.clone());
+                        }
+                        ui.add(egui::Label::new(egui::RichText::new(kit::shown(&link, 300)).color(t.text_dim)).truncate())
+                            .on_hover_text(link.as_str());
+                    }
+                    None if self.online_made => {
+                        ui.label(egui::RichText::new(tl!("The account's server hasn't given it a link to join by yet.")).color(t.text_dim));
+                    }
+                    None => {
+                        let words = tl!("The account's server makes it when the meeting is sent; the link to join by comes back with it.");
+                        ui.add(egui::Label::new(egui::RichText::new(words).color(t.text_dim)).truncate());
+                    }
+                });
+            }
+            // Other times that people invited proposed (a meeting the owner organizes).
+            if self.proposals > 0 && !self.guest {
+                row(ui, tl!("Proposals"), |ui| {
+                    let words = if self.proposals == 1 {
+                        tl!("1 person proposed another time.").to_string()
+                    } else {
+                        crate::i18n::fmt(tl!("{n} people proposed another time."), &[("n", &self.proposals.to_string())])
+                    };
+                    ui.label(egui::RichText::new(words).color(t.text));
+                    if ui.link(tl!("View All Proposals…")).clicked() {
+                        asked = Some("proposals");
+                    }
+                });
+            }
             // How it repeats, in a line; the dialog changes it. (In a window the bar opens the
             // dialog too, and the line is only there for an item that repeats.)
             let line = self.recurrence_line(twelve);
@@ -3022,6 +3152,34 @@ mod event {
                 Some("scheduling") => self.page = Page::Scheduling,
                 Some("recurrence") => self.open_recurrence(),
                 Some("private") => self.private = !self.private,
+                Some("importanceHigh") => self.importance = if self.importance == Importance::High { Importance::Normal } else { Importance::High },
+                Some("importanceLow") => self.importance = if self.importance == Importance::Low { Importance::Normal } else { Importance::Low },
+                // A Teams meeting is made by the server of the calendar the meeting is in: where
+                // that can't make one, the button says so and nothing is switched on.
+                Some("teams") => match mailcraft_engine::cmd::calendar::teams_refusal(&app.session, self.calendar).filter(|_| !self.online) {
+                    Some(why) => self.error = tl!(why.as_str()).to_string(),
+                    None => {
+                        self.online = !self.online;
+                        self.error.clear();
+                    }
+                },
+                // Sent on, looked at and joined through the main window's own commands, which
+                // ask what they need (who to send it to) and mail nobody by themselves.
+                Some("forward") => {
+                    if let Some(id) = self.id {
+                        let _ = app.run("calendar.forward", self.scoped(json!({"id": id})));
+                    }
+                }
+                Some("proposals") => {
+                    if let Some(id) = self.id {
+                        let _ = app.run("calendar.proposals", json!({"id": id}));
+                    }
+                }
+                Some("join") => {
+                    if let Some(id) = self.id {
+                        let _ = app.run("ui.joinMeeting", json!({"event": id}));
+                    }
+                }
                 Some("invite") => {
                     self.meeting = !self.meeting;
                     self.page = Page::Appointment;
@@ -3286,6 +3444,7 @@ mod event {
                         "title": "Design review", "location": "Room 4", "description": "",
                         "start": "2026-10-16T15:00", "end": "2026-10-16T15:30", "allDay": false,
                         "reminder": 15, "showAs": "busy", "categories": ["Blue category"], "private": false, "calendar": calendar,
+                        "importance": "normal",
                     })
                 )
             );
@@ -3305,6 +3464,11 @@ mod event {
             f.show_as = ShowAs::OutOfOffice;
             f.private = true;
             f.description = "Bring\nnotes".into();
+            // And what a meeting has beyond an appointment: how much it matters, what the people
+            // invited are asked for, and that it is to be a Teams meeting.
+            f.importance = Importance::High;
+            f.options.allow_proposals = false;
+            f.online = true;
             assert_eq!(
                 f.command(),
                 (
@@ -3316,9 +3480,70 @@ mod event {
                         "recurrence": {"freq": "weekly", "interval": 2, "byDay": ["mon", "fri"], "count": 6},
                         // A new whole-day event reminds the afternoon before (18 hours).
                         "reminder": 1080, "showAs": "outOfOffice", "categories": ["Blue category"], "private": true, "calendar": calendar,
+                        "importance": "high", "requestResponses": true, "allowProposals": false, "online": true,
                     })
                 )
             );
+        }
+
+        #[test]
+        fn importance_response_options_and_teams_are_in_the_bar_and_in_what_is_saved() {
+            let mut s = session();
+            let key = |f: &EventForm, key: &str| f.bar_items().into_iter().find(|item| item.key == key);
+            // An appointment: High and Low Importance, each on or off; nothing of a meeting's.
+            let mut f = EventForm::new(&s, &json!({"start": "2026-10-16T15:00", "title": "Dentist"}), false);
+            assert!(key(&f, "importanceHigh").is_some_and(|item| !item.checked) && key(&f, "importanceLow").is_some());
+            assert!(key(&f, "teams").is_none() && key(&f, "responseOptions").is_none() && key(&f, "forward").is_none());
+            f.importance = Importance::Low;
+            assert!(key(&f, "importanceLow").is_some_and(|item| item.checked) && key(&f, "importanceHigh").is_some_and(|item| !item.checked));
+            let (command, params) = f.command();
+            assert_eq!(
+                (command, &params["importance"], params.get("online"), params.get("allowProposals")),
+                ("calendar.new", &json!("low"), None, None)
+            );
+            let id = s.run(command, &params).unwrap()["id"].as_u64().unwrap();
+            assert_eq!(s.mailbox.event(id).unwrap().importance, Importance::Low);
+            // Opened again it says so, has Forward in its bar, and sends only what changes.
+            let mut f = EventForm::edit(&s, &json!({"id": id})).unwrap();
+            assert!(key(&f, "importanceLow").is_some_and(|item| item.checked) && key(&f, "forward").is_some() && !f.dirty());
+            f.importance = Importance::High;
+            assert_eq!(f.command(), ("calendar.edit", json!({"id": id, "importance": "high"})));
+            // A meeting the owner organizes: Teams Meeting and Response Options beside them.
+            let mut f = EventForm::new(&s, &json!({"start": "2026-10-16T15:00", "title": "Sync"}), true);
+            assert!(key(&f, "teams").is_some_and(|item| item.on && !item.checked) && key(&f, "responseOptions").is_some_and(|item| item.menu));
+            f.online = true;
+            assert!(key(&f, "teams").is_some_and(|item| item.checked));
+            // One that its server has made a Teams meeting stays one: the button says so.
+            let event = mailcraft_model::Event {
+                title: "Made".into(),
+                attendees: vec![mailcraft_model::Attendee { address: Address::new("Maya", "maya@lumen.example"), ..Default::default() }],
+                online: Some(mailcraft_model::OnlineMeeting { join_url: "https://teams.example.org/l/meetup-join/1".into(), ..Default::default() }),
+                response_options: ResponseOptions { request_responses: false, allow_proposals: true },
+                proposals: vec![mailcraft_model::Proposal::default(); 2],
+                ..Default::default()
+            };
+            let made = s.mailbox.add_event(event).unwrap();
+            let f = EventForm::edit(&s, &json!({"id": made})).unwrap();
+            assert_eq!(f.meeting_state(), (Importance::Normal, true, "https://teams.example.org/l/meetup-join/1"));
+            assert_eq!((f.options.request_responses, f.options.allow_proposals, f.proposals, f.online_made), (false, true, 2, false));
+            // (Kept here, no server made it: it can still be taken back.)
+            assert!(key(&f, "teams").is_some_and(|item| item.on && item.checked));
+            let made_there = EventForm { online_made: true, ..EventForm::edit(&s, &json!({"id": made})).unwrap() };
+            assert!(key(&made_there, "teams").is_some_and(|item| !item.on && item.checked && item.tip.contains("stays one")));
+            // Somebody else's meeting has neither: both are its organizer's to say.
+            let theirs = EventForm { guest: true, ..EventForm::edit(&s, &json!({"id": made})).unwrap() };
+            assert!(key(&theirs, "teams").is_none() && key(&theirs, "responseOptions").is_none() && key(&theirs, "importanceHigh").is_some());
+            // Another time that was proposed goes into the fields, and is then a change to send.
+            let mut f =
+                EventForm::edit(&s, &json!({"id": made, "proposed": {"start": "2026-10-20T14:00:00", "end": "2026-10-20T15:30:00"}})).unwrap();
+            assert_eq!((f.start_date.as_str(), f.end_date.as_str(), f.minutes, f.dirty()), ("2026-10-20", "2026-10-20", 90, true));
+            let (_, params) = f.command();
+            assert_eq!((&params["start"], &params["end"]), (&json!("2026-10-20T14:00"), &json!("2026-10-20T15:30")));
+            // A proposal that is none (backwards, unreadable) changes nothing.
+            f.take_proposal(DateTime::at_midnight(Date::new(2026, 10, 21).unwrap()), DateTime::at_midnight(Date::new(2026, 10, 20).unwrap()), true);
+            assert_eq!(f.start_date, "2026-10-20");
+            let f = EventForm::edit(&s, &json!({"id": made, "proposed": {"start": "soon", "end": 7}})).unwrap();
+            assert!(!f.dirty());
         }
 
         #[test]

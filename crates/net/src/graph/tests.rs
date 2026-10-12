@@ -476,7 +476,7 @@ fn the_calendar_comes_page_by_page() {
             pair("startDateTime", "2026-10-01T00:00:00Z"),
             pair("endDateTime", "2026-11-01T00:00:00Z"),
             pair("$top", "50"),
-            pair("$select", EVENT_FIELDS_FULL)
+            pair("$select", EVENT_FIELDS_OPTIONS)
         ]
     );
     for header in [
@@ -1232,7 +1232,7 @@ proptest! {
 
     #[test]
     fn any_upload_is_written_or_refused_without_panic(
-        kinds in proptest::collection::vec(0u8..4, 0..6),
+        kinds in proptest::collection::vec(0u8..5, 0..6),
         remote in "\\PC{0,30}",
         series in "\\PC{0,12}",
         occurrence in any::<i64>(),
@@ -1261,7 +1261,8 @@ proptest! {
             first: Date::new(2026, 10, 12).unwrap(),
         };
         let ops = kinds.iter().map(|kind| EventOp {
-            kind: [EventChangeKind::Create, EventChangeKind::Update, EventChangeKind::Delete, EventChangeKind::Respond][usize::from(*kind)],
+            kind: [EventChangeKind::Create, EventChangeKind::Update, EventChangeKind::Delete, EventChangeKind::Respond, EventChangeKind::Forward]
+                [usize::from(*kind)],
             event: 7,
             remote: if flags.0 { remote.clone() } else { String::new() },
             token: mark.clone(),
@@ -1271,8 +1272,14 @@ proptest! {
                 repeat: flags.1.then(|| repeat.clone()),
                 attendees: Some(vec![Attendee { address: Address::new(title.clone(), remote.clone()), ..Default::default() }]),
                 categories: Some(vec![title.clone()]),
+                importance: flags.1.then_some(mailcraft_model::Importance::High),
+                request_responses: Some(flags.0),
+                allow_proposals: Some(flags.1),
+                online: (flags.2 > 1).then_some(mailcraft_model::OnlineProvider::Teams),
                 ..Default::default()
             },
+            proposed: flags.1.then_some(EventTime { start, end, all_day }),
+            to: vec![Address::new(title.clone(), remote.clone()), Address::new(remote.clone(), "bo@example.org")],
             series: series.clone(),
             occurrence,
             calendar: series.clone(),
@@ -1655,16 +1662,28 @@ fn whose_meeting_it_is_and_the_mark_of_a_new_event_come_with_the_calendar() {
     // Should Graph not have the question with the newest fields in it (400), it is put as it was
     // before them, and before those that were added before them: the calendar still comes.
     let server = FakeHttp::start(|n, _| match n {
-        0 | 1 => answer("400 Bad Request", "", &graph_error("BadRequest", "Could not find a property named 'transactionId'.")),
+        0..=2 => answer("400 Bad Request", "", &graph_error("BadRequest", "Could not find a property named 'transactionId'.")),
         _ => page(vec![event("e-1", "x")], None),
     });
     let download = events_at(&server.url(""), TOKEN, from, to).unwrap();
-    assert_eq!((download.events.len(), download.complete, server.asked()), (1, true, 3));
+    assert_eq!((download.events.len(), download.complete, server.asked()), (1, true, 4));
+    assert!(!download.has_categories && !download.has_options);
     let select = |n: usize| asked_for(&server.request(n)).1.into_iter().find(|(name, _)| name == "$select").map(|(_, value)| value).unwrap();
-    assert_eq!((select(0), select(1), select(2)), (EVENT_FIELDS_FULL.to_string(), EVENT_FIELDS.to_string(), EVENT_FIELDS_PLAIN.to_string()));
+    assert_eq!(
+        (select(0), select(1), select(2), select(3)),
+        (EVENT_FIELDS_OPTIONS.to_string(), EVENT_FIELDS_FULL.to_string(), EVENT_FIELDS.to_string(), EVENT_FIELDS_PLAIN.to_string())
+    );
     assert!(
         !EVENT_FIELDS_PLAIN.contains("transactionId") && EVENT_FIELDS.starts_with(EVENT_FIELDS_PLAIN) && EVENT_FIELDS_FULL.starts_with(EVENT_FIELDS)
     );
+    assert!(EVENT_FIELDS_OPTIONS.starts_with(EVENT_FIELDS_FULL) && !EVENT_FIELDS_FULL.contains("importance"));
+    // Refused once, for the newest fields only: the categories still come, and say so.
+    let server = FakeHttp::start(|n, _| match n {
+        0 => answer("400 Bad Request", "", &graph_error("BadRequest", "Could not find a property named 'onlineMeeting'.")),
+        _ => page(vec![event("e-1", "x")], None),
+    });
+    let download = events_at(&server.url(""), TOKEN, from, to).unwrap();
+    assert_eq!((server.asked(), download.has_categories, download.has_options), (2, true, false));
     // Any other refusal is what it is, and asked about once.
     let server = FakeHttp::answering(answer("403 Forbidden", "", &graph_error("ErrorAccessDenied", "Access is denied.")));
     assert!(matches!(events_at(&server.url(""), TOKEN, from, to), Err(NetError::Forbidden(_))));
@@ -1743,7 +1762,10 @@ fn a_series_comes_as_itself_beside_its_occurrences() {
     let urls: Vec<&str> = asked["requests"].as_array().unwrap().iter().map(|one| one["url"].as_str().unwrap()).collect();
     assert_eq!(urls.len(), 3);
     for (url, id) in urls.iter().zip(["s-1", "s-2", "s-3"]) {
-        assert!(url.starts_with(&format!("/me/events/{id}?%24select=id%2C")) && url.ends_with("%2Crecurrence"), "{url}");
+        assert!(
+            url.starts_with(&format!("/me/events/{id}?%24select=id%2C")) && url.contains("%2Crecurrence%2C") && url.ends_with("%2ChasAttachments"),
+            "{url}"
+        );
     }
     assert_eq!(asked["requests"][0]["method"], "GET");
     assert_eq!(asked["requests"][0]["headers"]["Prefer"], "outlook.timezone=\"UTC\", outlook.body-content-type=\"text\"");
@@ -2083,13 +2105,14 @@ fn the_accounts_calendars_come_with_their_groups_and_colours() {
         1 => {
             assert!(
                 request.starts_with(
-                    "GET /v1.0/me/calendarGroups/g%2F1%3D/calendars?%24top=50&%24select=id%2Cname%2Ccolor%2ChexColor%2CcanEdit%2CisDefaultCalendar "
+                    "GET /v1.0/me/calendarGroups/g%2F1%3D/calendars?%24top=50&%24select=id%2Cname%2Ccolor%2ChexColor%2CcanEdit%2CisDefaultCalendar%2CallowedOnlineMeetingProviders "
                 ),
                 "{request}"
             );
             page(
                 vec![
-                    json!({"id": "c-main", "name": "Calendar", "color": "auto", "hexColor": "", "canEdit": true, "isDefaultCalendar": true}),
+                    json!({"id": "c-main", "name": "Calendar", "color": "auto", "hexColor": "", "canEdit": true, "isDefaultCalendar": true,
+                        "allowedOnlineMeetingProviders": ["teamsForBusiness", "skypeForBusiness", "somethingNew", 7]}),
                     json!({"id": "c-team", "name": "Team\r\nplans", "color": "lightGreen", "hexColor": "#2e8b57", "canEdit": true, "isDefaultCalendar": false}),
                     json!({"id": "c-pink", "name": "Pink", "color": "lightPink", "hexColor": "", "canEdit": true}),
                 ],
@@ -2122,6 +2145,21 @@ fn the_accounts_calendars_come_with_their_groups_and_colours() {
             ("c-holidays", "Holidays", "Other Calendars", None, true, false),
         ]
     );
+    // What a calendar's meetings may be held online with, when Graph says; nothing when it doesn't.
+    use mailcraft_model::OnlineProvider::{SkypeForBusiness, Teams};
+    assert_eq!(download.calendars[0].online_providers, Some(vec![Teams, SkypeForBusiness]));
+    assert_eq!(download.calendars[1].online_providers, None);
+    // Should Graph not have the question with that in it (400), the calendars come without.
+    let server = FakeHttp::start(|n, request| match n {
+        0 => page(vec![json!({"id": "g-1", "name": "My Calendars"})], None),
+        1 => answer("400 Bad Request", "", &graph_error("BadRequest", "Could not find a property named 'allowedOnlineMeetingProviders'.")),
+        _ => {
+            assert!(request.contains("%24select=id%2Cname%2Ccolor%2ChexColor%2CcanEdit%2CisDefaultCalendar "), "{request}");
+            page(vec![json!({"id": "c-main", "name": "Calendar", "isDefaultCalendar": true})], None)
+        }
+    });
+    let download = calendars_at(&server.url(""), TOKEN).unwrap();
+    assert_eq!((server.asked(), download.calendars.len(), download.complete, &download.calendars[0].online_providers), (3, 1, true, &None));
 
     // No groups to be had: the calendars as one list. Nothing at all: no reason to take every
     // calendar away.
@@ -2280,3 +2318,5 @@ proptest! {
         let _ = push_events_at(&server.url(""), TOKEN, &upload(vec![one]), &EventOptions::default());
     }
 }
+
+mod meetings;

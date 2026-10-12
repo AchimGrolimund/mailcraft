@@ -11,7 +11,10 @@
 use mailcraft_time::{Date, DateTime, Timestamp};
 use serde::{Deserialize, Serialize};
 
-use crate::{Account, Address, Attendee, Category, Event, Id, Labeled, MAX_NAME, PostalAddress, Recurrence, Response, Rgb, ShowAs};
+use crate::{
+    Account, Address, Attendee, Category, Event, Id, Importance, Labeled, MAX_NAME, OnlineMeeting, OnlineProvider, PostalAddress, Recurrence,
+    Response, ResponseOptions, Rgb, ShowAs,
+};
 
 /// Most events and most contacts one download is taken to hold; what is beyond is left out.
 pub const MAX_EVENTS: usize = 20_000;
@@ -153,6 +156,29 @@ pub struct RemoteEvent {
     /// Its categories, by name.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
+    /// How much it matters. (This and the four below are what
+    /// [`EventsDownload::has_options`] says a download has.)
+    pub importance: Importance,
+    /// Whether the people invited are asked to answer, and may propose another time.
+    pub options: ResponseOptions,
+    /// It is held online: with what, and the link to join it by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub online: Option<OnlineMeeting>,
+    /// The other times that people invited have proposed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub proposals: Vec<RemoteProposal>,
+    /// The server keeps files with it.
+    #[serde(skip_serializing_if = "is_false")]
+    pub attachments: bool,
+}
+
+/// Another time that somebody invited proposes for a meeting, as a server has it (Unix seconds).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RemoteProposal {
+    pub from: Address,
+    pub start: Timestamp,
+    pub end: Timestamp,
 }
 
 impl RemoteEvent {
@@ -180,6 +206,13 @@ impl RemoteEvent {
         self.recurrence = self.recurrence.take().map(tidy_rule);
         self.series_day = self.series_day.and_then(|day| Date::new(day.year, day.month, day.day));
         self.categories = names(std::mem::take(&mut self.categories));
+        // A link to join by is an `https` address or it is none.
+        self.online = self.online.take().map(OnlineMeeting::tidied);
+        self.proposals = std::mem::take(&mut self.proposals)
+            .into_iter()
+            .filter_map(|proposal| person(proposal.from).map(|from| RemoteProposal { from, end: proposal.end.max(proposal.start), ..proposal }))
+            .take(MAX_ATTENDEES)
+            .collect();
     }
 }
 
@@ -318,6 +351,11 @@ pub struct EventsDownload {
     /// them), an event's categories stay as they are here.
     #[serde(skip_serializing_if = "is_false")]
     pub has_categories: bool,
+    /// The events say how much they matter, what the people invited are asked for, whether they
+    /// are held online, who proposed another time and whether files are kept with them. When
+    /// not (a server that couldn't be asked for that), all of it stays as it is here.
+    #[serde(skip_serializing_if = "is_false")]
+    pub has_options: bool,
 }
 
 impl EventsDownload {
@@ -376,7 +414,13 @@ pub enum EventChangeKind {
     Delete,
     /// Somebody else's meeting that the owner answered here ([`EventChange::response`]).
     Respond,
+    /// A meeting the server has that the owner sends on to more people ([`EventChange::to`]).
+    /// Nothing changes here; the server writes to them.
+    Forward,
 }
+
+/// Most people one meeting is forwarded to at once.
+pub const MAX_FORWARD: usize = 100;
 
 /// A change made here to an event of a calendar that an account's server keeps, which the server
 /// is yet to be told. The change itself is already made in the mailbox; this is the note that it
@@ -437,6 +481,24 @@ pub struct EventChange {
     /// For an answer: what it is.
     #[serde(skip_serializing_if = "is_no_response")]
     pub response: Response,
+    /// For an answer (tentative, or declined): another time the owner proposes to the organizer
+    /// with it. It is mail to the organizer: only with [`EventChange::send`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposed: Option<EventTime>,
+    /// For a meeting that is forwarded: who to. It is mail to them: only with
+    /// [`EventChange::send`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub to: Vec<Address>,
+    /// For a new event that is an appointment moved here from another of the account's
+    /// calendars (a server has no way of moving one): what the server calls the original, which
+    /// it is to delete once it has made this one. `base` is then the original, to be put back
+    /// should either step be refused.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub replaces: String,
+    /// For the deletion that finishes such a move: what the server calls the copy it made,
+    /// which goes again should the server refuse to delete the original.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub moved: String,
 }
 
 fn is_no_response(response: &Response) -> bool {
@@ -513,6 +575,19 @@ pub struct EventFields {
     /// Its categories, by name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub categories: Option<Vec<String>>,
+    /// How much it matters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub importance: Option<Importance>,
+    /// Whether the people invited are asked to answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_responses: Option<bool>,
+    /// Whether they may propose another time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_proposals: Option<bool>,
+    /// It is to be held online, with this. (A server that has made a meeting online keeps it so:
+    /// there is no telling it otherwise, so nothing here says "not online".)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub online: Option<OnlineProvider>,
 }
 
 /// The start and the end of a series' first occurrence by the clock here ([`EventFields::wall`]).
@@ -608,6 +683,12 @@ pub struct EventOp {
     pub send: bool,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub comment: String,
+    /// For an answer that is sent: another time the owner proposes with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposed: Option<EventTime>,
+    /// For a meeting that is forwarded: who to (with `comment` for them to read).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub to: Vec<Address>,
 }
 
 impl EventOp {
@@ -619,6 +700,10 @@ impl EventOp {
         self.calendar = key(&self.calendar);
         self.comment = text(&self.comment, MAX_COMMENT);
         self.fields.tidy();
+        if let Some(time) = &mut self.proposed {
+            time.end = time.end.max(time.start);
+        }
+        self.to = recipients(std::mem::take(&mut self.to));
     }
 
     /// It is about one occurrence of a series, known by its series and its time only.
@@ -679,6 +764,14 @@ pub struct EventOutcome {
     /// How many seconds the server asked to be left alone, when it did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_after: Option<u32>,
+    /// For an event that was to be held online ([`EventFields::online`]): whether the server
+    /// made it so, when it said. `Some(false)`: the event was made (or changed) without the
+    /// online meeting, because the server wouldn't have one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub online: Option<bool>,
+    /// The link to join the meeting by, when the server's answer has it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub join_url: String,
 }
 
 impl EventOutcome {
@@ -689,6 +782,7 @@ impl EventOutcome {
         self.change_key = key(&self.change_key);
         self.uid = line(&self.uid, MAX_KEY);
         self.error = line(&self.error, MAX_WHY);
+        self.join_url = OnlineMeeting::clean_link(&self.join_url).unwrap_or_default();
     }
 }
 
@@ -749,6 +843,9 @@ pub struct RemoteCalendar {
     pub read_only: bool,
     /// It is the account's main calendar.
     pub main: bool,
+    /// The services a meeting in it may be held online with, when the server said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub online_providers: Option<Vec<OnlineProvider>>,
 }
 
 /// An account's calendars, as its server lists them.
@@ -786,6 +883,10 @@ impl CalendarsDownload {
             seen.push(calendar.id.clone());
             calendar.name = line(&calendar.name, MAX_NAME);
             calendar.group = line(&calendar.group, MAX_NAME);
+            if let Some(allowed) = &mut calendar.online_providers {
+                allowed.dedup();
+                allowed.truncate(8);
+            }
             calendar.main = calendar.main && !main;
             main |= calendar.main;
             self.calendars.push(calendar);
@@ -943,6 +1044,23 @@ fn mailbox(email: &str) -> String {
     let shaped = email.split_once('@').is_some_and(|(local, domain)| !local.is_empty() && !domain.is_empty() && !domain.contains('@'));
     let plain = email.len() <= 254 && !email.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '<' | '>' | ',' | ';' | '"'));
     if shaped && plain { email.to_string() } else { String::new() }
+}
+
+/// The people a meeting is forwarded to: each with an address that is one, nobody twice,
+/// [`MAX_FORWARD`] at most.
+fn recipients(list: Vec<Address>) -> Vec<Address> {
+    let mut out: Vec<Address> = Vec::new();
+    for who in list.into_iter().filter_map(person).filter(|who| !who.email.is_empty()) {
+        if out.len() < MAX_FORWARD && !out.iter().any(|have| have.email.eq_ignore_ascii_case(&who.email)) {
+            out.push(who);
+        }
+    }
+    out
+}
+
+/// [`recipients`], for whoever notes a forward: what a server would be sent of `list`.
+pub fn forward_recipients(list: Vec<Address>) -> Vec<Address> {
+    recipients(list)
 }
 
 /// Somebody an event names: with a name of one line and an address that is one. `None` when

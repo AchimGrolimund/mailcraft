@@ -166,6 +166,85 @@ fn every_free_busy_state_and_response_round_trips() {
 }
 
 #[test]
+fn importance_what_is_asked_of_the_people_invited_and_the_link_to_join_by_round_trip() {
+    use mailcraft_model::{OnlineMeeting, OnlineProvider, ResponseOptions};
+    let join = "https://teams.example.org/l/meetup-join/19%3ameeting_abc%40thread.v2/0?context=%7b%22Tid%22%3a%221%22%7d";
+    let invited = vec![Attendee { address: Address::new("Bo", "bo@example.org"), optional: false, response: Response::None }];
+    let base = Event { uid: "x".into(), attendees: invited, ..Default::default() };
+    for importance in [Importance::Low, Importance::Normal, Importance::High] {
+        for (request_responses, allow_proposals) in [(true, true), (false, true), (true, false), (false, false)] {
+            for provider in [None, Some(OnlineProvider::Teams), Some(OnlineProvider::Other)] {
+                let online = provider.map(|provider| OnlineMeeting { provider, join_url: join.into() });
+                let e = Event { importance, response_options: ResponseOptions { request_responses, allow_proposals }, online, ..base.clone() };
+                assert_eq!(round_trip(std::slice::from_ref(&e), &[]).events, [e]);
+            }
+        }
+    }
+    // How they are written: as a to-do's priority, as Outlook says "no proposals", and where
+    // Outlook looks for a Teams meeting's link (any other in RFC 7986's own property).
+    let teams = Event {
+        importance: Importance::High,
+        response_options: ResponseOptions { request_responses: false, allow_proposals: false },
+        online: Some(OnlineMeeting { provider: OnlineProvider::Teams, join_url: join.into() }),
+        ..base.clone()
+    };
+    let text = write(&[&teams], &[], &options()).replace("\r\n ", "");
+    for line in [
+        "PRIORITY:1\r\n",
+        "X-MICROSOFT-DISALLOW-COUNTER:TRUE\r\n",
+        &format!("X-MICROSOFT-SKYPETEAMSMEETINGURL:{join}\r\n"),
+        "PARTSTAT=NEEDS-ACTION;RSVP=FALSE",
+    ] {
+        assert!(text.contains(line), "{line} in {text}");
+    }
+    let other = Event { online: Some(OnlineMeeting { provider: OnlineProvider::Skype, join_url: join.into() }), ..base.clone() };
+    assert!(write(&[&other], &[], &options()).replace("\r\n ", "").contains(&format!("CONFERENCE;VALUE=URI:{join}\r\n")));
+    // An event with none of it writes none of it.
+    let plain = write(&[&base], &[], &options());
+    assert!(!plain.contains("PRIORITY") && !plain.contains("COUNTER") && !plain.contains("TEAMS") && !plain.contains("CONFERENCE"), "{plain}");
+
+    // What a file says the link is, is a link only when it is an https address: nothing else is
+    // kept, and nothing that isn't one is ever written.
+    let read = |more: &str| {
+        parse(&format!("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:x\r\nDTSTART:20261012T090000\r\n{more}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"), &|_| 0)
+            .events
+            .remove(0)
+    };
+    for hostile in [
+        "X-MICROSOFT-SKYPETEAMSMEETINGURL:javascript:alert(1)",
+        "X-MICROSOFT-SKYPETEAMSMEETINGURL:http://teams.example.org/plain",
+        "X-MICROSOFT-SKYPETEAMSMEETINGURL:file:///C:/Windows/System32/calc.exe",
+        "X-MICROSOFT-SKYPETEAMSMEETINGURL:https://teams.example.org/a b",
+        "X-MICROSOFT-SKYPETEAMSMEETINGURL:https://user:secret@teams.example.org/",
+        "CONFERENCE;VALUE=URI:tel:+15550100",
+        "X-MICROSOFT-ONLINEMEETINGCONFLINK:conf:sip:ada@example.org",
+    ] {
+        assert_eq!(read(hostile).online, None, "{hostile}");
+    }
+    let hostile = Event {
+        online: Some(OnlineMeeting { provider: OnlineProvider::Teams, join_url: "javascript:alert(1)\r\nATTENDEE:mailto:eve@example.org".into() }),
+        ..base.clone()
+    };
+    let text = write(&[&hostile], &[], &options());
+    assert!(!text.contains("javascript") && !text.contains("eve@example.org"), "{text}");
+    // As Outlook writes them, and as another program may.
+    let outlook = read(
+        "PRIORITY:5\r\nX-MICROSOFT-CDO-IMPORTANCE:1\r\nX-MICROSOFT-SKYPETEAMSMEETINGURL:https://teams.example.org/l/meetup-join/1\r\nX-MICROSOFT-DISALLOW-COUNTER:FALSE",
+    );
+    assert_eq!(
+        (outlook.importance, outlook.response_options, outlook.online.map(|online| online.provider)),
+        (Importance::Normal, ResponseOptions::default(), Some(OnlineProvider::Teams))
+    );
+    assert_eq!(read("X-MICROSOFT-CDO-IMPORTANCE:2").importance, Importance::High);
+    assert_eq!(read("PRIORITY:9\r\nX-MICROSOFT-CDO-IMPORTANCE:2").importance, Importance::Low, "PRIORITY is the standard's word");
+    assert_eq!(read("PRIORITY:0\r\nPRIORITY:banana").importance, Importance::Normal);
+    assert_eq!(
+        read("CONFERENCE;VALUE=URI;FEATURE=VIDEO:https://meet.example.org/abc").online,
+        Some(OnlineMeeting { provider: OnlineProvider::Other, join_url: "https://meet.example.org/abc".into() })
+    );
+}
+
+#[test]
 fn a_changed_instance_written_out_reads_back_beside_its_series() {
     // Read a series with a changed instance, write both, read again: nothing moves.
     let text = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:s@example.org\r\nDTSTART:20261005T140000\r\nDTEND:20261005T143000\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n\

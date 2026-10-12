@@ -392,26 +392,46 @@ fn home_calendar(app: &MailApp) -> Tab {
     // What is done with an appointment is there while one is selected (in Outlook, a tab of its
     // own comes up for it), and the answers to a meeting while it is somebody else's.
     if let Some(event) = selected {
-        groups.push(g(
-            "Appointment",
-            vec![
-                Item::big("edit", "Open", "calendar.edit", no()).at(3, 5),
-                Item::big("delete", "Delete", "calendar.delete", no()).at(3, 5).plain(),
-                Item::small_menu("showAs", "showAs", "Show As", "Show As", Menu::ShowAs).at(3, 6),
-                Item::small_menu("reminder", "reminder", "Reminder", "Reminder", Menu::Reminder).at(3, 6),
-                Item::small("private", "Private", "Private", "calendar.private", no()).checked(private).at(3, 6),
-                Item::big_menu("categorize", "categorize", "Categorize", "Categorize", Menu::CategorizeEvent).at(3, 5).plain(),
-            ],
-        ));
+        // High and Low Importance are each on or off: pressing the one that is on turns it off.
+        let (high, low) = (event.importance == Importance::High, event.importance == Importance::Low);
+        let matters = |on: bool, value: &str| json!({"value": if on { "normal" } else { value }});
+        let mut items = vec![
+            Item::big("edit", "Open", "calendar.edit", no()).at(3, 5),
+            Item::big("delete", "Delete", "calendar.delete", no()).at(3, 5).plain(),
+            Item::small("forward", "Forward", "Forward", "calendar.forward", no()).at(3, 7).plain(),
+            Item::small_menu("showAs", "showAs", "Show As", "Show As", Menu::ShowAs).at(3, 6),
+            Item::small_menu("reminder", "reminder", "Reminder", "Reminder", Menu::Reminder).at(3, 6),
+            Item::small("private", "Private", "Private", "calendar.private", no()).checked(private).at(3, 6),
+            Item::small("importanceHigh", "High Importance", "High Importance", "calendar.importance", matters(high, "high"))
+                .key("calendar.importanceHigh")
+                .checked(high)
+                .at(3, 7)
+                .plain(),
+            Item::small("importanceLow", "Low Importance", "Low Importance", "calendar.importance", matters(low, "low"))
+                .key("calendar.importanceLow")
+                .checked(low)
+                .at(3, 7)
+                .plain(),
+            Item::big_menu("categorize", "categorize", "Categorize", "Categorize", Menu::CategorizeEvent).at(3, 5).plain(),
+        ];
+        // An online meeting that has a link to join by.
+        if event.join_link().is_some() {
+            items.insert(2, Item::small("joinMeeting", "Join", "Join Online Meeting", "ui.joinMeeting", no()).at(3, 4));
+        }
+        groups.push(g("Appointment", items));
         if crate::calendar_view::invitation(app, event).0 {
-            groups.push(g(
-                "Respond",
-                vec![
-                    respond("accept", "Accept", "calendar.accept", "accepted"),
-                    respond("tentative", "Tentative", "calendar.tentative", "tentative"),
-                    respond("decline", "Decline", "calendar.decline", "declined"),
-                ],
-            ));
+            let mut answers = vec![
+                respond("accept", "Accept", "calendar.accept", "accepted"),
+                respond("tentative", "Tentative", "calendar.tentative", "tentative"),
+                respond("decline", "Decline", "calendar.decline", "declined"),
+            ];
+            // Another time can be proposed for a meeting that an account's server keeps, when
+            // its organizer takes proposals.
+            let kept = mailcraft_engine::cmd::remote::keeper(&app.session.mailbox, &event.origin).is_some();
+            if kept && event.origin.guest && event.response_options.allow_proposals {
+                answers.push(Item::small("proposeTime", "Propose New Time", "Propose New Time", "calendar.propose", no()).at(4, 5));
+            }
+            groups.push(g("Respond", answers));
         }
     }
     groups.push(g("Share", vec![Item::big("export", "Save\nCalendar", "file.exportCalendar", no()).at(5, 6)]));

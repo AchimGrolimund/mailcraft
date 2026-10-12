@@ -7,7 +7,7 @@
 use mailcraft_time::{Date, DateTime, Weekday, month_name};
 use serde::{Deserialize, Serialize};
 
-use crate::{Address, Id, Origin, Rgb};
+use crate::{Address, Id, Importance, Origin, Rgb};
 
 /// Most periods a recurrence walks, and most occurrences one query returns: a hostile rule (or a
 /// daily series since 1970) costs bounded work.
@@ -37,9 +37,20 @@ pub struct Calendar {
     /// again when the owner's choice is taken back.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub own_color: Option<Rgb>,
+    /// For a calendar that a server keeps: the services a meeting in it may be held online with,
+    /// when the server said which they are. `None` when it didn't (making one is then tried, and
+    /// the server's refusal is what says no).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub online_providers: Option<Vec<OnlineProvider>>,
 }
 
 impl Calendar {
+    /// Whether a meeting in this calendar may be made a Teams meeting, as far as is known: its
+    /// server didn't say which services it allows, or Teams is one of them.
+    pub fn allows_teams(&self) -> bool {
+        self.online_providers.as_ref().is_none_or(|allowed| allowed.contains(&OnlineProvider::Teams))
+    }
+
     /// The colour it is shown in: the one chosen here when there is one, else its own.
     pub fn shown_color(&self) -> Rgb {
         self.own_color.unwrap_or(self.color)
@@ -125,6 +136,124 @@ pub struct Attendee {
     pub address: Address,
     pub optional: bool,
     pub response: Response,
+}
+
+/// What the people invited to a meeting are asked for, which its organizer decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ResponseOptions {
+    /// They are asked to answer the invitation.
+    pub request_responses: bool,
+    /// They may propose another time when they answer.
+    pub allow_proposals: bool,
+}
+
+impl Default for ResponseOptions {
+    /// Both, as a new meeting has it.
+    fn default() -> Self {
+        ResponseOptions { request_responses: true, allow_proposals: true }
+    }
+}
+
+impl ResponseOptions {
+    /// As a new meeting has them: nothing to write down.
+    pub fn is_default(&self) -> bool {
+        *self == ResponseOptions::default()
+    }
+}
+
+/// The service a meeting is held online with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OnlineProvider {
+    #[default]
+    Teams,
+    SkypeForBusiness,
+    Skype,
+    /// Some other service, or one the server didn't name.
+    Other,
+}
+
+impl OnlineProvider {
+    /// What it is called in the interface.
+    pub fn label(self) -> &'static str {
+        match self {
+            OnlineProvider::Teams => "Teams",
+            OnlineProvider::SkypeForBusiness => "Skype for Business",
+            OnlineProvider::Skype => "Skype",
+            OnlineProvider::Other => "Online",
+        }
+    }
+
+    /// The name Microsoft Graph has for it (`onlineMeetingProviderType`).
+    pub fn code(self) -> &'static str {
+        match self {
+            OnlineProvider::Teams => "teamsForBusiness",
+            OnlineProvider::SkypeForBusiness => "skypeForBusiness",
+            OnlineProvider::Skype => "skypeForConsumer",
+            OnlineProvider::Other => "unknown",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<OnlineProvider> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "teamsforbusiness" | "teams" => Some(OnlineProvider::Teams),
+            "skypeforbusiness" => Some(OnlineProvider::SkypeForBusiness),
+            "skypeforconsumer" | "skype" => Some(OnlineProvider::Skype),
+            "unknown" | "other" => Some(OnlineProvider::Other),
+            _ => None,
+        }
+    }
+}
+
+/// Longest link to join a meeting by that is kept.
+pub const MAX_JOIN_LINK: usize = 2_048;
+
+/// A meeting that is (also) held online.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct OnlineMeeting {
+    pub provider: OnlineProvider,
+    /// The link people join it by: an `https` address, as its server gave it. Empty until the
+    /// server has made the meeting. It comes from outside: it is shown as it is, and followed
+    /// only when the owner asks ([`OnlineMeeting::clean_link`] is what lets it in).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub join_url: String,
+}
+
+impl OnlineMeeting {
+    /// A link to join a meeting by, when `url` can be one: an `https` address with a host, of
+    /// one line, no longer than [`MAX_JOIN_LINK`]. Anything else is no link (`None`): not
+    /// `http`, not `javascript:` or `file:`, nothing with a space or a control character in it,
+    /// nothing with a name and a password before its host.
+    pub fn clean_link(url: &str) -> Option<String> {
+        let url = url.trim();
+        let rest = url.get(..8).filter(|scheme| scheme.eq_ignore_ascii_case("https://")).and_then(|_| url.get(8..))?;
+        let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+        let plain = url.len() <= MAX_JOIN_LINK && !url.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '"' | '<' | '>' | '\\'));
+        let named = !host.is_empty() && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'));
+        (plain && named).then(|| format!("https://{rest}"))
+    }
+
+    /// The same meeting with a link that can be one, or with none.
+    pub fn tidied(mut self) -> OnlineMeeting {
+        self.join_url = OnlineMeeting::clean_link(&self.join_url).unwrap_or_default();
+        self
+    }
+}
+
+/// Another time that somebody invited proposes for a meeting, as its organizer has it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Proposal {
+    /// Who proposes it.
+    pub from: Address,
+    pub start: DateTime,
+    pub end: DateTime,
+}
+
+fn is_normal(importance: &Importance) -> bool {
+    *importance == Importance::Normal
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -387,9 +516,31 @@ pub struct Event {
     /// the server calls it is how the next download finds it again.
     #[serde(skip_serializing_if = "Origin::is_local")]
     pub origin: Origin,
+    /// How much it matters: what the High and Low Importance buttons say.
+    #[serde(skip_serializing_if = "is_normal")]
+    pub importance: Importance,
+    /// For a meeting: whether the people invited are asked to answer, and may propose another
+    /// time. Both, unless the organizer said otherwise.
+    #[serde(skip_serializing_if = "ResponseOptions::is_default")]
+    pub response_options: ResponseOptions,
+    /// It is held online (a Teams meeting): with what, and the link to join it by once its
+    /// server has made it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub online: Option<OnlineMeeting>,
+    /// For a meeting the owner organizes: the other times that people invited have proposed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub proposals: Vec<Proposal>,
+    /// Its server keeps files with it, which are not kept here.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub has_attachments: bool,
 }
 
 impl Event {
+    /// The link to join it by, when it is held online and its server has given one.
+    pub fn join_link(&self) -> Option<&str> {
+        self.online.as_ref().map(|online| online.join_url.as_str()).filter(|link| !link.is_empty())
+    }
+
     /// Minutes from start to end; never negative.
     pub fn duration_minutes(&self) -> i64 {
         self.start.minutes_until(self.end).max(0)
@@ -500,6 +651,55 @@ mod tests {
         // A window before the start, or the wrong way round.
         assert!(r.dates(d(2026, 1, 1), d(2025, 1, 1), d(2025, 12, 31), &[]).is_empty());
         assert!(r.dates(d(2026, 1, 1), d(2026, 2, 1), d(2026, 1, 1), &[]).is_empty());
+    }
+
+    #[test]
+    fn a_link_to_join_by_is_an_https_address_or_nothing() {
+        let clean = OnlineMeeting::clean_link;
+        let teams = "https://teams.example.org/l/meetup-join/19%3ameeting_abc%40thread.v2/0?context=%7b%22Tid%22%3a%221%22%7d";
+        assert_eq!(clean(teams).as_deref(), Some(teams));
+        assert_eq!(clean(&format!("  {teams}\r\n")).as_deref(), Some(teams));
+        assert_eq!(clean("HTTPS://Teams.example.org/x").as_deref(), Some("https://Teams.example.org/x"));
+        assert_eq!(clean("https://[2001:db8::1]:8443/x").as_deref(), Some("https://[2001:db8::1]:8443/x"));
+        for not_one in [
+            "",
+            "https://",
+            "https:///path",
+            "http://teams.example.org/x",
+            "javascript:alert(1)",
+            "file:///C:/Windows/System32/calc.exe",
+            "data:text/html,<script>alert(1)</script>",
+            "mailto:ada@example.org",
+            "teams.example.org/x",
+            "https://teams.example.org/a b",
+            "https://teams.example.org/a\nb",
+            "https://teams.example.org/a\u{0}",
+            "https://user:secret@teams.example.org/",
+            "https://teams.example.org@evil.example/",
+            "https://evil.example\\@teams.example.org/",
+            "https://teams.example.org/\"><script>",
+            "https://tëams.example.org/x",
+        ] {
+            assert_eq!(clean(not_one), None, "{not_one:?}");
+        }
+        assert_eq!(clean(&format!("https://teams.example.org/{}", "a".repeat(MAX_JOIN_LINK))), None);
+        // A meeting keeps a link that is one, and none that isn't; twice changes nothing more.
+        let tidied = OnlineMeeting { provider: OnlineProvider::Teams, join_url: "javascript:alert(1)".into() }.tidied();
+        assert_eq!(tidied, OnlineMeeting::default());
+        assert_eq!(tidied.clone().tidied(), tidied);
+        let event = Event { online: Some(OnlineMeeting { provider: OnlineProvider::Skype, join_url: teams.into() }), ..Default::default() };
+        assert_eq!(
+            (event.join_link(), Event::default().join_link(), Event { online: Some(tidied), ..Default::default() }.join_link()),
+            (Some(teams), None, None)
+        );
+        // What a calendar's server allows, when it says; anything is tried when it doesn't.
+        let calendar = |allowed: Option<Vec<OnlineProvider>>| Calendar { online_providers: allowed, ..Default::default() };
+        assert!(calendar(None).allows_teams() && calendar(Some(vec![OnlineProvider::Skype, OnlineProvider::Teams])).allows_teams());
+        assert!(!calendar(Some(Vec::new())).allows_teams() && !calendar(Some(vec![OnlineProvider::Skype])).allows_teams());
+        for provider in [OnlineProvider::Teams, OnlineProvider::SkypeForBusiness, OnlineProvider::Skype, OnlineProvider::Other] {
+            assert_eq!(OnlineProvider::parse(provider.code()), Some(provider));
+        }
+        assert_eq!(OnlineProvider::parse("somethingNew"), None);
     }
 
     #[test]

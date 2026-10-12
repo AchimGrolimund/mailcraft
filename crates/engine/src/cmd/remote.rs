@@ -23,6 +23,14 @@
 //! refused by the commands unless they are told `"send": true`, is noted with that yes
 //! ([`EventChange::send`]), and is not handed to a host without it ([`permitted`]), whatever a
 //! mailbox file says. An answer to somebody else's invitation tells the organizer only when asked.
+//! Two things are mail and nothing else, and are noted only with that yes: an answer that
+//! proposes another time to the organizer ([`propose_with_answer`]), and a meeting that is sent
+//! on to more people ([`note_forward`]).
+//!
+//! An appointment that is put into another calendar of its account is not moved by the server
+//! (Microsoft Graph has no such thing): it is made anew in the other calendar, and the original
+//! is deleted only once that went through ([`note_moved`]). Should the server refuse either
+//! step, the appointment is put back where it was, and that is said.
 //!
 //! Events go back to the server, as mail does ([`Mailbox::pending`]): a calendar command makes
 //! its change here at once and notes an [`EventChange`] in [`Mailbox::event_changes`]
@@ -53,7 +61,7 @@ use mailcraft_model::remote::{
     EventRepeat, EventResult, EventTime, EventWall, EventsDownload, EventsUpload, EventsUploaded, MAX_CONTACTS, MAX_EVENT_CHANGES, MAX_EVENT_OPS,
     MAX_EVENTS, MAX_KEY, RemoteContact, RemoteEvent, RemoteEventKind, clean_key,
 };
-use mailcraft_model::{Account, Attendee, Calendar, Contact, Event, Id, Mailbox, Origin, Response};
+use mailcraft_model::{Account, Attendee, Calendar, Contact, Event, Id, Importance, Mailbox, OnlineMeeting, Origin, Proposal, Response};
 use mailcraft_time::{Date, DateTime, Timestamp, Weekday};
 use serde_json::{Value, json};
 
@@ -76,7 +84,7 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new("sync.eventChanges", "Calendar Changes to Send", "Send / Receive", event_changes_command)
             .pure()
-            .params(r#"{"account": number} — what that account's server is to be told of events made, changed or deleted here: {"account", "email", "ops": [{"kind": "create"|"update"|"delete", "event": number, "remote"?: string, "token"?: string, "fields": {…}}]}"#),
+            .params(r#"{"account": number} — what that account's server is to be told of events made, changed or deleted here: {"account", "email", "ops": [{"kind": "create"|"update"|"delete"|"respond"|"forward", "event": number, "remote"?: string, "token"?: string, "fields": {…}, "send"?: bool, "comment"?: string, "proposed"?: {"start": seconds, "end": seconds} (another time, with an answer that is sent), "to"?: [{"name", "email"}] (who a meeting is forwarded to)}]}. Nothing that writes to other people is listed without the owner's yes to it"#),
         CommandSpec::new("sync.applyEventChanges", "Apply Sent Calendar Changes", "Send / Receive", apply_event_changes_command)
             .pure()
             .params(r#"{"result": EventsUploaded} — what a host heard from the server: {"account": number, "email"?: string, "outcomes": [{"op": EventOp, "result": "done"|"gone"|"refused"|"denied"|"failed", "remote"?: string, "changeKey"?: string, "error"?: string, "retryAfter"?: seconds}]}"#),
@@ -215,6 +223,13 @@ pub fn fields_of(event: &Event, offset_at: &dyn Fn(Timestamp) -> i32) -> EventFi
         // Who is invited, not what they answered: that is the server's to say.
         attendees: (!event.attendees.is_empty()).then(|| invited(event)),
         categories: (!event.categories.is_empty()).then(|| event.categories.clone()),
+        // What a server takes to be so unless it is told otherwise is left unsaid.
+        importance: (event.importance != Importance::Normal).then_some(event.importance),
+        request_responses: (!event.response_options.request_responses).then_some(false),
+        allow_proposals: (!event.response_options.allow_proposals).then_some(false),
+        // (One that has a link to join by is somebody's online meeting already: the server is
+        // asked to make one only for a meeting that has none yet.)
+        online: event.online.as_ref().filter(|online| online.join_url.is_empty()).map(|online| online.provider),
     };
     fields.tidy();
     fields
@@ -256,6 +271,13 @@ pub fn changed_fields(base: &Event, now: &Event, offset_at: &dyn Fn(Timestamp) -
         repeat: repeats.then(|| all.repeat.unwrap_or(EventRepeat { rule: None, first: now.start.date })),
         attendees: reinvited.then(|| all.attendees.unwrap_or_default()),
         categories: (was.categories != all.categories).then(|| all.categories.unwrap_or_default()),
+        importance: (base.importance != now.importance).then_some(now.importance),
+        request_responses: (base.response_options.request_responses != now.response_options.request_responses)
+            .then_some(now.response_options.request_responses),
+        allow_proposals: (base.response_options.allow_proposals != now.response_options.allow_proposals)
+            .then_some(now.response_options.allow_proposals),
+        // Held online from now on. (There is no saying "no longer": [`EventFields::online`].)
+        online: now.online.as_ref().filter(|online| base.online.is_none() && online.join_url.is_empty()).map(|online| online.provider),
     }
 }
 
@@ -305,6 +327,20 @@ fn put_fields(event: &mut Event, fields: &EventFields, offset_at: &dyn Fn(Timest
     }
     if let Some(categories) = &fields.categories {
         event.categories = categories.clone();
+    }
+    if let Some(importance) = fields.importance {
+        event.importance = importance;
+    }
+    if let Some(asked) = fields.request_responses {
+        event.response_options.request_responses = asked;
+    }
+    if let Some(allowed) = fields.allow_proposals {
+        event.response_options.allow_proposals = allowed;
+    }
+    if let Some(provider) = fields.online
+        && event.online.is_none()
+    {
+        event.online = Some(OnlineMeeting { provider, join_url: String::new() });
     }
 }
 
@@ -366,8 +402,32 @@ pub fn event_from_remote(remote: &RemoteEvent, owner: &str, offset_at: &dyn Fn(T
             guest,
             occurrence: None,
         },
+        importance: remote.importance,
+        response_options: remote.options,
+        online: remote.online.clone(),
+        proposals: proposals_from_remote(remote, offset_at),
+        has_attachments: remote.attachments,
         ..Default::default()
     }
+}
+
+/// The other times people proposed for a server's meeting, by the clock here.
+fn proposals_from_remote(remote: &RemoteEvent, offset_at: &dyn Fn(Timestamp) -> i32) -> Vec<Proposal> {
+    let local = |proposal: &mailcraft_model::remote::RemoteProposal| {
+        let (start, end) = local_times(proposal.start, proposal.end, false, offset_at);
+        Proposal { from: proposal.from.clone(), start, end }
+    };
+    remote.proposals.iter().map(local).collect()
+}
+
+/// A download that doesn't say how much its events matter, whether they are held online and the
+/// rest of it ([`EventsDownload::has_options`]): those stay as they are here.
+fn keep_options(old: &Event, fresh: &mut Event) {
+    fresh.importance = old.importance;
+    fresh.response_options = old.response_options;
+    fresh.online = old.online.clone();
+    fresh.proposals = old.proposals.clone();
+    fresh.has_attachments = old.has_attachments;
 }
 
 /// The event of the mailbox that a server's series is: [`event_from_remote`], repeating by the
@@ -589,7 +649,15 @@ pub(crate) fn note_changed(mailbox: &mut Mailbox, before: &Event, offset_at: &dy
 pub(crate) fn note_deleted(mailbox: &mut Mailbox, before: &Event) -> Result<(), CmdError> {
     let Some(account) = keeper(mailbox, &before.origin).map(|account| account.id) else { return Ok(()) };
     if before.origin.id.is_empty() {
+        // One that was on its way into another calendar ([`note_moved`]): the original, which
+        // the server still has, is what is to be deleted now.
+        let making = |change: &&EventChange| change.kind == EventChangeKind::Create && change.account == account && change.event == before.id;
+        let original = mailbox.event_changes.iter().find(making).filter(|change| !change.replaces.is_empty());
+        let original = original.map(|change| (change.replaces.clone(), change.base.clone()));
         mailbox.event_changes.retain(|change| !(change.kind == EventChangeKind::Create && change.account == account && change.event == before.id));
+        if let Some((remote, base)) = original {
+            mailbox.event_changes.push(EventChange { account, kind: EventChangeKind::Delete, event: before.id, remote, base, ..Default::default() });
+        }
         // One occurrence of a series that was changed here and not sent yet: what the server
         // is to hear now is that the occurrence is gone.
         for change in
@@ -653,6 +721,7 @@ fn holds(mailbox: &Mailbox, change: &EventChange, here: &HashSet<(Id, &str)>) ->
             && match change.kind {
                 EventChangeKind::Update => change.base.is_some() && mailbox.event(change.event).filter(of_account).is_some_and(one),
                 EventChangeKind::Delete | EventChangeKind::Respond => series(),
+                EventChangeKind::Forward => series() && !change.to.is_empty() && !change.token.is_empty(),
                 EventChangeKind::Create => false,
             };
     }
@@ -682,6 +751,11 @@ fn holds(mailbox: &Mailbox, change: &EventChange, here: &HashSet<(Id, &str)>) ->
                     _ => here,
                 }
         }
+        // A meeting that is here and that the server has, sent on to people with addresses.
+        EventChangeKind::Forward => {
+            let named = !change.remote.is_empty() && clean_key(&change.remote) == change.remote;
+            named && !change.to.is_empty() && !change.token.is_empty() && here.contains(&(change.account, change.remote.as_str()))
+        }
     }
 }
 
@@ -708,15 +782,19 @@ fn permitted(mailbox: &Mailbox, change: &EventChange) -> bool {
             !mailbox.events.values().any(|event| event.origin.account == change.account && event.origin.id == change.series && meeting(event))
         }
         EventChangeKind::Delete => !change.base.as_deref().is_some_and(meeting),
-        // An answer tells the organizer only when it says so, which is `send` itself.
-        EventChangeKind::Respond => true,
+        // An answer tells the organizer only when it says so, which is `send` itself. One that
+        // proposes another time is mail to the organizer whatever else it says.
+        EventChangeKind::Respond => change.proposed.is_none(),
+        // Forwarding is nothing but mail.
+        EventChangeKind::Forward => false,
     }
 }
 
 /// What the mailbox has of each server's events, by account and by what the server calls them:
 /// for [`holds`]. Nothing is listed when no deletion waits (nothing would ask).
 fn events_here(mailbox: &Mailbox) -> HashSet<(Id, &str)> {
-    if !mailbox.event_changes.iter().any(|change| matches!(change.kind, EventChangeKind::Delete | EventChangeKind::Respond)) {
+    let asks = |change: &EventChange| matches!(change.kind, EventChangeKind::Delete | EventChangeKind::Respond | EventChangeKind::Forward);
+    if !mailbox.event_changes.iter().any(asks) {
         return HashSet::new();
     }
     mailbox.events.values().filter(|event| !event.origin.id.is_empty()).map(|event| (event.origin.account, event.origin.id.as_str())).collect()
@@ -733,6 +811,9 @@ fn tidy_changes(mailbox: &mut Mailbox) {
     fn about(change: &EventChange) -> (Id, &str, Id, &str, Timestamp) {
         match change.kind {
             EventChangeKind::Create => (change.account, "", change.event, "", 0),
+            // (Forwarding changes nothing: it is beside whatever else waits for its event, and
+            // one forward beside another, each known by its own mark.)
+            EventChangeKind::Forward => (change.account, change.token.as_str(), Id::MAX, "", 0),
             _ if change.of_occurrence() => (change.account, "", 0, change.series.as_str(), change.occurrence),
             _ => (change.account, change.remote.as_str(), 0, "", 0),
         }
@@ -794,7 +875,7 @@ pub fn event_upload(s: &Session, account: Id) -> Result<EventsUpload, CmdError> 
         let fields = match (change.kind, event, change.base.as_deref()) {
             (EventChangeKind::Create, Some(event), _) => fields_of(event, &offset_at),
             (EventChangeKind::Update, Some(event), Some(base)) => changed_fields(base, event, &offset_at),
-            (EventChangeKind::Delete | EventChangeKind::Respond, _, _) => EventFields::default(),
+            (EventChangeKind::Delete | EventChangeKind::Respond | EventChangeKind::Forward, _, _) => EventFields::default(),
             _ => continue,
         };
         // Changed and changed back: nothing to say (the note goes when the next answer is taken in).
@@ -813,7 +894,10 @@ pub fn event_upload(s: &Session, account: Id) -> Result<EventsUpload, CmdError> 
         let cancel = change.kind == EventChangeKind::Delete
             && change.send
             && if change.of_occurrence() { series().is_some_and(|series| invited(series)) } else { change.base.as_deref().is_some_and(invited) };
-        let said = cancel || change.kind == EventChangeKind::Respond;
+        let forwards = change.kind == EventChangeKind::Forward;
+        let said = cancel || change.kind == EventChangeKind::Respond || forwards;
+        // Another time is proposed with an answer that is sent, and only with one that isn't a yes.
+        let proposes = change.kind == EventChangeKind::Respond && change.send && matches!(change.response, Response::Tentative | Response::Declined);
         ops.push(EventOp {
             kind: change.kind,
             event: change.event,
@@ -825,8 +909,10 @@ pub fn event_upload(s: &Session, account: Id) -> Result<EventsUpload, CmdError> 
             calendar,
             cancel,
             response: if change.kind == EventChangeKind::Respond { change.response } else { Response::None },
-            send: change.kind == EventChangeKind::Respond && change.send,
+            send: (change.kind == EventChangeKind::Respond || forwards) && change.send,
             comment: if said { change.comment.clone() } else { String::new() },
+            proposed: change.proposed.filter(|_| proposes),
+            to: if forwards && change.send { change.to.clone() } else { Vec::new() },
         });
     }
     Ok(EventsUpload { ops, ..Default::default() }.for_account(owner))
@@ -920,6 +1006,7 @@ pub fn apply_event_outcomes(s: &mut Session, uploaded: &EventsUploaded) -> Resul
         let mailbox = &mut s.mailbox;
         match outcome.op.kind {
             EventChangeKind::Create => created(mailbox, account, &outcome, &offset_at, now, &mut applied, &mut told),
+            EventChangeKind::Forward => forwarded(mailbox, account, &outcome, now, &mut applied, &mut told),
             _ if outcome.op.of_occurrence() => one_occurrence(mailbox, account, &outcome, &offset_at, now, &mut applied, &mut told),
             EventChangeKind::Update => updated(mailbox, account, &outcome, &offset_at, now, &mut applied, &mut told),
             EventChangeKind::Delete => deleted(mailbox, account, &outcome, now, &mut applied, &mut told),
@@ -1011,12 +1098,16 @@ fn created(
             if event.uid.is_empty() {
                 event.uid = outcome.uid.clone();
             }
+            settle_online(event, outcome, applied);
             // What the server has is what was sent; what was changed here since is still to go.
             let mut sent = event.clone();
             put_fields(&mut sent, &op.fields, offset_at);
             let more = !changed_fields(&sent, event, offset_at).is_empty();
             let (remote, id) = (event.origin.id.clone(), event.id);
-            mailbox.event_changes.remove(at);
+            let noted = mailbox.event_changes.remove(at);
+            // An appointment that was moved here from another calendar: the server has the copy
+            // now, and only now is to delete the original.
+            finish_move(mailbox, account, id, noted, &remote);
             // A series made here with days left out: the server has it whole so far.
             skip_days_there(mailbox, account, id, offset_at);
             if more {
@@ -1047,8 +1138,13 @@ fn created(
                 applied.failed += 1;
                 return;
             }
-            mailbox.event_changes.remove(at);
+            let noted = mailbox.event_changes.remove(at);
             applied.refused += 1;
+            // An appointment that was being moved from another calendar is still in that one on
+            // the server: it is put back there.
+            if move_refused(mailbox, noted, outcome, applied) {
+                return;
+            }
             // What was written is not thrown away: it stays, in a calendar of the mailbox's own.
             let own = mailbox.calendars.iter().find(|calendar| keeper(mailbox, &calendar.origin).is_none()).map(|calendar| calendar.id);
             let name = called(event.and_then(|id| mailbox.event(id)));
@@ -1190,6 +1286,197 @@ pub(crate) fn note_responded(mailbox: &mut Mailbox, before: &Event, response: Re
         ..Default::default()
     });
     Ok(())
+}
+
+/// The answer that was just noted for a meeting ([`note_responded`], [`note_occurrence_gone`])
+/// proposes another time to its organizer. It is mail to the organizer, so it goes only with the
+/// owner's yes: an answer that wasn't noted as one to send is left as it is.
+pub(crate) fn propose_with_answer(mailbox: &mut Mailbox, proposed: mailcraft_model::remote::EventTime) {
+    if let Some(change) = mailbox.event_changes.last_mut().filter(|change| change.kind == EventChangeKind::Respond && change.send) {
+        change.proposed = Some(proposed);
+    }
+}
+
+/// The owner sends a meeting that a server keeps on to more people (`to`), with a note. Nothing
+/// changes here: the server writes to them, and only because the owner said so (`send` is what
+/// this is). `occurrence`: one day of a series that is known by its series and its time only.
+pub(crate) fn note_forward(
+    s: &mut Session,
+    event: &Event,
+    occurrence: Option<Date>,
+    to: Vec<mailcraft_model::Address>,
+    comment: &str,
+) -> Result<(), CmdError> {
+    let Some(account) = keeper(&s.mailbox, &event.origin).map(|account| account.id) else { return Ok(()) };
+    room_for_change(&s.mailbox)?;
+    let token = new_token(event.id, s.rev() ^ s.now().unsigned_abs().rotate_left(24));
+    let (remote, series, at) = match occurrence {
+        Some(day) => (String::new(), event.origin.id.clone(), occurrence_instant(event, day, &offset_of(s))),
+        None => (event.origin.id.clone(), String::new(), 0),
+    };
+    s.mailbox.event_changes.push(EventChange {
+        account,
+        kind: EventChangeKind::Forward,
+        event: event.id,
+        remote,
+        token,
+        series,
+        occurrence: at,
+        send: true,
+        comment: comment.to_string(),
+        to,
+        ..Default::default()
+    });
+    Ok(())
+}
+
+/// An appointment that a server keeps (`before`, as it was) was put into another calendar of
+/// the same account; it is the event `id` here still. A server has no way of moving an event
+/// from one calendar to another, so it is made anew in the calendar it is in now, and the
+/// original is deleted once that has gone through ([`finish_move`]); should either step be
+/// refused, it is put back as it was ([`move_refused`], [`take_back_copy`]). Until then a
+/// download leaves the original out.
+pub(crate) fn note_moved(s: &mut Session, id: Id, before: &Event) -> Result<(), CmdError> {
+    let account = before.origin.account;
+    room_for_change(&s.mailbox)?;
+    let token = new_token(id, s.rev() ^ s.now().unsigned_abs().rotate_left(16));
+    let event = s.mailbox.event_mut(id)?;
+    // A new event as far as the server goes, with a name of its own to come.
+    event.origin = Origin { account, ..Default::default() };
+    event.uid.clear();
+    s.mailbox.event_changes.push(EventChange {
+        account,
+        kind: EventChangeKind::Create,
+        event: id,
+        token,
+        base: Some(Box::new(before.clone())),
+        replaces: before.origin.id.clone(),
+        ..Default::default()
+    });
+    Ok(())
+}
+
+/// The server has made the copy of an appointment that was moved to another calendar (`noted`
+/// is the note of making it, `copy` what the server calls it): now the original goes.
+fn finish_move(mailbox: &mut Mailbox, account: Id, id: Id, noted: EventChange, copy: &str) {
+    if noted.replaces.is_empty() {
+        return;
+    }
+    mailbox.event_changes.push(EventChange {
+        account,
+        kind: EventChangeKind::Delete,
+        event: id,
+        remote: noted.replaces,
+        base: noted.base,
+        moved: copy.to_string(),
+        ..Default::default()
+    });
+}
+
+/// The server wouldn't make the copy of an appointment that was being moved to another calendar
+/// (`noted` is the note of making it): the appointment is back as it was, in the calendar the
+/// server still has it in. Whether that is what was done.
+fn move_refused(mailbox: &mut Mailbox, noted: EventChange, outcome: &EventOutcome, applied: &mut EventsApplied) -> bool {
+    let Some(base) = noted.base.filter(|_| !noted.replaces.is_empty()) else { return false };
+    let name = called(Some(&base));
+    match mailbox.event_mut(base.id) {
+        Ok(event) => *event = *base,
+        Err(_) => {
+            let _ = mailbox.add_event(*base);
+        }
+    }
+    applied.say(format!(
+        "The server wouldn't take {name} into the other calendar{}, so it wasn't moved: it is back where it was.",
+        because(&outcome.error)
+    ));
+    true
+}
+
+/// The server made the copy of a moved appointment (`copy`) and then wouldn't delete the
+/// original: the copy goes again, here and there. Not when people were invited to it meanwhile
+/// (deleting it would send every one of them a cancellation nobody was asked about): then it
+/// stays, and `false` says so.
+fn take_back_copy(mailbox: &mut Mailbox, account: Id, copy: &str) -> bool {
+    let found = mailbox.events.values().find(|event| event.origin.account == account && event.origin.id == copy);
+    if found.is_some_and(|event| !event.attendees.is_empty()) {
+        return false;
+    }
+    let here = found.map(|event| event.id);
+    if let Some(id) = here {
+        let _ = mailbox.remove_event(id);
+    }
+    mailbox.event_changes.retain(|change| !(change.account == account && change.remote == copy));
+    mailbox.event_changes.push(EventChange {
+        account,
+        kind: EventChangeKind::Delete,
+        event: here.unwrap_or(0),
+        remote: copy.to_string(),
+        ..Default::default()
+    });
+    true
+}
+
+/// What the server made of an event that was to be held online: the link to join it by, when
+/// its answer has one; and when it wouldn't have an online meeting (an account that can't make
+/// one), the event is as the server has it, without, and that is said.
+fn settle_online(event: &mut Event, outcome: &EventOutcome, applied: &mut EventsApplied) {
+    if outcome.op.fields.online.is_none() {
+        return;
+    }
+    if outcome.online == Some(false) {
+        event.online = None;
+        let name = called(Some(event));
+        applied.say(format!(
+            "{name} couldn't be made a Teams meeting: the account's server wouldn't have it{}. The meeting itself is saved, without a link to join.",
+            because(&outcome.error)
+        ));
+    } else if let Some(online) = &mut event.online
+        && !outcome.join_url.is_empty()
+    {
+        online.join_url = outcome.join_url.clone();
+    }
+}
+
+/// The answer to forwarding a meeting.
+fn forwarded(mailbox: &mut Mailbox, account: Id, outcome: &EventOutcome, now: Timestamp, applied: &mut EventsApplied, told: &mut bool) {
+    let op = &outcome.op;
+    let noted = |change: &EventChange| {
+        change.kind == EventChangeKind::Forward && change.account == account && !op.token.is_empty() && change.token == op.token
+    };
+    let Some(at) = mailbox.event_changes.iter().position(noted) else {
+        *told |= outcome.result == EventResult::Done;
+        return;
+    };
+    let name = called(mailbox.event_changes.get(at).and_then(|change| mailbox.event(change.event)));
+    match outcome.result {
+        EventResult::Done => {
+            *told = true;
+            applied.done += 1;
+            mailbox.event_changes.remove(at);
+        }
+        EventResult::Failed => {
+            if let Some(change) = mailbox.event_changes.get_mut(at) {
+                held_back(change, outcome, now);
+                applied.failed += 1;
+            }
+        }
+        EventResult::Gone => {
+            mailbox.event_changes.remove(at);
+            applied.refused += 1;
+            applied.say(format!("{name} is no longer on the server, so it wasn't forwarded."));
+        }
+        EventResult::Denied | EventResult::Refused => {
+            let Some(change) = mailbox.event_changes.get_mut(at) else { return };
+            if outcome.result == EventResult::Denied && !held_back(change, outcome, now) {
+                applied.denied = true;
+                applied.failed += 1;
+                return;
+            }
+            mailbox.event_changes.remove(at);
+            applied.refused += 1;
+            applied.say(format!("The server wouldn't forward {name}{}. Nobody was written to.", because(&outcome.error)));
+        }
+    }
 }
 
 /// The answer to changing, deleting or answering one occurrence of a series.
@@ -1376,6 +1663,9 @@ fn updated(
             {
                 event.origin.change_key = outcome.change_key.clone();
             }
+            if let Some(Ok(event)) = event.map(|id| mailbox.event_mut(id)) {
+                settle_online(event, outcome, applied);
+            }
             let here = event.and_then(|id| mailbox.event(id)).cloned();
             match at {
                 // The server has what was sent now; what was changed here since is still to go
@@ -1515,10 +1805,25 @@ fn deleted(mailbox: &mut Mailbox, account: Id, outcome: &EventOutcome, now: Time
             let change = mailbox.event_changes.remove(at);
             applied.refused += 1;
             let name = called(change.base.as_deref());
+            // The end of a move to another calendar: the copy that was made there goes again.
+            let moving = !change.moved.is_empty();
+            let taken_back = moving && take_back_copy(mailbox, account, &change.moved);
             // Back in its calendar, under the id it had when that is still free.
             let back = change.base.is_some_and(|base| mailbox.add_event(*base).is_ok());
             let then = if back { " It is back in the calendar." } else { "" };
-            applied.say(format!("The server wouldn't delete {name}{}.{then}", because(&outcome.error)));
+            if taken_back {
+                applied.say(format!(
+                    "The server wouldn't take {name} out of the calendar it was in{}, so it wasn't moved: it is back there, and the copy in the other calendar was removed.",
+                    because(&outcome.error)
+                ));
+            } else if moving {
+                applied.say(format!(
+                    "The server wouldn't take {name} out of the calendar it was in{}. It is in both calendars now.",
+                    because(&outcome.error)
+                ));
+            } else {
+                applied.say(format!("The server wouldn't delete {name}{}.{then}", because(&outcome.error)));
+            }
         }
     }
 }
@@ -1624,6 +1929,15 @@ pub fn merge_events(mailbox: &mut Mailbox, download: &EventsDownload, offset_at:
     let mut made: HashMap<String, Id> = HashMap::new();
     let mut waiting_days: HashMap<String, Vec<Timestamp>> = HashMap::new();
     for change in mailbox.event_changes.iter().filter(|change| change.account == account) {
+        // An appointment on its way into another calendar: its original, which the server still
+        // has, is as good as deleted here. And a meeting that is being forwarded is as it is on
+        // the server: a download goes on telling what it is.
+        if !change.replaces.is_empty() {
+            waiting.insert(change.replaces.clone(), EventChangeKind::Delete);
+        }
+        if change.kind == EventChangeKind::Forward {
+            continue;
+        }
         match change.kind {
             EventChangeKind::Create if !change.token.is_empty() => {
                 made.insert(change.token.clone(), change.event);
@@ -1761,6 +2075,9 @@ pub fn merge_events(mailbox: &mut Mailbox, download: &EventsDownload, offset_at:
         match known.get(&remote.id).and_then(|id| mailbox.event(*id)).cloned() {
             Some(old) => {
                 fresh.id = old.id;
+                if !download.has_options {
+                    keep_options(&old, &mut fresh);
+                }
                 replace(mailbox, account, &old, fresh, download.has_categories, &mut merged);
             }
             None => {
@@ -1807,6 +2124,9 @@ pub fn merge_events(mailbox: &mut Mailbox, download: &EventsDownload, offset_at:
         match old {
             Some(old) => {
                 fresh.id = old.id;
+                if !download.has_options {
+                    keep_options(&old, &mut fresh);
+                }
                 replace(mailbox, account, &old, fresh, download.has_categories, &mut merged);
             }
             None => {
@@ -1933,6 +2253,12 @@ fn adopt(mailbox: &mut Mailbox, account: Id, id: Id, mut fresh: Event, token: &s
     here.origin = fresh.origin.clone();
     here.uid = fresh.uid.clone();
     here.organizer = fresh.organizer.clone();
+    // (An appointment that was moved here from another calendar: the original is still to go.)
+    let making = |change: &EventChange| change.kind == EventChangeKind::Create && change.account == account && change.token == token;
+    let moved = mailbox.event_changes.iter().position(|change| making(change) && !change.replaces.is_empty());
+    if let Some(noted) = moved.map(|at| mailbox.event_changes.remove(at)) {
+        finish_move(mailbox, account, id, noted, &here.origin.id);
+    }
     mailbox.event_changes.retain(|change| !(change.kind == EventChangeKind::Create && change.account == account && change.token == token));
     if !changed_fields(&fresh, &here, offset_at).is_empty() {
         let remote = here.origin.id.clone();
@@ -2118,6 +2444,11 @@ pub fn apply_calendars(s: &mut Session, download: &CalendarsDownload) -> CmdResu
                 (calendar.name, calendar.color, calendar.group, calendar.read_only) = (title, color, remote.group.clone(), remote.read_only);
                 updated += 1;
             }
+            // What its meetings may be held online with, when the list says (else: as it was).
+            if remote.online_providers.is_some() && calendar.online_providers != remote.online_providers {
+                calendar.online_providers = remote.online_providers.clone();
+                updated += usize::from(same);
+            }
         } else if mailbox.calendars.len() < MAX_CALENDARS {
             let color = remote.color.unwrap_or_else(|| super::calendar::next_color(mailbox));
             let id = mailbox.alloc_id();
@@ -2131,6 +2462,7 @@ pub fn apply_calendars(s: &mut Session, download: &CalendarsDownload) -> CmdResu
                 origin,
                 read_only: remote.read_only,
                 group: remote.group.clone(),
+                online_providers: remote.online_providers.clone(),
                 ..Default::default()
             });
             added += 1;

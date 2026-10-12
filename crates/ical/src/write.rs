@@ -1,6 +1,6 @@
 //! Writing events and to-dos as iCalendar text.
 
-use mailcraft_model::{Address, Event, Importance, Response, ShowAs, Task};
+use mailcraft_model::{Address, Event, Importance, OnlineMeeting, OnlineProvider, Response, ShowAs, Task};
 use mailcraft_time::DateTime;
 
 use crate::WriteOptions;
@@ -115,12 +115,32 @@ fn write_event(out: &mut String, e: &Event, stamp: &str) {
         ShowAs::WorkingElsewhere => "WORKINGELSEWHERE",
     };
     fold(out, &format!("X-MICROSOFT-CDO-BUSYSTATUS:{busy}"));
+    // How much it matters, as for a to-do; nothing for the usual.
+    match e.importance {
+        Importance::High => fold(out, "PRIORITY:1"),
+        Importance::Low => fold(out, "PRIORITY:9"),
+        Importance::Normal => {}
+    }
+    if !e.response_options.allow_proposals {
+        fold(out, "X-MICROSOFT-DISALLOW-COUNTER:TRUE");
+    }
+    // The link to join an online meeting by: where Outlook looks for a Teams meeting's, and
+    // RFC 7986's `CONFERENCE` for any other. Only an `https` address is one.
+    if let Some(online) = &e.online
+        && let Some(link) = OnlineMeeting::clean_link(&online.join_url)
+    {
+        match online.provider {
+            OnlineProvider::Teams => text(out, "X-MICROSOFT-SKYPETEAMSMEETINGURL", &link),
+            _ => fold(out, &format!("CONFERENCE;VALUE=URI:{link}")),
+        }
+    }
     if let Some(organizer) = e.organizer.as_ref().filter(|o| !is_blank(o)) {
         fold(out, &format!("ORGANIZER{}", person(organizer)));
     }
     for attendee in e.attendees.iter().filter(|a| !is_blank(&a.address)) {
         let role = if attendee.optional { "OPT-PARTICIPANT" } else { "REQ-PARTICIPANT" };
         let status = match attendee.response {
+            Response::None if !e.response_options.request_responses => "NEEDS-ACTION;RSVP=FALSE",
             Response::None => "NEEDS-ACTION;RSVP=TRUE",
             Response::Accepted => "ACCEPTED",
             Response::Tentative => "TENTATIVE",

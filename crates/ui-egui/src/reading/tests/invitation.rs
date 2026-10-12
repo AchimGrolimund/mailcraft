@@ -947,3 +947,117 @@ fn shots_of_meeting_mail() {
         shot(&mut harness, "meeting-11-options");
     }
 }
+
+#[test]
+fn a_request_offers_to_propose_another_time_and_sends_only_from_its_dialog() {
+    let closed = Meeting { uid: "uid-closed".into(), title: "No proposals", more: "X-MICROSOFT-DISALLOW-COUNTER:TRUE".into(), ..Meeting::default() };
+    let (app, account, ids) = mail_app(vec![Meeting::default().mail(), closed.mail()]);
+    let (request, shut) = (ids[0], ids[1]);
+    let mut harness = window(app, (1280.0, 900.0));
+    select(&mut harness, request);
+    // Beside the three answers: Propose New Time, which opens a dialog and sends nothing.
+    assert!(hit(&harness, "invitationPropose", request).is_some());
+    press(&mut harness, "invitationPropose", request);
+    harness.run_steps(3);
+    assert_eq!(harness.state().dialog.as_ref().map(|d| d.name()), Some("proposeTime"));
+    assert!(says(&harness, "Bo Marsh organizes \"Design review\"."));
+    assert!(says(&harness, "It is now on Thursday, October 15, 2026 2:00 PM – 3:00 PM."));
+    assert!(says(&harness, "Either button writes to Bo Marsh"));
+    assert!(outbox(harness.state(), account).is_empty() && events(harness.state(), "Design review").is_empty());
+    // Escape: nobody was written to, and nothing was answered.
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(3);
+    assert!(harness.state().dialog.is_none() && outbox(harness.state(), account).is_empty());
+    assert_eq!(said(&mut harness, request)["answered"], Value::Null);
+    // Tentative and Propose, pressed: the meeting is on the calendar, tentatively, and the
+    // proposal waits in the Outbox for its organizer, as a counter-proposal his program reads.
+    press(&mut harness, "invitationPropose", request);
+    harness.run_steps(3);
+    let button = harness.state().hit.rect("proposeTentative", 0).unwrap();
+    click_at(&mut harness, button.center());
+    harness.run_steps(4);
+    assert!(harness.state().dialog.is_none());
+    let waiting = outbox(harness.state(), account);
+    assert_eq!(waiting.len(), 1);
+    assert_eq!((waiting[0].0.as_str(), waiting[0].1.as_str()), ("bo@example.org", "Another time proposed: Design review"));
+    assert!(waiting[0].2.contains("METHOD:COUNTER") && waiting[0].2.contains("UID:uid-design-review"), "{}", waiting[0].2);
+    assert_eq!(events(harness.state(), "Design review").len(), 1);
+    assert!(says(&harness, "Tentatively accepted on"));
+    // An organizer who takes no proposals: nothing to press.
+    select(&mut harness, shut);
+    assert!(hit(&harness, "invitationAccept", shut).is_some() && hit(&harness, "invitationPropose", shut).is_none());
+}
+
+#[test]
+fn a_message_that_proposes_another_time_offers_to_take_it_up() {
+    // The owner's own meeting, kept on this computer, with Bo invited; and Bo's proposal of
+    // another time for it, as his program mails one.
+    let counter = Meeting {
+        method: "COUNTER",
+        uid: "uid-planning".into(),
+        title: "Planning",
+        start: "DTSTART:20261016T150000Z",
+        end: "DTEND:20261016T163000Z",
+        organizer: "ORGANIZER;CN=Avery Quinn:mailto:avery@mail.example",
+        more: String::new(),
+    };
+    let (mut app, _, ids) = mail_app(vec![counter.mail(), Meeting::default().mail()]);
+    let calendar = app.execute("calendar.addCalendar", json!({"name": "Mine"})).unwrap()["id"].as_u64().unwrap();
+    let at = |day: u8, hour: u8| mailcraft_time::DateTime::new(mailcraft_time::Date::new(2026, 10, day).unwrap(), hour, 0, 0).unwrap();
+    let planning = mailcraft_model::Event {
+        calendar,
+        uid: "uid-planning".into(),
+        title: "Planning".into(),
+        start: at(15, 10),
+        end: at(15, 11),
+        organizer: Some(Address::new("Avery Quinn", OWNER)),
+        attendees: vec![Attendee { address: Address::new("Bo Marsh", "bo@example.org"), optional: false, response: Response::Tentative }],
+        ..Default::default()
+    };
+    let planning = app.session.mailbox.add_event(planning).unwrap();
+    app.session.mailbox_changed();
+    let (proposal, request) = (ids[0], ids[1]);
+    let mut harness = window(app, (1280.0, 900.0));
+    select(&mut harness, proposal);
+    // What it is, what is proposed, when the meeting is now; and something to press.
+    assert!(says(&harness, "proposes another time for this meeting."));
+    assert!(says(&harness, "Proposed Friday, October 16, 2026 3:00 PM – 4:30 PM"));
+    assert!(hit(&harness, "invitationAcceptProposal", proposal).is_some() && hit(&harness, "invitationAccept", proposal).is_none());
+    // One proposal is all there is: no list to look at.
+    assert!(hit(&harness, "invitationProposals", proposal).is_none());
+    // Accept Proposal: the meeting opens with the proposed time in its fields. Nothing is
+    // changed, and nothing is sent, until the owner says so there.
+    press(&mut harness, "invitationAcceptProposal", proposal);
+    harness.run_steps(4);
+    let ctx = harness.ctx.clone();
+    let open = crate::control::inspect(harness.state_mut(), &ctx)["windows"].clone();
+    assert_eq!((&open[0]["event"], &open[0]["dirty"]), (&json!(planning), &json!(true)), "{open}");
+    assert_eq!(harness.state().session.mailbox.event(planning).map(|e| e.start), Some(at(15, 10)));
+    // Saved from there, it is at the proposed time.
+    let window = open[0]["id"].as_u64().unwrap();
+    harness.state_mut().execute("ui.eventWindow", json!({"window": window, "do": "saveAndClose"})).unwrap();
+    harness.run_steps(6);
+    let now = harness.state().session.mailbox.event(planning).cloned().unwrap();
+    assert_eq!(
+        (now.start, now.end),
+        (at(16, 15), mailcraft_time::DateTime::new(mailcraft_time::Date::new(2026, 10, 16).unwrap(), 16, 30, 0).unwrap())
+    );
+    // A second proposal that the calendar knows of: now there is a list, which opens.
+    harness.state_mut().session.mailbox.event_mut(planning).unwrap().proposals =
+        vec![mailcraft_model::Proposal { from: Address::new("Cy Tran", "cy@example.org"), start: at(17, 9), end: at(17, 10) }];
+    harness.state_mut().session.mailbox_changed();
+    harness.run_steps(3);
+    assert!(hit(&harness, "invitationProposals", proposal).is_some());
+    press(&mut harness, "invitationProposals", proposal);
+    harness.run_steps(3);
+    assert_eq!(harness.state().dialog.as_ref().map(|d| d.name()), Some("proposals"));
+    assert!(
+        says(&harness, "Bo Marsh: Friday, October 16, 2026 3:00 PM – 4:30 PM")
+            && says(&harness, "Cy Tran: Saturday, October 17, 2026 9:00 AM – 10:00 AM")
+    );
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(3);
+    // A request has none of this.
+    select(&mut harness, request);
+    assert!(hit(&harness, "invitationAcceptProposal", request).is_none() && hit(&harness, "invitationProposals", request).is_none());
+}

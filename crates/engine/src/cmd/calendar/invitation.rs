@@ -526,7 +526,22 @@ fn invitation(s: &mut Session, v: &Value) -> CmdResult {
             let writable = remote::keeper(&s.mailbox, &on_calendar.origin).is_none() || remote::writable(&s.mailbox, on_calendar.calendar).is_ok();
             is_theirs(s, on_calendar) && writable
         });
-    Ok(json!({
+    // Whether another time may be proposed with an answer: the organizer takes proposals (what
+    // the calendar says of that, else what the message does), and the answer can be sent.
+    let can_propose = is_request
+        && why.is_none()
+        && (kept || can_mail(s, &invitation))
+        && on_calendar.filter(|_| kept).map_or(invitation.event.response_options, |there| there.response_options).allow_proposals;
+    // How many proposals of another time are known for the meeting, this message's among them.
+    let proposals = {
+        let known = on_calendar.map(|there| there.proposals.as_slice()).unwrap_or_default();
+        let sender = proposer(s, &invitation).email;
+        let same = |one: &mailcraft_model::Proposal| {
+            one.from.email.trim().eq_ignore_ascii_case(sender.trim()) && one.start == invitation.event.start && one.end == invitation.event.end
+        };
+        known.len() + usize::from(kind == "counter" && !known.iter().any(same))
+    };
+    let mut told = json!({
         "message": invitation.message,
         "account": invitation.account,
         "part": invitation.part,
@@ -572,7 +587,53 @@ fn invitation(s: &mut Session, v: &Value) -> CmdResult {
         "conflicts": conflicts,
         "adjacent": adjacent,
         "day": day,
-    }))
+    });
+    told["canPropose"] = json!(can_propose);
+    // For a message that proposes another time: the time it proposes, as the message has it.
+    told["proposed"] = json!((kind == "counter").then(|| json!({"start": invitation.event.start.iso(), "end": invitation.event.end.iso()})));
+    told["proposals"] = json!(proposals);
+    Ok(told)
+}
+
+/// The other time that a message proposes for a meeting (`METHOD:COUNTER`).
+pub(super) struct Counter {
+    /// The meeting on the calendar that it is about, when it is there (for one occurrence that
+    /// the series still has: the series, and `occurrence` its day).
+    pub event: Option<Id>,
+    pub occurrence: Option<Date>,
+    /// Who proposes it.
+    pub from: Address,
+    pub start: DateTime,
+    pub end: DateTime,
+}
+
+/// What the message `v` names proposes; `None` for a message that proposes no other time.
+pub(super) fn counter(s: &Session, v: &Value) -> Result<Option<Counter>, CmdError> {
+    let invitation = read(s, v)?;
+    if invitation.method != "COUNTER" {
+        return Ok(None);
+    }
+    let about = about(s, &invitation);
+    let occurrence = match about {
+        About::Occurrence(_, day) => Some(day),
+        _ => None,
+    };
+    let from = proposer(s, &invitation);
+    let (start, end) = (invitation.event.start, invitation.event.end.max(invitation.event.start));
+    Ok(Some(Counter { event: about.event(), occurrence, from, start, end }))
+}
+
+/// Who a message that proposes another time is from: the one of the people it lists that it
+/// was sent by; its sender, when it lists somebody else or nobody; and whoever it lists first
+/// when nothing says who sent it.
+fn proposer(s: &Session, invitation: &Invitation) -> Address {
+    let sender = s.mailbox.message(invitation.message).map(|message| person(&message.from)).unwrap_or_default();
+    let sent_by = |who: &&Attendee| !sender.email.is_empty() && who.address.email.trim().eq_ignore_ascii_case(sender.email.trim());
+    match invitation.event.attendees.iter().find(sent_by) {
+        Some(who) => who.address.clone(),
+        None if !sender.email.is_empty() => sender,
+        None => invitation.event.attendees.first().map(|who| who.address.clone()).unwrap_or_default(),
+    }
 }
 
 /// `calendar.respond {"message": id, "response": …, "send"?: bool, "comment"?: string}`: answer
@@ -589,11 +650,16 @@ pub(super) fn respond(s: &mut Session, v: &Value) -> CmdResult {
     let about = about(s, &invitation);
     // On the account's server already: answered there, which is how the organizer hears. One
     // occurrence of a series is answered as that occurrence.
+    // (Another time that is proposed with the answer goes along: `calendar.propose`.)
+    let propose = v.get("propose").cloned().unwrap_or(Value::Null);
     let through = match about {
-        About::Event(id) if on_server(s, id) => Some((id, json!({"id": id, "response": response, "send": send, "comment": note, "scope": "series"}))),
-        About::Occurrence(series, day) if on_server(s, series) => {
-            Some((series, json!({"id": series, "response": response, "send": send, "comment": note, "scope": "occurrence", "occurrence": day.iso()})))
+        About::Event(id) if on_server(s, id) => {
+            Some((id, json!({"id": id, "response": response, "send": send, "comment": note, "scope": "series", "propose": propose})))
         }
+        About::Occurrence(series, day) if on_server(s, series) => Some((
+            series,
+            json!({"id": series, "response": response, "send": send, "comment": note, "scope": "occurrence", "occurrence": day.iso(), "propose": propose}),
+        )),
         _ => None,
     };
     if let Some((id, through)) = through {
@@ -615,7 +681,10 @@ pub(super) fn respond(s: &mut Session, v: &Value) -> CmdResult {
     // On this computer: the meeting goes into a calendar here (declined, it doesn't, and comes
     // out when it was there), and the organizer is written to when that is asked for.
     let owner = s.mailbox.account(invitation.account).or(s.mailbox.default_account()).cloned().ok_or_else(|| fail("the account is gone"))?;
-    let reply = if send { Some(reply_message(s, &invitation, &owner, response, &note)?) } else { None };
+    // Another time proposed with the answer: it goes to the organizer in the answer's place.
+    let proposal = super::meeting::proposed(s, v, invitation.event.response_options.allow_proposals, send, response)?;
+    let proposal = proposal.map(|(start, end, _)| (start, end));
+    let reply = if send { Some(reply_message(s, &invitation, &owner, response, &note, proposal)?) } else { None };
     let skip_day = |s: &mut Session, series: Id, day: Date| -> Result<(), CmdError> {
         let series = s.mailbox.event_mut(series)?;
         if !series.exceptions.contains(&day) && series.exceptions.len() < 5_000 {
@@ -702,6 +771,7 @@ fn reply_message(
     owner: &mailcraft_model::Account,
     response: Response,
     note: &str,
+    proposed: Option<(DateTime, DateTime)>,
 ) -> Result<Message, CmdError> {
     let organizer =
         invitation.event.organizer.clone().filter(|who| who.is_valid()).ok_or_else(|| fail("The invitation doesn't say who to answer."))?;
@@ -717,18 +787,24 @@ fn reply_message(
     };
     // Only who answers, and what: the organizer knows the rest.
     let event = &invitation.event;
+    // (With another time proposed, the answer is a counter-proposal: the meeting at that time.)
+    let (start, end, all_day) = match proposed {
+        Some((start, end)) => (start, end, false),
+        None => (event.start, event.end, event.all_day),
+    };
     let answer = Event {
         uid: event.uid.clone(),
         title: event.title.clone(),
-        start: event.start,
-        end: event.end,
-        all_day: event.all_day,
+        start,
+        end,
+        all_day,
         organizer: Some(organizer.clone()),
         attendees: vec![Attendee { address: owner.address(), optional: false, response }],
         ..Default::default()
     };
     let now = s.now();
-    let mut ics = mailcraft_ical::write(&[&answer], &[], &WriteOptions { method: "REPLY".into(), now });
+    let method = if proposed.is_some() { "COUNTER" } else { "REPLY" };
+    let mut ics = mailcraft_ical::write(&[&answer], &[], &WriteOptions { method: method.into(), now });
     // One occurrence of a series is named as the invitation named it.
     if let Some((written, _)) = &invitation.instance
         && written.len() <= 16
@@ -739,7 +815,15 @@ fn reply_message(
     }
     let title: String = event.title.chars().filter(|c| !c.is_control()).take(200).collect();
     let name = if owner.name.trim().is_empty() { owner.email.trim() } else { owner.name.trim() };
-    let text = if note.is_empty() { format!("{name} has {word} this meeting.\n") } else { format!("{note}\n\n{name} has {word} this meeting.\n") };
+    let mut said = format!("{name} has {word} this meeting.");
+    let mut subject = format!("{verb}: {title}");
+    if let Some((start, end)) = proposed {
+        let twelve = s.prefs.twelve_hour;
+        let until = if end.date == start.date { end.time_short(twelve) } else { format!("{} {}", end.date.long(), end.time_short(twelve)) };
+        said = format!("{said} {name} proposes another time: {} {} – {until}.", start.date.long(), start.time_short(twelve));
+        subject = format!("Another time proposed: {title}");
+    }
+    let text = if note.is_empty() { format!("{said}\n") } else { format!("{note}\n\n{said}\n") };
     let domain = owner.email.rsplit_once('@').map_or("", |(_, domain)| domain);
     Ok(Message {
         account: owner.id,
@@ -749,13 +833,67 @@ fn reply_message(
         references: original.map(|m| m.message_id.clone()).into_iter().filter(|id| !id.is_empty()).collect(),
         from: owner.address(),
         to: vec![organizer],
-        subject: format!("{verb}: {title}"),
+        subject,
         date: now,
         received: now,
         body: Body { text, html: None },
         // The answer is the message in another form: it goes beside the text, where the
         // organizer's program looks for it (`mailcraft-mime` writes it `text/calendar; method=REPLY`).
         attachments: vec![Attachment { inline: true, ..Attachment::new("response.ics", "text/calendar", ics.into_bytes()) }],
+        read: true,
+        ..Default::default()
+    })
+}
+
+/// An item that is kept on this computer, as mail that sends it on to `to` (`calendar.forward`):
+/// a few words, the owner's note, and the item as an iCalendar file for them to put into their
+/// own calendars. It is for the Outbox of the mailbox's first account with a mail server.
+///
+/// What the owner made of the item for their own use (its reminder, its categories, that it is
+/// private) and who else is invited stay here: the file says what, when and where.
+pub(super) fn forward_message(s: &Session, event: &Event, to: &[Address], note: &str) -> Result<Message, CmdError> {
+    let sends =
+        |account: &&mailcraft_model::Account| account.kind == AccountKind::Imap && s.mailbox.folder_of_kind(account.id, FolderKind::Outbox).is_some();
+    let owner = s.mailbox.default_account().filter(sends).or_else(|| s.mailbox.accounts.iter().find(sends));
+    let owner = owner.cloned().ok_or_else(|| fail("No account here has a mail server to send this through."))?;
+    let outbox = s.mailbox.folder_of_kind(owner.id, FolderKind::Outbox).ok_or_else(|| fail("this account has no Outbox folder"))?;
+    let item = Event {
+        attendees: Vec::new(),
+        categories: Vec::new(),
+        reminder_minutes: None,
+        private: false,
+        proposals: Vec::new(),
+        origin: Origin::default(),
+        ..event.clone()
+    };
+    let now = s.now();
+    let ics = mailcraft_ical::write(&[&item], &[], &WriteOptions { method: "PUBLISH".into(), now });
+    let title: String = event.title.chars().filter(|c| !c.is_control()).take(200).collect();
+    let twelve = s.prefs.twelve_hour;
+    let when = if event.all_day {
+        let last = event.end.add_minutes(-1).date.max(event.start.date);
+        if last == event.start.date { event.start.date.long() } else { format!("{} – {}", event.start.date.long(), last.long()) }
+    } else {
+        format!("{} {} – {}", event.start.date.long(), event.start.time_short(twelve), event.end.time_short(twelve))
+    };
+    let place = one_line(&event.location, MAX_LINE);
+    let mut text = if note.is_empty() { String::new() } else { format!("{note}\n\n") };
+    text.push_str(&format!("{title}\n{when}\n"));
+    if !place.is_empty() {
+        text.push_str(&format!("{place}\n"));
+    }
+    let domain = owner.email.rsplit_once('@').map_or("", |(_, domain)| domain);
+    Ok(Message {
+        account: owner.id,
+        folder: outbox,
+        message_id: mailcraft_mime::new_message_id(domain, now, s.rev().wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ event.id.rotate_left(23)),
+        from: owner.address(),
+        to: to.to_vec(),
+        subject: format!("FW: {title}"),
+        date: now,
+        received: now,
+        body: Body { text, html: None },
+        attachments: vec![Attachment::new("meeting.ics", "text/calendar", ics.into_bytes())],
         read: true,
         ..Default::default()
     })
