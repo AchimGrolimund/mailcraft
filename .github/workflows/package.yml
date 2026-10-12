@@ -153,7 +153,16 @@ jobs:
           mnt=$(mktemp -d)
           hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt"
           app="$mnt/MailCraft.app"
-          codesign --verify --deep --strict "$app"
+          # The app as somebody gets it: the signature holds for the copy in the image too. When
+          # it doesn't, say what the image attached to which file.
+          if ! codesign --verify --deep --strict --verbose=4 "$app"; then
+            echo "::group::What is attached to the files in the image"
+            xattr -lr "$app" || true
+            ls -laO@ "$mnt" "$app" "$app/Contents" "$app/Contents/MacOS" "$app/Contents/Resources" || true
+            echo "::endgroup::"
+            hdiutil detach "$mnt" || true
+            exit 1
+          fi
           plutil -p "$app/Contents/Info.plist" | grep -E "CFBundleIdentifier|CFBundleIconFile|CFBundleShortVersionString"
           lipo -info "$app/Contents/MacOS/MailCraft"
           "$app/Contents/MacOS/MailCraft" --version
