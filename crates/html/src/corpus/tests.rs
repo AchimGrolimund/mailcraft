@@ -130,6 +130,17 @@ fn show(blocks: &[Block]) -> String {
     out
 }
 
+/// Every picture, in reading order: its address, the size it asks for, and where it leads.
+fn pictures_of(blocks: &[Block]) -> Vec<(&str, Option<u16>, Option<u16>, Option<&str>)> {
+    images(blocks)
+        .into_iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Image { src, width, height, link } => Some((src.as_str(), *width, *height, link.as_deref())),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 #[ignore = "prints the block tree of every corpus message, for reading"]
 fn print_outlines() {
@@ -323,6 +334,88 @@ fn newsletter() {
 }
 
 #[test]
+fn built_newsletter() {
+    let blocks = parse(BUILT_NEWSLETTER);
+    let text = text_of(&blocks);
+    // Everything in it sits in cells with a font size of nothing; all of it is there.
+    for shown in [
+        "Lamplight · No. 41 · Read it on the web",
+        "The evenings are drawing in",
+        "Forty hours of light in a jar, poured on Tuesday.",
+        "The clocks went back on Sunday",
+        "If you have never seen a candle dipped",
+        "Amber Glow\nForty hours, orange peel and clove\n24.00",
+        "Winter tapers\nSix to a bundle, natural or oxblood\n18.50",
+        "You are reading Lamplight because you asked for it",
+    ] {
+        assert!(text.contains(shown), "{shown:?} is lost\n{}", show(&blocks));
+    }
+    // What is hidden from everybody, and what is written for Outlook alone, is not.
+    for never in ["Beeswax tapers are back", "BUTTON-DRAWN-FOR-OUTLOOK", "FOR-OUTLOOK-ONLY", "\u{34f}", "\u{200c}", "font-family", "endif"] {
+        assert!(!text.contains(never), "{never:?} is shown");
+    }
+    assert!(tables(&blocks).iter().all(|t| t.layout), "{}", show(&blocks));
+    // Its pictures, each once, in reading order: the address as it is to be asked for, the size
+    // from the attributes or else from the style, and where the picture leads.
+    let go = |what: &str| format!("https://go.tallowwick.example/c/7Qk2/{what}");
+    let (home, hero) = (go("home?m=40117&r=lamplight-41"), go("hero?m=40117&r=lamplight-41&utm_medium=email"));
+    let (amber, tapers, open_day) = (go("p-1181?m=40117"), go("p-1204?m=40117"), go("open-day?m=40117"));
+    let (photos, letters) = (go("s-photos?m=40117"), go("s-letters?m=40117"));
+    assert_eq!(
+        pictures_of(&blocks),
+        [
+            // No scheme: `https`. No size but in its style.
+            ("https://img.tallowwick.example/brand/wordmark-ink.png", Some(180), Some(40), Some(home.as_str())),
+            // The scheme in capitals, the query with its `&amp;` read; `height="auto"` is no height.
+            ("HTTPS://img.tallowwick.example/2026/11/hero-dusk-table.jpg?w=1200&q=72&sig=9c1e_f0a7", Some(600), None, Some(hero.as_str())),
+            // A space in the address stays the address's own; a line broken in it is mended.
+            ("https://img.tallowwick.example/2026/11/products/amber glow jar.jpg", Some(262), Some(262), Some(amber.as_str())),
+            ("https://img.tallowwick.example/2026/11/products/winter-tapers-six.jpg", Some(262), Some(262), Some(tapers.as_str())),
+            // One picture in slices, each in a cell with no font size at all.
+            ("https://img.tallowwick.example/2026/11/open-day/slice-1.png", Some(600), Some(96), Some(open_day.as_str())),
+            ("https://img.tallowwick.example/2026/11/open-day/slice-2.png", Some(600), Some(120), Some(open_day.as_str())),
+            // The one for every program but Outlook.
+            ("https://img.tallowwick.example/people/signature-maud@2x.png", Some(132), Some(48), None),
+            ("https://img.tallowwick.example/icons/round-photos.png", Some(28), Some(28), Some(photos.as_str())),
+            ("https://img.tallowwick.example/icons/round-letters.png", Some(28), Some(28), Some(letters.as_str())),
+        ],
+        "{}",
+        show(&blocks)
+    );
+    assert_eq!(block(&blocks, "Tallow & Wick Candle Works").kind, images(&blocks).first().map(|b| b.kind.clone()).unwrap_or(BlockKind::Rule));
+    // The two small pictures of the last row stand in one line.
+    assert_eq!((block(&blocks, "Photographs").space, block(&blocks, "Letters").space), (0, 0));
+    // Nothing else it names is anywhere in the result: not the background picture, given as an
+    // attribute, in the style, in a style sheet and in VML, nor `srcset`, nor the pixels.
+    let kept = format!("{blocks:?}").to_ascii_lowercase();
+    for gone in ["/bg/", "linen", "@3x", "for-outlook", "/o/7qk2", "metrics.", "seen.gif", "v:rect", "roundrect", "mso"] {
+        assert!(!kept.contains(gone), "{gone} survived");
+    }
+    // The cell that has the background picture keeps its colour, and the light text on it.
+    let over = table_with(&blocks, "The evenings are drawing in");
+    assert_eq!(over.rows.first().and_then(|r| r.cells.first()).and_then(|c| c.background), Some(Rgb(0x3b, 0x2f, 0x2a)));
+    let title = span(&blocks, "The evenings are drawing in");
+    assert_eq!(
+        (title.color, title.size, block(&blocks, "The evenings are drawing in").align),
+        (Some(Rgb(0xfb, 0xf6, 0xec)), Some(30), Align::Center)
+    );
+    // The button everybody but Outlook gets: its text, in its colours, leading where it leads.
+    let button = span(&blocks, "See the winter tapers");
+    assert_eq!(
+        (button.color, button.background, button.bold, button.link.as_deref()),
+        (Some(Rgb(255, 255, 255)), Some(Rgb(0xb5, 0x56, 0x2b)), true, Some("https://go.tallowwick.example/c/7Qk2/cta?m=40117&r=lamplight-41"))
+    );
+    // Text keeps the sizes and colours its own blocks give it.
+    let body = span(&blocks, "The clocks went back on Sunday");
+    assert_eq!((body.color, body.size), (Some(Rgb(0x3d, 0x38, 0x33)), Some(16)));
+    assert!(span(&blocks, "winter tapers").bold);
+    assert_eq!(span(&blocks, "24.00").color, Some(Rgb(0xb5, 0x56, 0x2b)));
+    assert_eq!(span(&blocks, "Stop these letters").link.as_deref(), Some("https://go.tallowwick.example/u/7Qk2?m=40117"));
+    let plain = to_text(BUILT_NEWSLETTER);
+    assert!(plain.contains("The evenings are drawing in") && plain.contains("[A table by a window at dusk, three candles lit]"), "{plain}");
+}
+
+#[test]
 fn receipt() {
     let blocks = parse(RECEIPT);
     assert_eq!(block(&blocks, "Thanks, Noor").kind, BlockKind::Heading(1));
@@ -509,6 +602,8 @@ fn nothing_remote_or_active_survives() {
         [
             "https://evil.example/plain.gif",
             "http://evil.example/insecure.gif",
+            // Written without its scheme: read as `https`, a stand-in like the others.
+            "https://evil.example/schemeless.gif",
             "cid:not-attached@evil.example",
             "https://evil.example/lazy.gif",
             "https://evil.example/picture-fallback.jpg",
@@ -530,7 +625,6 @@ fn nothing_remote_or_active_survives() {
         "written.gif",
         "attr-bg.gif",
         "onload.gif",
-        "schemeless.gif",
         "relative.gif",
         "set-1x.gif",
         "set-2x.gif",

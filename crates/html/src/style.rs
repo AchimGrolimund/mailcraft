@@ -12,13 +12,24 @@
 //! | underline, strike | `text-decoration`, `text-decoration-line` |
 //! | alignment | `text-align` |
 //! | font size | `font-size`, the size in `font` |
-//! | hidden | `display:none`, `visibility:hidden`, `opacity:0`, a font size of 2 pixels or less, `max-height:0`, `max-width:0`, a zero `height` or `width` with `overflow:hidden`, `mso-hide:all` |
+//! | hidden | `display:none`, `visibility:hidden`, `opacity:0`, `max-height:0`, `max-width:0`, a zero `height` or `width` with `overflow:hidden` |
+//! | text too small to read | a font size of 2 pixels or less: the text at that size is not shown; what is inside at a size of its own is, and so are pictures |
 //! | a margin or none | `margin`, `margin-top`, `margin-bottom`: only whether there is one to speak of (over 6 pixels) |
 //! | a border or none | `border` and its sides, `border-style`, `border-width`: only whether there is one |
 //! | Outlook's lists | `mso-list` (the level, and the marker text to replace) |
+//! | a picture's size | `width` and `height` in pixels, where its attributes give none |
 //!
 //! The old-style attributes (`color`, `bgcolor`, `align`, `width`, `height`, `<font size>`) are
 //! read by the helpers at the end.
+//!
+//! Two things a newsletter writes for one mail program are read as every other program reads
+//! them. A message is shown here the way it is written for programs that are not Outlook: what
+//! it keeps for Outlook alone (`<!--[if mso]>…<![endif]-->`, drawn in VML) is a comment and is
+//! dropped, so what it hides from Outlook alone (`mso-hide:all`: the button or the picture that
+//! everybody else gets in its place) is shown, or the message would have neither. And a font
+//! size of nothing around pictures and columns (`font-size:0`, to close the gaps between them)
+//! hides the text written at that size, not the pictures and not the text inside that names a
+//! size of its own.
 
 use crate::{Align, Length, MAX_FONT_PX, MIN_FONT_PX, Rgb, truncate};
 
@@ -153,7 +164,7 @@ impl Css {
                 "display" => css.hidden |= value == "none",
                 "visibility" => css.hidden |= matches!(value, "hidden" | "collapse"),
                 "opacity" => css.hidden |= number(value.trim_end_matches('%')).is_some_and(|n| n <= 0.0),
-                "mso-hide" => css.hidden |= value == "all",
+                // (`mso-hide:all` hides nothing here: see the notes at the top.)
                 "max-height" | "max-width" => css.hidden |= is_zero(value) == Some(true),
                 "overflow" | "overflow-x" | "overflow-y" => clipped |= tokens(value).any(|t| matches!(t, "hidden" | "clip")),
                 "height" => {
@@ -203,12 +214,8 @@ impl Css {
                 _ => {}
             }
         }
-        // A font size too small to read hides the text as surely as `display:none`.
-        if let Some(Size::Px(px)) = css.size
-            && px <= HIDDEN_FONT_PX
-        {
-            css.hidden = true;
-        }
+        // (A font size too small to read hides the text written at it, and nothing else: that is
+        // seen to where the size is resolved, [`Size::resolve`].)
         css.hidden |= zero_box && clipped;
         css
     }
@@ -811,15 +818,11 @@ mod tests {
             "visibility:hidden",
             "opacity:0",
             "opacity: 0.0",
-            "font-size:0",
-            "font-size:1px",
-            "font-size:0.0pt",
             "max-height:0px",
             "max-width:0",
             "height:0;overflow:hidden",
             "overflow:hidden; width:0px",
-            "mso-hide:all",
-            "color:#fff;display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden",
+            "color:#fff;display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all",
         ] {
             assert!(Css::parse(hidden).hidden, "{hidden}");
         }
@@ -835,9 +838,19 @@ mod tests {
             "height:10px;overflow:hidden",
             "display:inline-block;width:98%",
             "color:#ffffff",
+            // Hidden from Outlook alone, which is not what reads the message here.
+            "mso-hide:all",
+            "mso-hide:all;display:inline-block",
             "",
         ] {
             assert!(!Css::parse(shown).hidden, "{shown}");
+        }
+        // A font size too small to read hides text, not the element: it is a size that resolves
+        // to nothing, whatever is inside is judged by its own.
+        for tiny in ["font-size:0", "font-size:1px", "font-size:0.0pt", "font-size:2px;line-height:0"] {
+            let css = Css::parse(tiny);
+            assert!(!css.hidden, "{tiny}");
+            assert_eq!(css.size.and_then(|s| s.resolve(Some(16))), None, "{tiny}");
         }
         // A relative size is judged against the size around it.
         assert_eq!(Css::parse("font-size:0%").size.and_then(|s| s.resolve(Some(16))), None);

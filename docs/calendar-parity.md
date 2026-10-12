@@ -1,6 +1,6 @@
 # Calendar: matching Outlook
 
-Status: working list, 2026-10-12 (fourth revision: the third wave is in). The owner's bar for the
+Status: working list, 2026-10-12 (fifth revision: a change that doesn't reach the server can't go unnoticed). The owner's bar for the
 calendar is "behaves exactly like Outlook"; this is the list that bar is checked against.
 Behaviour is written down from using Outlook for Windows (classic) as a black box; nothing of it
 is copied but how it behaves.
@@ -40,7 +40,7 @@ server; what has met the real Microsoft 365 service is only what the owner has u
 | Drag in Month view, and all-day items between days; into and out of the all-day row | Done (a repeating item is not turned all-day or timed by dragging) |
 | Arrow keys move the slot selection, Shift+arrows extend it, Tab goes from item to item, Enter opens, Delete deletes | Done; also Home/End, Page Up/Down, Alt+Up/Down to move the item, Ctrl+C/X/V (a cut item stays in place until it is pasted) |
 | Hovering shows subject, time, location, organizer | Done (and that it is of high or low importance, or held online) |
-| Right-click: Open, Private, Show As, Categorize, Meeting responses, Delete (and Move/Copy to another calendar) | Done: Open, Delete, Show As, Private, Importance (High / Normal / Low), Categorize, Accept / Tentative / Decline, Propose New Time, Forward (and Forward This Occurrence), Join (an online meeting that has a link), Save as iCalendar, Move to Calendar, and a drop in another calendar's block moves the item there (Ctrl: a copy). Between two calendars of the same Microsoft 365 account an appointment moves; the service has no way of moving an event, so it is made in the other calendar first and taken out of the first one only when that went through (one step to undo here; a refusal of either half puts it back and says so). Refused, each with its reason: a meeting (everyone invited would get a cancellation and a new invitation), a series and one occurrence of one, an item with files attached (only the server keeps them), and taking an item out of its account. What MailCraft doesn't keep of an item (formatting in its text) is not carried over |
+| Right-click: Open, Private, Show As, Categorize, Meeting responses, Delete (and Move/Copy to another calendar) | Done: Open, Delete, Show As, Private, Importance (High / Normal / Low), Categorize, Accept / Tentative / Decline, Propose New Time, Forward (and Forward This Occurrence), Join (an online meeting that has a link), Save as iCalendar, Move to Calendar, and a drop in another calendar's block moves the item there (Ctrl: a copy). Between two calendars of the same Microsoft 365 account an appointment moves; the service has no way of moving an event, so it is made in the other calendar first and taken out of the first one only once the copy has been seen there in what the service sends back (one step to undo here; a refusal of either half, or a copy that turns out not to be there, puts it back and says so). Refused, each with its reason: a meeting (everyone invited would get a cancellation and a new invitation), a series and one occurrence of one, an item with files attached (only the server keeps them), and taking an item out of its account. What MailCraft doesn't keep of an item (formatting in its text) is not carried over |
 | A recurring item asks "just this one" or "the entire series" when opened, moved, resized or deleted | Done, for series on this computer and on the server (an occurrence dragged to another day of a series that keeps its weekdays moves alone, without the question) |
 | An item that came from someone else's invitation warns before it is changed here | Done (drag, move, resize, edit, delete, and the form's Save) |
 | Deleting a meeting the owner organizes offers to send a cancellation; deleting an invitation offers to decline | Done: a cancellation with a note (Microsoft 365 has no deleting without telling the attendees); an invitation can be deleted quietly, declined with word to the organizer, or declined without |
@@ -61,7 +61,7 @@ server; what has met the real Microsoft 365 service is only what the owner has u
 | Scheduling Assistant: everyone's free/busy on a grid; Room Finder | Done for one day: a row per person, busy / tentative / out of office / working elsewhere / no information, and the meeting's time as a band to move and stretch. Next: several days, AutoPick; Later: rooms |
 | Teams meeting button | Done on a meeting in a Microsoft 365 calendar: Teams Meeting in the window's bar (and `calendar.teamsMeeting`); the service makes the meeting when it is sent, and the link to join by comes back with it. The window then shows the link as it is, with Join and Copy Link; the item's menu, the ribbon and the reminder window have Join. Only an `https` link is kept or opened, and only on the owner's click. Once the service has made a meeting online it stays so (the service's rule), which the button says. An account that can't make one (a personal one, a calendar that doesn't allow Teams) is told so before, where the service says which calendars can, and otherwise after: the meeting is made without, and that is said. Not offered for a calendar on this computer. Outlook's "Don't Host Online" setting and the dial-in details are not there |
 | Tracking: who accepted, declined, tentatively accepted | Done, kept current with every download |
-| Response options: request responses, allow new time proposals | Done: Response Options in a meeting's bar, both on unless switched off; kept in the mailbox, sent to Microsoft 365 and read back, and in iCalendar files (`RSVP`, `X-MICROSOFT-DISALLOW-COUNTER`). Somebody else's meeting has none: they are its organizer's to say |
+| Response options: request responses, allow new time proposals | Done: Response Options in a meeting's bar, both on unless switched off; kept in the mailbox, sent to Microsoft 365 and read back, and in iCalendar files (`RSVP`, `X-MICROSOFT-DISALLOW-COUNTER`). Somebody else's meeting has none: they are its organizer's to say. Whether other times may be proposed goes to the service with a new meeting; its reference doesn't list that among what can be changed afterwards, so a change to it on a meeting that is already there may be refused, which is put back and said |
 
 ## Invitations and replies
 
@@ -91,6 +91,10 @@ server; what has met the real Microsoft 365 service is only what the owner has u
 |---|---|
 | Shows what is on the server, within moments of a change made elsewhere | Done: every half minute while the calendar is in front, at once when the window comes back, the calendar is switched to, other days come into view or something is changed here; every five minutes otherwise |
 | Everything made or changed here is on the server at once | Done, meetings and series included: a refusal is put back and said, an unreachable server is tried again. Nothing that mails other people goes without the owner's yes. Undo doesn't reach a change the server already has |
+| A change made here is in Outlook, or the owner knows it is not | Done: the server's "yes" is not taken for the change having arrived. Every change it says it took is looked for in what comes down next (asked for again within seconds); what the server doesn't show after three looks, or shows otherwise than it was sent, is put back to what the server has, and the owner is told which item and what of it (status bar and Send/Receive problems). A waiting change that can't be sent any more is never dropped without a word either. An answer that is older than the change it follows (a view asked for right after a write) changes nothing here |
+| What is only on this computer doesn't pass for the Outlook calendar | Done: a calendar of the mailbox's own that holds items beside the account's says "Only on this computer: not in your Outlook calendar" on its block and in the list, a line under the header counts the items and offers "Move to My Account's Calendar" (appointments move, meetings ask about their invitations, a copy of what the account's calendar has already just goes, an emptied calendar goes away), and a change to such an item says in the status bar that it stays here |
+| (none: Outlook is the server's own program) | File › Info › Check Calendar Connection: on the real account, after a question that says exactly what it does, one test appointment a year ahead is made, read back, changed twice (once as an instant, once said in this computer's time zone), read back each time and deleted; the report has the server's status and words for each step, and what was sent beside what the server has |
+| An item of another calendar than the main one, or of one that somebody shares | Done: written through its calendar (`/me/calendars/{id}/events/{id}`), which is the only way the service knows an item of a shared calendar by |
 | Recurring series as series (not only as their occurrences), with exceptions | Done both ways for the rules the mailbox can express; "first weekday of the month" and the like still come down as loose occurrences |
 | Categories with the mailbox's own names and colours | Done on items both ways; the mailbox's own list and colours come once the owner allows reading mailbox settings (asked for at the next Connect) |
 | Every calendar and calendar group of the account; shared calendars; other people's calendars | Done for the account's own calendars and groups (see the list row above): only the account's main calendar is ticked when the list first comes, the rest wait to be ticked, and what the owner ticks stays; Later: shared and other people's |
@@ -118,6 +122,11 @@ server; what has met the real Microsoft 365 service is only what the owner has u
 
 ## Known differences from Outlook in what is done
 
+- Event ids are the service's ordinary ones, which change when an item is moved to another
+  calendar in Outlook: a change that was waiting for such an item is answered "not found", the
+  item goes here and the owner is told; the next download has it in its new calendar. (Asking
+  for immutable ids would change every id the mailbox has kept so far.)
+
 - A copy made by dragging or pasting is a plain appointment; Outlook keeps the attendees as an
   unsent meeting.
 - Cut leaves the item where it is until it is pasted (deleting it first would cancel a meeting on
@@ -144,11 +153,20 @@ server; what has met the real Microsoft 365 service is only what the owner has u
   icons the ribbon had already. Outlook opens a calendar in a window of its own on request;
   that is not offered.
 
+## Proven and not proven
+
+Everything in "Staying in step" is tested against a stand-in that takes only what the documented
+Microsoft Graph v1.0 service takes (`crates/net/src/graph/standin.rs`: addresses, headers, bodies,
+ids with `=`, `/` and `+`, a view that lags behind a change). What only the real service can say
+is what the owner's Check Calendar Connection shows: whether a change of time is taken as it is
+sent, and whether a time said in this computer's zone means the same instant there.
+
 ## Revision history
 
 | Date | Change |
 |---|---|
 | 2026-10-12 | First version, when the owner made the calendar the top priority |
+| 2026-10-12 | After a change of time made here didn't show in the owner's Outlook: sent changes are checked against what comes down, nothing is dropped silently, items that are only on this computer say so and can be moved, events of other calendars go through their calendar, and the owner can check the connection on the real account |
 | 2026-10-12 | The first wave is in: rows marked Done, and rows corrected where the code does something else than the list said (server series, deleting meetings, the calendar list) |
 | 2026-10-12 | The third wave is in: meeting requests in the reading pane, the appointment window's command bar, unsaved-changes question and recurrence dialog, the Scheduling Assistant, calendars by group, side by side and overlaid, working hours from the mailbox |
 | 2026-10-12 | The second wave is in: the grid (resize, copy, keys, navigator, time scales), series as series with the question, meetings and answers through Microsoft 365, every calendar, categories, several appointment windows; a list of known differences |

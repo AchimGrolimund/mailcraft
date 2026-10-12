@@ -117,7 +117,7 @@ pub fn message_summary(s: &Session, m: &Message) -> Value {
         "importance": m.importance,
         "categories": m.categories,
         "attachments": m.listed_attachments().map(|(_, a)| a.name.as_str()).collect::<Vec<_>>(),
-        "snippet": m.snippet(140),
+        "snippet": crate::list::preview(m, 140),
     })
 }
 

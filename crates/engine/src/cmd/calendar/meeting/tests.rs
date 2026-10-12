@@ -884,26 +884,44 @@ fn an_appointment_is_moved_to_another_calendar_of_its_account() {
     // Until that is done the original, which the server still has, doesn't come back as a second one.
     serve(&mut s, account, "", vec![remote("e-1", "Eye test", at(13, 9, 0)), remote("e-2", "Gym", at(14, 18, 0))]);
     assert_eq!(s.mailbox.events.values().filter(|e| e.title == "Eye test").count(), 1);
-    // Made: only now is the original to go.
+    // Made, the server says: that is yet to be seen there, and the original stays until it is.
+    let copy = format!("made-{}", dentist.id);
     let applied = apply_event_outcomes(&mut s, &said(&upload, EventResult::Done, "")).unwrap();
     assert!(applied.messages.is_empty());
-    assert_eq!(s.mailbox.event(dentist.id).map(|e| (e.origin.id.as_str(), e.calendar)), Some((format!("made-{}", dentist.id).as_str(), side)));
+    assert_eq!((applied.unverified, applied.waiting), (1, 1));
+    assert_eq!(s.mailbox.event(dentist.id).map(|e| (e.origin.id.as_str(), e.calendar)), Some((copy.as_str(), side)));
+    assert!(ops(&s, account).is_empty(), "the original is not deleted on the server's word alone");
+    let waiting = events_waiting(&s, account);
+    assert_eq!((waiting.due, waiting.total, waiting.next.is_some()), (0, 1, true));
+    // A look at the other calendar that was answered from before the copy decides nothing; nor
+    // does the original, which the server still has, come back as a second one.
+    serve(&mut s, account, "c-side", Vec::new());
+    serve(&mut s, account, "", vec![remote("e-1", "Eye test", at(13, 9, 0)), remote("e-2", "Gym", at(14, 18, 0))]);
+    assert!(ops(&s, account).is_empty());
+    assert_eq!(s.mailbox.events.values().filter(|e| e.title == "Eye test").map(|e| e.calendar).collect::<Vec<_>>(), [side]);
+    // The copy is there: only now is the original to go, out of the calendar it is in.
+    let theirs = vec![RemoteEvent { change_key: "ck-new".into(), ..remote(&copy, "Eye test", at(13, 10, 0)) }];
+    let merged = apply_events(&mut s, &october(account, "c-side", theirs.clone())).unwrap();
+    assert_eq!((merged["verified"].as_u64(), merged["putBack"].as_u64()), (Some(1), Some(0)));
     let upload = event_upload(&s, account).unwrap();
-    assert_eq!(upload.ops.iter().map(|op| (op.kind, op.remote.as_str(), op.cancel)).collect::<Vec<_>>(), [(EventChangeKind::Delete, "e-1", false)]);
+    assert_eq!(
+        upload.ops.iter().map(|op| (op.kind, op.remote.as_str(), op.calendar.as_str(), op.cancel)).collect::<Vec<_>>(),
+        [(EventChangeKind::Delete, "e-1", "", false)]
+    );
     serve(&mut s, account, "", vec![remote("e-1", "Eye test", at(13, 9, 0)), remote("e-2", "Gym", at(14, 18, 0))]);
     assert_eq!(s.mailbox.events.values().filter(|e| e.title == "Eye test").count(), 1, "still one, while the original waits to go");
     apply_event_outcomes(&mut s, &said(&upload, EventResult::Done, "")).unwrap();
     assert!(s.mailbox.event_changes.is_empty());
-    // What the server has now is what is here: one of them, in the other calendar.
-    serve(&mut s, account, "", vec![remote("e-2", "Gym", at(14, 18, 0))]);
-    serve(
-        &mut s,
-        account,
-        "c-side",
-        vec![RemoteEvent { change_key: "ck-new".into(), ..remote(&format!("made-{}", dentist.id), "Eye test", at(13, 10, 0)) }],
-    );
+    // A main calendar that was answered from before the deletion doesn't bring the original
+    // back; and what the server has then is what is here: one of them, in the other calendar.
+    serve(&mut s, account, "", vec![remote("e-1", "Eye test", at(13, 9, 0)), remote("e-2", "Gym", at(14, 18, 0))]);
+    assert_eq!(s.mailbox.events.values().filter(|e| e.title == "Eye test").count(), 1);
+    let merged = apply_events(&mut s, &october(account, "", vec![remote("e-2", "Gym", at(14, 18, 0))])).unwrap();
+    assert_eq!((merged["verified"].as_u64(), merged["putBack"].as_u64(), merged["messages"].as_array().map(Vec::len)), (Some(1), Some(0), Some(0)));
+    serve(&mut s, account, "c-side", theirs);
     let all: Vec<(Id, Id)> = s.mailbox.events.values().filter(|e| e.title == "Eye test").map(|e| (e.id, e.calendar)).collect();
     assert_eq!(all, [(dentist.id, side)]);
+    assert!(s.mailbox.event_checks.is_empty() && s.mailbox.clone().repair().is_empty());
 
     // Taken back before the server heard of it: nothing is told, and it is as it was.
     let gym = event_called(&s, "e-2");
@@ -954,9 +972,11 @@ fn a_move_the_server_refuses_is_put_back_and_says_so() {
     serve(&mut s, account, "", vec![remote("e-1", "Eye test", at(13, 9, 0))]);
     assert_eq!(s.mailbox.events.values().filter(|e| e.title == "Eye test").count(), 1);
     s.mailbox.event_changes[0].retry_at = 0;
-    // The copy is made, and then the original won't go: the copy is taken out again, here and
-    // there, and the appointment is back where it was.
+    // The copy is made and seen there, and then the original won't go: the copy is taken out
+    // again, here and there, and the appointment is back where it was.
+    let copy = format!("made-{}", dentist.id);
     push(&mut s, account, EventResult::Done, "");
+    serve(&mut s, account, "c-side", vec![RemoteEvent { change_key: "ck-new".into(), ..remote(&copy, "Eye test", at(13, 9, 0)) }]);
     assert_eq!(ops(&s, account).iter().map(|op| (op.kind, op.remote.clone())).collect::<Vec<_>>(), [(EventChangeKind::Delete, "e-1".to_string())]);
     let applied = push(&mut s, account, EventResult::Refused, "Microsoft Graph answered with status 409");
     assert_eq!(
@@ -967,13 +987,71 @@ fn a_move_the_server_refuses_is_put_back_and_says_so() {
     );
     assert_eq!(s.mailbox.event(dentist.id), Some(&dentist));
     assert_eq!(s.mailbox.events.values().filter(|e| e.title == "Eye test").count(), 1);
+    // (The copy is asked for in the calendar it is in, not in the one the appointment is back in.)
     assert_eq!(
-        ops(&s, account).iter().map(|op| (op.kind, op.remote.clone(), op.cancel)).collect::<Vec<_>>(),
-        [(EventChangeKind::Delete, format!("made-{}", dentist.id), false)]
+        ops(&s, account).iter().map(|op| (op.kind, op.remote.clone(), op.calendar.clone(), op.cancel)).collect::<Vec<_>>(),
+        [(EventChangeKind::Delete, copy.clone(), "c-side".to_string(), false)]
     );
     push(&mut s, account, EventResult::Done, "");
     assert!(s.mailbox.event_changes.is_empty());
     assert_eq!(s.mailbox.event(dentist.id).map(|e| e.calendar), Some(main));
+    // The copy is gone there, the original is still there: nothing is left to look for.
+    serve(&mut s, account, "c-side", Vec::new());
+    serve(&mut s, account, "", vec![remote("e-1", "Eye test", at(13, 9, 0))]);
+    assert_eq!(s.mailbox.event(dentist.id), Some(&dentist));
+    assert!(s.mailbox.event_checks.is_empty() && s.mailbox.clone().repair().is_empty());
+}
+
+#[test]
+fn the_original_of_a_move_goes_only_when_the_copy_is_seen_on_the_server() {
+    let (mut s, account, main, side) = session();
+    let theirs = || vec![remote("e-1", "Eye test", at(13, 9, 0)), remote("e-2", "Gym", at(14, 18, 0))];
+    serve(&mut s, account, "", theirs());
+    let (dentist, gym) = (event_called(&s, "e-1"), event_called(&s, "e-2"));
+    // The server says it made the copy, and the other calendar never has it: after three looks
+    // the move is taken back. The original was not touched, so nothing is lost: the appointment
+    // is where it was, and the owner is told.
+    run(&mut s, "calendar.edit", json!({"id": dentist.id, "calendar": side}));
+    push(&mut s, account, EventResult::Done, "");
+    for look in 1..=2 {
+        let merged = apply_events(&mut s, &october(account, "c-side", Vec::new())).unwrap();
+        assert_eq!((merged["putBack"].as_u64(), merged["unverified"].as_u64()), (Some(0), Some(1)), "look {look}");
+        assert!(ops(&s, account).is_empty(), "look {look}");
+        serve(&mut s, account, "", theirs());
+        assert_eq!(s.mailbox.event(dentist.id).map(|e| e.calendar), Some(side), "look {look}");
+    }
+    let merged = apply_events(&mut s, &october(account, "c-side", Vec::new())).unwrap();
+    assert_eq!((merged["putBack"].as_u64(), merged["unverified"].as_u64(), merged["removed"].as_u64()), (Some(1), Some(0), Some(0)));
+    assert_eq!(
+        merged["messages"],
+        json!([
+            "\"Eye test\" was moved to another calendar here and the server said it took it there, but that calendar doesn't have it. It wasn't moved: it is back where it was."
+        ])
+    );
+    assert_eq!(s.mailbox.event(dentist.id), Some(&dentist));
+    assert!(s.mailbox.event_changes.is_empty() && s.mailbox.event_checks.is_empty() && ops(&s, account).is_empty());
+    serve(&mut s, account, "", theirs());
+    assert_eq!(s.mailbox.events.values().filter(|e| e.title == "Eye test").map(|e| (e.id, e.calendar)).collect::<Vec<_>>(), [(dentist.id, main)]);
+    assert!(s.mailbox.clone().repair().is_empty());
+
+    // A copy that no download can show (its calendar isn't asked for): the original is not
+    // kept waiting for ever. After two minutes it goes on the server's word, as any change
+    // that can't be looked for is taken on it.
+    run(&mut s, "calendar.edit", json!({"id": gym.id, "calendar": side}));
+    assert!(crate::cmd::remote::unverified_calendars(&s, account).is_empty());
+    push(&mut s, account, EventResult::Done, "");
+    // (A host asks for the calendar the copy is in while that is so, ticked or not.)
+    assert_eq!(crate::cmd::remote::unverified_calendars(&s, account), [side]);
+    serve(&mut s, account, "", theirs());
+    assert!(ops(&s, account).is_empty());
+    let next = events_waiting(&s, account).next.unwrap();
+    assert!(next > s.now() && next <= s.now() + 121, "{next}");
+    s.clock.now = Some(next);
+    assert_eq!(events_waiting(&s, account).due, 1);
+    assert_eq!(
+        ops(&s, account).iter().map(|op| (op.kind, op.remote.as_str(), op.calendar.as_str())).collect::<Vec<_>>(),
+        [(EventChangeKind::Delete, "e-2", "")]
+    );
 }
 
 #[test]
@@ -1114,4 +1192,19 @@ fn a_hostile_file_cannot_make_the_server_write_to_anybody() {
     };
     apply_event_outcomes(&mut s, &uploaded).unwrap();
     assert!(s.mailbox.events == before.events);
+    // Nor do such notes lie about for ever: without the yes they are given up, with a word each
+    // for the owner, and nothing of the meetings is changed.
+    for change in &mut s.mailbox.event_changes {
+        change.send = false;
+    }
+    s.mailbox.event_changes[1].response = Response::Tentative;
+    let dropped = crate::cmd::remote::settle_changes(&mut s);
+    assert_eq!(
+        dropped.iter().map(|one| one.message.as_str()).collect::<Vec<_>>(),
+        [
+            "\"Planning\" was not forwarded: that writes to other people, and nobody said to send it. Nobody was written to.",
+            "The other time proposed for \"Board\" was not sent: that writes to its organizer, and nobody said to send it. The next Send/Receive shows the meeting as the server has it.",
+        ]
+    );
+    assert!(s.mailbox.event_changes.is_empty() && s.mailbox.events == before.events);
 }

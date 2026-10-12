@@ -517,7 +517,24 @@ fn the_menu_of_an_item_offers_what_can_be_done_with_a_meeting() {
     harness.run_steps(12);
     let side = harness.state().session.mailbox.calendars.iter().find(|c| c.origin.id == "c-side").map(|c| c.id).unwrap();
     assert_eq!(named(&harness, "Physio").calendar, side);
-    let there = server.lock().unwrap();
-    let moved: Vec<&RemoteEvent> = there.events.iter().filter(|e| e.title == "Physio").collect();
-    assert_eq!((moved.len(), there.placed.get(&moved[0].id).map(String::as_str)), (1, Some("c-side")));
+    // The server makes it in the other calendar at once. The one in the calendar it was in goes
+    // when the copy has been seen there, which the next looks at the calendar bring: "Side"
+    // isn't ticked, and is asked for all the same while something in it is yet to be seen.
+    let placed = |server: &Arc<Mutex<Server>>| {
+        let there = server.lock().unwrap();
+        let mut all: Vec<Option<String>> = there.events.iter().filter(|e| e.title == "Physio").map(|e| there.placed.get(&e.id).cloned()).collect();
+        all.sort();
+        all
+    };
+    assert_eq!(placed(&server), [None, Some("c-side".to_string())]);
+    let mut at = crate::now_ms();
+    for _ in 0..3 {
+        at += 31_000.0;
+        harness.state_mut().calendar_tick_at(true, at);
+        harness.state_mut().poll_calendar();
+    }
+    assert_eq!(placed(&server), [Some("c-side".to_string())]);
+    assert_eq!(named(&harness, "Physio").calendar, side);
+    let mailbox = &harness.state().session.mailbox;
+    assert!(mailbox.event_changes.is_empty() && mailbox.event_checks.is_empty());
 }

@@ -115,6 +115,7 @@ pub fn show(app: &mut MailApp, ui: &mut Ui) {
         let mut frame = Frame::begin(ui);
         header(app, ui);
         connect_notice(app, ui);
+        local_notice(app, ui);
         // After the header, whose buttons change the range; and after the list of calendars,
         // whose check boxes change what is shown.
         let (mut from, mut to) = calendar_range(&app.session);
@@ -946,6 +947,8 @@ fn side_pane(app: &mut MailApp, ui: &mut Ui) {
         // As many months as the pane has room for over the list of calendars; one at the least.
         let groups = calendar_groups(app);
         let list_h: f32 = groups.iter().map(|group| 30.0 + if group.folded { 0.0 } else { group.rows.len() as f32 * 26.0 }).sum();
+        // (The line under a calendar that is on this computer only takes of the room that is
+        // left over under the list; where there is none, the pane scrolls.)
         // The account whose sign-in lacks only the optional extras, which a quiet line says.
         let extras = extras_account(app);
         let foot = if extras.is_some() { EXTRAS_H } else { 0.0 };
@@ -1289,15 +1292,36 @@ fn calendar_list(app: &mut MailApp, ui: &mut Ui, groups: Vec<ListGroup>) {
     let t = Tokens::get(ui.ctx());
     let current = mailcraft_engine::cmd::calendar::current_calendar(&app.session);
     let several = groups.iter().flat_map(|group| &group.rows).filter(|row| row.visible).count() > 1;
+    let only_here = local_only(app);
     for (n, group) in groups.iter().enumerate() {
         group_heading(app, ui, &t, n, group);
         if !group.folded {
             for row in &group.rows {
                 calendar_row(app, ui, &t, row, row.id == current, several);
+                if only_here.contains(&row.id) {
+                    local_line(app, ui, &t, row.id);
+                }
             }
         }
         ui.add_space(6.0);
     }
+}
+
+/// The line under a calendar of the list that is kept on this computer only, beside a calendar
+/// that the account's server keeps: what is in it is not in the owner's Outlook calendar.
+fn local_line(app: &mut MailApp, ui: &mut Ui, t: &Tokens, calendar: Id) {
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), LOCAL_LINE_H), Sense::hover());
+    let inner = Rect::from_min_max(pos2(r.min.x + 40.0, r.min.y), pos2(r.max.x - 8.0, r.max.y));
+    let font = egui::text::TextFormat { font_id: regular(11.0), color: t.orange, ..Default::default() };
+    let mut job = egui::text::LayoutJob::default();
+    job.append(tl!(LOCAL_ONLY), 0.0, font);
+    job.wrap = egui::text::TextWrapping { max_width: inner.width().max(20.0), max_rows: 2, break_anywhere: false, overflow_character: Some('…') };
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(inner.min, galley, t.orange);
+    app.hit.add("calendarLocalLine", calendar, r);
+    let tip =
+        tl!("Items in this calendar are kept on this computer and nowhere else. Above the calendar you can move them to your account's calendar.");
+    ui.interact(r, ui.id().with(("calendar_local_line", calendar)), Sense::hover()).on_hover_text(tip);
 }
 
 /// The heading of a group of calendars: a click folds the group away, or brings it back.
@@ -1510,6 +1534,69 @@ fn connect_notice(app: &mut MailApp, ui: &mut Ui) {
     app.hit.add("calendarConnect", account, button);
     if resp.on_hover_text(tl!("Sign in once more, so that MailCraft may show and change your calendar")).clicked()
         && let Err(e) = app.run("ui.connectMicrosoft", json!({"account": account}))
+    {
+        app.status(e);
+    }
+}
+
+/// What a calendar that is kept on this computer says of itself, beside a calendar that the
+/// account's server keeps: on its block, and in the list of calendars.
+pub(crate) const LOCAL_ONLY: &str = "Only on this computer: not in your Outlook calendar";
+/// Height of that line under a calendar's row in the list.
+const LOCAL_LINE_H: f32 = 30.0;
+
+/// The calendars that are kept on this computer only although the account has a calendar on its
+/// server, and hold something ([`mailcraft_engine::cmd::remote::only_here`]): what is in them
+/// is in nobody's Outlook calendar.
+fn local_only(app: &MailApp) -> Vec<Id> {
+    mailcraft_engine::cmd::remote::only_here(&app.session.mailbox).into_iter().map(|(calendar, _)| calendar).take(50).collect()
+}
+
+/// A line under the header while items that are shown are kept on this computer only, although
+/// the account has a calendar on its server: drawn beside that calendar they look the part, and
+/// a change to one of them goes nowhere. The line says so, and offers to move them where they
+/// are thought to be.
+fn local_notice(app: &mut MailApp, ui: &mut Ui) {
+    let mailbox = &app.session.mailbox;
+    let shown = |calendar: &Id| mailbox.calendar(*calendar).is_some_and(|c| c.visible);
+    let only_here = mailcraft_engine::cmd::remote::only_here(mailbox);
+    let items: usize = only_here.iter().filter(|(calendar, _)| shown(calendar)).map(|(_, items)| *items).sum();
+    if items == 0 {
+        return;
+    }
+    let t = Tokens::get(ui.ctx());
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+    let p = ui.painter().clone();
+    p.rect_filled(r, 0.0, t.today);
+    p.hline(r.x_range(), r.max.y - 0.5, Stroke::new(1.0, t.border));
+    // A mark in the colour of a warning, so the line isn't taken for a heading.
+    p.rect_filled(Rect::from_min_size(r.min, vec2(4.0, r.height())), 0.0, t.orange);
+    let action = tl!("Move to My Account's Calendar");
+    let wide = text_w(ui, action, medium(12.0)) + 26.0;
+    let button = Rect::from_min_size(pos2(r.max.x - 12.0 - wide, r.center().y - 11.0), vec2(wide, 22.0));
+    let resp = ui.interact(button, ui.id().with("calendar_local_only"), Sense::click());
+    let fill = if resp.is_pointer_button_down_on() {
+        t.pressed
+    } else if resp.hovered() {
+        t.hover
+    } else {
+        t.surface
+    };
+    p.rect(button, 4.0, fill, Stroke::new(1.0, t.border_strong), StrokeKind::Inside);
+    p.text(button.center(), Align2::CENTER_CENTER, action, medium(12.0), t.text);
+    let text = if items == 1 {
+        tl!("1 item here is only on this computer: not in your Outlook calendar. A change to it stays here.").to_string()
+    } else {
+        crate::i18n::fmt(
+            tl!("{n} items here are only on this computer: not in your Outlook calendar. A change to one of them stays here."),
+            &[("n", &items.to_string())],
+        )
+    };
+    paint_clipped(&p, pos2(r.min.x + 14.0, r.center().y), button.min.x - r.min.x - 26.0, &text, regular(12.0), t.text);
+    app.hit.add("calendarLocalOnly", items as u64, button);
+    let tip = tl!("Put them into the calendar of your account, where Outlook and your other devices have them too. You are asked first.");
+    if resp.on_hover_text(tip).clicked()
+        && let Err(e) = app.run("calendar.moveToAccount", json!({}))
     {
         app.status(e);
     }
@@ -3023,6 +3110,7 @@ fn tab_strip(app: &mut MailApp, ui: &mut Ui, blocks: &Blocks, panes: &[PaneView]
     let p = ui.painter().clone();
     let current = mailcraft_engine::cmd::calendar::current_calendar(&app.session);
     let stacked = panes.first().is_some_and(|pane| pane.tabs.iter().any(|tab| tab.overlaid));
+    let only_here = local_only(app);
     for (k, pane) in panes.iter().enumerate().take(blocks.count) {
         let cols = blocks.cols(k);
         let (left, right) = (cols.left, cols.right());
@@ -3036,7 +3124,20 @@ fn tab_strip(app: &mut MailApp, ui: &mut Ui, blocks: &Blocks, panes: &[PaneView]
             if each < 6.0 {
                 continue;
             }
-            let name = clip_text(tab.name.trim(), 80);
+            // A calendar that is on this computer only says so on its block: what is drawn there
+            // is not in the Outlook calendar it stands beside.
+            let named = if only_here.contains(&tab.id) {
+                let plain = tab.name.trim();
+                let line = tl!(LOCAL_ONLY);
+                if plain.eq_ignore_ascii_case(mailcraft_engine::cmd::remote::LOCAL_CALENDAR) {
+                    line.to_string()
+                } else {
+                    format!("{plain} · {line}")
+                }
+            } else {
+                tab.name.trim().to_string()
+            };
+            let name = clip_text(&named, 120);
             // It can be laid over the others when there is one to its left to lie on; one that
             // lies there already can be stood beside them again.
             let arrow = if tab.overlaid {
@@ -4964,6 +5065,54 @@ mod tests {
         assert_eq!(rig.picked().map(|s| (s.0, s.2)), Some((at(wednesday, 14, 0), false)));
         rig.click(pos2(row.center().x, row.max.y - 3.0), 1);
         assert_eq!(rig.picked().map(|s| (s.0, s.2)), Some((at(thursday, 0, 0), true)));
+    }
+
+    /// What is kept on this computer only says so beside the account's calendar: under the
+    /// header, on its block and in the list; and one action moves it to the account's calendar.
+    #[test]
+    fn what_is_only_on_this_computer_says_so_and_moves_to_the_accounts_calendar() {
+        use crate::calendar_sync::testing::event as on_server;
+        use crate::dialogs::Dialog;
+        let (mut rig, _server, _account) = Rig::served(vec![on_server("e-1", "Dentist", NOW + 18 * 3600)]);
+        let mailbox = &rig.app.session.mailbox;
+        let own = mailbox.calendars.iter().find(|c| c.origin.is_local()).map(|c| c.id).unwrap();
+        let here = mailbox.events.values().filter(|e| e.calendar == own).count();
+        let meetings = mailbox.events.values().filter(|e| e.calendar == own && !e.attendees.is_empty()).count();
+        assert!(meetings > 0 && here > meetings);
+        // Under the header: how many, and the way out. In the list: a line under the calendar.
+        let button = rig.app.hit.rect("calendarLocalOnly", here as u64).expect("the line under the header");
+        let (row, line) = (rig.app.hit.rect("calendar", own).unwrap(), rig.app.hit.rect("calendarLocalLine", own).expect("the line in the list"));
+        assert!(line.min.y >= row.max.y - 1.0 && line.height() >= 20.0, "{row:?} {line:?}");
+        // The calendar is all there, under the line.
+        assert!(rig.at("Design review").min.y > button.max.y);
+        // The calendars of the server have no such line.
+        let server_calendar = rig.app.session.mailbox.calendars.iter().find(|c| !c.origin.is_local()).map(|c| c.id).unwrap();
+        assert!(rig.app.hit.rect("calendarLocalLine", server_calendar).is_none());
+
+        // The button asks first: it puts things on the server, and meetings would invite people.
+        rig.click(button.center(), 1);
+        let Some(Dialog::Confirm { command, params, ask }) = rig.app.dialog.take() else { panic!("no question is being asked") };
+        assert_eq!(
+            (command.as_str(), ask.title.as_str(), ask.action.as_str()),
+            ("calendar.moveToAccount", "Move to Your Account's Calendar", "Move All and Send Invitations")
+        );
+        assert_eq!(ask.more.iter().map(|(label, _)| label.as_str()).collect::<Vec<_>>(), ["Move the Appointments Only"]);
+        assert!(ask.text.contains("not in your Outlook calendar") && ask.text.contains("send them the invitation"), "{}", ask.text);
+        assert_eq!(rig.app.session.mailbox.events.values().filter(|e| e.calendar == own).count(), here);
+        // The appointments only: they are the account's now, and the meetings stay and say so.
+        let with = ask.more[0].1.clone();
+        crate::dialogs::go_ahead(&mut rig.app, &command, crate::dialogs::answered(&params, &with, None));
+        let said = rig.app.status_msg.as_ref().map(|(text, _)| text.clone()).unwrap_or_default();
+        assert_eq!(said, format!("{} items moved to your account's calendar; {} stay on this computer", here - meetings, meetings));
+        rig.frames(3);
+        assert_eq!(rig.app.session.mailbox.events.values().filter(|e| e.calendar == own).count(), meetings);
+        assert!(rig.app.hit.rect("calendarLocalOnly", meetings as u64).is_some() && rig.app.hit.rect("calendarLocalOnly", here as u64).is_none());
+        // With the invitations: nothing is left on this computer, the calendar goes, and so do the lines.
+        rig.run("calendar.moveToAccount", json!({"send": true}));
+        rig.frames(3);
+        assert!(rig.app.session.mailbox.calendar(own).is_none());
+        assert!(rig.app.hit.rect("calendarLocalLine", own).is_none() && rig.app.hit.rect("calendarLocalOnly", meetings as u64).is_none());
+        assert!(mailcraft_engine::cmd::remote::only_here(&rig.app.session.mailbox).is_empty());
     }
 
     #[test]

@@ -61,6 +61,8 @@ fn own_specs() -> Vec<CommandSpec> {
         CommandSpec::new("calendar.removeCalendar", "Delete Calendar", "Folder › Actions", remove_calendar).params(r#"{"id": number}"#),
         CommandSpec::new("calendar.showCalendar", "Show Calendar", "Home › Manage Calendars", show_calendar)
             .params(r#"{"id": number, "value"?: bool (default: toggle)}"#),
+        CommandSpec::new("calendar.moveToAccount", "Move to the Account's Calendar", "Home › Manage Calendars", move_to_account)
+            .params(r#"{"calendar"?: number (default: every calendar on this computer), "send"?: bool} — puts what is only on this computer into the main calendar of the account's server, so that it is in the owner's Outlook calendar too: an appointment simply moves; a meeting with people invited moves only with "send": true, which makes the server send them the invitation (with "send": false it stays where it is; with neither, and meetings among them, nothing is moved and the command says so); one that the account's calendar has already (the same title at the same time) is not made a second time there: the copy on this computer goes; what can't go says why. A calendar on this computer that is empty afterwards goes away. Answers {"moved": number, "already": number, "kept": [{"id", "title", "why"}], "calendar": number, "removed": number}"#),
         CommandSpec::new("calendar.setCurrent", "Work in Calendar", "Home › Manage Calendars", set_current)
             .pure()
             .params(r#"{"id": number | null} — the calendar new events go into (null: the account's server calendar when there is one, else the mailbox's own)"#),
@@ -1000,6 +1002,87 @@ fn remove_calendar(s: &mut Session, v: &Value) -> CmdResult {
         s.mailbox.remove_event(*e)?;
     }
     Ok(json!({"deleted": id, "events": events.len()}))
+}
+
+/// What is only on this computer goes into the main calendar of the account's server
+/// (`calendar.moveToAccount`): an appointment simply moves, and is made on the server; a meeting
+/// moves only when its invitations are to be sent; what can't go stays and says why. A calendar
+/// of the mailbox's own that is left empty goes away, unless the owner named it.
+fn move_to_account(s: &mut Session, v: &Value) -> CmdResult {
+    let Some((target, account)) = remote::server_calendar(&s.mailbox).map(|calendar| (calendar.id, calendar.origin.account)) else {
+        return Err(fail("No account's server keeps a calendar here yet, so there is nowhere to move these to."));
+    };
+    writable(s, target)?;
+    let own = |s: &Session, calendar: Id| s.mailbox.calendar(calendar).is_some_and(|c| remote::keeper(&s.mailbox, &c.origin).is_none());
+    let from: Vec<Id> = match p::id(v, "calendar") {
+        Some(calendar) if own(s, calendar) => vec![calendar],
+        Some(calendar) if s.mailbox.calendar(calendar).is_some() => return Err(fail("That calendar is kept by an account's server already.")),
+        Some(calendar) => return Err(fail(format!("no calendar with id {calendar}"))),
+        None => s.mailbox.calendars.iter().filter(|c| remote::keeper(&s.mailbox, &c.origin).is_none()).map(|c| c.id).collect(),
+    };
+    let ids: Vec<Id> = s.mailbox.events.values().filter(|e| from.contains(&e.calendar)).map(|e| e.id).take(10_000).collect();
+    let meetings = ids.iter().filter(|id| s.mailbox.event(**id).is_some_and(|e| !e.attendees.is_empty())).count();
+    let send = p::bool(v, "send");
+    if meetings > 0 && send.is_none() {
+        let which = if meetings == 1 { "1 of these is a meeting".to_string() } else { format!("{meetings} of these are meetings") };
+        return Err(fail(format!(
+            "{which} with people invited, and {TELLS_INVITE} Nothing was moved. Say \"send\": true to move them too and invite the people, or \"send\": false to move only the appointments."
+        )));
+    }
+    let owner = s.mailbox.account(account).map(|a| a.address());
+    let (mut moved, mut already, mut kept) = (0usize, 0usize, Vec::new());
+    // What the account's calendars have already: the same title at the same time, repeating
+    // the same way. Such an item is on the server; a second one there would help nobody.
+    let twin = |s: &Session, e: &Event| {
+        let same = |other: &Event| {
+            other.origin.account == account
+                && other.title.trim() == e.title.trim()
+                && (other.start, other.end, other.all_day) == (e.start, e.end, e.all_day)
+                && other.recurrence == e.recurrence
+        };
+        s.mailbox.events.values().any(|other| same(other))
+    };
+    for id in ids {
+        let Some(before) = s.mailbox.event(id).cloned() else { continue };
+        if twin(s, &before) {
+            s.mailbox.remove_event(id)?;
+            already += 1;
+            continue;
+        }
+        let mut e = Event { calendar: target, ..before.clone() };
+        let why = if !e.attendees.is_empty() && send != Some(true) {
+            Some("People are invited to it, and no invitations were to be sent.".to_string())
+        } else {
+            fits_server(s, &e).and_then(|()| remote::room_for_change(&s.mailbox)).err().map(|e| e.to_string())
+        };
+        if let Some(why) = why {
+            kept.push(json!({"id": id, "title": before.title, "why": why}));
+            continue;
+        }
+        // The account whose calendar it is organizes it from now on.
+        if !e.attendees.is_empty() {
+            e.organizer = owner.clone().or(e.organizer);
+        }
+        let invites = !e.attendees.is_empty();
+        *s.mailbox.event_mut(id)? = e;
+        // It is that server's now, and the server is to have it too.
+        remote::note_created(s, id)?;
+        if invites {
+            remote::approve_mail(&mut s.mailbox, account, id, "", "");
+        }
+        moved += 1;
+    }
+    // A calendar on this computer with nothing left in it goes away: the one the mailbox was
+    // made with, under either of the names it goes by. One the owner named stays.
+    let in_use: std::collections::HashSet<Id> = s.mailbox.events.values().map(|e| e.calendar).collect();
+    let default_name = |name: &str| name.trim().eq_ignore_ascii_case("Calendar") || name.trim().eq_ignore_ascii_case(remote::LOCAL_CALENDAR);
+    let calendars = s.mailbox.calendars.len();
+    s.mailbox.calendars.retain(|c| !(from.contains(&c.id) && !in_use.contains(&c.id) && default_name(&c.name)));
+    let removed = calendars - s.mailbox.calendars.len();
+    if s.mailbox.calendar(s.view.in_calendar).is_none() {
+        s.view.in_calendar = 0;
+    }
+    Ok(json!({"moved": moved, "already": already, "kept": kept, "calendar": target, "removed": removed}))
 }
 
 fn set_current(s: &mut Session, v: &Value) -> CmdResult {

@@ -13,6 +13,17 @@
 //!
 //! One job at a time, and never while the Microsoft Graph part of a Send/Receive is at work:
 //! an answer that was asked for before a change went up could otherwise be taken in after it.
+//!
+//! A change that the server said it took is looked for in what comes down next (the engine's
+//! `EventCheck`): while one is yet to be seen, the calendar is asked for again every few
+//! seconds rather than when it is next due. What the server turns out not to have is put back,
+//! and what couldn't be sent at all is given up; either way the owner is told, in the status
+//! bar and in the Send/Receive problems report, and a line goes to the log (which names no
+//! item: a tag made of the event's id is all it says of it).
+//!
+//! The owner can also have the connection checked on the real account (File › Info › Check
+//! Calendar Connection, `ui.checkCalendar`): the host makes, reads, changes and deletes one
+//! test appointment a year ahead and reports what the server answered at each step.
 
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
@@ -20,11 +31,12 @@ use std::sync::mpsc::Receiver;
 use mailcraft_engine::Module;
 use mailcraft_engine::cmd::remote;
 use mailcraft_model::Id;
-use mailcraft_model::remote::{EventsUpload, EventsUploaded};
+use mailcraft_model::remote::{EventsUpload, EventsUploaded, id_tag};
 use mailcraft_model::sync::Tokens;
 use mailcraft_time::{DateTime, Timestamp};
+use serde_json::{Value, json};
 
-use crate::{GraphRequest, GraphResult, MailApp, now_ms};
+use crate::{CalendarCheckRequest, CalendarCheckResult, GraphRequest, GraphResult, MailApp, now_ms};
 
 /// How often the calendar is asked for while it is in front of the owner, and otherwise
 /// (milliseconds).
@@ -38,6 +50,9 @@ const QUIET_MS: f64 = 0.0;
 /// first, twice as long after each one more, and never longer than the second.
 const FIRST_RETRY_MS: f64 = 30_000.0;
 const LONGEST_RETRY_MS: f64 = 600_000.0;
+/// How often the calendar is asked for while a change that was just sent is yet to be seen on
+/// the server (milliseconds).
+const RECHECK_MS: f64 = 10_000.0;
 /// How many days either side of the days on screen are asked for.
 const MARGIN_DAYS: i64 = 7;
 /// The wide stretch a Send/Receive brings down, as the host has it: a month back, a year ahead
@@ -79,6 +94,13 @@ pub(crate) struct CalendarSync {
     pub(crate) opened: Option<(Id, Option<mailcraft_time::Date>)>,
     /// When each account's mailbox was last asked for its working hours (milliseconds).
     pub(crate) settings_asked: HashMap<Id, f64>,
+    /// The state of the mailbox at which the waiting changes were last looked over for ones
+    /// that can't be sent any more.
+    settled_rev: Option<u64>,
+    /// A check of an account's calendar connection that the host is making.
+    check_rx: Option<(Id, Receiver<CalendarCheckResult>)>,
+    /// What the last check of the calendar connection came to, as its report says it.
+    pub(crate) last_check: Vec<String>,
 }
 
 impl MailApp {
@@ -111,8 +133,8 @@ impl MailApp {
     }
 
     /// [`calendar_tick`](Self::calendar_tick) at `now` (milliseconds), with the window in front
-    /// or not. Whether a job was started.
-    pub(crate) fn calendar_tick_at(&mut self, focused: bool, now: f64) -> bool {
+    /// or not. Whether a job was started. (Public for a host's tests, which have no window.)
+    pub fn calendar_tick_at(&mut self, focused: bool, now: f64) -> bool {
         let in_front = self.session.view.module == Module::Calendar && !self.ui.backstage;
         let came_back = (focused && !self.calendar.focused) || (in_front && !self.calendar.in_front);
         (self.calendar.focused, self.calendar.in_front) = (focused, in_front);
@@ -125,6 +147,13 @@ impl MailApp {
         // One at a time; and a Send/Receive that is about to ask Graph, or is asking, goes first.
         if self.calendar.rx.is_some() || self.graph_rx.is_some() || self.signing_in.is_some() || !self.sync_queue.is_empty() {
             return false;
+        }
+        // What waits and can't be sent any more is given up before anything is sent: with a
+        // word to the owner, never silently. (Looked at once for each state of the mailbox.)
+        if self.calendar.settled_rev != Some(self.session.rev()) {
+            let dropped = remote::settle_changes(&mut self.session);
+            self.calendar.settled_rev = Some(self.session.rev());
+            self.tell_dropped(&dropped);
         }
         for account in self.microsoft_accounts() {
             // What is ready to go, and for how long it has been: a change gets a quiet moment.
@@ -141,7 +170,13 @@ impl MailApp {
             let changes = if ready > 0 && now - since >= QUIET_MS { self.calendar_changes(account) } else { None };
             let again = |(sent, at): &(EventsUpload, f64)| changes.as_ref() == Some(sent) && now - at < FIRST_RETRY_MS;
             let push = changes.is_some() && !self.calendar.sent.get(&account).is_some_and(again);
-            let every = if in_front { IN_FRONT_MS } else { BEHIND_MS };
+            // A change that was just sent and isn't seen on the server yet: asked for again soon.
+            let unseen = remote::recheck_due(&self.session, account);
+            let every = match (unseen, in_front) {
+                (true, _) => RECHECK_MS,
+                (false, true) => IN_FRONT_MS,
+                (false, false) => BEHIND_MS,
+            };
             let asked = self.calendar.checked.get(&account).copied();
             // Other days came into view (a series shows there by its rule until the server has
             // said which of its days are really there): they are asked for without waiting.
@@ -265,8 +300,8 @@ impl MailApp {
     }
 
     /// The calendar job answered: keep its token, take in what the server said to the changes
-    /// and what it has in the days that were asked for.
-    pub(crate) fn poll_calendar(&mut self) {
+    /// and what it has in the days that were asked for. (Public for a host's tests.)
+    pub fn poll_calendar(&mut self) {
         let Some((account, carried, started, rx)) = &self.calendar.rx else { return };
         let (account, carried, started) = (*account, *carried, *started);
         let mut result = match rx.try_recv() {
@@ -336,7 +371,18 @@ impl MailApp {
                     if let Some(first) = applied.messages.first() {
                         self.status(first.clone());
                     }
-                    errors.extend(applied.messages);
+                    log::info!(
+                        "calendar: of {} changes sent, {} were taken, {} refused, {} are to be tried again, {} given up; {} still wait, {} are yet to be seen on the server",
+                        uploaded.outcomes.len(),
+                        applied.done,
+                        applied.refused,
+                        applied.failed,
+                        applied.dropped.len(),
+                        applied.waiting,
+                        applied.unverified
+                    );
+                    // (They name the events: for the owner to read, not for the log.)
+                    self.keep_sync_problems(account, &applied.messages);
                     // The server says the account may not write to its calendar: the owner
                     // agreed to less, once. Nothing more is asked until that is put right.
                     if applied.denied && self.graph_consent_needed.insert(account) {
@@ -357,13 +403,202 @@ impl MailApp {
             }
         }
         let Some(events) = events else { return false };
-        match remote::apply_events(&mut self.session, events) {
-            Ok(_) => true,
+        self.take_in_events(account, events, errors)
+    }
+
+    /// Take in what the server has in a stretch of one calendar. What was sent and isn't there
+    /// is put back by the merge: the owner is told which item, and the log how many (and of
+    /// each calendar how much came down). Whether it was taken in.
+    fn take_in_events(&mut self, account: Id, events: &mailcraft_model::remote::EventsDownload, errors: &mut Vec<String>) -> bool {
+        match remote::take_in_events(&mut self.session, events) {
+            Ok(merged) => {
+                if let Some(first) = merged.messages.first() {
+                    self.status(first.clone());
+                }
+                // (They name the events: for the owner to read, not for the log.)
+                self.keep_sync_problems(account, &merged.messages);
+                let which =
+                    if events.calendar.is_empty() { "the main calendar".to_string() } else { format!("calendar #{}", id_tag(&events.calendar)) };
+                log::info!(
+                    "calendar: {which}: {} events came down ({} new, {} changed, {} gone here); of what was sent, {} are there as sent, {} were put back, {} are not seen yet; {} waiting changes were given up",
+                    events.events.len(),
+                    merged.added,
+                    merged.updated,
+                    merged.removed,
+                    merged.verified,
+                    merged.put_back,
+                    merged.unverified,
+                    merged.dropped.len()
+                );
+                true
+            }
             Err(e) => {
                 errors.push(format!("{}: {e}", tl!("The calendar couldn't be taken in")));
                 false
             }
         }
+    }
+
+    /// Tell the owner of the waiting changes that were given up without being sent: in the
+    /// status bar and in the Send/Receive problems report. (The engine wrote the log line.)
+    fn tell_dropped(&mut self, dropped: &[remote::Dropped]) {
+        for one in dropped.iter().filter(|one| !one.message.is_empty()).take(20) {
+            self.status(one.message.clone());
+            self.keep_sync_problems(one.account, std::slice::from_ref(&one.message));
+        }
+    }
+
+    /// What the status bar says after a calendar command that changed an item which is kept on
+    /// this computer only, although the account has a calendar on its server: the change goes
+    /// nowhere else, and that must not pass for a change to the Outlook calendar.
+    pub(crate) fn stays_here_note(&self, id: &str, answer: &Value) -> Option<String> {
+        let changes = matches!(
+            id,
+            "calendar.new"
+                | "calendar.newMeeting"
+                | "calendar.edit"
+                | "calendar.move"
+                | "calendar.showAs"
+                | "calendar.reminder"
+                | "calendar.private"
+                | "calendar.categorize"
+        );
+        let event = answer.get("id").and_then(Value::as_u64).filter(|_| changes)?;
+        remote::stays_here(&self.session.mailbox, event)
+            .then(|| tl!("Saved on this computer only: this item is not in your Outlook calendar").to_string())
+    }
+
+    /// A Graph token as a sign-in leaves it, for a host's tests (which sign nobody in).
+    #[doc(hidden)]
+    pub fn seed_graph_token(&mut self, account: Id, tokens: Tokens) {
+        self.tokens.insert(account, tokens.clone());
+        self.graph_tokens.insert(account, tokens);
+    }
+
+    /// File › Info › Check Calendar Connection (`ui.checkCalendar`): have the host check the
+    /// calendar connection of an account on its real server. The owner was asked first (the
+    /// question says exactly what is done: [`crate::dialogs::confirmation`]); a script says
+    /// `"confirmed": true`. The report comes when the host is done
+    /// ([`poll_calendar_check`](Self::poll_calendar_check)).
+    pub(crate) fn check_calendar(&mut self, p: &Value) -> Result<Value, String> {
+        if p.get("confirmed").and_then(Value::as_bool) != Some(true) {
+            return Err(tl!(
+                "This makes, changes and deletes a test appointment in the account's real calendar. Say that this is meant with \"confirmed\": true."
+            )
+            .to_string());
+        }
+        if self.services.check_calendar.is_none() {
+            return Err(tl!("This build can't reach the account's calendar.").to_string());
+        }
+        if self.calendar.check_rx.is_some() {
+            return Err(tl!("The calendar connection is being checked already.").to_string());
+        }
+        let account = p.get("account").and_then(Value::as_u64).or_else(|| self.microsoft_accounts().first().copied());
+        let Some(owner) = account.and_then(|id| self.session.mailbox.account(id)).cloned() else {
+            return Err(tl!("No account signs in with Microsoft").to_string());
+        };
+        let Some(oauth) = owner.oauth.clone().filter(|o| o.provider == mailcraft_model::OAuthProvider::Microsoft) else {
+            return Err(tl!("This account doesn't sign in with Microsoft").to_string());
+        };
+        if self.calendar.rx.is_some() || self.graph_rx.is_some() || self.signing_in.is_some() {
+            return Err(tl!("The calendar is being updated: try again in a moment.").to_string());
+        }
+        let account = owner.id;
+        let access = self.graph_tokens.get(&account).filter(|t| t.fresh(mailcraft_time::now())).map(|t| t.access.clone()).unwrap_or_default();
+        let kept = self.tokens.get(&account).map(|t| t.refresh.clone()).filter(|r| !r.is_empty());
+        let refresh = kept.or_else(|| self.remembered("refresh", &owner.email)).unwrap_or_default();
+        if access.is_empty() && refresh.is_empty() {
+            return Err(tl!("This account's calendar can't be asked yet: Send/Receive signs it in first.").to_string());
+        }
+        let request = CalendarCheckRequest { account: owner, oauth: self.effective_oauth(oauth), refresh, access };
+        let Some(check) = &self.services.check_calendar else { return Err(tl!("This build can't reach the account's calendar.").to_string()) };
+        self.calendar.check_rx = Some((account, check(request)));
+        self.status(tl!("Checking the calendar connection…"));
+        Ok(json!({"pending": "calendarCheck", "account": account}))
+    }
+
+    /// Whether a check of the calendar connection is under way.
+    pub fn checking_calendar(&self) -> bool {
+        self.calendar.check_rx.is_some()
+    }
+
+    /// What the last check of the calendar connection came to, line by line.
+    pub fn calendar_check_report(&self) -> &[String] {
+        &self.calendar.last_check
+    }
+
+    /// The host is done checking the calendar connection: keep its token, show what the server
+    /// answered at each step in a report, and put the same in the log. (Public for a host's tests.)
+    pub fn poll_calendar_check(&mut self) {
+        let Some((account, rx)) = &self.calendar.check_rx else { return };
+        let account = *account;
+        let mut result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                CalendarCheckResult { account, error: tl!("the check stopped unexpectedly").to_string(), cleaned_up: true, ..Default::default() }
+            }
+        };
+        self.calendar.check_rx = None;
+        if result.token_refused {
+            self.graph_tokens.remove(&account);
+        }
+        if let Some(tokens) = result.tokens.take() {
+            self.keep_graph_tokens(account, tokens);
+        }
+        if result.consent_needed && self.graph_consent_needed.insert(account) {
+            self.status(tl!("Calendar and contacts need your permission: File › Info › Connect calendar and contacts"));
+        }
+        let whose = self
+            .session
+            .mailbox
+            .account(account)
+            .map(|a| if a.email.trim().is_empty() { a.name.clone() } else { a.email.clone() })
+            .unwrap_or_default();
+        let mut lines: Vec<String> = Vec::new();
+        let verdict = if !result.error.is_empty() {
+            format!("{} {}", tl!("The calendar connection couldn't be checked:"), result.error)
+        } else if result.ok {
+            tl!("The calendar connection works: what was sent arrived, and the server has it as it was sent.").to_string()
+        } else {
+            tl!("Something did not go through, or did not arrive as it was sent. The steps below say what.").to_string()
+        };
+        lines.push(format!("{whose}: {verdict}"));
+        for (n, step) in result.steps.iter().take(20).enumerate() {
+            let answered = if step.status == 0 { tl!("no answer").to_string() } else { format!("{} {}", tl!("the server answered"), step.status) };
+            let how = if step.ok { tl!("OK") } else { tl!("FAILED") };
+            let line = format!("{}. {}: {how} ({answered}). {}", n + 1, tl!(&step.what), step.said);
+            // What was sent, what the server said, and when: nothing of anybody's calendar.
+            if step.ok {
+                log::info!("calendar check, account {account}: {line}");
+            } else {
+                log::warn!("calendar check, account {account}: {line}");
+            }
+            lines.push(line);
+        }
+        if !result.steps.is_empty() {
+            lines.push(if result.cleaned_up {
+                tl!("The test appointment is gone again. Nothing else in the calendar was read or changed.").to_string()
+            } else {
+                tl!(
+                    "The test appointment (\"MailCraft connection check\", a year from today) could not be deleted: please delete it in the calendar. Nothing else was read or changed."
+                )
+                .to_string()
+            });
+        }
+        log::info!(
+            "calendar check, account {account}: {}",
+            if result.ok { "everything arrived as it was sent" } else { "not everything arrived as it was sent" }
+        );
+        self.calendar.last_check = lines.clone();
+        self.status(if result.ok {
+            tl!("The calendar connection works")
+        } else {
+            tl!("The calendar connection check found a problem: see its report")
+        });
+        self.dialog = Some(crate::dialogs::Dialog::Report { name: "calendarCheck", title: tl!("Calendar Connection Check").to_string(), lines });
+        // The calendar is looked at again at once, when it is in front.
+        self.calendar.due = true;
     }
 
     /// [`take_in_calendar`](Self::take_in_calendar) for the Microsoft Graph part of a
@@ -384,7 +619,8 @@ impl MailApp {
 
     /// The calendars of `account` that a job brings down, each with the series the mailbox
     /// expects in the stretch (for the host to ask about by name when the stretch brings nothing
-    /// of them): the main one, and the others that are shown. The stretch is the wide one of a
+    /// of them): the main one, the others that are shown, and any that holds something which was
+    /// sent and is yet to be seen there. The stretch is the wide one of a
     /// Send/Receive (`directory`: a month back, a year ahead), or else `stretch`.
     pub(crate) fn calendar_asks(
         &self,
@@ -394,7 +630,12 @@ impl MailApp {
     ) -> Vec<mailcraft_model::remote::CalendarAsk> {
         let now = self.session.now();
         let Some((from, to)) = (if directory { Some((now - WIDE_BEHIND, now + WIDE_AHEAD)) } else { stretch }) else { return Vec::new() };
-        let followed = |c: &&mailcraft_model::Calendar| c.origin.account == account && (c.origin.id.is_empty() || c.visible || directory);
+        // (And one that holds something which was sent and is yet to be seen on the server,
+        // shown or not: an appointment that was just put into a calendar that isn't ticked.)
+        let unseen = remote::unverified_calendars(&self.session, account);
+        let followed = |c: &&mailcraft_model::Calendar| {
+            c.origin.account == account && (c.origin.id.is_empty() || c.visible || directory || unseen.contains(&c.id))
+        };
         let mut asks: Vec<mailcraft_model::remote::CalendarAsk> = Vec::new();
         for calendar in self.session.mailbox.calendars.iter().filter(followed).take(MAX_ASKED) {
             if !asks.iter().any(|ask| ask.calendar == calendar.origin.id) {
@@ -445,9 +686,7 @@ impl MailApp {
     /// Take in the same stretch of the account's other calendars.
     pub(crate) fn take_in_more_calendars(&mut self, more: &[mailcraft_model::remote::EventsDownload], errors: &mut Vec<String>) {
         for events in more.iter().take(MAX_ASKED) {
-            if let Err(e) = remote::apply_events(&mut self.session, events) {
-                errors.push(format!("{}: {e}", tl!("The calendar couldn't be taken in")));
-            }
+            self.take_in_events(events.account, events, errors);
         }
     }
 
@@ -1379,6 +1618,116 @@ mod tests {
         assert_eq!(mail(&server).last().map(String::as_str), Some("response:Board:Declined:Can't make it"));
         assert!(server.lock().unwrap().events.iter().all(|e| e.id != "g-1"));
         assert!(app.session.mailbox.event_changes.is_empty() && !app.has_sync_problems());
+    }
+
+    #[test]
+    fn the_owner_can_have_the_calendar_connection_checked() {
+        use crate::{CalendarCheckRequest, CalendarCheckResult, CalendarCheckStep};
+        let (mut app, server, _) = app();
+        // A build that can't reach a server can't check one.
+        assert_eq!(app.execute("ui.checkCalendar", json!({"confirmed": true})).unwrap_err(), "This build can't reach the account's calendar.");
+        // A host that reports three steps, of which the reading didn't come back as it was sent.
+        let calls: Arc<Mutex<Vec<(String, bool)>>> = Default::default();
+        let seen = calls.clone();
+        app.services.check_calendar = Some(Box::new(move |request: CalendarCheckRequest| {
+            seen.lock().unwrap().push((request.account.email.clone(), !request.access.is_empty()));
+            let step = |what: &str, ok: bool, status: u16, said: &str| CalendarCheckStep { what: what.into(), ok, status, said: said.into() };
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(CalendarCheckResult {
+                account: request.account.id,
+                steps: vec![
+                    step("Make an appointment", true, 201, "sent: A to B"),
+                    step("Read it back", false, 200, "sent: A to B; the server has: C to D (the start and the end differ)"),
+                    step("Delete it", true, 204, "deleted"),
+                ],
+                ok: false,
+                cleaned_up: true,
+                ..Default::default()
+            });
+            rx
+        }));
+        // The owner is asked first, and told exactly what is about to happen on the real account.
+        assert_eq!(app.run("ui.checkCalendar", json!({})).unwrap()["pending"], "confirm");
+        let Some(Dialog::Confirm { ask, .. }) = &app.dialog else { panic!("no question is being asked") };
+        assert_eq!((ask.title.as_str(), ask.action.as_str(), ask.more.len()), ("Check Calendar Connection", "Check Now", 0));
+        for said in [
+            "\"MailCraft connection check\"",
+            "avery@mail.example",
+            "a year from today",
+            "deletes it again",
+            "Nothing else in your calendar is read or changed",
+        ] {
+            assert!(ask.text.contains(said), "{said}: {}", ask.text);
+        }
+        assert!(calls.lock().unwrap().is_empty() && !app.checking_calendar());
+        // A script has to say that it means it; closing the question does nothing at all.
+        assert!(app.execute("ui.checkCalendar", json!({})).unwrap_err().contains("\"confirmed\": true"));
+        app.dialog = None;
+        assert!(calls.lock().unwrap().is_empty());
+        // Yes: the host gets the job, with the token that is at hand, and one check at a time.
+        app.run("ui.checkCalendar", json!({})).unwrap();
+        answer(&mut app, "Check Now", "");
+        assert_eq!(*calls.lock().unwrap(), [("avery@mail.example".to_string(), true)]);
+        assert!(app.checking_calendar());
+        assert_eq!(app.execute("ui.checkCalendar", json!({"confirmed": true})).unwrap_err(), "The calendar connection is being checked already.");
+        // The report: every step with the server's status and what it said, to read and to copy.
+        app.poll_calendar_check();
+        assert!(!app.checking_calendar());
+        let Some(Dialog::Report { name, title, lines }) = &app.dialog else { panic!("the report is shown") };
+        assert_eq!((*name, title.as_str()), ("calendarCheck", "Calendar Connection Check"));
+        assert_eq!(
+            lines,
+            &[
+                "avery@mail.example: Something did not go through, or did not arrive as it was sent. The steps below say what.",
+                "1. Make an appointment: OK (the server answered 201). sent: A to B",
+                "2. Read it back: FAILED (the server answered 200). sent: A to B; the server has: C to D (the start and the end differ)",
+                "3. Delete it: OK (the server answered 204). deleted",
+                "The test appointment is gone again. Nothing else in the calendar was read or changed.",
+            ]
+        );
+        assert_eq!(app.calendar_check_report(), lines.as_slice());
+        // It asked the calendar's own stand-in for nothing: the check is the host's business.
+        assert_eq!(jobs(&server), 0);
+    }
+
+    #[test]
+    fn a_change_that_cannot_be_sent_is_given_up_out_loud() {
+        let (mut app, server, _, mut at) = calendar(Vec::new());
+        // A meeting the owner called, on the server.
+        app.run("calendar.newMeeting", json!({"title": "Sync", "start": "2026-10-15T10:00", "attendees": "bo@example.org"})).unwrap();
+        answer(&mut app, "Send", "");
+        sync(&mut app, &mut at);
+        let id = titled(&app, "Sync")[0].id;
+        assert_eq!(mail(&server), ["invitation:Sync:1"]);
+        // A change to it that waits without the owner's yes to the mail it makes (only a
+        // mailbox file from elsewhere holds such a thing): it is not sent, and it doesn't just
+        // vanish either. The event is as the server has it again, and the owner is told.
+        app.execute("calendar.move", json!({"id": id, "start": "2026-10-15T11:00", "send": true})).unwrap();
+        app.session.mailbox.event_changes[0].send = false;
+        app.session.mailbox_changed();
+        sync(&mut app, &mut at);
+        assert_eq!((titled(&app, "Sync")[0].start.hour, mail(&server).len()), (10, 1));
+        assert!(app.session.mailbox.event_changes.is_empty());
+        let line = "The change to \"Sync\" was not sent: it would have made the server write to the people invited, and nobody said to send that. It was put back to what the server has.";
+        assert_eq!(app.status_msg.as_ref().map(|(text, _)| text.as_str()), Some(line));
+        assert!(app.has_sync_problems() && app.sync_problem_lines().iter().any(|said| said.trim() == line));
+    }
+
+    #[test]
+    fn a_change_to_what_is_only_on_this_computer_says_that_it_stays_here() {
+        let (mut app, _, _, _) = calendar(Vec::new());
+        // The sample's own appointments are on this computer; the account's calendar is on its server.
+        let lunch = app.session.mailbox.events.values().find(|e| e.origin.is_local() && e.attendees.is_empty()).map(|e| e.id).unwrap();
+        app.status_msg = None;
+        app.run("calendar.showAs", json!({"id": lunch, "value": "tentative"})).unwrap();
+        let said = app.status_msg.as_ref().map(|(text, _)| text.clone());
+        assert_eq!(said.as_deref(), Some("Saved on this computer only: this item is not in your Outlook calendar"));
+        assert!(app.session.mailbox.event_changes.is_empty());
+        // One of the server's says nothing of the kind: it goes there.
+        let review = titled(&app, "Budget review")[0].id;
+        app.status_msg = None;
+        app.run("calendar.showAs", json!({"id": review, "value": "tentative"})).unwrap();
+        assert!(app.status_msg.is_none() && app.session.mailbox.event_changes.len() == 1);
     }
 
     #[test]

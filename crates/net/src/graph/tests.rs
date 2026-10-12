@@ -1414,8 +1414,11 @@ fn what_changed_of_an_event_is_all_that_is_sent() {
     let server = FakeHttp::answering(json_answer("200 OK", r#"{"id":"e-1","changeKey":"ck"}"#));
     let sent = |fields: EventFields| {
         let before = server.asked();
+        let nothing = fields.is_empty();
         let uploaded = push_events_at(&server.url(""), TOKEN, &upload(vec![update("e-1", fields)]), &EventOptions::default());
-        assert_eq!(uploaded.outcomes[0].result, EventResult::Done);
+        // A change that says nothing is never called done: nothing was done.
+        let expected = if nothing { EventResult::Refused } else { EventResult::Done };
+        assert_eq!(uploaded.outcomes[0].result, expected, "{}", uploaded.outcomes[0].error);
         (server.asked() > before).then(|| body_of(&server.request(before)))
     };
     let fields = EventFields::default;
@@ -1443,7 +1446,7 @@ fn what_changed_of_an_event_is_all_that_is_sent() {
     // Text is cut to size and to one line where it is one; nothing in it can say more than it is.
     let long = sent(EventFields { title: Some(format!("Budget\r\nreview{}", "x".repeat(5_000))), ..fields() }).unwrap();
     assert_eq!(long["subject"].as_str().map(|s| (s.chars().count(), s.starts_with("Budget  review"))), Some((500, true)));
-    // Changed and changed back: there is nothing to tell, and Graph isn't asked.
+    // A change that says nothing: Graph isn't asked, and the answer doesn't say "done".
     assert_eq!(sent(fields()), None);
 }
 
@@ -1860,7 +1863,7 @@ fn how_a_series_repeats_is_read_and_written() {
         ),
     ];
     for (rule, pattern, range) in cases {
-        let written = recurrence_body(&rule, first, "Pacific Standard Time").unwrap_or_else(|| panic!("{rule:?}"));
+        let written = recurrence_body(&rule, first, "Pacific Standard Time", 0).unwrap_or_else(|| panic!("{rule:?}"));
         let mut expected = range.clone();
         expected["startDate"] = json!("2026-10-12");
         expected["recurrenceTimeZone"] = json!("Pacific Standard Time");
@@ -1869,19 +1872,19 @@ fn how_a_series_repeats_is_read_and_written() {
         assert_eq!(rule_of(&written), Some((rule.clone(), first)), "{written}");
     }
     // A week without days named is one on the day it starts; no zone is UTC.
-    let written = recurrence_body(&rule(Freq::Weekly), first, "").unwrap();
+    let written = recurrence_body(&rule(Freq::Weekly), first, "", 0).unwrap();
     assert_eq!(written["pattern"]["daysOfWeek"], json!(["monday"]));
     assert_eq!(written["range"]["recurrenceTimeZone"], "UTC");
     // "Every weekday" is said as a week with those days in it.
     let weekdays = Recurrence { by_day: vec![Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri], ..rule(Freq::Daily) };
-    assert_eq!(recurrence_body(&weekdays, first, "").unwrap()["pattern"]["type"], "weekly");
+    assert_eq!(recurrence_body(&weekdays, first, "", 0).unwrap()["pattern"]["type"], "weekly");
     // What Graph has no way of saying is not said some other way.
     for odd in [
         Recurrence { interval: 2, by_day: vec![Weekday::Mon], ..rule(Freq::Daily) },
         Recurrence { by_day: vec![Weekday::Mon, Weekday::Tue], nth: Some(1), ..rule(Freq::Monthly) },
         Recurrence { by_day: vec![Weekday::Mon], nth: Some(5), ..rule(Freq::Monthly) },
     ] {
-        assert_eq!(recurrence_body(&odd, first, ""), None, "{odd:?}");
+        assert_eq!(recurrence_body(&odd, first, "", 0), None, "{odd:?}");
     }
     // And what the mailbox has no way of saying is not read as something near it.
     let read = |pattern: Value, range: Value| rule_of(&json!({"pattern": pattern, "range": range}));
@@ -2293,7 +2296,7 @@ proptest! {
         // A rule from outside is one the mailbox can say, or none; and what is written of it reads back.
         if let Some((rule, first)) = rule_of(&entry) {
             prop_assert!((1..=999).contains(&rule.interval));
-            if let Some(written) = recurrence_body(&rule, first, "UTC") {
+            if let Some(written) = recurrence_body(&rule, first, "UTC", 0) {
                 prop_assert_eq!(rule_of(&written), Some((rule, first)));
             }
         }

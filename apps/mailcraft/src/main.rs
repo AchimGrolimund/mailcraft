@@ -17,11 +17,14 @@
 
 #[cfg(target_os = "macos")]
 mod apple_events;
+#[cfg(test)]
+mod calendar_flow;
 mod control_server;
 mod file_dialogs;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
 mod logging;
+mod picture_cache;
 mod secrets;
 mod single_instance;
 
@@ -31,7 +34,8 @@ use mailcraft_engine::Session;
 use mailcraft_model::Mailbox;
 use mailcraft_model::sync::Tokens;
 use mailcraft_ui_egui::{
-    FreeBusyRequest, FreeBusyResult, GraphRequest, GraphResult, MailApp, Services, SignInRequest, UiState,
+    CalendarCheckRequest, CalendarCheckResult, CalendarCheckStep, FreeBusyRequest, FreeBusyResult, GraphRequest, GraphResult, MailApp, Services,
+    SignInRequest, UiState,
     window_geometry::{WindowGeometry, take_rescue},
 };
 
@@ -90,6 +94,10 @@ impl eframe::App for App {
         if let Err(e) = self.0.save_on_exit() {
             log::error!("saving the mailbox on exit failed: {e}");
         }
+        // What is still to be noted of the pictures kept on disk.
+        if let Some(pictures) = PICTURES.get() {
+            pictures.flush();
+        }
         if let Some(key_file) = &self.2 {
             key_file.remove();
         }
@@ -107,6 +115,27 @@ fn prefs_path() -> Option<PathBuf> {
 /// Where the mailbox is kept unless `--mailbox` says otherwise.
 fn default_mailbox_path() -> Option<PathBuf> {
     mailcraft_control_key::settings_dir().map(|b| b.join(format!("mailbox.{}", mailcraft_engine::io::MAILBOX_EXT)))
+}
+
+/// The pictures from the web that are kept between runs (`picture_cache`): in the settings
+/// folder, beside the mailbox's own content folder. None for the sample mailbox or a run
+/// without preferences, which keep nothing; and none is made until a picture is kept.
+static PICTURES: std::sync::OnceLock<std::sync::Arc<picture_cache::Cache>> = std::sync::OnceLock::new();
+
+/// Start keeping downloaded pictures in the settings folder, and tidy up there a moment later,
+/// off the window's thread.
+fn keep_pictures() -> Option<std::sync::Arc<picture_cache::Cache>> {
+    let dir = mailcraft_control_key::settings_dir()?.join(picture_cache::FOLDER);
+    let cache = PICTURES.get_or_init(|| picture_cache::Cache::at(dir)).clone();
+    let tidying = cache.clone();
+    let tidy = move || {
+        std::thread::sleep(std::time::Duration::from_secs(20));
+        tidying.tidy();
+    };
+    if let Err(e) = std::thread::Builder::new().name("picture tidying".into()).spawn(tidy) {
+        log::debug!("the downloaded pictures were not tidied: {e}");
+    }
+    Some(cache)
 }
 
 /// Where the log files live: `logs` in the preferences folder (see `logging`).
@@ -255,10 +284,43 @@ fn system_zone() -> Option<String> {
     link.to_string_lossy().split_once("zoneinfo/").map(|(_, zone)| zone.to_string())
 }
 
+/// What the server made of one calendar change, for the log: the kind of change, a tag made of
+/// the event's id (the same in every line about that event, and nothing of the id can be read
+/// from it), which of the event's properties were sent (their names, never what they say), the
+/// zone its times were said in, the calendar, and the server's answer. Nothing of the event.
+fn log_outcome(outcome: &mailcraft_model::remote::EventOutcome) {
+    use mailcraft_model::remote::{EventResult, id_tag};
+    let op = &outcome.op;
+    // What the server calls it: for a new event, what it is called from now on.
+    let id = [op.remote.as_str(), outcome.remote.as_str()].into_iter().find(|id| !id.is_empty());
+    let tag = id.map_or("an event without a name yet".to_string(), |id| format!("#{}", id_tag(id)));
+    let one = if op.of_occurrence() { format!(" (one occurrence of the series #{})", id_tag(&op.series)) } else { String::new() };
+    let names = op.fields.names();
+    let sent = if names.is_empty() { String::new() } else { format!(", sent [{}]", names.join(", ")) };
+    let zone = if outcome.zone.is_empty() { String::new() } else { format!(" with times said in {}", outcome.zone) };
+    let calendar = if op.calendar.is_empty() { "the main calendar".to_string() } else { format!("calendar #{}", id_tag(&op.calendar)) };
+    let status = if outcome.status == 0 { "no answer".to_string() } else { format!("status {}", outcome.status) };
+    match outcome.result {
+        EventResult::Done => log::info!("calendar: {:?} {tag}{one}{sent}{zone}, in {calendar}: taken by the server ({status})", op.kind),
+        result => {
+            log::warn!(
+                "calendar: {:?} {tag}{one}{sent}{zone}, in {calendar}: not taken by the server ({result:?}, {status}): {}",
+                op.kind,
+                outcome.error
+            )
+        }
+    }
+}
+
 /// What Microsoft Graph does for an account before its mail is synchronised: send what waits in
 /// the Outbox, and bring the calendar and the contacts down. Nothing here stops the mail: every
 /// trouble is a line in the answer.
 fn graph(request: GraphRequest) -> GraphResult {
+    graph_in(request, local_zone())
+}
+
+/// [`graph`], with the owner's time zone as `zone` (a name Microsoft Graph knows).
+fn graph_in(request: GraphRequest, zone: &str) -> GraphResult {
     use mailcraft_net::{NetError, graph, oauth};
     let mut out = GraphResult { account: request.account.id, ..Default::default() };
     let mut access = request.access.clone();
@@ -308,15 +370,12 @@ fn graph(request: GraphRequest) -> GraphResult {
     // What was made, moved, changed or deleted in the calendar here goes up before the calendar
     // comes down: what comes down then is what the server has after it.
     if let Some(changes) = request.changes.as_ref().filter(|changes| !changes.ops.is_empty() && !refused) {
-        let uploaded = graph::push_events(&access, changes, &graph::EventOptions { zone: local_zone().to_string() });
-        // What the server made of each change, for the log: the kind of change and the answer,
-        // never what the event says.
+        log::info!("calendar: {} changes go to the server", changes.ops.len());
+        let uploaded = graph::push_events(&access, changes, &graph::EventOptions { zone: zone.to_string() });
+        // What the server made of each change, for the log: the kind of change, what was sent
+        // of it by name, and the answer, never what the event says.
         for outcome in &uploaded.outcomes {
-            let what = format!("{:?}{}", outcome.op.kind, if outcome.op.of_occurrence() { " of one occurrence" } else { "" });
-            match outcome.result {
-                mailcraft_model::remote::EventResult::Done => log::info!("calendar: {what} taken by the server"),
-                result => log::warn!("calendar: {what} not taken by the server ({result:?}): {}", outcome.error),
-            }
+            log_outcome(outcome);
         }
         if uploaded.outcomes.len() < changes.ops.len() {
             log::warn!("calendar: {} of {} changes were answered; the rest wait", uploaded.outcomes.len(), changes.ops.len());
@@ -352,9 +411,16 @@ fn graph(request: GraphRequest) -> GraphResult {
     }
     if let Some((from, to)) = stretch.filter(|_| !refused) {
         let main = graph::EventsQuery { calendar: String::new(), from, to, series: expected("") };
+        let days = |instant: i64| mailcraft_time::DateTime::from_timestamp(instant, 0).date.iso();
         match graph::events_in(&access, &main) {
             Ok(events) => {
-                log::debug!("calendar: the main calendar came down for the stretch asked for");
+                log::info!(
+                    "calendar: the main calendar came down: {} events from {} to {} (all of them: {})",
+                    events.events.len(),
+                    days(from),
+                    days(to),
+                    events.complete
+                );
                 out.events = Some(events.for_account(&request.account));
             }
             Err(e) if e.is_refused_sign_in() => refused = true,
@@ -366,7 +432,15 @@ fn graph(request: GraphRequest) -> GraphResult {
             }
             let query = graph::EventsQuery { calendar: calendar.clone(), from, to, series: expected(calendar) };
             match graph::events_in(&access, &query) {
-                Ok(events) => out.more_events.push(events.for_account(&request.account)),
+                Ok(events) => {
+                    log::info!(
+                        "calendar: calendar #{} came down: {} events (all of them: {})",
+                        mailcraft_model::remote::id_tag(calendar),
+                        events.events.len(),
+                        events.complete
+                    );
+                    out.more_events.push(events.for_account(&request.account));
+                }
                 Err(e) if e.is_refused_sign_in() => refused = true,
                 // A calendar that is gone, or may not be read: the list says so the next time.
                 Err(e) => log::debug!("one of the account's other calendars didn't come down: {e}"),
@@ -400,6 +474,45 @@ fn graph(request: GraphRequest) -> GraphResult {
         }
     }
     out.token_refused = refused;
+    out
+}
+
+/// File › Info › Check Calendar Connection: on the account's real server, and only because the
+/// owner asked for it and said yes to what it does. One appointment is made a year from today
+/// in the main calendar, read back, changed (once as an instant, once said in this computer's
+/// time zone), read back each time and deleted; what the server answered at each step goes back
+/// to the window, which shows and logs it. Nothing else of the calendar is read or changed.
+fn check_calendar(request: CalendarCheckRequest) -> CalendarCheckResult {
+    check_calendar_in(request, local_zone(), &mailcraft_time::local_offset_minutes)
+}
+
+/// [`check_calendar`], with the owner's time zone as `zone` and how far east of UTC it is at an
+/// instant as `offset_at` (minutes).
+fn check_calendar_in(request: CalendarCheckRequest, zone: &str, offset_at: &dyn Fn(i64) -> i32) -> CalendarCheckResult {
+    use mailcraft_net::{graph, oauth};
+    let mut out = CalendarCheckResult { account: request.account.id, cleaned_up: true, ..Default::default() };
+    let mut access = request.access.clone();
+    if access.is_empty() {
+        match oauth::refresh_graph(&request.oauth, &request.refresh) {
+            Ok(got) => {
+                access = got.tokens.access.clone();
+                out.tokens = Some(got.tokens);
+            }
+            Err(e) => {
+                out.consent_needed = e.is_consent_needed();
+                out.token_refused = e.is_refused_sign_in();
+                out.error = format!("Couldn't sign in to Microsoft for the calendar: {e}");
+                return out;
+            }
+        }
+    }
+    let check = graph::check_calendar(&access, mailcraft_time::now(), zone, offset_at);
+    (out.ok, out.cleaned_up, out.token_refused) = (check.ok(), check.cleaned_up, check.token_refused);
+    out.steps = check
+        .steps
+        .into_iter()
+        .map(|step| CalendarCheckStep { what: step.what.to_string(), ok: step.ok, status: step.status, said: step.said })
+        .collect();
     out
 }
 
@@ -454,9 +567,12 @@ fn free_busy(request: FreeBusyRequest) -> FreeBusyResult {
 /// What the app needs from the system: native file dialogs, shown without blocking the window
 /// (`file_dialogs`); everything that opens a socket (Send/Receive, signing in, finding a domain's
 /// mail servers, checking an account), each on a background thread; and the credential store.
-fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context) -> Services {
+/// `kept_pictures` is where downloaded pictures are kept between runs, when they are.
+fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: Option<std::sync::Arc<picture_cache::Cache>>) -> Services {
     let pictures_ctx = ctx.clone();
+    let pictures_kept = kept_pictures.clone();
     let busy_ctx = ctx.clone();
+    let check_ctx = ctx.clone();
     let (sync_ctx, sign_in_ctx, graph_ctx, mx_ctx, test_ctx) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone(), ctx);
     let sync_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel = sync_cancel.clone();
@@ -499,11 +615,17 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context) -> Services {
         // A picture a message keeps on the web, once the owner asked for that message's pictures.
         // The address is the message's choice, so `fetch` checks where it leads before it goes
         // there (never to this machine or a private network), and takes and waits only so much.
+        // One that was downloaded before and is still kept comes from the disk instead: nobody
+        // is asked, and so nobody is told again. Either way the window gets bytes to check.
         pictures: Some(Box::new(move |url| {
-            background(&pictures_ctx, "picture", move || mailcraft_net::pictures::fetch(&url).map_err(|e| e.to_string()))
+            let kept = pictures_kept.clone();
+            background(&pictures_ctx, "picture", move || picture_cache::picture(&url, kept.as_ref()))
         })),
+        picture_cache: kept_pictures.map(|kept| Box::new(picture_cache::Kept(kept)) as Box<dyn mailcraft_ui_egui::PictureCache>),
         // When the people of a meeting are free and busy, while its Scheduling Assistant is open.
         free_busy: Some(Box::new(move |request| background(&busy_ctx, "free and busy times", move || free_busy(request)))),
+        // A check of the calendar connection on the account's real server, when the owner asks.
+        check_calendar: Some(Box::new(move |request| background(&check_ctx, "calendar check", move || check_calendar(request)))),
         secrets: secrets::store(),
         microsoft_client_id: microsoft_client_id(),
         ..Default::default()
@@ -669,7 +791,9 @@ fn main() -> eframe::Result {
             let mut session = Session::new(mailbox);
             let kept = path.is_some();
             session.path = path;
-            let mut app = MailApp::new(session, services(file_dialog, cc.egui_ctx.clone()));
+            // A run that keeps its mailbox and its settings keeps downloaded pictures too.
+            let kept_pictures = if kept && !sample && prefs_enabled() { keep_pictures() } else { None };
+            let mut app = MailApp::new(session, services(file_dialog, cc.egui_ctx.clone(), kept_pictures));
             // Nowhere to keep the mailbox (the sample, a run without preferences): don't try.
             app.autosave = kept;
             if let Some(path) = &app.session.path {

@@ -14,7 +14,7 @@
 use mailcraft_time::Weekday;
 use serde_json::Value;
 
-use super::{ASK_TIMEOUT, DAYS, Doing, GRAPH, Graph, code_of, nonsense, text};
+use super::{ASK_TIMEOUT, DAYS, Doing, Graph, code_of, nonsense, text};
 use crate::NetError;
 
 const WORKING_HOURS: &str = "/v1.0/me/mailboxSettings/workingHours";
@@ -51,7 +51,7 @@ pub struct MailboxSettings {
 /// The working hours of the mailbox, for the owner of `token` (an access token for Graph).
 /// Without the permission for it the answer is [`NetError::Forbidden`].
 pub fn mailbox_settings(token: &str) -> Result<MailboxSettings, NetError> {
-    mailbox_settings_at(GRAPH, token)
+    mailbox_settings_at(&super::graph_base(), token)
 }
 
 /// [`mailbox_settings`] from Graph at `base`.

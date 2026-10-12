@@ -1237,13 +1237,22 @@ fn a_download_does_not_undo_what_waits_or_make_an_event_twice() {
     // The server has it as it is here: nothing more to make, and the rest still waits.
     assert_eq!(s.mailbox.event_changes.iter().map(|c| c.kind).collect::<Vec<_>>(), [EventChangeKind::Update, EventChangeKind::Delete]);
 
-    // An event that was changed here and is gone from the server: the server's word is the
-    // last, and the change with it.
+    // An event that was changed here and is not in what the server has in the stretch: a
+    // download never takes it away while the change waits (it may be elsewhere there than it is
+    // here, outside what was asked for). The server says so itself when it is told the change:
+    // then it goes, the change with it, and the owner hears of it.
     s.clock.now = Some(s.now() + 10_000);
     let merged = apply_events(&mut s, &october(account, vec![with_new[2].clone()])).unwrap();
-    assert_eq!(merged["removed"], 1);
-    assert!(s.mailbox.event(first).is_none());
-    assert_eq!(s.mailbox.event_changes.iter().map(|c| (c.kind, c.remote.as_str())).collect::<Vec<_>>(), [(EventChangeKind::Delete, "e-2")]);
+    assert_eq!((merged["removed"].as_u64(), merged["dropped"]["count"].as_u64()), (Some(0), Some(0)));
+    assert!(s.mailbox.event(first).is_some());
+    assert_eq!(s.mailbox.event_changes.iter().map(|c| c.kind).collect::<Vec<_>>(), [EventChangeKind::Update, EventChangeKind::Delete]);
+    let applied = push_said(&mut s, account, EventResult::Gone, "");
+    assert!(s.mailbox.event(first).is_none() && s.mailbox.event_changes.is_empty());
+    assert_eq!(applied.messages, ["\"Budget review\" is no longer on the server, so it couldn't be changed there. It was removed here too."]);
+    assert_eq!(
+        applied.dropped.iter().map(|d| (d.kind, d.reason)).collect::<Vec<_>>(),
+        [(EventChangeKind::Update, "the server no longer has the event")]
+    );
     assert!(s.mailbox.clone().repair().is_empty());
 }
 
@@ -2028,6 +2037,8 @@ fn nobody_is_written_to_unless_the_owner_says_so() {
         attendees: vec![answered(Response::Declined)],
         is_organizer: Some(true),
         change_key: "ck-3".into(),
+        // (As it was sent: an hour later, and tentative.)
+        show_as: ShowAs::Tentative,
         ..remote("m-1", "Planning", at(2026, 10, 12, 14, 0), 60)
     };
     apply_events(&mut s, &october(account, vec![now.clone()])).unwrap();
@@ -2598,4 +2609,297 @@ fn free_and_busy_times_are_asked_for_and_merged() {
     }
     let crowd: Vec<String> = (0..21).map(|n| format!("p{n}@example.org")).collect();
     assert!(s.run("calendar.freeBusy", &json!({"people": crowd, "from": "2026-10-15T08:00", "to": "2026-10-15T18:00"})).is_err());
+}
+
+/// The two events of [`served`] as the server has them, the first at `start` under the mark `key`.
+fn both(start: Timestamp, key: &str) -> Vec<RemoteEvent> {
+    vec![RemoteEvent { change_key: key.into(), ..remote("e-1", "Budget review", start, 60) }, remote("e-2", "Dentist", at(2026, 10, 13, 18, 0), 30)]
+}
+
+/// What a merge says of the changes that were sent: seen on the server, put back, still to be seen.
+fn checked(merged: &Value) -> (u64, u64, u64) {
+    let n = |name: &str| merged[name].as_u64().unwrap();
+    (n("verified"), n("putBack"), n("unverified"))
+}
+
+fn said(merged: &Value) -> Vec<String> {
+    merged["messages"].as_array().unwrap().iter().map(|line| line.as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn a_yes_from_the_server_is_checked_against_what_comes_down() {
+    let (mut s, account, first, _, _) = served();
+    let (monday, wednesday) = (at(2026, 10, 12, 13, 0), at(2026, 10, 14, 13, 0));
+    // Moved to Wednesday, and the server says it took the change: that is noted, to be seen.
+    run(&mut s, "calendar.move", json!({"id": first, "start": "2026-10-14T09:00"}));
+    let applied = push_done(&mut s, account);
+    assert_eq!((applied.done, applied.unverified, s.mailbox.event_checks.len()), (1, 1, 1));
+    assert!(super::recheck_due(&s, account) && s.mailbox.event_changes.is_empty());
+    // A download that was answered from before the change (the old time, under the old mark):
+    // the event stays where the owner put it, and the change is still to be seen.
+    let merged = apply_events(&mut s, &october(account, both(monday, "ck-e-1-1"))).unwrap();
+    assert_eq!((checked(&merged), counts(&merged)), ((0, 0, 1), (0, 0, 0, 2, 0)));
+    assert_eq!(s.mailbox.event(first).map(|e| e.start), Some(clock(2026, 10, 14, 9, 0)));
+    assert_eq!(s.mailbox.event_checks[0].tries, 1);
+    // The server has caught up: the change is there, and nothing is left to look for.
+    let merged = apply_events(&mut s, &october(account, both(wednesday, "ck-new"))).unwrap();
+    assert_eq!((checked(&merged), said(&merged).len()), ((1, 0, 0), 0));
+    assert!(s.mailbox.event_checks.is_empty() && !super::recheck_due(&s, account));
+    assert_eq!(s.mailbox.event(first).map(|e| (e.start, e.origin.change_key.clone())), Some((clock(2026, 10, 14, 9, 0), "ck-new".to_string())));
+
+    // A server that says yes and never shows it: after three looks the event is put back to
+    // what the server has, and the owner is told which one and what of it.
+    run(&mut s, "calendar.move", json!({"id": first, "start": "2026-10-15T09:00"}));
+    push_done(&mut s, account);
+    for look in 1..=2 {
+        let merged = apply_events(&mut s, &october(account, both(wednesday, "ck-older"))).unwrap();
+        assert_eq!((checked(&merged), s.mailbox.event(first).map(|e| e.start)), ((0, 0, 1), Some(clock(2026, 10, 15, 9, 0))), "look {look}");
+    }
+    let merged = apply_events(&mut s, &october(account, both(wednesday, "ck-older"))).unwrap();
+    assert_eq!(checked(&merged), (0, 1, 0));
+    assert_eq!(
+        said(&merged),
+        [
+            "\"Budget review\" was changed here and the server said it took the change, but it still has its time as before. It was put back to what the server has."
+        ]
+    );
+    assert_eq!(s.mailbox.event(first).map(|e| e.start), Some(clock(2026, 10, 14, 9, 0)));
+    assert!(s.mailbox.event_checks.is_empty() && s.mailbox.event_changes.is_empty());
+
+    // A server whose own version of the change is not what was sent (it is under the mark the
+    // change was answered with, and at another time): that needs no second look.
+    run(&mut s, "calendar.edit", json!({"id": first, "start": "2026-10-16T09:00", "title": "Budget review, final"}));
+    push_done(&mut s, account);
+    let theirs = vec![RemoteEvent { change_key: "ck-new".into(), ..remote("e-1", "Budget review, final", wednesday, 60) }];
+    let merged = apply_events(&mut s, &october(account, theirs)).unwrap();
+    assert_eq!(checked(&merged), (0, 1, 0));
+    assert_eq!(
+        said(&merged),
+        [
+            "The server took the change to \"Budget review, final\" but has its time otherwise than it was sent. It is shown here as the server has it."
+        ]
+    );
+    assert_eq!(s.mailbox.event(first).map(|e| e.start), Some(clock(2026, 10, 14, 9, 0)));
+
+    // What a download can't show again as it was sent (a description, a category) is not waited
+    // for: there is nothing to hold it against.
+    run(&mut s, "calendar.edit", json!({"id": first, "description": "Bring the numbers."}));
+    assert_eq!(push_done(&mut s, account).unverified, 0);
+    // A change that is waited for and never comes into any download is let go after a day.
+    run(&mut s, "calendar.move", json!({"id": first, "start": "2027-03-01T09:00"}));
+    push_done(&mut s, account);
+    let merged = apply_events(&mut s, &october(account, Vec::new())).unwrap();
+    assert_eq!((checked(&merged), s.mailbox.event(first).is_some()), ((0, 0, 1), true));
+    s.clock.now = Some(s.now() + 90_000);
+    assert_eq!(checked(&apply_events(&mut s, &october(account, Vec::new())).unwrap()), (0, 0, 0));
+    assert!(s.mailbox.clone().repair().is_empty());
+}
+
+#[test]
+fn what_was_made_or_deleted_is_looked_for_on_the_server_too() {
+    let (mut s, account, first, second, server) = served();
+    let monday = at(2026, 10, 12, 13, 0);
+    // A new event that the server said it made, and that the next download doesn't have yet:
+    // it is not taken for one the server lost.
+    let lunch = run(&mut s, "calendar.new", json!({"title": "Lunch", "start": "2026-10-15T12:00"}))["id"].as_u64().unwrap();
+    push_done(&mut s, account);
+    let merged = apply_events(&mut s, &october(account, both(monday, "ck-e-1-1"))).unwrap();
+    assert_eq!((checked(&merged), merged["removed"].as_u64()), ((0, 0, 1), Some(0)));
+    assert_eq!(s.mailbox.event(lunch).map(|e| e.origin.id.as_str()), Some("made-0"));
+    let mut with_lunch = both(monday, "ck-e-1-1");
+    with_lunch.push(RemoteEvent { reminder_minutes: Some(15), ..remote("made-0", "Lunch", at(2026, 10, 15, 16, 0), 30) });
+    assert_eq!(checked(&apply_events(&mut s, &october(account, with_lunch.clone())).unwrap()), (1, 0, 0));
+
+    // One the server said it made and never shows: after three looks it is kept on this
+    // computer, where the owner still has it, and says that it is not in the Outlook calendar.
+    let ghost = run(&mut s, "calendar.new", json!({"title": "Ghost", "start": "2026-10-16T12:00"}))["id"].as_u64().unwrap();
+    let mut answer = all_done(&event_upload(&s, account).unwrap());
+    answer.outcomes[0].remote = "made-9".into();
+    apply_event_outcomes(&mut s, &answer).unwrap();
+    for _ in 0..2 {
+        assert_eq!(checked(&apply_events(&mut s, &october(account, with_lunch.clone())).unwrap()), (0, 0, 1));
+    }
+    let merged = apply_events(&mut s, &october(account, with_lunch.clone())).unwrap();
+    assert_eq!(checked(&merged), (0, 1, 0));
+    assert_eq!(
+        said(&merged),
+        [
+            "\"Ghost\" was made here and the server said it took it, but it is not in the server's calendar. It is kept on this computer only: it is not in your Outlook calendar."
+        ]
+    );
+    let kept = s.mailbox.event(ghost).unwrap();
+    assert!(kept.origin.is_local() && kept.calendar != server && super::stays_here(&s.mailbox, ghost));
+
+    // A deletion the server said it made, in a download that still has the event: it is not
+    // brought back for that; when it is gone there too, the deletion has arrived.
+    run(&mut s, "calendar.delete", json!({"id": second}));
+    push_done(&mut s, account);
+    let merged = apply_events(&mut s, &october(account, with_lunch.clone())).unwrap();
+    assert_eq!((checked(&merged), merged["added"].as_u64()), ((0, 0, 1), Some(0)));
+    assert!(!titles(&s, account).contains(&"Dentist".to_string()));
+    let without: Vec<RemoteEvent> = with_lunch.iter().filter(|e| e.id != "e-2").cloned().collect();
+    assert_eq!(checked(&apply_events(&mut s, &october(account, without.clone())).unwrap()), (1, 0, 0));
+    // And one that the server keeps all the same comes back, with a word about it.
+    run(&mut s, "calendar.delete", json!({"id": first}));
+    push_done(&mut s, account);
+    for _ in 0..2 {
+        assert_eq!(checked(&apply_events(&mut s, &october(account, without.clone())).unwrap()), (0, 0, 1));
+        assert!(!titles(&s, account).contains(&"Budget review".to_string()));
+    }
+    let merged = apply_events(&mut s, &october(account, without)).unwrap();
+    assert_eq!((checked(&merged), merged["added"].as_u64()), ((0, 1, 0), Some(1)));
+    assert_eq!(
+        said(&merged),
+        ["\"Budget review\" was deleted here and the server said it deleted it too, but it still has it. It is back in the calendar."]
+    );
+    assert!(titles(&s, account).contains(&"Budget review".to_string()));
+    assert!(s.mailbox.event_checks.is_empty() && s.mailbox.clone().repair().is_empty());
+    // What is noted of sent changes is kept with the mailbox, and a mailbox without any says nothing of it.
+    run(&mut s, "calendar.move", json!({"id": lunch, "start": "2026-10-15T13:00"}));
+    push_done(&mut s, account);
+    let json = serde_json::to_string(&s.mailbox).unwrap();
+    assert!(json.contains(r#""eventChecks":[{"account":"#), "{:.200}", json);
+    assert_eq!(serde_json::from_str::<mailcraft_model::Mailbox>(&json).unwrap().event_checks, s.mailbox.event_checks);
+    s.mailbox.event_checks.clear();
+    assert!(!serde_json::to_string(&s.mailbox).unwrap().contains("eventChecks"));
+}
+
+#[test]
+fn a_change_that_cannot_be_sent_is_given_up_with_a_word_and_put_back() {
+    let unasked = "it would have made the server write to the people invited, and nobody said to send that";
+    let reason = "it would make the server write to the people invited, and nobody said to send that";
+    // A change to a meeting the owner called that waits without the owner's yes (only a file
+    // from elsewhere holds such a thing): it is not sent, and it doesn't just go either.
+    let (mut s, account, own, _) = meetings();
+    run(&mut s, "calendar.move", json!({"id": own, "start": "2026-10-12T10:00", "send": true}));
+    s.mailbox.event_changes[0].send = false;
+    let answer = run(&mut s, "sync.eventChanges", json!({"account": account}));
+    assert_eq!((answer["ops"].as_array().map(Vec::len), answer["dropped"]["count"].as_u64()), (Some(0), Some(1)));
+    assert_eq!(answer["dropped"]["reasons"], json!([format!("Update: {reason}")]));
+    assert_eq!(
+        answer["dropped"]["messages"],
+        json!([format!("The change to \"Planning\" was not sent: {unasked}. It was put back to what the server has.")])
+    );
+    // Back where the server has it, with nothing left waiting; asked again, nothing more is said.
+    assert_eq!(s.mailbox.event(own).map(|e| e.start), Some(clock(2026, 10, 12, 9, 0)));
+    assert!(s.mailbox.event_changes.is_empty());
+    assert_eq!(run(&mut s, "sync.eventChanges", json!({"account": account}))["dropped"]["count"], 0);
+
+    // A deletion of the kind: the meeting is still on the server, and the owner hears that it comes back.
+    run(&mut s, "calendar.delete", json!({"id": own, "send": true}));
+    s.mailbox.event_changes[0].send = false;
+    let dropped = super::settle_changes(&mut s);
+    assert_eq!(dropped.iter().map(|d| (d.account, d.kind, d.reason)).collect::<Vec<_>>(), [(account, EventChangeKind::Delete, reason)]);
+    assert_eq!(
+        dropped[0].message,
+        format!("Deleting \"Planning\" was not sent to the server: {unasked}. It is still there, and comes back into the calendar.")
+    );
+    // A new meeting of the kind: kept on this computer, where nobody is invited to anything.
+    let made = run(&mut s, "calendar.newMeeting", json!({"title": "Sync", "start": "2026-10-15T10:00", "attendees": "bo@example.org", "send": true}));
+    let made = made["id"].as_u64().unwrap();
+    s.mailbox.event_changes[0].send = false;
+    let merged = apply_events(&mut s, &october(account, Vec::new())).unwrap();
+    assert_eq!(merged["dropped"]["count"], 1);
+    assert_eq!(said(&merged), [format!("\"Sync\" was not sent to the server: {unasked}. It is kept on this computer only.")]);
+    assert!(s.mailbox.event(made).is_some_and(|e| e.origin.is_local()) && s.mailbox.event_changes.is_empty());
+
+    // A note that says nothing any more (the event is as the server has it) just goes: there
+    // was nothing to send, and it must not keep the event from following the server.
+    let (mut s, account, first, _, _) = served();
+    run(&mut s, "calendar.move", json!({"id": first, "start": "2026-10-14T09:00"}));
+    let base = s.mailbox.event_changes[0].base.clone().unwrap();
+    *s.mailbox.event_mut(first).unwrap() = *base;
+    assert!(ops(&s, account).is_empty());
+    let merged = apply_events(&mut s, &october(account, both(at(2026, 10, 13, 13, 0), "ck-2"))).unwrap();
+    assert_eq!((merged["dropped"]["count"].as_u64(), s.mailbox.event_changes.len()), (Some(0), 0));
+    // (The next download moves it as the server has it.)
+    apply_events(&mut s, &october(account, both(at(2026, 10, 13, 13, 0), "ck-2"))).unwrap();
+    assert_eq!(s.mailbox.event(first).map(|e| e.start), Some(clock(2026, 10, 13, 9, 0)));
+}
+
+#[test]
+fn an_event_of_another_calendar_is_sent_through_that_calendar() {
+    use mailcraft_model::remote::{CalendarsDownload, RemoteCalendar};
+    let (mut s, account, first, _, _) = served();
+    let entry = |id: &str, name: &str, main: bool| RemoteCalendar { id: id.into(), name: name.into(), main, ..Default::default() };
+    let list = CalendarsDownload {
+        account,
+        email: "ada@example.org".into(),
+        complete: true,
+        calendars: vec![entry("cal-main", "Calendar", true), entry("cal-team", "Team", false)],
+    };
+    super::apply_calendars(&mut s, &list).unwrap();
+    let in_team = EventsDownload { calendar: "cal-team".into(), ..october(account, vec![remote("t-1", "Retro", at(2026, 10, 15, 13, 0), 60)]) };
+    apply_events(&mut s, &in_team).unwrap();
+    let retro = event_called(&s, account, "t-1").id;
+    let team = s.mailbox.event(retro).unwrap().calendar;
+    // A change, a new event and a deletion there all say which calendar of the server it is.
+    run(&mut s, "calendar.move", json!({"id": retro, "start": "2026-10-15T10:00"}));
+    run(&mut s, "calendar.new", json!({"title": "Planning poker", "start": "2026-10-16T10:00", "calendar": team}));
+    let told: Vec<(EventChangeKind, String)> = ops(&s, account).into_iter().map(|op| (op.kind, op.calendar)).collect();
+    assert_eq!(told, [(EventChangeKind::Update, "cal-team".to_string()), (EventChangeKind::Create, "cal-team".to_string())]);
+    push_done(&mut s, account);
+    run(&mut s, "calendar.delete", json!({"id": retro}));
+    assert_eq!(
+        ops(&s, account).into_iter().map(|op| (op.kind, op.calendar)).collect::<Vec<_>>(),
+        [(EventChangeKind::Delete, "cal-team".to_string())]
+    );
+    // One of the main calendar says nothing: it is the account's own.
+    run(&mut s, "calendar.move", json!({"id": first, "start": "2026-10-14T09:00"}));
+    assert!(ops(&s, account).iter().any(|op| op.remote == "e-1" && op.calendar.is_empty()));
+}
+
+#[test]
+fn what_is_only_on_this_computer_says_so_and_can_be_moved_to_the_account() {
+    // The sample's own events, beside a server calendar that has two.
+    let (mut s, account, first, _, server) = served();
+    let local = s.mailbox.calendars.iter().find(|c| c.origin.is_local()).map(|c| (c.id, c.name.clone())).unwrap();
+    assert_eq!(local.1, "On this computer");
+    let here: Vec<Event> = own(&s).0;
+    let meetings = here.iter().filter(|e| !e.attendees.is_empty()).count();
+    assert!(meetings > 0 && here.len() > meetings, "the sample has appointments and meetings of its own");
+    assert_eq!(super::only_here(&s.mailbox), [(local.0, here.len())]);
+    assert!(super::stays_here(&s.mailbox, here[0].id) && !super::stays_here(&s.mailbox, first));
+    // A copy of something the server has already: the same title at the same time.
+    let twin =
+        run(&mut s, "calendar.new", json!({"title": "Budget review", "start": "2026-10-12T09:00", "end": "2026-10-12T10:00", "calendar": local.0}));
+    let twin = twin["id"].as_u64().unwrap();
+    assert!(s.mailbox.event_changes.is_empty());
+
+    // Meetings are among them, and nothing was said of invitations: nothing moves.
+    let why = refused(&mut s, "calendar.moveToAccount", json!({}));
+    assert!(why.contains("with people invited") && why.contains("Nothing was moved."), "{why}");
+    assert_eq!(own(&s).0.len(), here.len() + 1);
+    // Without invitations: the appointments move and are made on the server, the copy of what
+    // is there already just goes, and the meetings stay where they are and say why.
+    let moved = run(&mut s, "calendar.moveToAccount", json!({"send": false}));
+    let appointments = here.len() - meetings;
+    assert_eq!((moved["moved"].as_u64(), moved["already"].as_u64(), moved["calendar"].as_u64()), (Some(appointments as u64), Some(1), Some(server)));
+    assert_eq!(moved["kept"].as_array().map(Vec::len), Some(meetings));
+    assert_eq!(moved["kept"][0]["why"], "People are invited to it, and no invitations were to be sent.");
+    assert!(s.mailbox.event(twin).is_none());
+    let told = ops(&s, account);
+    assert_eq!((told.len(), told.iter().all(|op| op.kind == EventChangeKind::Create && op.fields.attendees.is_none())), (appointments, true));
+    assert_eq!(super::only_here(&s.mailbox), [(local.0, meetings)]);
+    // One step, to be taken back like any other.
+    assert!(s.undo());
+    assert_eq!((own(&s).0.len(), s.mailbox.event_changes.len()), (here.len() + 1, 0));
+
+    // With the owner's yes to the invitations, everything goes, and the calendar that is left
+    // empty goes away.
+    let moved = run(&mut s, "calendar.moveToAccount", json!({"send": true}));
+    assert_eq!(
+        (moved["moved"].as_u64(), moved["kept"].as_array().map(Vec::len), moved["removed"].as_u64()),
+        (Some(here.len() as u64), Some(0), Some(1))
+    );
+    assert!(own(&s).0.is_empty() && super::only_here(&s.mailbox).is_empty());
+    assert!(s.mailbox.calendar(local.0).is_none());
+    let told = ops(&s, account);
+    assert_eq!(told.iter().filter(|op| op.fields.attendees.as_ref().is_some_and(|people| !people.is_empty())).count(), meetings);
+    assert!(s.mailbox.event_changes.iter().all(|change| change.kind == EventChangeKind::Create));
+    assert!(s.mailbox.clone().repair().is_empty());
+    // With no server calendar there is nowhere to move anything to, and nothing to say.
+    let mut alone = Session::at(crate::sample::mailbox(at(2026, 10, 14, 16, 0), 0), at(2026, 10, 14, 16, 0), 0);
+    assert!(super::only_here(&alone.mailbox).is_empty());
+    assert!(refused(&mut alone, "calendar.moveToAccount", json!({})).starts_with("No account's server keeps a calendar here yet"));
 }
