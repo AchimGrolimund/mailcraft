@@ -985,9 +985,16 @@ impl Graph<'_> {
         // outcome says so, with what Graph said to the first asking.
         let asks_online = matches!(op.kind, EventChangeKind::Create | EventChangeKind::Update) && op.fields.online.is_some();
         let (mut online, mut no_online) = (asks_online, String::new());
-        // A few times at most: again in UTC, should Graph not know the zone a whole day is in,
-        // and again without the online meeting, should it not have one.
-        for _ in 0..4 {
+        // A change says whether another time may be proposed. That is said when a meeting is
+        // made; Graph's reference doesn't list it among what an update may say. Should Graph
+        // refuse the change, it is asked once more without that, and the outcome says so: one
+        // thing Graph won't have changed doesn't undo the rest of what was changed with it.
+        let asks_new_times = op.kind == EventChangeKind::Update && op.fields.allow_proposals.is_some();
+        let mut new_times = asks_new_times;
+        // A few times at most: again without what Graph may not let an update say, again
+        // without the online meeting, should it not have one, and again in UTC, should it not
+        // know the zone a whole day is in.
+        for _ in 0..5 {
             let body = match op.kind {
                 EventChangeKind::Delete if op.cancel => Some(json!({"comment": op.comment}).to_string()),
                 EventChangeKind::Delete => None,
@@ -998,10 +1005,16 @@ impl Graph<'_> {
                     if !online {
                         fields.online = None;
                     }
-                    // Nothing but the online meeting was to change, and Graph won't have it.
+                    if asks_new_times && !new_times {
+                        fields.allow_proposals = None;
+                    }
+                    // Nothing but what Graph won't have was to change: there is nothing left to
+                    // ask, and the outcome says what was left out.
                     if op.kind == EventChangeKind::Update && fields.is_empty() {
-                        let mut done = outcome(op, EventResult::Done, no_online);
-                        (done.remote, done.online) = (found, Some(false));
+                        let (no_meeting, no_times) = (asks_online && !online, asks_new_times && !new_times);
+                        let mut done = outcome(op, EventResult::Done, if no_meeting { no_online } else { String::new() });
+                        done.remote = found;
+                        (done.online, done.new_times) = (no_meeting.then_some(false), no_times.then_some(false));
                         return Wrote::Outcome(done, false);
                     }
                     match event_body(&fields, &op.token, zone, own) {
@@ -1054,6 +1067,10 @@ impl Graph<'_> {
                         (done.online, done.join_url) = if online { (is_online, link) } else { (Some(false), String::new()) };
                         done.error = if done.online == Some(false) { no_online } else { String::new() };
                     }
+                    // And whether what was said of proposing another time was left out for it.
+                    if asks_new_times && !new_times {
+                        done.new_times = Some(false);
+                    }
                     done.tidy();
                     return Wrote::Outcome(done, false);
                 }
@@ -1063,6 +1080,13 @@ impl Graph<'_> {
                 (_, 403) => (EventResult::Denied, false),
                 (_, 429 | 503 | 504) => (EventResult::Failed, true),
                 (EventChangeKind::Create, 409) | (_, 500..=599) => (EventResult::Failed, false),
+                // A change that says whether another time may be proposed, which Graph may not
+                // let a change say: the same change without that, once. (Nothing was changed by
+                // the one that was refused, and nobody was written to.)
+                (EventChangeKind::Update, 400) if new_times => {
+                    new_times = false;
+                    continue;
+                }
                 // An online meeting that Graph won't make: the same event without one.
                 (EventChangeKind::Create | EventChangeKind::Update, 400) if online => {
                     online = false;

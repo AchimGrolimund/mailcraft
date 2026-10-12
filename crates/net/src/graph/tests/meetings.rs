@@ -341,3 +341,48 @@ fn a_meeting_is_forwarded_to_the_people_it_names_and_to_nobody_else() {
     assert!(server.request(0).starts_with("GET /v1.0/me/events/s-1/instances?"), "{}", server.request(0));
     assert!(server.request(1).starts_with("POST /v1.0/me/events/occ-1/forward HTTP/1.1\r\n"), "{}", server.request(1));
 }
+
+#[test]
+fn a_change_refused_for_what_it_says_of_proposing_another_time_goes_without_that() {
+    let refusal = || answer("400 Bad Request", "", &graph_error("ErrorInvalidPropertySet", "The property 'allowNewTimeProposals' is read-only."));
+    let taken = || json_answer("200 OK", r#"{"id":"e-1","changeKey":"ck-2"}"#);
+    let push = |server: &FakeHttp, op: &EventOp| {
+        push_events_at(&server.url(""), TOKEN, &upload(vec![op.clone()]), &EventOptions::default()).outcomes.remove(0)
+    };
+    // How much it matters and that option in one change. Graph refuses, and is asked once more
+    // without the option: the rest is taken, and the outcome says what was left out.
+    let both = update("e-1", EventFields { importance: Some(Importance::High), allow_proposals: Some(false), ..Default::default() });
+    let server = FakeHttp::start(move |n, _| match n {
+        0 => refusal(),
+        _ => taken(),
+    });
+    let said = push(&server, &both);
+    assert_eq!(server.asked(), 2);
+    assert_eq!(body_of(&server.request(0)), json!({"importance": "high", "allowNewTimeProposals": false}));
+    assert_eq!(body_of(&server.request(1)), json!({"importance": "high"}));
+    assert_eq!((said.result, said.remote.as_str(), said.change_key.as_str(), said.new_times), (EventResult::Done, "e-1", "ck-2", Some(false)));
+    // A Graph that takes it is asked once, and nothing is said of leaving anything out.
+    let server = FakeHttp::answering(taken());
+    let said = push(&server, &both);
+    assert_eq!((server.asked(), said.result, said.new_times), (1, EventResult::Done, None));
+    // Only that option, which Graph won't have changed: nothing is left to ask for.
+    let server = FakeHttp::answering(refusal());
+    let said = push(&server, &update("e-1", EventFields { allow_proposals: Some(true), ..Default::default() }));
+    assert_eq!((server.asked(), said.result, said.remote.as_str(), said.new_times), (1, EventResult::Done, "e-1", Some(false)));
+
+    // A refusal for another reason stays a refusal. A change that doesn't say that option is
+    // not asked a second time at all...
+    let no = || answer("400 Bad Request", "", &graph_error("ErrorInvalidRequest", "No."));
+    let server = FakeHttp::answering(no());
+    let said = push(&server, &update("e-1", EventFields { importance: Some(Importance::High), ..Default::default() }));
+    assert_eq!((server.asked(), said.result, said.new_times), (1, EventResult::Refused, None));
+    // ...and one that does, and is refused without it as well, is refused: nothing of it is
+    // called taken.
+    let server = FakeHttp::answering(no());
+    let said = push(&server, &both);
+    assert_eq!((server.asked(), said.result, said.new_times), (2, EventResult::Refused, None));
+    // A new meeting says the option like everything else it says, and is not asked twice for it.
+    let server = FakeHttp::answering(no());
+    let said = push(&server, &create(EventFields { title: Some("Sync".into()), allow_proposals: Some(false), ..Default::default() }));
+    assert_eq!((server.asked(), said.result, said.new_times), (1, EventResult::Refused, None));
+}

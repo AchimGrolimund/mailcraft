@@ -867,6 +867,11 @@ pub struct EventOutcome {
     /// The link to join the meeting by, when the server's answer has it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub join_url: String,
+    /// For a change that said whether another time may be proposed
+    /// ([`EventFields::allow_proposals`]): `Some(false)` when the server wouldn't have that
+    /// changed, and took the rest of the change without it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_times: Option<bool>,
 }
 
 impl EventOutcome {
@@ -956,6 +961,16 @@ pub struct EventCheck {
     pub series: String,
     #[serde(skip_serializing_if = "is_zero_time")]
     pub occurrence: Timestamp,
+    /// For a deletion: the server didn't say that it deleted the event, but that it has no such
+    /// event. That is what it says of one that is gone already, and of one that was asked for
+    /// at the wrong address: only a download tells which.
+    #[serde(skip_serializing_if = "is_false")]
+    pub not_found: bool,
+    /// For the deletion that finishes a move to another calendar ([`EventChange::moved`]): what
+    /// the server calls the copy, which goes again should the original turn out to be there
+    /// still.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub moved: String,
 }
 
 impl EventCheck {

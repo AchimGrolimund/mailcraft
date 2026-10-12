@@ -645,11 +645,21 @@ fn a_meeting_is_made_online_answered_with_another_time_and_forwarded_as_the_serv
         ("low", false, true, made.join_url.as_str())
     );
     // Whether another time may be proposed is not among what the reference lets an update say:
-    // the service refuses it, and nothing is changed.
-    let outcome = push(&server, vec![update(&made.remote, EventFields { allow_proposals: Some(true), ..Default::default() })], EASTERN).remove(0);
-    assert_eq!((outcome.result, outcome.status), (EventResult::Refused, 400));
-    assert!(server.state().event("Planning").unwrap().no_new_times);
+    // the service refuses the change. It is asked once more without that, so what was changed
+    // with it holds, and the outcome says what was left out.
+    let both = EventFields { title: Some("Planning day".into()), allow_proposals: Some(true), ..Default::default() };
+    let outcome = push(&server, vec![update(&made.remote, both)], EASTERN).remove(0);
+    assert_eq!((outcome.result, outcome.status, outcome.new_times), (EventResult::Done, 200, Some(false)));
+    let have = server.state().event("Planning day").cloned().unwrap();
+    assert!(have.no_new_times && have.id == made.remote);
     assert_eq!(refusals(&server).len(), 1);
+    assert_eq!(server.state().mail.iter().filter(|line| line.starts_with("update:Planning day")).count(), 1, "one update, for what was taken");
+    // A service that lets it be said takes it as it is.
+    server.state().updates_new_times = true;
+    let outcome = done(&server, update(&made.remote, EventFields { allow_proposals: Some(true), ..Default::default() }), EASTERN);
+    assert_eq!((outcome.new_times, server.state().event("Planning day").map(|event| event.no_new_times)), (None, Some(false)));
+    assert_eq!(refusals(&server).len(), 1);
+    server.state().updates_new_times = false;
 
     // A calendar whose meetings can't be held online. The reference doesn't say what the
     // service makes of being asked all the same. Should it refuse, the event is made without,
@@ -730,7 +740,7 @@ fn a_meeting_is_made_online_answered_with_another_time_and_forwarded_as_the_serv
         {"EmailAddress": {"Address": "dan@example.org", "Name": ""}},
     ]);
     assert_eq!(said(&server), ("forward".to_string(), json!({"ToRecipients": recipients, "Comment": "Do come."})));
-    assert_eq!(server.state().mail, ["forward:Planning:2:Do come."]);
+    assert_eq!(server.state().mail, ["forward:Planning day:2:Do come."]);
     // One of another calendar goes through that calendar.
     done(&server, forward(&refused.remote, &plain, true), EASTERN);
     let through = server.state().requests.last().map(|asked| asked.path.clone()).unwrap();

@@ -852,13 +852,26 @@ fn a_teams_meeting_its_importance_and_what_is_asked_of_the_people_invited_are_wh
     assert_eq!(flow.refusals(), []);
 
     // Whether another time may be proposed is said when a meeting is made; the reference
-    // doesn't list it among what an update may change. A service that goes by that refuses,
-    // and it is put back here with a word, not left looking as if it had been changed.
+    // doesn't list it among what an update may change. A service that goes by that refuses a
+    // save that says it. The save is sent once more without it: the title holds, that option
+    // alone is as it was, the owner is told in one line, and the people invited get one update.
+    flow.server.state().mail.clear();
+    flow.run("calendar.edit", json!({"id": launch, "title": "Launch day", "allowProposals": true, "send": true}));
+    flow.sync();
+    let line = "The account's server doesn't let it be changed, once a meeting is made, whether another time may be proposed for \"Launch day\". That option is as it was.";
+    assert_eq!(flow.status(), line);
+    assert!(!flow.here("Launch day").response_options.allow_proposals && flow.there("Launch day").no_new_times);
+    assert_eq!(flow.server.state().mail, ["update:Launch day:1"]);
+    assert_eq!(flow.refusals().iter().map(|(method, _, status)| (method.as_str(), *status)).collect::<Vec<_>>(), [("PATCH", 400)]);
+    assert!(flow.app.session.mailbox.event_changes.is_empty() && flow.app.session.mailbox.event_checks.is_empty());
+    // A service that lets it be changed: it is changed, there and here, and nothing is said.
+    flow.server.state().updates_new_times = true;
+    flow.app.status_msg = None;
     flow.run("calendar.responseOptions", json!({"id": launch, "allowProposals": true, "send": true}));
     flow.sync();
-    let status = flow.status();
-    assert!(status.starts_with("The server wouldn't take the change to \"Launch\"") && status.ends_with("It was put back as it was."), "{status}");
-    assert!(!flow.here("Launch").response_options.allow_proposals && flow.there("Launch").no_new_times);
+    assert_eq!(flow.status(), "");
+    assert!(flow.here("Launch day").response_options.allow_proposals && !flow.there("Launch day").no_new_times);
+    assert_eq!(flow.refusals().len(), 1);
     assert!(flow.app.session.mailbox.event_changes.is_empty() && flow.app.session.mailbox.event_checks.is_empty());
 }
 
@@ -1141,5 +1154,85 @@ fn another_time_proposed_by_the_clock_here_is_that_moment_for_the_organizer() {
         json!({"start": {"dateTime": "2026-11-04T16:00:00", "timeZone": "UTC"}, "end": {"dateTime": "2026-11-04T17:30:00", "timeZone": "UTC"}});
     assert_eq!(asked, json!({"comment": "", "sendResponse": true, "proposedNewTime": slot}));
     assert_eq!(flow.server.state().mail, ["response:Board:tentativelyAccept:", "proposal:Board:2026-11-04T16:00:00Z/2026-11-04T17:30:00Z"]);
+    assert_eq!(flow.refusals(), []);
+}
+
+#[test]
+fn a_deletion_the_server_answers_not_found_is_settled_by_what_comes_down() {
+    let mut flow = Flow::start();
+    let (team, team_here) = team(&mut flow);
+    let review = flow.here("Budget review");
+    // Deleted in Outlook meanwhile: the server has no such item, and what comes down agrees.
+    // It is gone, and nothing is said.
+    flow.server.state().events.retain(|event| event.subject != "Budget review");
+    flow.app.status_msg = None;
+    flow.run("calendar.delete", json!({"id": review.id}));
+    flow.sync();
+    assert_eq!(flow.refusals().iter().map(|(method, _, status)| (method.as_str(), *status)).collect::<Vec<_>>(), [("DELETE", 404)]);
+    assert!(flow.all_here("Budget review").is_empty() && flow.settled(), "{}", flow.status());
+    assert_eq!(flow.status(), "");
+
+    // An item the server has, for which it answers "not found" all the same (what it says to
+    // a deletion that reaches it at an address that isn't the item's): that is not taken for
+    // a deletion. The item is still on the server.
+    let retro = flow.server.state().add_event(&team, "Retro", utc(10, 15, 17, 0));
+    flow.sync();
+    let here = flow.here("Retro");
+    assert_eq!(here.calendar, team_here);
+    flow.server.state().fail_next.push(("DELETE".into(), 404, "ErrorItemNotFound".into()));
+    flow.run("calendar.delete", json!({"id": here.id}));
+    flow.sync();
+    assert_eq!(flow.refusals().len(), 2);
+    assert_eq!((flow.all_here("Retro").len(), flow.all_there("Retro").len(), flow.status()), (0, 1, String::new()));
+    // It is looked for twice more, within seconds; then it is back where the server has it,
+    // and the owner is told.
+    for _ in 0..2 {
+        flow.at += 11.0 * SECOND;
+        assert!(flow.app.calendar_tick_at(true, flow.at));
+        flow.take_in();
+    }
+    let line = "\"Retro\" was deleted here and the server answered that it has no such item, but it still has it. It is back in the calendar.";
+    assert_eq!(flow.status(), line);
+    let back = flow.all_here("Retro");
+    assert_eq!(back.iter().map(|e| (e.origin.id.as_str(), e.calendar)).collect::<Vec<_>>(), [(retro.as_str(), team_here)]);
+    // Once: the looks that follow find it as it is, and say nothing more.
+    flow.app.status_msg = None;
+    flow.sync();
+    flow.sync();
+    assert_eq!((flow.status(), flow.all_here("Retro").len(), flow.all_there("Retro").len()), (String::new(), 1, 1));
+    let mailbox = &flow.app.session.mailbox;
+    assert!(mailbox.event_changes.is_empty() && mailbox.event_checks.is_empty());
+    assert_eq!(flow.refusals().len(), 2, "and it is not asked for again");
+}
+
+#[test]
+fn what_is_undone_while_it_is_being_made_is_deleted_through_its_calendar() {
+    let mut flow = Flow::start();
+    let (team, team_here) = team(&mut flow);
+    // And a calendar that somebody else shares with the account, ticked too.
+    let shared = flow.server.state().add_calendar("Bo's calendar", true, true);
+    let list: CalendarsDownload = mailcraft_net::graph::calendars(TOKEN).unwrap();
+    let account = flow.app.session.mailbox.account(flow.account).cloned().unwrap();
+    flow.run("sync.applyCalendars", json!({"download": list.for_account(&account)}));
+    let shared_here = flow.app.session.mailbox.calendars.iter().find(|c| c.name == "Bo's calendar").map(|c| c.id).unwrap();
+    flow.run("calendar.showCalendar", json!({"id": shared_here, "value": true}));
+    flow.sync();
+    for (title, here, there) in [("Planning poker", team_here, team), ("Their sync", shared_here, shared)] {
+        flow.run("calendar.new", json!({"title": title, "start": "2026-10-16T10:00", "calendar": here}));
+        // The job that makes it on the server is under way...
+        assert!(flow.look());
+        assert_eq!(flow.all_there(title).len(), 1, "{title}");
+        // ...and the owner takes it back before its answer is in.
+        assert!(flow.app.session.undo());
+        flow.take_in();
+        assert!(flow.all_here(title).is_empty(), "{title}");
+        // The server is told to delete what it made, through the calendar it made it in (one
+        // that somebody else shares is reached no other way); and that is seen.
+        flow.sync();
+        assert!(flow.all_there(title).is_empty(), "{title}");
+        let last = flow.server.state().writes().last().cloned().unwrap();
+        assert_eq!((last.0.as_str(), last.1[..4].to_vec()), ("DELETE", vec!["v1.0".to_string(), "me".to_string(), "calendars".to_string(), there]));
+        assert!(flow.all_here(title).is_empty() && flow.settled(), "{title}: {}", flow.status());
+    }
     assert_eq!(flow.refusals(), []);
 }

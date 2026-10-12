@@ -1569,10 +1569,21 @@ fn created(
                 if !mailbox.event_changes.iter().any(orphan)
                     && !mailbox.events.values().any(|e| e.origin.account == account && e.origin.id == outcome.remote)
                 {
+                    // (With what was made, as far as its answer says: the deletion then goes
+                    // through the calendar it was made in, and a download can tell whether it
+                    // is gone.)
+                    let home = mailbox.calendars.iter().find(|calendar| calendar.origin.account == account && calendar.origin.id == op.calendar);
+                    let base = home.map(|calendar| calendar.id).map(|calendar| {
+                        let origin = Origin { account, id: outcome.remote.clone(), change_key: outcome.change_key.clone(), ..Default::default() };
+                        let mut made = Event { calendar, origin, ..Default::default() };
+                        put_fields(&mut made, &op.fields, offset_at);
+                        Box::new(made)
+                    });
                     mailbox.event_changes.push(EventChange {
                         account,
                         kind: EventChangeKind::Delete,
                         remote: outcome.remote.clone(),
+                        base,
                         ..Default::default()
                     });
                 }
@@ -2126,6 +2137,23 @@ fn one_occurrence(
             // The series has nothing at that time any more: nothing to delete, nothing to change.
             mailbox.event_changes.remove(at);
             applied.done += 1;
+            // (So the server says. A day that was to be deleted is looked for in what comes
+            // down all the same: "no such occurrence" is also what a wrong address is answered.)
+            if op.kind == EventChangeKind::Delete {
+                expect(
+                    mailbox,
+                    EventCheck {
+                        account,
+                        kind: EventChangeKind::Delete,
+                        event: series.unwrap_or(0),
+                        series: op.series.clone(),
+                        occurrence: op.occurrence,
+                        made: now,
+                        not_found: true,
+                        ..Default::default()
+                    },
+                );
+            }
             if let Some(id) = one {
                 let name = called(mailbox.event(id));
                 let _ = mailbox.remove_event(id);
@@ -2247,6 +2275,22 @@ fn updated(
             if let Some(Ok(event)) = event.map(|id| mailbox.event_mut(id)) {
                 settle_online(event, outcome, applied);
             }
+            // What the server took of the change: all of it, or all but whether another time may
+            // be proposed, which it may not let a change say. Then that option alone is as it
+            // was here too, and the owner is told; the rest of what was changed stays.
+            let mut taken = op.fields.clone();
+            if outcome.new_times == Some(false)
+                && let Some(asked) = taken.allow_proposals.take()
+                && let Some(Ok(event)) = event.map(|id| mailbox.event_mut(id))
+                && event.response_options.allow_proposals == asked
+            {
+                event.response_options.allow_proposals = !asked;
+                let name = called(Some(&*event));
+                log::info!("calendar: #{}: the server took a change without what it said of proposing another time", id_tag(&op.remote));
+                applied.say(format!(
+                    "The account's server doesn't let it be changed, once a meeting is made, whether another time may be proposed for {name}. That option is as it was."
+                ));
+            }
             let here = event.and_then(|id| mailbox.event(id)).cloned();
             match at {
                 // The server has what was sent now; what was changed here since is still to go
@@ -2273,7 +2317,7 @@ fn updated(
                     let mut settled = false;
                     if let Some(change) = mailbox.event_changes.get_mut(at) {
                         if let Some(base) = change.base.as_deref_mut() {
-                            put_fields(base, &op.fields, offset_at);
+                            put_fields(base, &taken, offset_at);
                             base.origin.change_key = outcome.change_key.clone();
                         }
                         change.failures = 0;
@@ -2294,7 +2338,7 @@ fn updated(
                 None => {
                     let Some(event) = here else { return };
                     let mut sent = event.clone();
-                    put_fields(&mut sent, &op.fields, offset_at);
+                    put_fields(&mut sent, &taken, offset_at);
                     if !changed_fields(&sent, &event, offset_at).is_empty() {
                         let back = EventChange {
                             account,
@@ -2377,22 +2421,23 @@ fn deleted(mailbox: &mut Mailbox, account: Id, outcome: &EventOutcome, now: Time
             applied.done += 1;
             if let Some(at) = at {
                 let change = mailbox.event_changes.remove(at);
-                // It is to stay gone in what comes down (when the server said it deleted it:
-                // one it no longer had is gone for sure).
-                if outcome.result == EventResult::Done {
-                    expect(
-                        mailbox,
-                        EventCheck {
-                            account,
-                            kind: EventChangeKind::Delete,
-                            event: change.event,
-                            remote: op.remote.clone(),
-                            made: now,
-                            base: change.base,
-                            ..Default::default()
-                        },
-                    );
-                }
+                // It is to stay gone in what comes down. So is one of which the server said that
+                // it has no such event: that is its answer for one that is gone already, and for
+                // one that was asked for at the wrong address. Only a download tells which.
+                expect(
+                    mailbox,
+                    EventCheck {
+                        account,
+                        kind: EventChangeKind::Delete,
+                        event: change.event,
+                        remote: op.remote.clone(),
+                        made: now,
+                        base: change.base,
+                        not_found: outcome.result == EventResult::Gone,
+                        moved: change.moved,
+                        ..Default::default()
+                    },
+                );
                 return;
             }
             // Undone while it was on its way: the event is here again and the server no longer
@@ -2645,9 +2690,8 @@ fn check_sent(
                 still.push(check);
             } else {
                 let name = called(Some(&of));
-                let line = format!(
-                    "One day of {name} was deleted here and the server said it deleted it too, but it still has it. That day is back in the calendar."
-                );
+                let said = if check.not_found { "the server answered that it has no such day" } else { "the server said it deleted it too" };
+                let line = format!("One day of {name} was deleted here and {said}, but it still has it. That day is back in the calendar.");
                 failed(merged, &check, "the server still has the occurrence", line);
             }
             continue;
@@ -2670,10 +2714,24 @@ fn check_sent(
                         still.push(check);
                     } else {
                         let name = called(check.base.as_deref());
-                        let line = format!(
-                            "{name} was deleted here and the server said it deleted it too, but it still has it. It is back in the calendar."
-                        );
-                        failed(merged, &check, "the server still has the event", line);
+                        let (said, why) = match check.not_found {
+                            true => ("the server answered that it has no such item", "the server still has an event it answered \"not found\" for"),
+                            false => ("the server said it deleted it too", "the server still has the event"),
+                        };
+                        // The end of a move to another calendar: the original is there still, so
+                        // the copy goes again, and the appointment is where the server has it.
+                        let line = if check.moved.is_empty() {
+                            format!("{name} was deleted here and {said}, but it still has it. It is back in the calendar.")
+                        } else if take_back_copy(mailbox, account, &check.moved) {
+                            format!(
+                                "{name} was moved to another calendar here, and when it was to be taken out of the one it was in {said}, but it still has it there. It wasn't moved: it is back there, and the copy in the other calendar was removed."
+                            )
+                        } else {
+                            format!(
+                                "{name} was moved to another calendar here, and when it was to be taken out of the one it was in {said}, but it still has it there. It is in both calendars now."
+                            )
+                        };
+                        failed(merged, &check, why, line);
                     }
                     continue;
                 }
