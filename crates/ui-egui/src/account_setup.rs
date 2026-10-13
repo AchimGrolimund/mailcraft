@@ -10,6 +10,13 @@
 //! still owes an answer for. It only collects input: what it does, it does by running commands
 //! (`account.preset`, `account.add`, `account.edit`, `ui.microsoftClientId`, `ui.sync`), and the
 //! functions that say which command a page runs need no window.
+//!
+//! A sign-in on Microsoft's page may end on a page of Microsoft's that says the organisation
+//! has to approve MailCraft first, and nothing may come back from it. The owner is never left
+//! with a page that only waits: what to do next is said while the browser has the sign-in, on
+//! a page of its own, and whenever a sign-in ends without having signed anybody in (`help`).
+
+mod help;
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
@@ -20,10 +27,13 @@ use egui::{
 use mailcraft_model::{Account, AccountKind, Directory, FavoritesSource, Id, OAuth, OAuthProvider, Security, Server, provider};
 use serde_json::{Map, Value, json};
 
+use crate::approval::SignInEnd;
 use crate::forms::kit::{Pass, body, changes, error, field_id, object, shown};
 use crate::i18n::fmt;
 use crate::theme::{Tokens, medium, paint_clipped, regular, semibold};
 use crate::{MailApp, icons};
+
+pub(crate) use help::Help;
 
 /// The dialog's width in points.
 pub const WIDTH: f32 = 520.0;
@@ -51,6 +61,9 @@ pub enum Page {
     ApplicationId,
     /// The owner is on the provider's page in the browser, or that came to nothing.
     SignIn,
+    /// The organisation has to approve MailCraft before its people can sign in: why, and what
+    /// to do next. Also the whole dialog for an account that exists and was refused for it.
+    Approval,
     /// The password, and the servers when they want a look.
     Password,
     /// The host is trying the password on the servers.
@@ -145,6 +158,14 @@ pub enum Action {
     MailOnly,
     /// Start over for one more account.
     Another,
+    /// Show what to do when the organisation has to approve MailCraft first.
+    Approval,
+    /// "I'm an administrator": open Microsoft's approval page in the browser.
+    Administrator,
+    /// Copy a message for an administrator.
+    CopyMessage,
+    /// "Not now": close, leaving nothing behind.
+    NotNow,
 }
 
 /// How setting the account up ended, for the last page to say.
@@ -365,6 +386,20 @@ pub struct AccountSetup {
     waiting: bool,
     /// The owner asked to sign in for mail alone (the provider's page refused the fuller request).
     mail_only: bool,
+    /// How the last sign-in ended, when it ended without signing anybody in.
+    ended: Option<SignInEnd>,
+    /// The page that says what to do when the organisation has to approve MailCraft first.
+    approval: help::Approval,
+    /// An administrator approved MailCraft from this wizard: the sign-in that follows says so.
+    approved: bool,
+    /// The account the approval page is about, when it is one that exists (0: the one that is
+    /// being set up); its organisation's directory, when that is known; and whether Exchange
+    /// Web Services is asked for with the rest (its Favorites in Outlook wait on that).
+    existing: Id,
+    organisation: String,
+    source: FavoritesSource,
+    /// The dialog is finished: what a page did between two frames says so.
+    done: bool,
     outcome: Outcome,
     /// The account that was just added (0 until there is one), which kind of Microsoft account
     /// its sign-in said it is, and what its owner picks for its Favorites in Outlook.
@@ -384,7 +419,7 @@ impl Drop for AccountSetup {
     fn drop(&mut self) {
         let Some(ctx) = self.ctx.take() else { return };
         forget_field(&ctx);
-        if self.waiting {
+        if self.waiting && self.existing == 0 {
             ctx.data_mut(|d| d.insert_temp(left_waiting(), true));
         }
     }
@@ -439,6 +474,13 @@ impl AccountSetup {
             check: None,
             waiting: false,
             mail_only: false,
+            ended: None,
+            approval: help::Approval::default(),
+            approved: false,
+            existing: 0,
+            organisation: String::new(),
+            source: FavoritesSource::Unset,
+            done: false,
             outcome: Outcome::Downloading,
             added: 0,
             directory: Directory::Unknown,
@@ -461,6 +503,9 @@ impl AccountSetup {
                 (w.email, w.oauth, w.added, w.outcome) = (line(&account.email, LINE), account.oauth.clone(), id, Outcome::Later);
                 Some(w)
             }
+            // What to do when its organisation has to approve MailCraft first, for an account
+            // that exists and signs in with Microsoft (`ui.approvalHelp`).
+            Some(id) if p.get("page").and_then(Value::as_str) == Some("approval") => AccountSetup::approval_for(app, id),
             Some(id) => app.session.mailbox.account(id).filter(|a| !a.email.is_empty()).map(AccountSetup::edit),
             None => Some(AccountSetup::new(app, p)),
         }
@@ -496,7 +541,14 @@ impl AccountSetup {
 
     /// The dialog's title, in the interface language.
     pub fn title(&self) -> String {
-        if self.edit.is_some() { tl!("Account Settings") } else { tl!("Add Account") }.to_string()
+        if self.edit.is_some() {
+            tl!("Account Settings")
+        } else if self.existing != 0 {
+            tl!("Approval Needed")
+        } else {
+            tl!("Add Account")
+        }
+        .to_string()
     }
 
     // ---- what each page runs ----
@@ -680,10 +732,40 @@ impl AccountSetup {
             (Page::Choose, Action::Back) => self.go(Page::Address),
             (Page::ApplicationId, Action::Go) => self.use_client_id(app),
             (Page::ApplicationId, Action::Back) => self.go(self.origin()),
-            (Page::SignIn, Action::Go) => self.start_sign_in(app),
+            // "Try again", and "Open the page again" while one is still waiting.
+            (Page::SignIn, Action::Go) => {
+                self.stop_sign_in(app);
+                self.start_sign_in(app);
+            }
             (Page::SignIn, Action::Back) => {
                 self.stop_sign_in(app);
                 self.go(Page::Address);
+            }
+            // The sign-in that is waiting goes on waiting: the owner may yet come back from it.
+            (Page::SignIn, Action::Approval) => self.open_approval(false),
+            (Page::SignIn | Page::Approval, Action::Administrator) => {
+                if let Err(e) = self.ask_administrator(app) {
+                    self.error = e;
+                }
+            }
+            (Page::SignIn | Page::Approval, Action::CopyMessage) => match self.copy_message(app) {
+                Ok(_) => self.error.clear(),
+                Err(e) => self.error = e,
+            },
+            (Page::Approval, Action::Go) => {
+                if let Err(e) = self.again(app) {
+                    self.error = e;
+                }
+                return self.done;
+            }
+            // Cancel, while Microsoft's approval page is open: back to what there is to do.
+            (Page::Approval, Action::Back) => {
+                app.cancel_admin_consent();
+                self.approval.approving = false;
+            }
+            (Page::Approval, Action::NotNow) => {
+                self.give_up(app);
+                return true;
             }
             (Page::SignIn, Action::MailOnly) => {
                 self.stop_sign_in(app);
@@ -812,6 +894,7 @@ impl AccountSetup {
     fn start_sign_in(&mut self, app: &mut MailApp) {
         let Some(oauth) = self.oauth.clone() else { return };
         self.go(Page::SignIn);
+        self.ended = None;
         match app.begin_setup_sign_in(oauth, self.email.trim(), self.mail_only) {
             Ok(()) => self.waiting = true,
             Err(e) => self.error = e,
@@ -973,6 +1056,16 @@ impl AccountSetup {
         match self.page {
             Page::Detecting => self.poll_lookup(app),
             Page::SignIn if self.waiting => self.poll_sign_in(app),
+            // (A sign-in may still be waiting behind the approval page: the owner may sign in
+            // with an administrator's account on Microsoft's page after all.)
+            Page::Approval => {
+                if self.waiting {
+                    self.poll_sign_in(app);
+                }
+                if self.page == Page::Approval {
+                    self.poll_approval(app);
+                }
+            }
             Page::Checking => self.poll_check(app),
             _ => {}
         }
@@ -1010,12 +1103,15 @@ impl AccountSetup {
             }
             Some(Err(e)) => {
                 self.waiting = false;
-                self.error = e;
+                self.sign_in_ended(e);
             }
             // Given up from elsewhere (Cancel Sign-In): back to the start, as Cancel here does.
+            // (From the approval page there is nowhere to go back to: it says what to do.)
             None if !app.signing_in() => {
                 self.waiting = false;
-                self.go(Page::Address);
+                if self.page == Page::SignIn {
+                    self.go(Page::Address);
+                }
             }
             None => {}
         }
@@ -1036,7 +1132,13 @@ impl AccountSetup {
 
     /// Whether the host owes an answer: frames keep coming until it is in.
     fn busy(&self) -> bool {
-        self.lookup.is_some() || self.check.is_some() || self.waiting
+        self.lookup.is_some() || self.check.is_some() || self.waiting || self.approval.approving
+    }
+
+    /// Whether the dialog is finished, by what one of its pages did outside a frame (a command
+    /// that ran on it): whoever holds it lets it go.
+    pub(crate) fn finished(&self) -> bool {
+        self.done
     }
 
     // ---- leaving ----
@@ -1053,6 +1155,10 @@ impl AccountSetup {
     fn give_up(&mut self, app: &mut MailApp) {
         (self.lookup, self.check) = (None, None);
         self.stop_sign_in(app);
+        // An administrator's approval that Microsoft's page is open for is given up with it.
+        if std::mem::take(&mut self.approval.approving) {
+            app.cancel_admin_consent();
+        }
         self.forget_password();
     }
 
@@ -1080,6 +1186,9 @@ impl AccountSetup {
             return true;
         }
         self.poll(app);
+        if self.done {
+            return true;
+        }
         if self.busy() {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
@@ -1089,8 +1198,9 @@ impl AccountSetup {
             Page::Detecting => waiting_page(ui, &pass, self.page, tl!("Finding your account settings…"), &shown(self.email.trim(), 120)),
             Page::Choose => self.choose_page(ui, &pass),
             Page::ApplicationId => self.application_id_page(ui, &mut pass),
-            Page::SignIn if self.waiting => self.signing_in_page(ui, &pass),
-            Page::SignIn => self.sign_in_failed_page(ui, &pass),
+            Page::SignIn if self.waiting => self.signing_in_page(app, ui, &pass),
+            Page::SignIn => self.sign_in_ended_page(app, ui, &pass),
+            Page::Approval => self.approval_page(app, ui, &pass),
             Page::Password => self.password_page(app, ui, &mut pass),
             Page::Checking => {
                 let server = shown(self.incoming.host.trim(), 120);
@@ -1191,49 +1301,6 @@ impl AccountSetup {
             back = button(ui, tl!("Back"), false, true).clicked();
         });
         if back { Some(Action::Back) } else { (ready && (go || entered(ui, pass))).then_some(Action::Go) }
-    }
-
-    fn signing_in_page(&mut self, ui: &mut Ui, pass: &Pass) -> Option<Action> {
-        let provider = self.oauth.as_ref().map(|o| o.provider.label()).unwrap_or_default();
-        let text = fmt(
-            tl!("Sign in to {address} on the {provider} page that opened in your browser"),
-            &[("address", &shown(self.email.trim(), 120)), ("provider", provider)],
-        );
-        let action = waiting_page(ui, pass, self.page, &text, tl!("This window carries on by itself once you have signed in."));
-        // The way out when the provider's page shows an error instead of coming back.
-        let mut mail_only = false;
-        if !self.mail_only {
-            ui.vertical_centered(|ui| {
-                let hint = tl!("Asks for mail alone, without the calendar and contacts, which can be connected later");
-                mail_only = ui.link(tl!("Trouble on that page? Sign in for mail only")).on_hover_text(hint).clicked();
-            });
-            ui.add_space(6.0);
-        }
-        if mail_only { Some(Action::MailOnly) } else { action }
-    }
-
-    fn sign_in_failed_page(&mut self, ui: &mut Ui, pass: &Pass) -> Option<Action> {
-        let t = pass.t;
-        page(ui, &t, |ui| {
-            heading(ui, tl!("Signing in didn't work"), &t);
-            note(ui, &shown(self.email.trim(), 120), t.text_dim);
-            error(ui, &self.error);
-        });
-        let (mut again, mut manual, mut mail_only) = (false, false, false);
-        strip(ui, self.page, |ui| {
-            again = button(ui, tl!("Try again"), true, true).clicked();
-            manual = button(ui, tl!("Set up manually"), false, true).clicked();
-            if !self.mail_only {
-                mail_only = button(ui, tl!("Mail only"), false, true).on_hover_text(tl!("Sign in again, asking for mail alone")).clicked();
-            }
-        });
-        if manual {
-            Some(Action::Manual)
-        } else if mail_only {
-            Some(Action::MailOnly)
-        } else {
-            (again || entered(ui, pass)).then_some(Action::Go)
-        }
     }
 
     fn password_page(&mut self, app: &MailApp, ui: &mut Ui, pass: &mut Pass) -> Option<Action> {
@@ -1631,6 +1698,9 @@ mod tests {
     use crate::dialogs::Dialog;
     use crate::forms::Form;
     use crate::{Services, SignInRequest};
+
+    /// What the wizard says about a sign-in on Microsoft's page, and the approval help (M4.4).
+    mod help;
 
     /// Wednesday 2026-10-14 16:00 UTC.
     const NOW: i64 = 1_791_993_600;
@@ -2343,7 +2413,9 @@ mod tests {
         click(&mut h, "Continue");
         assert_eq!((page(&h), wizard(&h).map(|w| w.waiting)), (Some(Page::SignIn), Some(true)));
         assert_eq!(h.state().ui.microsoft_client_id, APP_ID);
-        assert!(h.state().signing_in() && says(&h, "Sign in to noor@example.org on the Microsoft page that opened in your browser"));
+        assert!(
+            h.state().signing_in() && says(&h, "Microsoft's sign-in page is open in your browser") && says(&h, "Sign in there as noor@example.org")
+        );
         {
             let signed = signed.lock().unwrap();
             assert_eq!((signed.len(), signed[0].0.as_str(), signed[0].1.as_str()), (1, "noor@example.org", APP_ID));
@@ -2595,6 +2667,7 @@ mod tests {
             Page::Choose,
             Page::ApplicationId,
             Page::SignIn,
+            Page::Approval,
             Page::Password,
             Page::Checking,
             Page::Favorites,
@@ -2604,7 +2677,8 @@ mod tests {
         for theme in ["light", "dark"] {
             for size in [(1280.0, 800.0), (760.0, 480.0), (320.0, 200.0)] {
                 // Each page twice: as it comes, and full of hostile text. The sign-in page is
-                // waiting the first time and has come to nothing the second; Account Settings is
+                // waiting the first time and has come to nothing the second; the approval page
+                // says what to do, then what Microsoft answered a try at it; Account Settings is
                 // for a password account, then for one that signs in on Microsoft's page.
                 for (page_in_view, hostile) in pages.into_iter().flat_map(|p| [(p, false), (p, true)]) {
                     let mut a = app(true);
@@ -2633,7 +2707,10 @@ mod tests {
                     } else {
                         w.page = page_in_view;
                         (w.advanced, w.settings_open, w.guessed) = (true, true, hostile);
-                        w.oauth = matches!(page_in_view, Page::SignIn | Page::ApplicationId).then(OAuth::default);
+                        w.oauth = matches!(page_in_view, Page::SignIn | Page::ApplicationId | Page::Approval).then(OAuth::default);
+                        (w.service, w.approval.said) = ("Microsoft 365".into(), hostile);
+                        w.approval.refused = hostile.then(|| (junk.clone(), junk.clone()));
+                        (w.ended, w.approved) = (hostile.then_some(SignInEnd::TimedOut), !hostile);
                         (w.lookup, w.check) = (Some(lookup), Some(check));
                         w.outcome = if hostile { Outcome::Offline } else { Outcome::Downloading };
                         // (The last step is about an account that exists.)

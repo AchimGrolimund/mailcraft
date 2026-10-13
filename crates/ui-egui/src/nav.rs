@@ -321,7 +321,8 @@ fn quiet_link(app: &mut MailApp, ui: &mut Ui, account: Id, step: crate::favorite
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
     let resp = ui.interact(highlight(r), ui.id().with(("favorites_step", account, step.code())), Sense::click());
     let kind = match step {
-        crate::favorites_sync::Step::CopyLink => "favoritesCopyLink",
+        crate::favorites_sync::Step::CopyMessage => "favoritesCopyMessage",
+        crate::favorites_sync::Step::Help => "favoritesHelp",
         crate::favorites_sync::Step::Use(_) => "favoritesSwitch",
     };
     app.hit.add(kind, account, r);

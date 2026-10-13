@@ -780,7 +780,7 @@ fn what_stands_in_the_way_is_said_with_what_the_owner_can_do_about_it() {
     let state = rig.state();
     assert_eq!(
         (state["line"].clone(), state["text"].clone(), state["steps"].clone()),
-        (json!("approval"), json!(NEEDS_APPROVAL), json!(["copyLink", "useEws"]))
+        (json!("approval"), json!(NEEDS_APPROVAL), json!(["copyMessage", "help", "useEws"]))
     );
     // The link names the organisation's own directory, as this run's sign-in said it.
     let copied = rig.app.execute("ui.copyAdminConsentLink", json!({})).unwrap();
@@ -800,7 +800,7 @@ fn what_stands_in_the_way_is_said_with_what_the_owner_can_do_about_it() {
     rig.choose("ews");
     rig.look_all(SECOND);
     assert_eq!((rig.note(), rig.host.lock().unwrap().ews_sign_ins), (Some(Note::Approval(FavoritesSource::Ews)), 1));
-    assert_eq!(rig.state()["steps"], json!(["copyLink", "useGraph"]));
+    assert_eq!(rig.state()["steps"], json!(["copyMessage", "help", "useGraph"]));
     rig.app.execute("ui.copyAdminConsentLink", json!({"account": rig.account})).unwrap();
     assert_eq!(rig.host.lock().unwrap().links.last(), Some(&(ORGANISATION.to_string(), FavoritesSource::Ews)));
     for _ in 0..30 {
@@ -938,13 +938,23 @@ fn the_offer_opens_the_choice_for_an_organisation_and_the_choice_does_what_is_pi
     harness.run_steps(3);
     let heading = at(&harness, "folderHeading", 0).unwrap();
     let line = at(&harness, "favoritesNote", account).expect("the sentence");
-    let copy = at(&harness, "favoritesCopyLink", account).expect("the link to copy");
+    let copy = at(&harness, "favoritesCopyMessage", account).expect("the message to copy");
+    let help = at(&harness, "favoritesHelp", account).expect("the way to what to do next");
     let switch = at(&harness, "favoritesSwitch", account).expect("the other way");
-    assert!(line.min.y >= heading.max.y - 0.5 && copy.min.y >= line.max.y - 0.5 && switch.min.y >= copy.max.y - 0.5);
+    assert!(line.min.y >= heading.max.y - 0.5 && copy.min.y >= line.max.y - 0.5);
+    assert!(help.min.y >= copy.max.y - 0.5 && switch.min.y >= help.max.y - 0.5);
     assert!(line.height() >= 24.0);
     click(&mut harness, copy.center());
     assert_eq!(host.lock().unwrap().links.len(), 1);
-    assert!(harness.state().status_msg.as_ref().is_some_and(|(text, _)| text.contains("clipboard")));
+    assert!(harness.state().status_msg.as_ref().is_some_and(|(text, _)| text.contains("The message is on the clipboard")));
+    // What to do next: the page about an approval, for this account; closed, nothing has changed.
+    click(&mut harness, help.center());
+    assert_eq!(harness.state().dialog.as_ref().map(|dialog| dialog.name()), Some("account"));
+    assert!(harness.query_all_by_label_contains("Your organisation has to approve MailCraft first").next().is_some());
+    harness.get_by_label("Not now").click();
+    harness.run_steps(4);
+    assert!(harness.state().dialog.is_none() && harness.state().favorites_source(account) == FavoritesSource::Graph);
+    let switch = at(&harness, "favoritesSwitch", account).expect("the other way");
     click(&mut harness, switch.center());
     assert_eq!(harness.state().favorites_source(account), FavoritesSource::Ews);
     assert!(at(&harness, "favoritesNote", account).is_none(), "another way was chosen: what was said of the first is gone");
@@ -953,7 +963,8 @@ fn the_offer_opens_the_choice_for_an_organisation_and_the_choice_does_what_is_pi
     harness.run_steps(3);
     let line = at(&harness, "favoritesNote", account).expect("the sentence");
     let switch = at(&harness, "favoritesSwitch", account).expect("the other way");
-    assert!(at(&harness, "favoritesCopyLink", account).is_none() && switch.min.y >= line.max.y - 0.5);
+    assert!(at(&harness, "favoritesCopyMessage", account).is_none() && at(&harness, "favoritesHelp", account).is_none());
+    assert!(switch.min.y >= line.max.y - 0.5);
     let before = host.lock().unwrap().sign_ins.len();
     click(&mut harness, switch.center());
     harness.run_steps(4);

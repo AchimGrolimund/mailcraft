@@ -15,6 +15,7 @@ macro_rules! tl {
 }
 
 mod account_setup;
+pub mod approval;
 pub mod backstage;
 mod calendar_sync;
 pub mod calendar_view;
@@ -51,6 +52,7 @@ use mailcraft_model::sync::{SyncRequest, SyncResult, Tokens};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub use approval::{AdminConsentAnswer, AdminConsentRequest};
 pub use control::ControlRequest;
 pub use files::FileDialogRequest;
 pub use scheduling::{FreeBusyRequest, FreeBusyResult};
@@ -138,12 +140,20 @@ pub struct Services {
     /// The list, or why there is none, arrives through the channel and the host wakes the UI.
     /// Absent in the browser.
     pub ews: Option<Box<dyn Fn(EwsRequest) -> Receiver<EwsResult>>>,
-    /// Desktop: the address an organisation's administrator opens to approve, once for
-    /// everybody, this program reading the Favorites of Outlook the way named (Microsoft's
-    /// admin-consent page): for the sign-in settings (with the application id filled in), the
-    /// directory when it is known (else empty), and the way. It names the application and the
-    /// permissions and nothing else; `None` when there is no such address. Nothing is fetched.
+    /// Desktop: the address an organisation's administrator opens to approve this program, once
+    /// for everybody, for everything it asks an owner for (Microsoft's admin-consent page): for
+    /// the sign-in settings (with the application id filled in), the directory when it is known
+    /// (else empty), and with Exchange Web Services in it for `Ews` (an account whose owner
+    /// chose to have Outlook's Favorites read that way) and without for anything else. It names
+    /// the application, the directory and the permissions and nothing else; `None` when there
+    /// is no such address. Nothing is fetched.
     pub admin_consent_link: Option<Box<dyn Fn(&mailcraft_model::OAuth, &str, mailcraft_model::FavoritesSource) -> Option<String>>>,
+    /// Desktop: have an administrator approve this program for an organisation, on a background
+    /// thread: open that same page of Microsoft's in the system's browser, with a way back to
+    /// this machine, and wait for its yes or no ([`approval`]). Only ever on the owner's say-so
+    /// ("I'm an administrator"). The answer arrives through the channel and the host wakes the
+    /// UI. Absent in the browser.
+    pub admin_consent: Option<Box<dyn Fn(AdminConsentRequest) -> Receiver<AdminConsentAnswer>>>,
 }
 
 /// Files delivered asynchronously.
@@ -170,7 +180,11 @@ pub trait PictureCache {
     fn clear(&self) -> Result<(), String>;
 }
 
-/// What the host needs to sign an account's owner in ([`Services::sign_in`]).
+/// What the host needs to sign an account's owner in ([`Services::sign_in`]). A sign-in on the
+/// provider's page that ends without tokens in one of the ways the window has something of its
+/// own to say about is answered with exactly [`approval::NEEDS_APPROVAL`],
+/// [`approval::SIGN_IN_DECLINED`], [`approval::SIGN_IN_TIMED_OUT`] or [`approval::NO_BROWSER`]
+/// as its error; any other error is shown as it is.
 pub struct SignInRequest {
     /// The account, or 0 while one is being set up.
     pub account: Id,
@@ -368,6 +382,8 @@ struct SigningIn {
     favorites: bool,
     /// For Exchange Web Services alone: the Favorites of Outlook read that way.
     ews: bool,
+    /// Nobody asked for it (a Send/Receive that started by itself).
+    quiet: bool,
     account: Id,
     rx: Receiver<Result<Tokens, String>>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -460,14 +476,24 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "ui.dialog",
         "Open Dialog",
         "Window",
-        r#"{"name": "commands"|"event"|"meeting"|"editEvent"|"contact"|"editContact"|"task"|"editTask"|"folder"|"goToDate"|"account"|"categories"|"rules"|"about"|"proposeTime"|"forwardMeeting"|"proposals"|"favoritesSource", …} (account: "email"?: string to start with, or "id": number for that account's settings, and with "page": "favorites" the last step of adding it, where an account of an organisation chooses how Outlook's Favorites are read; favoritesSource: "account"?: number, that choice for an account that exists (it can't open for one that has no choice); proposeTime: "id"?: number (an item of the calendar) | "message": number (an invitation in the mail); forwardMeeting: "id"?: number; proposals: "id"?: number | "message": number — the first two write to other people only from their own Propose and Send buttons)"#,
+        r#"{"name": "commands"|"event"|"meeting"|"editEvent"|"contact"|"editContact"|"task"|"editTask"|"folder"|"goToDate"|"account"|"categories"|"rules"|"about"|"proposeTime"|"forwardMeeting"|"proposals"|"favoritesSource", …} (account: "email"?: string to start with, or "id": number for that account's settings, with "page": "favorites" the last step of adding it, where an account of an organisation chooses how Outlook's Favorites are read, and with "page": "approval" the page that says what to do when its organisation has to approve MailCraft first (as `ui.approvalHelp` opens it); favoritesSource: "account"?: number, that choice for an account that exists (it can't open for one that has no choice); proposeTime: "id"?: number (an item of the calendar) | "message": number (an invitation in the mail); forwardMeeting: "id"?: number; proposals: "id"?: number | "message": number — the first two write to other people only from their own Propose and Send buttons)"#,
     ),
     ("ui.closeDialog", "Close Dialog", "Window", "{}"),
     ("ui.theme", "Interface Theme", "File › Options", r#"{"value": "light"|"dark"|"system"}"#),
     ("ui.interfaceSize", "Interface Size", "File › Options", r#"{"value": 80-200}"#),
     ("ui.focusSearch", "Search", "Search", "{}"),
-    ("ui.sync", "Send/Receive All Folders", "Send / Receive", r#"{"account"?: number, "password"?: string}"#),
-    ("ui.cancelSignIn", "Cancel Sign-In", "Send / Receive", "{}"),
+    (
+        "ui.sync",
+        "Send/Receive All Folders",
+        "Send / Receive",
+        r#"{"account"?: number, "password"?: string, "quiet"?: bool (nobody asked: no page of a provider's is put in front of the owner, and no dialog)} — an account without a password asks for it (the "password" dialog); one that signs in with Microsoft and is told there that an administrator of its organisation has to approve MailCraft first gets the page that says what to do next (the account dialog's "approval" page, as `ui.approvalHelp` opens it), unless "quiet""#,
+    ),
+    (
+        "ui.cancelSignIn",
+        "Cancel Sign-In",
+        "Send / Receive",
+        "{} — gives up the sign-in, or the administrator's approval, that the browser is open for",
+    ),
     ("ui.cancelSync", "Cancel Send/Receive", "Send / Receive", "{}"),
     (
         "ui.connectMicrosoft",
@@ -491,7 +517,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "ui.favorites",
         "Outlook's Favorites",
         "Folder › Favorites",
-        r#"{"account"?: number, "refresh"?: bool, "answer"?: {"outcome": "read"|"missing"|"notPermitted"|"refused"|"approval"|"blocked"|"failed", "folders"?: [{"path": [string], "kind": string, "root"?: string}], "why"?: string}} — what the folder pane has of the Favorites of an account that signs in with Microsoft. "refresh": true reads them from its server again at the next chance ("Try again"); with "answer" nothing is asked of anybody, and it is taken in as what the host brought (for scripts, and for looking at the pane in each of its states: "approval" is a sign-in that an administrator has to approve first, "blocked" an organisation that doesn't allow Exchange Web Services). Answers {"account", "from": "server"|"mailbox", "own": bool, "source": "graph"|"ews"|"none"|null (the owner's choice; null: never made), "directory": "organisation"|"personal"|null, "choice": bool (the owner has one: an account of an organisation), "offered": [string], "line": "offer"|"approval"|"blocked"|"ended"|"refused"|"failed"|null (what the pane says under the Favorites heading), "text": string, "steps": ["copyLink"|"useEws"|"useGraph"] (the links under that line), "favorites": [number]}"#,
+        r#"{"account"?: number, "refresh"?: bool, "answer"?: {"outcome": "read"|"missing"|"notPermitted"|"refused"|"approval"|"blocked"|"failed", "folders"?: [{"path": [string], "kind": string, "root"?: string}], "why"?: string}} — what the folder pane has of the Favorites of an account that signs in with Microsoft. "refresh": true reads them from its server again at the next chance ("Try again"); with "answer" nothing is asked of anybody, and it is taken in as what the host brought (for scripts, and for looking at the pane in each of its states: "approval" is a sign-in that an administrator has to approve first, "blocked" an organisation that doesn't allow Exchange Web Services). Answers {"account", "from": "server"|"mailbox", "own": bool, "source": "graph"|"ews"|"none"|null (the owner's choice; null: never made), "directory": "organisation"|"personal"|null, "choice": bool (the owner has one: an account of an organisation), "offered": [string], "line": "offer"|"approval"|"blocked"|"ended"|"refused"|"failed"|null (what the pane says under the Favorites heading), "text": string, "steps": ["copyMessage"|"help"|"useEws"|"useGraph"] (the links under that line: `ui.copyAdminMessage`, `ui.approvalHelp`, `ui.favoritesSource`), "favorites": [number]}"#,
     ),
     (
         "ui.favoritesSource",
@@ -503,7 +529,31 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "ui.copyAdminConsentLink",
         "Copy a Link for Your Administrator",
         "File › Options",
-        r#"{"account"?: number} — puts on the clipboard the address of Microsoft's page where an administrator of the account's organisation approves, once for everybody, this application reading Outlook's Favorites the way the account is set to (Graph's two permissions, or Exchange Web Services). The address names the application and those permissions and nothing else; nothing is opened and nothing is sent. Answers {"account", "source", "url"}"#,
+        r#"{"account"?: number} — puts on the clipboard the address of Microsoft's page where an administrator of the account's organisation approves this application, once for everybody, for everything it asks an owner for (mail, calendar, contacts, and reading Outlook's Favorites through Microsoft Graph; Exchange Web Services with it only for an account set to that). The address names the application, the organisation's directory when it is known and those permissions, and nothing else; nothing is opened and nothing is sent. Answers {"account", "source", "url"}. (The window's own links copy a whole message with it: `ui.copyAdminMessage`.)"#,
+    ),
+    (
+        "ui.approvalHelp",
+        "What to Do When Your Organisation Has to Approve MailCraft",
+        "File › Info",
+        r#"{"account"?: number} — opens the page that says what to do when an organisation lets only an administrator approve a new program: in Add Account, while it is at its sign-in with Microsoft, its own page for it (the sign-in that is waiting goes on waiting); for an account that exists (the one named, else the first that signs in with Microsoft), a dialog with the same page. Nothing is asked of anybody. Answers {"dialog": "account", "page": "approval", "account": number (0: the one being set up)}"#,
+    ),
+    (
+        "ui.copyAdminMessage",
+        "Copy a Message for My Administrator",
+        "File › Info",
+        r#"{"account"?: number} — puts on the clipboard a short, plain message for an administrator of the organisation: what MailCraft is, that it needs their approval once for the organisation, the address of Microsoft's page for that (the one `ui.copyAdminConsentLink` copies), and that their browser may show a page that can't be reached afterwards. Nothing of the owner is in it, nothing is opened and nothing is sent; the status bar says it was copied. For the account named; else the one Add Account is signing in; else the first that signs in with Microsoft. Answers {"account", "source", "url", "text"}"#,
+    ),
+    (
+        "ui.adminConsent",
+        "I'm an Administrator: Approve MailCraft for My Organisation",
+        "File › Info",
+        r#"{"account"?: number} — opens Microsoft's admin-consent page in the system's browser, for this application and everything it asks an owner for (not Exchange Web Services, unless the account's Favorites are set to it), for the organisation's directory when it is known, and waits for the page to come back to this computer with a yes or a no. Approved: Add Account says so and goes on to the sign-in by itself; an account that exists signs in again (`ui.signInAgain`). Refused: what Microsoft answered is said. A sign-in that Add Account was waiting for gives way to it. Answers {"pending": "adminConsent", "account": number (0: the one being set up)}; `ui.cancelSignIn` gives it up"#,
+    ),
+    (
+        "ui.signInAgain",
+        "Try Signing In Again",
+        "File › Info",
+        r#"{"account"?: number} — "Try again", once an administrator has approved: Add Account starts its sign-in with Microsoft afresh (answers {"pending": "signIn", "account": 0}); an account that exists asks once more for what was refused for want of an approval, which is what its Favorites in Outlook were to be read with when the folder pane says they wait on an administrator (as `ui.favoritesSource`), and otherwise its sign-in, by Send/Receive (as `ui.sync`)"#,
     ),
     ("ui.dismissReminder", "Dismiss Reminder", "Reminders", r#"{"event": number, "occurrence": "YYYY-MM-DDTHH:MM"} | {"all": true}"#),
     (
@@ -637,6 +687,8 @@ pub struct MailApp {
     signing_in: Option<SigningIn>,
     /// What a sign-in for an account that is being set up came to, until its dialog takes it.
     setup_sign_in: Option<Result<Tokens, String>>,
+    /// An administrator's approval the host is waiting on, and what the last came to ([`approval`]).
+    approvals: approval::Approvals,
     /// A synchronisation in flight.
     sync_rx: Option<Receiver<SyncResult>>,
     /// What the run in flight has come to so far, piece by piece.
@@ -738,6 +790,7 @@ impl MailApp {
             mail_only_next: false,
             signing_in: None,
             setup_sign_in: None,
+            approvals: Default::default(),
             sync_rx: None,
             sync_totals: Default::default(),
             sync_run: None,
@@ -825,7 +878,7 @@ impl MailApp {
                     && self.graph_rx.is_none()
                     && self.signing_in.is_none()
             }
-            None if id == "ui.cancelSignIn" => self.signing_in.is_some(),
+            None if id == "ui.cancelSignIn" => self.signing_in.is_some() || self.approving(),
             None if id == "ui.cancelSync" => self.sync_rx.is_some(),
             None if id == "ui.copySelection" => self.text_selection.any(),
             None => UI_COMMANDS.iter().any(|c| c.0 == id),
@@ -1058,7 +1111,14 @@ impl MailApp {
                     self.session.sync_status = tl!("Sign-in cancelled").to_string();
                     Ok(json!({"cancelled": s.account}))
                 }
-                None => Err(tl!("Nobody is signing in").to_string()),
+                // (An administrator's approval that is waited for is called off the same way.)
+                None => match self.cancel_admin_consent() {
+                    Some(account) => {
+                        self.session.sync_status = tl!("Sign-in cancelled").to_string();
+                        Ok(json!({"cancelled": account}))
+                    }
+                    None => Err(tl!("Nobody is signing in").to_string()),
+                },
             },
             "ui.open" => {
                 files::open(self, "mailbox");
@@ -1090,7 +1150,8 @@ impl MailApp {
                     .or_else(|| reading::remote::ui_command(self, id, p))
                     .or_else(|| calendar_view::ui_command(self, id, p))
                     .or_else(|| meeting_dialogs::ui_command(self, id, p))
-                    .or_else(|| favorites_sync::ui_command(self, id, p));
+                    .or_else(|| favorites_sync::ui_command(self, id, p))
+                    .or_else(|| approval::ui_command(self, id, p));
             }
         })
     }
@@ -1151,7 +1212,7 @@ impl MailApp {
         let mail_only = std::mem::take(&mut self.mail_only_next);
         let favorites = std::mem::take(&mut self.favorites_next) && graph;
         let ews = std::mem::take(&mut self.ews_next) && !graph;
-        if self.signing_in.is_some() {
+        if self.signing_in.is_some() || self.approving() {
             return Err(tl!("Finish signing in first (your browser is waiting)").to_string());
         }
         let Some(sign_in) = &self.services.sign_in else {
@@ -1172,7 +1233,7 @@ impl MailApp {
             ews,
         };
         let rx = sign_in(request);
-        self.signing_in = Some(SigningIn { graph, favorites, ews, account, rx, cancel });
+        self.signing_in = Some(SigningIn { graph, favorites, ews, quiet, account, rx, cancel });
         self.session.sync_status = waiting.to_string();
         Ok(())
     }
@@ -1358,7 +1419,8 @@ impl MailApp {
                 self.session.sync_status = tl!("Sending your changes…").to_string();
             }
         }
-        if self.services.sync.is_none() || self.sync_rx.is_some() || self.graph_rx.is_some() || self.signing_in.is_some() || self.dialog.is_some() {
+        let busy = self.sync_rx.is_some() || self.graph_rx.is_some() || self.signing_in.is_some() || self.approving();
+        if self.services.sync.is_none() || busy || self.dialog.is_some() {
             return;
         }
         if let Some((account, quiet)) = self.sync_queue.pop_front() {
@@ -1479,6 +1541,7 @@ impl MailApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(tl!("Signing in stopped unexpectedly").to_string()),
         };
         let (account, for_graph, for_favorites, for_ews) = (waiting.account, waiting.graph, waiting.favorites, waiting.ews);
+        let asked_for = !waiting.quiet;
         self.signing_in = None;
         // A day at most, whatever the provider said; a sign-in is asked for again after.
         let now = mailcraft_time::now();
@@ -1570,7 +1633,7 @@ impl MailApp {
                 }
                 Err(e) => {
                     self.session.sync_status.clear();
-                    self.status(e);
+                    self.sign_in_came_to_nothing(account, &e, asked_for);
                 }
             }
             return;
@@ -1592,9 +1655,23 @@ impl MailApp {
                 }
                 self.session.sync_status.clear();
                 self.note_sync_problems(account, std::slice::from_ref(&e), false);
-                self.status(e);
+                self.sign_in_came_to_nothing(account, &e, asked_for);
             }
         }
+    }
+
+    /// A sign-in of an account that exists (to its mail, or for its calendar and contacts)
+    /// brought no tokens: `error` says why, in the status bar. When it is that an administrator
+    /// of the organisation has to approve MailCraft first, and the owner had asked for the
+    /// sign-in, the page that says what to do next comes up as well ([`approval`]): the owner
+    /// has just come back from a page of Microsoft's that said no, and is not left with a line
+    /// at the foot of the window. Never for a sign-in nobody asked for, and never over another
+    /// dialog.
+    fn sign_in_came_to_nothing(&mut self, account: Id, error: &str, asked_for: bool) {
+        if approval::SignInEnd::of(error) == approval::SignInEnd::Approval && asked_for && self.dialog.is_none() {
+            self.dialog = dialogs::Dialog::open("account", self, &json!({"id": account, "page": "approval"}));
+        }
+        self.status(tl!(error));
     }
 
     /// Whether the last Send/Receive of any account had problems.
@@ -1787,6 +1864,9 @@ impl MailApp {
             let _ = self.execute("ui.cancelSignIn", json!({}));
             self.session.sync_status.clear();
         }
+        // An administrator's approval that was waited for ([`approval`]).
+        self.poll_admin_consent();
+        self.sweep_admin_consent();
         self.poll_graph();
         self.poll_calendar();
         self.poll_favorites();
@@ -1807,8 +1887,8 @@ impl MailApp {
         self.autosave_tick(ctx);
         self.collect_screenshots(ctx);
         self.issue_screenshots(ctx);
-        if !self.synthetic.is_empty() || self.sync_rx.is_some() || self.graph_rx.is_some() || self.signing_in.is_some() || !self.sync_queue.is_empty()
-        {
+        let waiting = self.sync_rx.is_some() || self.graph_rx.is_some() || self.signing_in.is_some() || self.approving();
+        if !self.synthetic.is_empty() || waiting || !self.sync_queue.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         } else if self.auto_sync && self.services.sync.is_some() && self.session.prefs.sync_minutes > 0 && !self.server_accounts().is_empty() {
             // Nothing is happening: look again in a while, in case a Send/Receive round is due or

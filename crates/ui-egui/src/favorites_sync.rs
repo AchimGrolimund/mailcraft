@@ -26,8 +26,9 @@
 //! there is to say is a quiet line under the Favorites heading:
 //!
 //! - the sign-in doesn't cover reading them: the offer, and the server isn't asked again that day;
-//! - the owner asked and an administrator has to approve it first: that, with a link to copy
-//!   for the administrator and the offer to read them the other way;
+//! - the owner asked and an administrator has to approve it first: that, with a message to
+//!   copy for the administrator, the way to the page that says what to do next
+//!   ([`crate::approval`]) and the offer to read them the other way;
 //! - the organisation doesn't allow Exchange Web Services: that, and the offer to use Graph;
 //! - the owner asked and it wasn't to be had (this kind of account has no such permission, the
 //!   organisation has shut the door): one plain line saying so;
@@ -90,8 +91,12 @@ pub(crate) enum Note {
 /// A link under a quiet line: what the owner can do about it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Step {
-    /// Copy the address an administrator approves it at.
-    CopyLink,
+    /// Copy a message for an administrator, with the address they approve it at
+    /// ([`crate::approval`]).
+    CopyMessage,
+    /// Open the page that says what the owner and an administrator can do
+    /// ([`crate::approval`]).
+    Help,
     /// Read the Favorites the other way instead.
     Use(FavoritesSource),
 }
@@ -99,7 +104,8 @@ pub(crate) enum Step {
 impl Step {
     pub(crate) fn code(self) -> &'static str {
         match self {
-            Step::CopyLink => "copyLink",
+            Step::CopyMessage => "copyMessage",
+            Step::Help => "help",
             Step::Use(FavoritesSource::Ews) => "useEws",
             Step::Use(_) => "useGraph",
         }
@@ -108,7 +114,8 @@ impl Step {
     /// What the link says.
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Step::CopyLink => "Copy a link for your administrator",
+            Step::CopyMessage => "Copy a message for my administrator",
+            Step::Help => "What to do next",
             Step::Use(FavoritesSource::Ews) => "Use Exchange Web Services instead",
             Step::Use(_) => "Use Microsoft Graph instead",
         }
@@ -117,8 +124,11 @@ impl Step {
     /// And what it does, for whoever asks before clicking.
     pub(crate) fn about(self) -> &'static str {
         match self {
-            Step::CopyLink => {
-                "Copies the address of Microsoft's page where an administrator of your organisation approves MailCraft reading Outlook's Favorites, once for everybody. Nothing is sent: pass the link on yourself."
+            Step::CopyMessage => {
+                "Copies a short message with the address of Microsoft's page where an administrator of your organisation approves MailCraft, once for everybody. Nothing is sent: paste it into mail or chat yourself."
+            }
+            Step::Help => {
+                "Says what you and your organisation's administrator can do, and lets an administrator approve MailCraft on Microsoft's page from here."
             }
             Step::Use(FavoritesSource::Ews) => {
                 "Reads Outlook's Favorites through Exchange Web Services, which needs no administrator where your organisation still allows it. Microsoft switches it off on 1 April 2027."
@@ -189,7 +199,7 @@ pub(crate) struct FavoritesSync {
 
 impl MailApp {
     /// Whether `account` signs in with Microsoft.
-    fn is_microsoft(&self, account: Id) -> bool {
+    pub(crate) fn is_microsoft(&self, account: Id) -> bool {
         let microsoft = |a: &mailcraft_model::Account| a.oauth.as_ref().is_some_and(|o| o.provider == mailcraft_model::OAuthProvider::Microsoft);
         self.session.mailbox.account(account).is_some_and(microsoft)
     }
@@ -438,11 +448,13 @@ impl MailApp {
         let offered = self.favorites_offered(account);
         let other = |source: FavoritesSource| source.code().filter(|code| offered.contains(code)).map(|_| Step::Use(source));
         match note {
-            Note::Approval(FavoritesSource::Ews) => [Some(Step::CopyLink), other(FavoritesSource::Graph)].into_iter().flatten().collect(),
+            Note::Approval(FavoritesSource::Ews) => {
+                [Some(Step::CopyMessage), Some(Step::Help), other(FavoritesSource::Graph)].into_iter().flatten().collect()
+            }
             // (The other way only where there is a choice: a personal account has none.)
             Note::Approval(_) => {
                 let ews = other(FavoritesSource::Ews).filter(|_| self.favorites_choice(account));
-                [Some(Step::CopyLink), ews].into_iter().flatten().collect()
+                [Some(Step::CopyMessage), Some(Step::Help), ews].into_iter().flatten().collect()
             }
             Note::Blocked | Note::Ended => vec![Step::Use(FavoritesSource::Graph)],
             Note::Offer | Note::Refused(_) | Note::Failed(_) => Vec::new(),
@@ -708,7 +720,7 @@ impl MailApp {
     // ---- commands ----
 
     /// The Microsoft account a favourites command is for: the one named, else the first.
-    fn favorites_account(&self, p: &Value) -> Result<Id, String> {
+    pub(crate) fn favorites_account(&self, p: &Value) -> Result<Id, String> {
         let named = p.get("account").and_then(Value::as_u64);
         let first = || self.session.mailbox.accounts.iter().map(|a| a.id).find(|id| self.is_microsoft(*id));
         match named.or_else(first) {
@@ -810,9 +822,11 @@ impl MailApp {
         Ok(state)
     }
 
-    /// The address an administrator of the organisation of `account` approves this program at,
-    /// for the way its Favorites are (or were to be) read.
-    fn admin_consent_link(&self, account: Id) -> Result<(String, FavoritesSource), String> {
+    /// What an administrator's approval is asked for, for `account`: its sign-in settings (as
+    /// the account has them), its organisation's directory when that is known (else empty), and
+    /// whether Exchange Web Services is asked for with the rest (`Ews`: its Favorites are, or
+    /// were to be, read that way).
+    pub(crate) fn approval_of(&self, account: Id) -> Result<(mailcraft_model::OAuth, String, FavoritesSource), String> {
         let Some(owner) = self.session.mailbox.account(account) else { return Err(tl!("No account signs in with Microsoft").to_string()) };
         let Some(oauth) = owner.oauth.clone() else { return Err(tl!("This account doesn't sign in with Microsoft").to_string()) };
         let source = match self.favorites.notes.get(&account) {
@@ -825,13 +839,31 @@ impl MailApp {
         let named = oauth.tenant.trim();
         let settings = (Directory::of_tenant(named) == Directory::Organisation && !named.eq_ignore_ascii_case("organizations")).then_some(named);
         let tenant = self.favorites.tenants.get(&account).map(String::as_str).or(settings).unwrap_or("").to_string();
-        let oauth = self.effective_oauth(oauth);
-        let link = self.services.admin_consent_link.as_ref().and_then(|make| make(&oauth, &tenant, source));
-        link.map(|link| (link, source)).ok_or_else(|| tl!("This build can't make a link for an administrator.").to_string())
+        Ok((oauth, tenant, source))
+    }
+
+    /// The address of Microsoft's page where an administrator approves this program, for the
+    /// sign-in settings `oauth` (with the application id filled in), the directory `tenant`
+    /// (empty: whichever the administrator is of) and with Exchange Web Services or without
+    /// (`source`). A directory the host won't make an address of is left out of it.
+    pub(crate) fn admin_link(&self, oauth: &mailcraft_model::OAuth, tenant: &str, source: FavoritesSource) -> Result<String, String> {
+        let unable = || tl!("This build can't make a link for an administrator.").to_string();
+        let make = self.services.admin_consent_link.as_ref().ok_or_else(unable)?;
+        let link = make(oauth, tenant, source).or_else(|| if tenant.is_empty() { None } else { make(oauth, "", source) });
+        link.ok_or_else(unable)
+    }
+
+    /// The address an administrator of the organisation of `account` approves this program at,
+    /// with Exchange Web Services in it where its Favorites are (or were to be) read that way.
+    fn admin_consent_link(&self, account: Id) -> Result<(String, FavoritesSource), String> {
+        let (oauth, tenant, source) = self.approval_of(account)?;
+        let link = self.admin_link(&self.effective_oauth(oauth), &tenant, source)?;
+        Ok((link, source))
     }
 
     /// `ui.copyAdminConsentLink`: put the address an administrator approves this program at on
-    /// the clipboard, for the owner to pass on. Nothing is opened and nothing is sent.
+    /// the clipboard, for the owner to pass on. Nothing is opened and nothing is sent. (The
+    /// window's own links copy a whole message with it: `ui.copyAdminMessage`.)
     fn copy_admin_consent_link(&mut self, p: &Value) -> Result<Value, String> {
         let account = self.favorites_account(p)?;
         let (link, source) = self.admin_consent_link(account)?;
