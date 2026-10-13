@@ -65,6 +65,10 @@
 //! account's calendars and their groups ([`calendars`]), the mailbox's categories
 //! ([`categories`], which takes `MailboxSettings.Read`), and when people are free and busy
 //! ([`schedule`]).
+//!
+//! And the folders the owner keeps under Favorites in Outlook ([`favorites`], which takes
+//! `MailboxConfigItem.Read` and `Mail.ReadBasic`): read from one configuration item of the
+//! mailbox, in the beta version of Graph, and never written.
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -300,6 +304,7 @@ enum Doing {
     Contacts,
     Writing,
     Categories,
+    Favorites,
 }
 
 fn nonsense(text: &str) -> NetError {
@@ -448,6 +453,7 @@ fn refusal(doing: Doing, reply: &Reply, sent: &[&str], now: Timestamp) -> NetErr
                 Doing::Contacts => "this account may not read its contacts through Microsoft Graph",
                 Doing::Writing => "this account may not change its calendar through Microsoft Graph",
                 Doing::Categories => "this account may not read its list of categories through Microsoft Graph",
+                Doing::Favorites => "this account may not read its Favorites through Microsoft Graph",
             };
             NetError::Forbidden(format!("{what}{}", code()))
         }
@@ -1707,6 +1713,9 @@ fn schedule_at(base: &str, token: &str, ask: &FreeBusyAsk) -> Result<FreeBusy, N
 
 mod settings;
 pub use settings::{MailboxSettings, WorkingHours, mailbox_settings};
+
+mod favorites;
+pub use favorites::favorites;
 
 mod check;
 pub use check::{CHECK_TITLE, CalendarCheck, CheckStep, STEPS as CHECK_STEPS, check_calendar, check_start, no_sign_in};

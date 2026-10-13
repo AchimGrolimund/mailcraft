@@ -56,5 +56,10 @@ rows of windowsZones in the Unicode CLDR supplemental data: Copyright (c) Unicod
 the Unicode License v3 (https://www.unicode.org/license.txt). They are identifiers; nothing else
 of Windows is included.
 
+For the one document a server hands over as XML (the Favorites of Outlook, read through Microsoft
+Graph): quick-xml (the MIT License; https://github.com/tafia/quick-xml), with memchr under it (the
+Unlicense OR MIT). Written in Rust throughout; it reads no DTD and expands no entity. In the
+desktop app and the CLI only: the browser build has no server connection and does not include it.
+
 No Microsoft, Google, Apple, Mozilla or other vendor's icons, images, templates, sounds or artwork
 are included.

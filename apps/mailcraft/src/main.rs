@@ -20,6 +20,8 @@ mod apple_events;
 #[cfg(test)]
 mod calendar_flow;
 mod control_server;
+#[cfg(test)]
+mod favorites_flow;
 mod file_dialogs;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
@@ -216,6 +218,21 @@ fn sign_in(ctx: &egui::Context, request: SignInRequest) -> Result<Tokens, String
         ctx.open_url(egui::OpenUrl::new_tab(url));
         ctx.request_repaint();
     };
+    // "Show Outlook's Favorites": the owner asked, so the page comes up, for what Microsoft Graph
+    // was asked for before and the two permissions that reading the Favorites takes. A no that
+    // is not the owner's to change is said in the words the window knows it by; nothing is
+    // asked a second time.
+    if request.graph && request.favorites {
+        use mailcraft_net::oauth::FavoritesRefusal;
+        use mailcraft_ui_egui::favorites_sync::{REFUSED_BY_ORGANISATION, REFUSED_FOR_ACCOUNT};
+        return mailcraft_net::oauth::sign_in_for_favorites(&request.oauth, &request.email, &open, &request.cancel).map_err(
+            |refusal| match refusal {
+                FavoritesRefusal::Organisation => REFUSED_BY_ORGANISATION.to_string(),
+                FavoritesRefusal::Account => REFUSED_FOR_ACCOUNT.to_string(),
+                FavoritesRefusal::Other(e) => e.to_string(),
+            },
+        );
+    }
     // "Connect calendar and contacts": the owner asked, so the page comes up, for what Microsoft
     // Graph needs rather than for mail.
     if request.graph {
@@ -237,7 +254,8 @@ fn sign_in(ctx: &egui::Context, request: SignInRequest) -> Result<Tokens, String
     }
     if request.mail_only {
         // Without the calendar and contacts along: for when the provider's page won't have both.
-        let mail = mailcraft_net::oauth::Endpoints { consent: String::new(), ..mailcraft_net::oauth::Endpoints::of(&request.oauth) };
+        let mail =
+            mailcraft_net::oauth::Endpoints { consent: String::new(), lesser: String::new(), ..mailcraft_net::oauth::Endpoints::of(&request.oauth) };
         return mailcraft_net::oauth::sign_in_at(&mail, &request.oauth, &request.email, &open, &request.cancel).map_err(|e| e.to_string());
     }
     mailcraft_net::oauth::sign_in(&request.oauth, &request.email, &open, &request.cancel).map_err(|e| e.to_string())
@@ -294,16 +312,42 @@ fn graph(request: GraphRequest) -> GraphResult {
 
 /// [`graph`], with the owner's time zone as `zone` (a name Microsoft Graph knows).
 fn graph_in(request: GraphRequest, zone: &str) -> GraphResult {
-    use mailcraft_net::{NetError, graph, oauth};
+    use mailcraft_net::oauth;
+    // A token for everything Graph is asked for, and for reading the Favorites of Outlook when
+    // the window wants that too (it stops wanting it for the day once it was told no).
+    graph_with(request, zone, &|settings, refresh, favorites| {
+        if favorites { oauth::refresh_graph_with_favorites(settings, refresh) } else { oauth::refresh_graph(settings, refresh) }
+    })
+}
+
+/// How a job gets a token for Microsoft Graph when the window handed it none: from the sign-in
+/// settings and the refresh token, and whether one that is good for the Favorites is wanted.
+type Renew<'a> = &'a dyn Fn(&mailcraft_model::OAuth, &str, bool) -> Result<mailcraft_net::oauth::GraphTokens, mailcraft_net::NetError>;
+
+/// Why reading the Favorites of Outlook failed, in a few plain words for the folder pane.
+fn favorites_words(error: &mailcraft_net::NetError) -> &'static str {
+    match error {
+        mailcraft_net::NetError::Busy { .. } => "Outlook is busy",
+        error if error.is_unreachable() => "Couldn't reach Outlook",
+        _ => "Couldn't read the list",
+    }
+}
+
+/// [`graph_in`], with the token coming from `renew` when the request brings none.
+fn graph_with(request: GraphRequest, zone: &str, renew: Renew<'_>) -> GraphResult {
+    use mailcraft_model::remote::{FavoritesDownload, FavoritesOutcome};
+    use mailcraft_net::{NetError, graph};
     let mut out = GraphResult { account: request.account.id, ..Default::default() };
     let mut access = request.access.clone();
     if access.is_empty() {
         // For everything Graph is asked for; a sign-in from before the newest of it was asked
         // for gets its tokens for what it covers, and says what is missing.
-        match oauth::refresh_graph(&request.oauth, &request.refresh) {
+        match renew(&request.oauth, &request.refresh, request.favorites_scopes) {
             Ok(got) => {
                 access = got.tokens.access.clone();
                 out.extras_missing = got.extras_missing;
+                // (Asked for without the Favorites' permissions, it says nothing of them.)
+                out.favorites_covered = request.favorites_scopes.then_some(got.covers_favorites);
                 out.tokens = Some(got.tokens);
             }
             Err(e) if e.is_consent_needed() => {
@@ -444,6 +488,31 @@ fn graph_in(request: GraphRequest, zone: &str) -> GraphResult {
             Err(NetError::Forbidden(_)) => out.extras_missing = true,
             Err(e) if e.is_refused_sign_in() => refused = true,
             Err(e) => log::debug!("the mailbox's working hours didn't come down: {e}"),
+        }
+    }
+    // The Favorites as Outlook has them: read, never written, and nothing to trouble the owner
+    // with when they can't be had (the folder pane says what there is to say, in one line).
+    if request.favorites && !refused {
+        let outcome = |outcome: FavoritesOutcome| Some(FavoritesDownload { outcome, ..Default::default() }.for_account(&request.account));
+        if out.favorites_covered == Some(false) {
+            // The sign-in doesn't cover it: the server isn't asked what it would only refuse.
+            log::info!("favorites: the sign-in doesn't cover reading them");
+            out.favorites = outcome(FavoritesOutcome::NotPermitted);
+        } else {
+            match graph::favorites(&access) {
+                Ok(download) => out.favorites = Some(download.for_account(&request.account)),
+                Err(NetError::Forbidden(_)) => {
+                    log::info!("favorites: the server says the sign-in doesn't cover reading them (status 403)");
+                    out.favorites = outcome(FavoritesOutcome::NotPermitted);
+                }
+                Err(e) if e.is_refused_sign_in() => refused = true,
+                // (The error says what was being done and the status: no name, no id.)
+                Err(e) => {
+                    log::warn!("favorites: they couldn't be read: {e}");
+                    out.favorites = outcome(FavoritesOutcome::Failed);
+                    out.favorites_error = favorites_words(&e).to_string();
+                }
+            }
         }
     }
     out.token_refused = refused;

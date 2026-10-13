@@ -8,6 +8,7 @@ use mailcraft_engine::Module;
 use mailcraft_model::{Folder, FolderKind, Id, Mailbox};
 use serde_json::json;
 
+use crate::favorites_sync::Note;
 use crate::theme::{Tokens, bold, paint_clipped, regular};
 use crate::{MailApp, icons};
 
@@ -273,6 +274,8 @@ fn folder_row(app: &mut MailApp, ui: &mut Ui, f: &Folder, depth: usize, has_chil
         }
     }
     let (id, custom, favorite, kind) = (f.id, f.kind == FolderKind::Custom, f.favorite, f.kind);
+    // An account whose Favorites are Outlook's has them changed in Outlook: nothing to do here.
+    let from_outlook = mailcraft_engine::cmd::folder::favorites_from_server(&app.session, f.account);
     resp.context_menu(|ui| {
         ui.set_min_width(190.0);
         let item = |ui: &mut Ui, app: &mut MailApp, label: &str, cmd: &str, params: serde_json::Value, enabled: bool| {
@@ -291,8 +294,68 @@ fn folder_row(app: &mut MailApp, ui: &mut Ui, f: &Folder, depth: usize, has_chil
             item(ui, app, "Empty Folder", "folder.empty", json!({"id": id}), true);
         }
         ui.separator();
-        item(ui, app, if favorite { "Remove from Favorites" } else { "Add to Favorites" }, "folder.favorite", json!({"id": id}), true);
+        if from_outlook {
+            item(ui, app, "Favorites Are Set in Outlook", "folder.favorite", json!({"id": id}), false);
+        } else {
+            item(ui, app, if favorite { "Remove from Favorites" } else { "Add to Favorites" }, "folder.favorite", json!({"id": id}), true);
+        }
     });
+}
+
+/// The quiet line under the Favorites heading, when there is something to say of an account's
+/// Favorites in Outlook ([`crate::favorites_sync`]): the offer to show them, why they can't be
+/// had, or why the last look came to nothing, with "Try again" after it. One row, never more.
+fn favorites_note(app: &mut MailApp, ui: &mut Ui, account: Id, note: &Note) {
+    let t = Tokens::get(ui.ctx());
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
+    let y = r.center().y - TEXT_RISE;
+    let left = r.min.x + NAME_LEFT;
+    let width = (r.max.x - COUNT_RIGHT - left).max(0.0);
+    let font = regular(NAME_SIZE);
+    match note {
+        // The whole line is the offer.
+        Note::Offer => {
+            let resp = ui.interact(highlight(r), ui.id().with(("favorites_offer", account)), Sense::click());
+            app.hit.add("favoritesOffer", account, r);
+            if resp.hovered() {
+                ui.painter().rect_filled(highlight(r), 0.0, t.panel.lerp_to_gamma(t.hover, 0.7));
+            }
+            paint_clipped(ui.painter(), pos2(left, y), width, tl!("Show Outlook's Favorites"), font, t.accent_text);
+            let about = tl!(
+                "Sign in with Microsoft once more to let MailCraft read the folders you keep under Favorites in Outlook. They are only read, never changed, and everything else stays as it is."
+            );
+            if resp.on_hover_text(about).clicked()
+                && let Err(e) = app.run("ui.connectFavorites", json!({"account": account}))
+            {
+                app.status(e);
+            }
+        }
+        Note::Refused(why) => {
+            let resp = ui.interact(highlight(r), ui.id().with(("favorites_note", account)), Sense::hover());
+            app.hit.add("favoritesNote", account, r);
+            paint_clipped(ui.painter(), pos2(left, y), width, tl!(why), font, t.text_dim);
+            resp.on_hover_text(tl!(
+                "Outlook's Favorites can't be shown for this account, so the ones kept in MailCraft are. File › Options can ask again."
+            ));
+        }
+        // Why, in a few words, and the way to ask again right after it.
+        Note::Failed(why) => {
+            app.hit.add("favoritesNote", account, r);
+            let again = tl!("Try again");
+            let again_w = crate::theme::text_width(ui.painter(), again, &font, 0.0, t.accent_text);
+            let used = paint_clipped(ui.painter(), pos2(left, y), (width - again_w - 10.0).max(0.0), tl!(why), font.clone(), t.text_dim);
+            let link = Rect::from_min_size(pos2(left + used + if used > 0.0 { 10.0 } else { 0.0 }, r.min.y), vec2(again_w, ROW_H));
+            let resp = ui.interact(link, ui.id().with(("favorites_retry", account)), Sense::click());
+            app.hit.add("favoritesRetry", account, link);
+            let ink = if resp.hovered() { t.accent } else { t.accent_text };
+            ui.painter().text(pos2(link.min.x, y), Align2::LEFT_CENTER, again, font, ink);
+            if resp.on_hover_text(tl!("Read the Favorites from Outlook again now")).clicked()
+                && let Err(e) = app.run("ui.favorites", json!({"account": account, "refresh": true}))
+            {
+                app.status(e);
+            }
+        }
+    }
 }
 
 /// The pane as a sheet lying on the window: the panel colour with a line along its top and left,
@@ -377,7 +440,12 @@ pub fn folder_pane(app: &mut MailApp, ui: &mut Ui) {
             };
             // What is listed: the favourites, and under each account what isn't folded away.
             let folded = app.ui.collapsed_folders.clone();
-            let favorites: Vec<Folder> = app.session.mailbox.folders.iter().filter(|f| f.favorite).cloned().collect();
+            // The favourites as the engine lists them: Outlook's own, in Outlook's order, for an
+            // account whose server has them; else the ones that are marked here.
+            let favorites: Vec<Folder> =
+                mailcraft_engine::cmd::folder::favorites(&app.session).into_iter().filter_map(|id| app.session.mailbox.folder(id).cloned()).collect();
+            // And what there is to say of Outlook's, in one quiet line under the heading.
+            let note = app.favorites_note();
             let lists: Vec<(Id, String, Vec<(Folder, usize, bool)>)> = app
                 .session
                 .mailbox
@@ -404,7 +472,10 @@ pub fn folder_pane(app: &mut MailApp, ui: &mut Ui) {
                     heading(app, ui, id, name, 2.0 * ROW_H, 34.5, true)
                 }
             };
-            if !favorites.is_empty() && head(app, ui, FAVORITES, tl!("Favorites")) {
+            if (!favorites.is_empty() || note.is_some()) && head(app, ui, FAVORITES, tl!("Favorites")) {
+                if let Some((account, note)) = &note {
+                    favorites_note(app, ui, *account, note);
+                }
                 for f in &favorites {
                     folder_row(app, ui, f, 0, false, "fav", count(f), favorite_selected && f.id == current);
                 }

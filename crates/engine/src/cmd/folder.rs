@@ -19,12 +19,80 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("folder.rename", "Rename Folder", "Folder › Actions", rename).key("F2").params(r#"{"name": string, "id"?: number}"#),
         CommandSpec::new("folder.move", "Move Folder", "Folder › Actions", move_folder).params(r#"{"parent": number | null, "id"?: number}"#),
         CommandSpec::new("folder.delete", "Delete Folder", "Folder › Actions", delete).params(FOLDER),
-        CommandSpec::new("folder.favorite", "Add to Favorites", "Folder › Favorites", favorite).params(r#"{"value"?: bool (default: toggle), "id"?: number}"#),
+        CommandSpec::new("folder.favorite", "Add to Favorites", "Folder › Favorites", favorite).params(
+            r#"{"value"?: bool (default: toggle), "id"?: number} — refused for a folder of an account whose Favorites come from its server (Outlook's list, which is changed in Outlook; `view.favorites` says which accounts those are)"#,
+        ),
+        CommandSpec::new("view.favorites", "Favorites from Outlook", "File › Options", favorites_command).pure().params(
+            r#"{"own"?: bool} — "own": true shows the Favorites that are marked here even for an account whose server has a list of its own, false the server's list where there is one (default: as it is). Answers what the folder pane lists under Favorites, in its order: {"own": bool, "favorites": [{"id", "name", "account", "path"}], "accounts": [{"account": number, "from": "server" | "mailbox", "listed": number}]}"#,
+        ),
         CommandSpec::new("folder.empty", "Empty Folder", "Folder › Clean Up", empty).params(FOLDER).selection(can_empty),
     ]
 }
 
+/// Most folders the pane lists under Favorites.
+const MAX_FAVORITES: usize = 1_000;
+
+/// Whether the Favorites of `account` are the ones its server lists (the folders Outlook shows
+/// under Favorites, taken in with `sync.applyFavorites`) rather than the ones marked here: the
+/// mailbox has a list from that account's server, and the owner hasn't asked for the mailbox's
+/// own instead ([`crate::Prefs::own_favorites`]).
+pub fn favorites_from_server(s: &Session, account: Id) -> bool {
+    !s.prefs.own_favorites && s.mailbox.favorites_from_server.iter().any(|list| list.account == account)
+}
+
+/// The folders the pane lists under Favorites, in its order: for each account whose Favorites
+/// come from its server, that list in the server's order; then the folders marked as favourites
+/// here of every other account, as they always were. The marks of an account whose list comes
+/// from its server are kept, and count again once it no longer does.
+pub fn favorites(s: &Session) -> Vec<Id> {
+    let mut out: Vec<Id> = Vec::new();
+    let mut served: Vec<Id> = Vec::new();
+    if !s.prefs.own_favorites {
+        for account in &s.mailbox.accounts {
+            if let Some(list) = s.mailbox.server_favorites(account.id) {
+                served.push(account.id);
+                out.extend(list);
+            }
+        }
+    }
+    out.extend(s.mailbox.folders.iter().filter(|f| f.favorite && !served.contains(&f.account)).map(|f| f.id));
+    out.truncate(MAX_FAVORITES);
+    out
+}
+
+fn favorites_json(s: &Session) -> Value {
+    let listed = favorites(s);
+    let folders: Vec<Value> = listed
+        .iter()
+        .filter_map(|id| s.mailbox.folder(*id))
+        .map(|f| json!({"id": f.id, "name": f.name, "account": f.account, "path": s.mailbox.folder_path(f.id)}))
+        .collect();
+    let accounts: Vec<Value> = s
+        .mailbox
+        .accounts
+        .iter()
+        .map(|a| {
+            let server = favorites_from_server(s, a.id);
+            let count = listed.iter().filter(|id| s.mailbox.folder(**id).is_some_and(|f| f.account == a.id)).count();
+            json!({"account": a.id, "from": if server { "server" } else { "mailbox" }, "listed": count})
+        })
+        .collect();
+    json!({"own": s.prefs.own_favorites, "favorites": folders, "accounts": accounts})
+}
+
+fn favorites_command(s: &mut Session, v: &Value) -> CmdResult {
+    match v.get("own") {
+        None | Some(Value::Null) => {}
+        Some(_) => s.prefs.own_favorites = p::bool(v, "own").ok_or_else(|| bad("`own` is true or false"))?,
+    }
+    Ok(favorites_json(s))
+}
+
 const FOLDER: &str = r#"{"id"?: number} (default: the folder in view)"#;
+
+/// Why `folder.favorite` refuses for an account whose Favorites are its server's.
+pub const FROM_OUTLOOK: &str =
+    "This account's Favorites come from Outlook and are changed there (File › Options can show the ones kept in MailCraft instead)";
 
 fn can_empty(s: &Session) -> Option<&'static str> {
     if s.mailbox.count(s.view.folder) == 0 { Some("the folder is already empty") } else { None }
@@ -91,9 +159,15 @@ fn list(s: &mut Session, _: &Value) -> CmdResult {
         .mailbox
         .accounts
         .iter()
-        .map(|a| json!({"id": a.id, "name": a.name, "email": a.email, "kind": a.kind, "folders": tree(s, a.id, None, 0)}))
+        .map(|a| {
+            json!({
+                "id": a.id, "name": a.name, "email": a.email, "kind": a.kind,
+                "favoritesFrom": if favorites_from_server(s, a.id) { "server" } else { "mailbox" },
+                "folders": tree(s, a.id, None, 0),
+            })
+        })
         .collect();
-    Ok(json!({"accounts": accounts, "current": s.view.folder}))
+    Ok(json!({"accounts": accounts, "current": s.view.folder, "favorites": favorites(s)}))
 }
 
 fn new(s: &mut Session, v: &Value) -> CmdResult {
@@ -150,6 +224,11 @@ fn delete(s: &mut Session, v: &Value) -> CmdResult {
 
 fn favorite(s: &mut Session, v: &Value) -> CmdResult {
     let id = target(s, v)?;
+    // Outlook's list is only ever read: a mark made here would show nowhere, and nothing is
+    // written to the server for it.
+    if s.mailbox.folder(id).is_some_and(|f| favorites_from_server(s, f.account)) {
+        return Err(fail(FROM_OUTLOOK));
+    }
     let f = s.mailbox.folder_mut(id)?;
     f.favorite = p::bool(v, "value").unwrap_or(!f.favorite);
     Ok(json!({"id": id, "favorite": f.favorite}))

@@ -22,6 +22,7 @@ pub mod chrome;
 pub mod compose;
 pub mod control;
 pub mod dialogs;
+pub mod favorites_sync;
 pub mod files;
 pub mod forms;
 pub mod i18n;
@@ -179,6 +180,11 @@ pub struct SignInRequest {
     /// Ask for mail alone, without the calendar and contacts along: the owner's way out when the
     /// provider's page won't have the fuller request.
     pub mail_only: bool,
+    /// With `graph`: ask also for what reading the Favorites of Outlook takes (the owner chose
+    /// "Show Outlook's Favorites"). The tokens that come back are then good for that too. A no
+    /// that is not the owner's to change is answered with exactly
+    /// [`favorites_sync::REFUSED_BY_ORGANISATION`] or [`favorites_sync::REFUSED_FOR_ACCOUNT`].
+    pub favorites: bool,
 }
 
 /// What the host needs to check an account's calendar connection ([`Services::check_calendar`]).
@@ -250,6 +256,12 @@ pub struct GraphRequest {
     /// Also bring the working hours the mailbox has set: an extra that takes a permission of its
     /// own, without which the answer says [`GraphResult::extras_missing`].
     pub settings: bool,
+    /// Also read the Favorites as Outlook has them ([`GraphResult::favorites`]).
+    pub favorites: bool,
+    /// A token that is obtained for this job is asked for with the permissions that reading the
+    /// Favorites takes ([`GraphResult::favorites_covered`] says whether it has them). Without
+    /// it, a token is asked for as it always was.
+    pub favorites_scopes: bool,
 }
 
 /// What a [`GraphRequest`] came to. Never an error as a whole: mail goes on either way.
@@ -284,12 +296,23 @@ pub struct GraphResult {
     pub extras_missing: bool,
     /// The working hours the mailbox has set, when they were asked for and could be read.
     pub mailbox_hours: Option<mailcraft_engine::cmd::calendar_settings::MailboxHours>,
+    /// The Favorites as Outlook has them, when they were asked for: the list, or how the read
+    /// went instead (the mailbox has none, the sign-in doesn't cover it, it failed).
+    pub favorites: Option<mailcraft_model::remote::FavoritesDownload>,
+    /// Why reading the Favorites failed, in a few plain words for the folder pane; no name
+    /// and no id in it.
+    pub favorites_error: String,
+    /// When a token was obtained for this job: whether it is good for reading the Favorites
+    /// (it was asked for with that, and the sign-in covers it).
+    pub favorites_covered: Option<bool>,
 }
 
 /// A sign-in the host is busy with.
 struct SigningIn {
     /// For Microsoft Graph (calendar, contacts, sending) rather than for mail.
     graph: bool,
+    /// And for the Favorites of Outlook with it ([`favorites_sync`]).
+    favorites: bool,
     account: Id,
     rx: Receiver<Result<Tokens, String>>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -402,6 +425,18 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "Check Calendar Connection",
         "File › Info",
         r#"{"account"?: number, "confirmed": true} — on the account's real server: makes one appointment called "MailCraft connection check" a year from today in its main calendar, reads it back, changes its time (once as an instant, once said in this computer's time zone), reads it back each time, and deletes it; nothing else is read or changed and nobody is written to. Every step is reported with the server's status and words, in a report dialog ("calendarCheck") and in the log. It asks first; a script says "confirmed": true. Answers {"pending": "calendarCheck", "account"}"#,
+    ),
+    (
+        "ui.connectFavorites",
+        "Show Outlook's Favorites",
+        "File › Options",
+        r#"{"account"?: number} — signs in on Microsoft's page for the two permissions that reading the Favorites of Outlook takes (the mailbox's configuration items, and its folders by name); nothing is written there, ever. Answers {"pending": "signIn", "account"}. When the organisation doesn't let its people give them, the folder pane says so in one line, and nothing else changes"#,
+    ),
+    (
+        "ui.favorites",
+        "Outlook's Favorites",
+        "Folder › Favorites",
+        r#"{"account"?: number, "refresh"?: bool, "answer"?: {"outcome": "read"|"missing"|"notPermitted"|"refused"|"failed", "folders"?: [{"path": [string], "kind": string, "root"?: string}], "why"?: string}} — what the folder pane has of the Favorites of an account that signs in with Microsoft. "refresh": true reads them from its server again at the next chance ("Try again"); with "answer" nothing is asked of anybody, and it is taken in as what the host brought (for scripts, and for looking at the pane in each of its states). Answers {"account", "from": "server"|"mailbox", "own": bool, "line": "offer"|"refused"|"failed"|null (what the pane says under the Favorites heading), "text": string, "favorites": [number]}"#,
     ),
     ("ui.dismissReminder", "Dismiss Reminder", "Reminders", r#"{"event": number, "occurrence": "YYYY-MM-DDTHH:MM"} | {"all": true}"#),
     (
@@ -523,6 +558,10 @@ pub struct MailApp {
     graph_consent_needed: std::collections::HashSet<Id>,
     /// Keeping the calendar current between Send/Receive runs ([`calendar_sync`]).
     calendar: calendar_sync::CalendarSync,
+    /// Keeping the Favorites of the folder pane the ones Outlook shows ([`favorites_sync`]).
+    favorites: favorites_sync::FavoritesSync,
+    /// The next sign-in for Microsoft Graph also asks for the Favorites' permissions.
+    favorites_next: bool,
     /// The next sign-in asks for mail alone (account setup's "mail only").
     mail_only_next: bool,
     /// A sign-in the host is waiting on (the owner is in the browser).
@@ -624,6 +663,8 @@ impl MailApp {
             graph_checked: Default::default(),
             graph_consent_needed: Default::default(),
             calendar: Default::default(),
+            favorites: Default::default(),
+            favorites_next: false,
             mail_only_next: false,
             signing_in: None,
             setup_sign_in: None,
@@ -785,9 +826,16 @@ impl MailApp {
         if r.is_ok() && id == "view.reminders" {
             self.reminders.asked_for = true;
         }
+        // Outlook's Favorites are wanted again: they are read at once.
+        if r.is_ok() && id == "view.favorites" && params.get("own").and_then(Value::as_bool) == Some(false) {
+            for account in self.session.mailbox.accounts.iter().map(|a| a.id).collect::<Vec<_>>() {
+                self.favorites_due(account);
+            }
+        }
         if let (Ok(_), Some((account, address))) = (&r, leaving) {
             // Its calendar and contacts were the server's, not the owner's own.
             let _ = mailcraft_engine::cmd::remote::forget(&mut self.session, account);
+            self.forget_favorites(account);
             self.graph_tokens.remove(&account);
             self.graph_checked.remove(&account);
             self.graph_consent_needed.remove(&account);
@@ -971,7 +1019,8 @@ impl MailApp {
                 return windows::ui_command(self, id, p)
                     .or_else(|| reading::remote::ui_command(self, id, p))
                     .or_else(|| calendar_view::ui_command(self, id, p))
-                    .or_else(|| meeting_dialogs::ui_command(self, id, p));
+                    .or_else(|| meeting_dialogs::ui_command(self, id, p))
+                    .or_else(|| favorites_sync::ui_command(self, id, p));
             }
         })
     }
@@ -1030,6 +1079,7 @@ impl MailApp {
         graph: bool,
     ) -> Result<(), String> {
         let mail_only = std::mem::take(&mut self.mail_only_next);
+        let favorites = std::mem::take(&mut self.favorites_next) && graph;
         if self.signing_in.is_some() {
             return Err(tl!("Finish signing in first (your browser is waiting)").to_string());
         }
@@ -1047,9 +1097,10 @@ impl MailApp {
             quiet,
             graph,
             mail_only,
+            favorites,
         };
         let rx = sign_in(request);
-        self.signing_in = Some(SigningIn { graph, account, rx, cancel });
+        self.signing_in = Some(SigningIn { graph, favorites, account, rx, cancel });
         self.session.sync_status = waiting.to_string();
         Ok(())
     }
@@ -1134,8 +1185,10 @@ impl MailApp {
                 let changes = if free { self.calendar_changes(account) } else { None };
                 let calendar = (free && !directory && (!quiet || changes.is_some())).then(|| self.calendar_window());
                 if directory || !request.outbox.is_empty() || changes.is_some() || calendar.is_some() {
-                    let access =
-                        self.graph_tokens.get(&account).filter(|t| t.fresh(mailcraft_time::now())).map(|t| t.access.clone()).unwrap_or_default();
+                    // The Favorites as Outlook has them ride along: with a Send/Receive the owner
+                    // asked for, and otherwise when they are due ([`favorites_sync`]).
+                    let favorites = free && self.favorites_ask(account, now, !quiet);
+                    let access = self.graph_access_for(account, favorites);
                     let ask = GraphRequest {
                         account: request.account.clone(),
                         oauth: self.effective_oauth(oauth),
@@ -1148,6 +1201,8 @@ impl MailApp {
                         asks: self.calendar_asks(account, directory, calendar),
                         // (The calendar's own job asks for them: [`calendar_sync`].)
                         settings: false,
+                        favorites,
+                        favorites_scopes: favorites,
                     };
                     self.session.sync_status =
                         if ask.outbox.is_empty() { tl!("Updating the calendar and contacts…") } else { tl!("Sending…") }.to_string();
@@ -1276,12 +1331,14 @@ impl MailApp {
     fn poll_graph(&mut self) {
         let Some((account, quiet, directory, rx)) = &self.graph_rx else { return };
         let (account, quiet, directory) = (*account, *quiet, *directory);
-        let result = match rx.try_recv() {
+        let mut result = match rx.try_recv() {
             Ok(r) => r,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => GraphResult { account, ..Default::default() },
         };
         self.graph_rx = None;
+        // The Favorites as Outlook has them, when they came along ([`favorites_sync`]).
+        self.take_in_favorites(account, &mut result);
         let address = self.session.mailbox.account(account).map(|a| a.email.clone()).unwrap_or_default();
         let mut errors = result.errors;
         if result.token_refused {
@@ -1339,15 +1396,15 @@ impl MailApp {
     }
 
     /// The sign-in came back: keep the tokens for the session and carry on with the Send/Receive
-    /// that asked for them; or say why not.
-    fn poll_sign_in(&mut self) {
+    /// that asked for them; or say why not. (Public for a host's tests, which have no window.)
+    pub fn poll_sign_in(&mut self) {
         let Some(waiting) = &self.signing_in else { return };
         let answer = match waiting.rx.try_recv() {
             Ok(answer) => answer,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(tl!("Signing in stopped unexpectedly").to_string()),
         };
-        let (account, for_graph) = (waiting.account, waiting.graph);
+        let (account, for_graph, for_favorites) = (waiting.account, waiting.graph, waiting.favorites);
         self.signing_in = None;
         // A day at most, whatever the provider said; a sign-in is asked for again after.
         let now = mailcraft_time::now();
@@ -1385,10 +1442,24 @@ impl MailApp {
                     self.graph_checked.remove(&account);
                     // Calendar changes that waited for this permission go now.
                     self.calendar_connected(account);
+                    // Asked for with the Favorites' permissions, the token is good for them, and
+                    // they are read at once. Asked for without, it may not be: an account that
+                    // has Outlook's list is not to lose it to a token that can't read it.
+                    if for_favorites {
+                        self.favorites_connected(account);
+                    } else if self.session.mailbox.favorites_from_server.iter().any(|list| list.account == account) {
+                        self.favorites_token_is_plain(account);
+                    }
                     if let Err(e) = self.start_sync(&json!({"account": account})) {
                         self.session.sync_status.clear();
                         self.status(e);
                     }
+                }
+                // The Favorites were not to be had: said under their heading, or in the status
+                // bar; nothing else is any different for it.
+                Err(e) if for_favorites => {
+                    self.session.sync_status.clear();
+                    self.favorites_refused(account, &e);
                 }
                 Err(e) => {
                     self.session.sync_status.clear();

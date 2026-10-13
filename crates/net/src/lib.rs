@@ -7,9 +7,9 @@
 //! signs the owner in on the provider's own page, for accounts whose servers take an access
 //! token (SASL XOAUTH2) instead of a password, and [`lookup_mx`] finds out where a domain's mail
 //! goes, which tells its provider. [`graph`] asks Microsoft Graph for what a Microsoft 365
-//! account has that IMAP and SMTP don't reach: sending where SMTP is switched off, the calendar
-//! and the contacts. All of them block, so a host calls them on a background thread; every
-//! connection has timeouts.
+//! account has that IMAP and SMTP don't reach: sending where SMTP is switched off, the calendar,
+//! the contacts, and which folders the owner keeps under Favorites in Outlook. All of them
+//! block, so a host calls them on a background thread; every connection has timeouts.
 //!
 //! A password or a token is only ever sent inside TLS, or to a server on this machine. It never
 //! appears in an error or a log line.
@@ -130,6 +130,12 @@ mod native {
         /// owner to sign in again the cure.
         pub fn is_refused_sign_in(&self) -> bool {
             matches!(self, NetError::Proto(mailcraft_proto::ProtoError::Auth(_)))
+        }
+
+        /// Whether the other side couldn't be reached or stopped answering, as against an answer
+        /// that says no: trying again later is what there is to do.
+        pub fn is_unreachable(&self) -> bool {
+            matches!(self, NetError::Connect { .. } | NetError::Tls { .. } | NetError::Proto(mailcraft_proto::ProtoError::Io(_)))
         }
 
         /// Whether the connection the error came from can't be used any more.

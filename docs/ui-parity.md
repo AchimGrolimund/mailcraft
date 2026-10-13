@@ -1,6 +1,6 @@
 # Interface parity
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-12 · **Change:** minor (the message list, measured against the target's) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-13 · **Change:** minor (the Favorites of the folder pane are Outlook's own for a Microsoft account) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
 
 How the window compares with the target's. The look is the Craft apps' own (WordCraft's design
 tokens, type rungs and ribbon widgets, with MailCraft's teal accent); the *arrangement* is the one
@@ -13,7 +13,7 @@ Outlook users know. No pixel of the target's artwork is used: every icon is draw
 | Title bar | yes | Quick Access (Send/Receive, Undo, Redo), search box with scope, account avatar. macOS integrated title bar. No customisation |
 | Ribbon | yes | File, Home (changes with the module), Send / Receive, Folder, View, Help, and a Message tab while writing. Collapsible by double-click. No keytips (Alt), no customisation, no simplified ribbon |
 | Module bar | yes | Mail, Calendar, People, Tasks, with the Inbox's unread count. No Notes, no reordering |
-| Folder pane | yes | Favorites, account trees, collapse/expand, unread counts, context menu, resizable. No drag and drop, no search folders, no groups |
+| Folder pane | yes | Favorites, account trees, collapse/expand, unread counts, context menu, resizable. For an account that signs in with Microsoft the Favorites are the folders Outlook shows there, in Outlook's order, read from the server (never written: they are changed in Outlook); one quiet line under the heading offers to connect them, or says why they can't be had, and File › Options switches back to the favourites kept here. No drag and drop, no search folders, no groups; a favourite that is a person, a category or a group is not shown |
 | Message list | yes | Laid out from the target's at 100 %, to the pixel ([the measurements](#the-message-list-measured)): a header with All and Unread as tabs and the arrangement (By Date) with the arrow that turns the list over; rows of the sender (11 pt), the subject with the time at the end of its line, and 0–3 lines of preview (8 pt); a line of dots round the row the keys act on; the bar an unread message wears; a scroll bar with arrows in its own lane. Date/sender/importance groups, conversations as one row with a count, marks, category marks, flag and delete on the row under the pointer, the read switch down a row's left edge, dragging to a folder, context menu, multi-select with Ctrl/Shift, keyboard movement, virtualised. The preview is what the message says to its reader: the words of its HTML (the opening line a sender hid for message lists included), without markup, invisible padding or web addresses. No column view, no collapsing of groups, no opening a conversation in place; the tabs do not turn into a menu in a narrow list (the one in use stays, the others are in the arrangement's menu) |
 | Reading pane | yes | Right, bottom or off; header with avatar, recipients, date; notes (flag, importance, replied, pictures withheld); attachment chips; conversation jump list; formatted body with clickable links. Simplified HTML (gap #6); no zoom, no inline reply |
 | Composer | yes | In place of the reading pane: From (several accounts), To, Cc, Bcc, Subject, attachment chips, body; Send, Attach, Save draft, Discard. Plain text (gap #7); no pop-out window, no address autocomplete |
@@ -76,3 +76,4 @@ High-DPI is handled by egui; multi-window, system tray, notifications and badges
 | 2026-10-11 | major | First version |
 | 2026-10-12 | minor | The message list measured against the target's: rows, header, scroll bar, previews |
 | 2026-10-12 | patch | The calendar's time bar can show a second time zone |
+| 2026-10-13 | minor | The Favorites of the folder pane are Outlook's own, read from the server, for an account that signs in with Microsoft (M4.2) |

@@ -310,6 +310,8 @@ fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
                 }
             });
     });
+    // (Whose Favorites the folder pane shows, for an account that signs in with Microsoft.)
+    crate::favorites_sync::options(app, ui, t);
     section(ui, tl!("Pictures in mail"), t);
     crate::reading::remote::options(app, ui, t);
     section(ui, tl!("Accounts"), t);

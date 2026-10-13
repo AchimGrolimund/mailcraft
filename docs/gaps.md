@@ -1,6 +1,6 @@
 # Where MailCraft falls short of Outlook
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-12 · **Change:** major (gap 10, time zones, down to its remainder; calendar changes are checked against the server; items only on this computer say so) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-13 · **Change:** minor (Outlook's Favorites are read from the server for Microsoft accounts; what is left of that is a rough edge) · **Target:** Microsoft Outlook (Microsoft 365)
 
 The work list. One entry per shortfall, ranked by how much it stops an Outlook user from switching
 (**B** = blocks beta). Each says what's missing, the evidence, who it hurts, a rough estimate of
@@ -35,7 +35,7 @@ done similar work in this code base.
 
 - A sync that hits the per-run download cap leaves the rest for the next run without saying so.
 - Server folders that disappear are not removed locally.
-- Outlook's Favorites are not read from or written to the server (no public interface for them was found): favourites chosen here stay on this computer.
+- Outlook's Favorites are read from the server for an account that signs in with Microsoft (M4.2) and never written: the list is changed in Outlook, and `folder.favorite` says so. They come from an item that Microsoft Graph documents in its beta version only, whose content nobody documents (the cached configuration of Outlook on the web), so they can stop coming without notice; MailCraft's own favourites are shown then. Reading them takes two permissions the owner is asked for separately, of which Microsoft's permissions reference says one needs an administrator in an organisation (its Graph Explorer says not): where that holds, the folder pane says in one line that the organisation doesn't allow it. A favourite that is a person, a category or a group is not shown; other providers have no such list. Proven on one mailbox by hand and against a stand-in since; how soon a change made in Outlook shows in that item is not known.
 - The window's caption strip is the system's, so in dark mode it is a slightly different dark than the rest; text is drawn without subpixel smoothing.
 - An appointment window is one row of commands, not a ribbon with tabs; its questions about mail to attendees come up in the main window.
 - Conversations are grouped by subject, so two unrelated threads with the same subject merge.
@@ -52,3 +52,4 @@ done similar work in this code base.
 | 2026-10-12 | major | Gap 9 rewritten after the calendar's second and third waves (meetings, invitations in mail, the Scheduling Assistant); rough edges updated |
 | 2026-10-12 | major | Gaps 1, 5, 6, 9 and 18 rewritten after a day on a real Microsoft 365 mailbox, calendar write-back, pictures on request and the first installer builds; rough edges updated |
 | 2026-10-12 | major | Gap 10 rewritten after time zones (M3.5): a zone database, every stored time a moment, zones of an item's own, the calendar's zone and a second one, a computer that travels; gaps 5 and 9 no longer count time zones as missing |
+| 2026-10-13 | minor | Rough edges: Outlook's Favorites are read from the server for Microsoft accounts (M4.2), and what is not proven of that |

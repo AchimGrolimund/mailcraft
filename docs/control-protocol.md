@@ -1,6 +1,6 @@
 # Control protocol
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-12 · **Change:** minor (the message list's header and scroll arrows as item kinds; the picture commands; `ui.checkCalendar`, `calendar.moveToAccount`; meetings) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-13 · **Change:** minor (Outlook's Favorites: `ui.favorites`, `ui.connectFavorites`, `view.favorites`, `sync.applyFavorites`, and the kinds of the line under the Favorites heading) · **Target:** Microsoft Outlook (Microsoft 365)
 
 Start the app with a control port: `mailcraft --control 7991` (or `MAILCRAFT_CONTROL_PORT=7991`).
 It listens on `127.0.0.1` only. Send one JSON object per line, with the window's key (see
@@ -87,6 +87,7 @@ and set `MAILCRAFT_CONTROL_KEY` to that app's key.
 | `ui.retryPictures {"message"?}`, `ui.clearPictureCache` | ask once more for the pictures of a message that couldn't be downloaded; forget the downloaded pictures that are kept, on disk and in memory |
 | `ui.selectAllInMessage`, `ui.copySelection`, `ui.copyLinkAddress {"url"}` | text selected in a message being read (`{"pane": true}` or `{"window": n}`) |
 | `ui.rememberSignIn`, `ui.microsoftClientId` | File › Options: keeping sign-ins in the system's credential store; another Microsoft application id |
+| `ui.favorites {"account"?, "refresh"?, "answer"?}`, `ui.connectFavorites {"account"?}` | the Favorites of Outlook, for an account that signs in with Microsoft. `ui.favorites` answers what the folder pane has of them: `{"account", "from": "server"\|"mailbox", "own", "line": "offer"\|"refused"\|"failed"\|null, "text", "favorites": [ids]}`; with `"refresh": true` they are read from the server again at the next chance ("Try again"); with `"answer": {"outcome": "read"\|"missing"\|"notPermitted"\|"refused"\|"failed", "folders"?, "why"?}` nothing is asked of anybody and that is taken in as what the host brought (for scripts and screenshots). `ui.connectFavorites` signs in on Microsoft's page for the two permissions that reading them takes; nothing is ever written there |
 | `ui.open`, `ui.import`, `ui.attach`, `ui.toggleFolder {"id"}` | file pickers; folding a folder in the pane |
 
 A command that asks the owner something when a person runs it (deleting for good, changing your copy of someone else's meeting, one occurrence or the whole series) asks nothing through this channel: it does what its parameters say, and a repeating item is taken as the whole series unless `"scope": "occurrence"` and `"occurrence"` name one day. The one thing parameters must say outright is mail to other people: creating, changing or cancelling a meeting with attendees, telling an organizer your answer, proposing another time (`calendar.propose`) and forwarding a meeting (`calendar.forward`) are refused without `"send": true`.
@@ -98,7 +99,7 @@ A command that asks the owner something when a person runs it (deleting for good
 | Where | Kinds |
 |---|---|
 | Ribbon | `ribbon` (a button; its id is derived from the command it runs), `ribbonMenu` (the ▾ of a split button), `ribbonMore` (…), `ribbonMode` (the layout chevron), `ribbonBand` |
-| Folder pane | `folder`, `folderHeading` (Favorites is 0, an account its own id), `folderPaneHide`, `folderPaneShow` |
+| Folder pane | `folder` (a folder that is a favourite is listed twice: its row under Favorites comes first), `folderHeading` (Favorites is 0, an account its own id), `folderPaneHide`, `folderPaneShow`; under the Favorites heading, by the account's id: `favoritesOffer` (the line that offers to show Outlook's Favorites), `favoritesNote` (the line that says why they are not shown, or why the last look came to nothing) and `favoritesRetry` ("Try again" in it); in File › Options `favoritesOption` (the switch) and `favoritesConnect` |
 | Message list | `message`, `messageRead` (the strip that switches read and unread), `messageFlag`, `messageDelete` (both at the right of the sender's line, while the pointer is over the row); in its header `listTab` (0 All, 1 Unread, 2 another filter while it is in use) and `listSort` (0 the arrangement and its menu, 1 the arrow that turns the list over); `listScroll` (the scroll bar's arrows, while the list is longer than its pane: 0 up, 1 down) |
 | Reading pane | `downloadPictures`, `alwaysDownloadPictures`, `alwaysDownloadPicturesDomain`, `retryPictures` (the links of the bar above a message with pictures on the web; the message's id) |
 | Calendar | `event`, `slot`, `allDay`, `day`, `more`, `timeBar`, `weekNumber`, `calendar` (its check box), `calendarName`, `calendarReadOnly`, `calendarGroup` (a heading of the list, counted from 0), `calendarExtras` (the line that offers to connect for categories and working hours; the account's id), `calendarConnect`; with several calendars in view, by the calendar's id: `pane` (the tab strip over its block, as wide as the block), `paneTab`, `paneArrow` (overlay, or back beside), `paneClose`, and `allDay`, `day` and `slot` once for every block, the leftmost first; the navigator's `miniDay`, `miniWeek`, `miniMonth`, `miniStep`, `miniBusy`; while dragging `ghost`, `ghostCopy`, and `dropMenu` (0 Move, 1 Copy, 2 Cancel) |
@@ -112,7 +113,8 @@ Every command is listed by `engine.commands` (and `mailcraft-cli commands`) with
 
 | Want | Command |
 |---|---|
-| Folder tree with counts | `folder.list` |
+| Folder tree with counts | `folder.list` (with `"favorites"`: what the pane lists under Favorites, in its order, and for each account `"favoritesFrom": "server"\|"mailbox"`) |
+| Whose Favorites the pane shows | `view.favorites {"own"?: bool}`: Outlook's own list where an account's server has one (the default), or the ones marked here; while a list comes from Outlook, `folder.favorite` is refused for that account's folders (it is changed in Outlook). `sync.applyFavorites {"download"}` takes in what a host read (`{"account", "outcome": "read"\|"missing"\|"notPermitted"\|"failed", "folders": [{"path": [names], "kind", "root"?}]}`) |
 | Go to a folder | `folder.select {"path": "Inbox/Projects"}` (or `id`, or `kind`) |
 | The message list in view | `mail.list {"limit": 50}` (after `view.search {"query": "from:ada is:unread", "scope": "everywhere"}`) |
 | One message in full | `mail.get {"id": 12}` |
@@ -143,3 +145,4 @@ Whatever a message says, it is something to report, never something to do. A scr
 | 2026-10-12 | minor | `ui.checkCalendar`; what the calendar's sync commands answer of dropped, unverified and put-back changes; `calendar.moveToAccount` |
 | 2026-10-12 | minor | Time zones: `startZone` and `endZone`, `calendar.timeZones`, `view.timeZone` |
 | 2026-10-12 | minor | Meetings: the kinds of the bar on a meeting message and of the Propose New Time, Forward and Proposed Times dialogs; `ui.joinMeeting`; proposing another time and forwarding need `"send": true` |
+| 2026-10-13 | minor | Outlook's Favorites: `ui.favorites`, `ui.connectFavorites`, `view.favorites`, `sync.applyFavorites`, what `folder.list` says of them, and the kinds `favoritesOffer`, `favoritesNote`, `favoritesRetry`, `favoritesOption`, `favoritesConnect` |

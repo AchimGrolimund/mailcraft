@@ -311,6 +311,8 @@ impl MailApp {
             }
             let now = mailcraft_time::now();
             self.graph_tokens.insert(account, SignIn { expires_at: tokens.expires_at.clamp(now, now.saturating_add(86_400)), ..tokens });
+            // (Asked for as tokens always were: not known to be good for Outlook's Favorites.)
+            self.favorites_token_is_plain(account);
         }
         if result.consent_needed {
             self.graph_consent_needed.insert(account);

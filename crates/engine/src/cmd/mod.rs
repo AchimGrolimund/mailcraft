@@ -7,6 +7,8 @@ pub mod calendar_settings;
 pub mod category;
 pub mod compose;
 pub mod edit;
+#[cfg(test)]
+mod favorites_tests;
 pub mod file;
 pub mod folder;
 pub mod mail;

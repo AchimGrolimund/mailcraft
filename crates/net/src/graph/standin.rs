@@ -34,6 +34,21 @@
 //!   for a deletion, 202 for an action, lists in pages with `@odata.nextLink`. A calendar view
 //!   holds single events, the occurrences of series and their exceptions, never a series itself.
 //!   A changed occurrence becomes an exception under the id it had.
+//! - **Folders of mail and the Favorites.** `GET /v1.0/me/mailFolders/{id}` answers a folder by
+//!   its id or by a well-known name (`inbox`, `sentitems`, `msgfolderroot`…), with `$select` of a
+//!   mail folder's own properties and no other parameter; an id is written in Graph's alphabet
+//!   (`-` and `_`, never `/` or `+`: 400), and one that names nothing is 404. In a `$batch` a
+//!   request that is told to come back later (429) says when among its own headers
+//!   (`Retry-After`), as the reference has it ([`State::throttle_folders`]).
+//!   `GET /beta/me/mailFolders/root/userConfigurations/Aggregated.OwaUserConfiguration` answers
+//!   the cached configuration of Outlook on the web as `{"id", "xmlData"}` (base64): there is no
+//!   list of such items (400), no query parameters (400), nothing of it in v1.0, and it is only
+//!   read (403 to anything else). What the document holds is nobody's documentation: it is made
+//!   here as it was once seen ([`State::configuration_xml`]), with knobs for a mailbox that has
+//!   none ([`Configuration::Missing`]), a sign-in that doesn't cover it
+//!   ([`Configuration::Denied`], [`State::folders_denied`]), entries for folders that are gone
+//!   or belong to another mailbox, entries that are no folders, and a document that is anything
+//!   at all ([`State::configuration_document`]).
 //! - **Time.** [`State::stale_views`] calendar views after a change are answered as the calendar
 //!   was before it: an answer may be older than the last change. [`State::keeps_times`] makes it
 //!   say yes to a change of time and not make it, which no client should take for done.
@@ -51,6 +66,12 @@ use serde_json::{Map, Value, json};
 
 /// The token a stand-in takes unless it is told another.
 pub const TOKEN: &str = "standin.acc-ess_tok.en-0123456789";
+/// What stands, in the cached configuration of Outlook on the web, for everything in it that
+/// is not the list of Favorites: nothing a client reads, keeps, shows or logs may hold it.
+pub const CONFIGURATION_CANARY: &str = "not-for-anybody-7c1e";
+/// What a folder of mail may be asked for by name (`$select`).
+const MAIL_FOLDER_PROPERTIES: &[&str] =
+    &["id", "displayName", "parentFolderId", "childFolderCount", "unreadItemCount", "totalItemCount", "sizeInBytes", "isHidden"];
 /// Largest request it reads, and how many entries a page of a list has when none is asked for.
 const MAX_REQUEST: usize = 4 * 1024 * 1024;
 const PAGE: usize = 10;
@@ -147,6 +168,43 @@ pub struct Stored {
     pub join_url: String,
 }
 
+/// A folder of mail the stand-in has.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MailFolder {
+    pub id: String,
+    pub name: String,
+    /// The folder it lies in, by its id.
+    pub parent: String,
+    /// The well-known name it also answers to (`inbox`, `sentitems`, `msgfolderroot`…); empty
+    /// for a folder that has none.
+    pub well_known: String,
+}
+
+/// One entry of the Favorites, as the cached configuration of Outlook on the web lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Favorite {
+    /// The name it is shown by there (which may be long out of date).
+    pub name: String,
+    /// Its place in the list; `None` writes none.
+    pub index: Option<i64>,
+    /// `Folder` for a folder; anything else for what is none.
+    pub kind: String,
+    /// The folder's id as that document writes it (with `/` and `+`); empty writes no such setting.
+    pub folder_id: String,
+}
+
+/// Whether the mailbox has the cached configuration of Outlook on the web, and may be asked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Configuration {
+    /// It is there.
+    #[default]
+    There,
+    /// The mailbox has no such item: 404.
+    Missing,
+    /// The sign-in doesn't cover reading it: 403.
+    Denied,
+}
+
 /// One request the stand-in was sent, with the status it answered.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Asked {
@@ -208,6 +266,24 @@ pub struct State {
     pub mail: Vec<String>,
     /// The owner's address, which is who organizes what is made here.
     pub owner: String,
+    /// The folders of mail: the top of the mailbox, the special folders under it, and whatever
+    /// a test adds ([`State::add_folder`]).
+    pub folders: Vec<MailFolder>,
+    /// The Favorites the cached configuration of Outlook on the web lists; `None` for a
+    /// configuration that has no list of them at all.
+    pub favorites: Option<Vec<Favorite>>,
+    /// Whether the mailbox has that configuration, and whether it may be read.
+    pub configuration: Configuration,
+    /// The document that configuration holds, when it is to be something else than the one made
+    /// of `favorites` (too large, cut short, not XML at all): served as it is.
+    pub configuration_document: Option<String>,
+    /// The sign-in doesn't cover reading folders: 403 to every question about one.
+    pub folders_denied: bool,
+    /// How many questions about a folder to come are told to come back later (429, with a
+    /// `Retry-After`) instead of being answered.
+    pub throttle_folders: usize,
+    /// The prefixes the document writes its two namespaces with (`a` and `b` unless said).
+    pub prefixes: (String, String),
     before: Option<Vec<Stored>>,
     made: u64,
     clock: Timestamp,
@@ -653,6 +729,166 @@ impl State {
             ..Default::default()
         });
         id
+    }
+
+    /// A folder of mail of the stand-in's making, in the folder `parent` (`None`: at the top of
+    /// the mailbox): its id, as Graph writes ids (with `-`, `_` and `=`).
+    pub fn add_folder(&mut self, name: &str, parent: Option<&str>) -> String {
+        self.made += 1;
+        let id = format!("AQMkAGV4YW1wbGUtb3JnLW1haWxib3gtZm9sZGVycwAuAAADk1v_Qx7RkS-nTtqB3L0d9EBAFh2c-Kp_0aTmWvN4uYx1RoAAAIB{:04}AAAA=", self.made);
+        let parent = parent.map(str::to_string).unwrap_or_else(|| self.well_known("msgfolderroot"));
+        self.folders.push(MailFolder { id: id.clone(), name: name.to_string(), parent, well_known: String::new() });
+        id
+    }
+
+    /// The id of the folder that answers to a well-known name (`inbox`, `msgfolderroot`…);
+    /// empty when the mailbox has none.
+    pub fn well_known(&self, name: &str) -> String {
+        self.folders.iter().find(|folder| folder.well_known == name).map(|folder| folder.id.clone()).unwrap_or_default()
+    }
+
+    /// A folder's id as the cached configuration of Outlook on the web writes it: the same id
+    /// in the other alphabet (`/` for `-`, `+` for `_`).
+    pub fn configuration_id(id: &str) -> String {
+        id.replace('-', "/").replace('_', "+")
+    }
+
+    /// Put the folder `id` among the Favorites, at the place `index`, under the name it has now.
+    pub fn add_favorite(&mut self, id: &str, index: i64) {
+        let name = self.folders.iter().find(|folder| folder.id == id).map(|folder| folder.name.clone()).unwrap_or_default();
+        let entry = Favorite { name, index: Some(index), kind: "Folder".into(), folder_id: State::configuration_id(id) };
+        self.favorites.get_or_insert_with(Vec::new).push(entry);
+    }
+
+    /// The document the cached configuration of Outlook on the web holds: a dictionary of which
+    /// one entry is the list of Favorites (when there is one), among others that are nobody's
+    /// business ([`CONFIGURATION_CANARY`] stands for all of that).
+    pub fn configuration_xml(&self) -> String {
+        let (a, b) = (self.prefixes.0.as_str(), self.prefixes.1.as_str());
+        let escaped = |text: &str| text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        let storage = "http://schemas.datacontract.org/2004/07/Microsoft.Exchange.Data.Storage";
+        // (The pair's own element has a name with a generated end to it: nothing to go by.)
+        let pair = |key: &str, kind: &str, value: &str| {
+            format!(
+                "<{a}:KeyValueOfstringSerializableDataBaseQx7_Zr2Lm><{a}:Key>{key}</{a}:Key>\
+                 <{a}:Value i:type=\"{b}:{kind}\" xmlns:{b}=\"{storage}.Configuration\">{value}</{a}:Value>\
+                 </{a}:KeyValueOfstringSerializableDataBaseQx7_Zr2Lm>\n"
+            )
+        };
+        let mut parts = pair("OWA.ThemeData", "ThemeData", &format!("<{b}:value>{CONFIGURATION_CANARY}</{b}:value>"));
+        if let Some(favorites) = &self.favorites {
+            let mut list = String::new();
+            for (n, favorite) in favorites.iter().enumerate() {
+                let index = favorite.index.map(|index| format!("<{b}:Index>{index}</{b}:Index>")).unwrap_or_default();
+                let setting =
+                    |key: &str, value: &str| format!("<{b}:KeyValueType><{b}:Key>{key}</{b}:Key><{b}:Value>{value}</{b}:Value></{b}:KeyValueType>");
+                let settings = if favorite.folder_id.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}{}", setting("FolderId", &escaped(&favorite.folder_id)), setting("ChangeKey", "AQAAABYAAAB4"))
+                };
+                list.push_str(&format!(
+                    "<{b}:OutlookFavorite><{b}:Client>{}</{b}:Client><{b}:DisplayName>{}</{b}:DisplayName>\
+                     <{b}:Id>RgAAAABleGFtcGxlLWZhdm9yaXRl{n:04}</{b}:Id>{index}\
+                     <{b}:LastModifiedTime>2026-03-17T09:00:00Z</{b}:LastModifiedTime>\
+                     <{b}:SingleValueSettings>{settings}</{b}:SingleValueSettings><{b}:Type>{}</{b}:Type></{b}:OutlookFavorite>\n",
+                    if n == 0 { "OWA" } else { "Legacy" },
+                    escaped(&favorite.name),
+                    escaped(&favorite.kind),
+                ));
+            }
+            parts.push_str(&pair("OWA.OutlookFavorites", "OutlookFavoritesData", &format!("<{b}:value>{list}</{b}:value>")));
+        }
+        parts.push_str(&pair(".docx", "FileTypeData", &format!("<{b}:value>{CONFIGURATION_CANARY}</{b}:value>")));
+        format!(
+            "<AggregatedUserConfiguration.MementoClass xmlns=\"{storage}\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\">\
+             <ConcurrentUpdates/><FailedToLoad/>\
+             <Parts xmlns:{a}=\"http://schemas.microsoft.com/2003/10/Serialization/Arrays\">\n{parts}</Parts>\
+             </AggregatedUserConfiguration.MementoClass>"
+        )
+    }
+
+    /// The folder of mail an address names: by its id, or by a well-known name.
+    fn mail_folder(&self, named: &str) -> Result<&MailFolder, Refusal> {
+        if let Some(folder) = self.folders.iter().find(|folder| !folder.well_known.is_empty() && folder.well_known == named) {
+            return Ok(folder);
+        }
+        // What can't be an id at all is told apart from one that names nothing. (An id is
+        // written in an address in Graph's own alphabet: with `-` and `_`, never `/` or `+`.)
+        if named.len() < 20 || named.chars().any(|c| !(c.is_ascii_alphanumeric() || "-_=".contains(c))) {
+            return Err(refuse(400, "ErrorInvalidIdMalformed", "Id is malformed."));
+        }
+        self.folders.iter().find(|folder| folder.id == named).ok_or_else(not_found)
+    }
+
+    /// `GET /me/mailFolders/{id}`: the folder, with the properties that were asked for by name.
+    fn mail_folder_read(&mut self, asked: &Asked, named: &str) -> Result<Answer, Refusal> {
+        if self.folders_denied {
+            return Err(refuse(403, "ErrorAccessDenied", "Access is denied. Check credentials and try again."));
+        }
+        if self.throttle_folders > 0 {
+            self.throttle_folders -= 1;
+            return Err(refuse(
+                429,
+                "ApplicationThrottled",
+                "Application is over its MailboxConcurrency limit while the request was being processed.",
+            ));
+        }
+        if let Some((other, _)) = asked.query.iter().find(|(name, _)| name != "$select") {
+            return Err(bad(format!("The query parameter '{other}' is not one this stand-in answers for a mail folder.")));
+        }
+        let select: Option<Vec<&str>> = asked.param("$select").map(|names| names.split(',').map(str::trim).collect());
+        if let Some(unknown) = select.iter().flatten().find(|name| !MAIL_FOLDER_PROPERTIES.contains(name)) {
+            return Err(refuse(400, "BadRequest", format!("Could not find a property named '{unknown}' on type 'microsoft.graph.mailFolder'.")));
+        }
+        let folder = self.mail_folder(named)?;
+        let children = self.folders.iter().filter(|other| other.parent == folder.id).count();
+        let mut all = json!({
+            "@odata.context": format!("{}/v1.0/$metadata#users('me')/mailFolders/$entity", self.base),
+            "id": folder.id,
+            "displayName": folder.name,
+            "parentFolderId": folder.parent,
+            "childFolderCount": children,
+            "unreadItemCount": 0,
+            "totalItemCount": 0,
+            "sizeInBytes": 0,
+            "isHidden": false,
+        });
+        if let (Some(select), Some(map)) = (&select, all.as_object_mut()) {
+            map.retain(|name, _| name == "@odata.context" || name == "id" || select.contains(&name.as_str()));
+        }
+        Ok((200, Some(all)))
+    }
+
+    /// `/beta/me/mailFolders/{folder}/userConfigurations…`: the cached configuration of Outlook
+    /// on the web, which is in the root of the mailbox and is only ever read here.
+    fn user_configuration(&self, asked: &Asked, method: &str, rest: &[&str]) -> Result<Answer, Refusal> {
+        match rest {
+            // There is no list of them: an item is asked for by its name.
+            [_, "userConfigurations"] => Err(refuse(400, "ErrorInvalidRequest", "The OData request is not supported.")),
+            [folder, "userConfigurations", name] => {
+                if self.configuration == Configuration::Denied {
+                    return Err(refuse(403, "ErrorAccessDenied", "Access is denied. Check credentials and try again."));
+                }
+                // (Reading is all the permission is for.)
+                if method != "GET" {
+                    return Err(refuse(403, "ErrorAccessDenied", "Access is denied. Check credentials and try again."));
+                }
+                if !asked.query.is_empty() {
+                    return Err(bad("This method doesn't support OData query parameters."));
+                }
+                if self.configuration == Configuration::Missing || *folder != "root" || *name != "Aggregated.OwaUserConfiguration" {
+                    return Err(not_found());
+                }
+                use base64::Engine as _;
+                let document = self.configuration_document.clone().unwrap_or_else(|| self.configuration_xml());
+                let context = format!("{}/beta/$metadata#users('me')/mailFolders('root')/userConfigurations/$entity", self.base);
+                let packed = base64::engine::general_purpose::STANDARD.encode(document);
+                Ok((200, Some(json!({"@odata.context": context, "id": name, "xmlData": packed}))))
+            }
+            [first, ..] => Err(refuse(400, "BadRequest", format!("Resource not found for the segment '{first}'."))),
+            [] => Err(refuse(405, "MethodNotAllowed", "The method is not allowed on this resource.")),
+        }
     }
 
     /// The main calendar's id.
@@ -1190,6 +1426,10 @@ impl State {
         let method = asked.method.as_str();
         match (method, path.as_slice()) {
             ("POST", ["v1.0", "$batch"]) => self.batch(asked),
+            // (User configurations are in the beta version only.)
+            (_, ["beta", "me", "mailFolders", rest @ ..]) => self.user_configuration(asked, method, rest),
+            (_, ["v1.0", "me", "mailFolders", folder]) if method == "GET" => self.mail_folder_read(asked, folder),
+            (_, ["v1.0", "me", "mailFolders", _]) => Err(refuse(405, "MethodNotAllowed", "The method is not allowed on this resource.")),
             (_, ["v1.0", "me", rest @ ..]) => self.me(asked, method, rest),
             (_, [first, ..]) => Err(refuse(400, "BadRequest", format!("Resource not found for the segment '{first}'."))),
             _ => Err(refuse(400, "BadRequest", "Resource not found.")),
@@ -1533,7 +1773,13 @@ impl State {
             };
             one.status = status;
             self.requests.push(one);
-            responses.push(json!({"id": id, "status": status, "headers": {"Content-Type": "application/json"}, "body": body.unwrap_or(Value::Null)}));
+            // A request that is told to come back later says when among its own headers.
+            let headers = if status == 429 || status == 503 {
+                json!({"Content-Type": "application/json", "Retry-After": "1"})
+            } else {
+                json!({"Content-Type": "application/json"})
+            };
+            responses.push(json!({"id": id, "status": status, "headers": headers, "body": body.unwrap_or(Value::Null)}));
         }
         Ok((200, Some(json!({"responses": responses}))))
     }
@@ -1605,6 +1851,31 @@ impl StandIn {
         let main = state.add_calendar("Calendar", true, false);
         if let Some(calendar) = state.calendars.iter_mut().find(|calendar| calendar.id == main) {
             calendar.main = true;
+        }
+        // The folders of mail every mailbox has: the top, and the special ones under it. The
+        // configuration of Outlook on the web is there, and has no list of Favorites yet.
+        state.prefixes = ("a".into(), "b".into());
+        let top = MailFolder {
+            id: "AQMkAGV4YW1wbGUtb3JnLW1haWxib3gtZm9sZGVycwAuAAADk1v_Qx7RkS-nTtqB3L0d9EBAFh2c-Kp_0aTmWvN4uYx1RoAAAIBCAAAAA==".into(),
+            name: "Top of Information Store".into(),
+            parent: "AQMkAGV4YW1wbGUtb3JnLW1haWxib3gtZm9sZGVycwAuAAADk1v_Qx7RkS-nTtqB3L0d9EBAFh2c-Kp_0aTmWvN4uYx1RoAAAIBAQAAAA==".into(),
+            well_known: "msgfolderroot".into(),
+        };
+        state.folders.push(top);
+        let special = [
+            ("Inbox", "inbox"),
+            ("Drafts", "drafts"),
+            ("Sent Items", "sentitems"),
+            ("Deleted Items", "deleteditems"),
+            ("Junk Email", "junkemail"),
+            ("Archive", "archive"),
+            ("Outbox", "outbox"),
+        ];
+        for (name, well_known) in special {
+            let id = state.add_folder(name, None);
+            if let Some(folder) = state.folders.iter_mut().find(|folder| folder.id == id) {
+                folder.well_known = well_known.into();
+            }
         }
         let state = Arc::new(Mutex::new(state));
         let shared = state.clone();

@@ -69,12 +69,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use mailcraft_model::remote::EventZones;
 use mailcraft_model::remote::{
     CalendarsDownload, CategoriesDownload, ContactsDownload, EventChange, EventChangeKind, EventCheck, EventFields, EventOp, EventOutcome,
-    EventReminder, EventRepeat, EventResult, EventTime, EventWall, EventsDownload, EventsUpload, EventsUploaded, MAX_CHECK_AGE, MAX_CHECK_TRIES,
-    MAX_CONTACTS, MAX_EVENT_CHANGES, MAX_EVENT_CHECKS, MAX_EVENT_OPS, MAX_EVENTS, MAX_KEY, RemoteContact, RemoteEvent, RemoteEventKind, clean_key,
-    id_tag,
+    EventReminder, EventRepeat, EventResult, EventTime, EventWall, EventsDownload, EventsUpload, EventsUploaded, FavoritesDownload, FavoritesOutcome,
+    MAX_CHECK_AGE, MAX_CHECK_TRIES, MAX_CONTACTS, MAX_EVENT_CHANGES, MAX_EVENT_CHECKS, MAX_EVENT_OPS, MAX_EVENTS, MAX_FAVORITE_DEPTH, MAX_KEY,
+    RemoteContact, RemoteEvent, RemoteEventKind, RemoteFavorite, clean_key, id_tag,
 };
 use mailcraft_model::zoned;
-use mailcraft_model::{Account, Attendee, Calendar, Contact, Event, Id, Importance, Mailbox, OnlineMeeting, Origin, Proposal, Response};
+use mailcraft_model::{Account, Attendee, Calendar, Contact, Event, FolderKind, Id, Importance, Mailbox, OnlineMeeting, Origin, Proposal, Response};
 use mailcraft_time::{Date, DateTime, Timestamp, Weekday, Zone};
 use serde_json::{Value, json};
 
@@ -113,6 +113,9 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("sync.applyCategories", "Apply Downloaded Categories", "Send / Receive", apply_categories_command)
             .pure()
             .params(r#"{"download": CategoriesDownload} — the mailbox's categories as a host brought them from the account's server: {"account": number, "email"?: string, "categories": [{"name": string, "color": [r, g, b]}]}"#),
+        CommandSpec::new("sync.applyFavorites", "Apply Downloaded Favorites", "Send / Receive", apply_favorites_command)
+            .pure()
+            .params(r#"{"download": FavoritesDownload} — the account's Favorites as a host read them from its server (the folders Outlook shows under Favorites): {"account": number, "email"?: string, "outcome": "read"|"missing"|"notPermitted"|"failed", "folders": [{"path": [string] (names from the top of the mailbox down to the folder), "kind": "inbox"|"drafts"|"sent"|"deleted"|"junk"|"archive"|"outbox"|"custom", "root"?: the same (which special folder the first name of the path is)}], "skipped": number, "unresolved": number} — "read": the folders of that account that match (by kind first, then by path, whatever the case) are its Favorites from now on, in that order, and `folder.favorite` is refused for it; "missing" or "notPermitted": the server has no list to show, and the Favorites marked here are what there is; "failed": nothing changes. The marks made here are never touched. Answers {"outcome", "from": "server"|"mailbox", "favorites": [number], "absent": number (listed by the server, not a folder here), "changed": bool}"#),
         CommandSpec::new("sync.forgetRemote", "Forget Downloaded Calendar and Contacts", "Send / Receive", forget_command)
             .pure()
             .params(r#"{"account": number} — removes the events, contacts and calendars that came from that account's server"#),
@@ -3486,6 +3489,74 @@ pub fn apply_categories(s: &mut Session, download: &CategoriesDownload) -> CmdRe
         s.mailbox_changed();
     }
     Ok(json!({"changed": changed, "categories": s.mailbox.categories.len()}))
+}
+
+/// The folder of `account` that a favourite of its server's list is: the special folder it says
+/// it is; else the one at its path, name by name from the top whatever their case, starting at
+/// the special folder its first name is when it lies under one. `None` when the mailbox has no
+/// such folder (yet).
+fn folder_of_favorite(mailbox: &Mailbox, account: Id, favorite: &RemoteFavorite) -> Option<Id> {
+    if favorite.kind != FolderKind::Custom {
+        return mailbox.folder_of_kind(account, favorite.kind);
+    }
+    let same = |have: &str, want: &str| have.trim().to_lowercase() == want.trim().to_lowercase();
+    let child = |parent: Option<Id>, name: &str| {
+        mailbox.folders.iter().find(|f| f.account == account && f.parent == parent && same(&f.name, name)).map(|f| f.id)
+    };
+    let mut names = favorite.path.iter().take(MAX_FAVORITE_DEPTH);
+    let first = names.next()?;
+    let mut at = match favorite.root {
+        FolderKind::Custom => child(None, first)?,
+        root => mailbox.folder_of_kind(account, root)?,
+    };
+    for name in names {
+        at = child(Some(at), name)?;
+    }
+    Some(at)
+}
+
+/// Take in an account's Favorites as its server has them ([`FavoritesDownload`]: the folders
+/// Outlook shows under Favorites). A list that was read is the account's from now on, in the
+/// server's order: each of its folders is matched to the mailbox's own by what it is, then by
+/// where it is, and one the mailbox doesn't have is left out (and counted). When the server has
+/// no list, or it may not be read, what was kept of one goes, and the favourites marked here
+/// are what the pane shows; when it couldn't be read this time, nothing changes. The marks made
+/// here ([`mailcraft_model::Folder::favorite`]) are never touched. Not an undo step.
+pub fn apply_favorites(s: &mut Session, download: &FavoritesDownload) -> CmdResult {
+    let account = owner(&s.mailbox, download.account, &download.email)?.id;
+    let mut download = download.clone();
+    download.tidy();
+    let mut absent = 0usize;
+    let changed = match download.outcome {
+        FavoritesOutcome::Read => {
+            let mut folders: Vec<Id> = Vec::new();
+            for favorite in &download.folders {
+                match folder_of_favorite(&s.mailbox, account, favorite) {
+                    Some(id) if !folders.contains(&id) => folders.push(id),
+                    Some(_) => {}
+                    None => absent += 1,
+                }
+            }
+            s.mailbox.set_server_favorites(account, Some(folders))
+        }
+        FavoritesOutcome::Missing | FavoritesOutcome::NotPermitted => s.mailbox.set_server_favorites(account, None),
+        FavoritesOutcome::Failed => false,
+    };
+    if changed {
+        s.mailbox_changed();
+    }
+    let from_server = super::folder::favorites_from_server(s, account);
+    Ok(json!({
+        "outcome": download.outcome,
+        "from": if from_server { "server" } else { "mailbox" },
+        "favorites": s.mailbox.server_favorites(account).unwrap_or_default(),
+        "absent": absent,
+        "changed": changed,
+    }))
+}
+
+fn apply_favorites_command(s: &mut Session, v: &Value) -> CmdResult {
+    apply_favorites(s, &download_of::<FavoritesDownload>(v)?)
 }
 
 /// The series of an account that the mailbox expects to happen between `from` and `to` (Unix
