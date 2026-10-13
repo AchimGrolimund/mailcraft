@@ -500,6 +500,9 @@ fn signatures(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     }
 }
 
+/// Who began MailCraft: named in About, here and in the Help tab's.
+pub(crate) const INITIAL_CONTRIBUTOR: &str = "William Daugherty";
+
 fn about(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     heading(ui, tl!("About MailCraft"), t);
     ui.label(egui::RichText::new(crate::i18n::fmt(tl!("Version {version}"), &[("version", env!("CARGO_PKG_VERSION"))])).color(t.text_dim));
@@ -507,6 +510,8 @@ fn about(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
         "Mail, calendar, people and tasks, written from scratch in Rust. It runs natively on macOS, Windows, Linux and BSD, and in the browser."
     ));
     ui.label(tl!("Open source under the MIT License or the Apache License 2.0, at your option."));
+    section(ui, tl!("Contributors"), t);
+    ui.label(crate::i18n::fmt(tl!("Initial contributor: {name}"), &[("name", INITIAL_CONTRIBUTOR)]));
     section(ui, tl!("What it is made of"), t);
     ui.label(tl!("The interface fonts are Inter, Source Sans 3 and JetBrains Mono (SIL Open Font License 1.1). Every icon is drawn in code and is original work. No artwork, fonts or text from other mail programs are included."));
     section(ui, tl!("Your mail stays yours"), t);

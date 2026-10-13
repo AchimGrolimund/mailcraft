@@ -941,6 +941,7 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
                     egui::RichText::new(crate::i18n::fmt(tl!("Version {version}"), &[("version", env!("CARGO_PKG_VERSION"))])).color(t.text_dim),
                 );
                 ui.label(tl!("Mail, calendar, people and tasks, written from scratch in Rust."));
+                ui.label(crate::i18n::fmt(tl!("Initial contributor: {name}"), &[("name", crate::backstage::INITIAL_CONTRIBUTOR)]));
                 ui.label(tl!("Open source under the MIT License or the Apache License 2.0, at your option. The interface fonts are Inter, Source Sans 3 and JetBrains Mono (SIL Open Font License). Every icon is drawn in code."));
                 let parity = mailcraft_engine::catalog::parity(&app.session.registry);
                 ui.label(

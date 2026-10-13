@@ -258,6 +258,26 @@ fn everything_lays_out_without_panicking() {
     }
 }
 
+/// About says who began the program: in the Help tab's window and on the File page.
+#[test]
+fn about_names_the_initial_contributor() {
+    use egui_kittest::kittest::Queryable as _;
+    for (id, params) in [("ui.dialog", json!({"name": "about"})), ("ui.backstage", json!({"value": true, "page": "about"}))] {
+        let mut a = app();
+        a.execute(id, params).unwrap();
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1280.0, 800.0)).build_ui_state(
+            |ui, app: &mut MailApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            a,
+        );
+        harness.run_steps(4);
+        assert!(harness.query_by_label_contains("Initial contributor: William Daugherty").is_some(), "{id}");
+    }
+}
+
 /// A mailbox with a great deal in it still lays out (only what is on screen is drawn).
 #[test]
 fn a_large_mailbox_lays_out() {
