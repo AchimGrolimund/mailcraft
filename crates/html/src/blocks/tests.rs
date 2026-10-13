@@ -898,6 +898,33 @@ fn a_font_size_of_nothing_hides_text_and_not_what_is_inside() {
 }
 
 #[test]
+fn a_size_of_nothing_does_not_pass_a_class_or_an_id() {
+    // What a builder writes when the sizes that count are in its style sheet, by class: a size
+    // of nothing on every cell, and nothing inline on the text. The style sheet is not read, so
+    // read as in a browser without it, such a message showed none of its text.
+    let built = r#"<style>.headline{font-size:28px}.footer div{font-size:13px}.code{font-size:32px}</style>
+        <table><tr><td style="font-size:0px;padding:10px 25px;" align="center"><div><span class="headline">The headline</span></div></td></tr>
+        <tr><td style="font-size:0px" align="center"><div><span class="code-box"><span class="code">482913</span></span></div></td></tr>
+        <tr><td class="footer" style="font-size:0px"><div><span style="color:#0a0a0a">Need help?</span> <a class="link" href="mailto:help@shop.example">Write to us</a></div></td></tr></table>"#;
+    let text = all_text(&parse(built));
+    for shown in ["The headline", "482913", "Need help?", "Write to us"] {
+        assert!(text.contains(shown), "{shown}: {text}");
+    }
+    assert!(!text.contains("font-size"), "{text}");
+    // An element with a class or an id is not held to the nothing around it, and neither is
+    // what is inside an element that asks for nothing and carries one itself...
+    assert_eq!(dump("<div style='font-size:0'>GAP<span class='t'>shown</span>GAP<p id='p'>and this</p></div>"), ["p|shown", "p|and this"]);
+    assert_eq!(dump("<div class='c' style='font-size:0'>GAP<b>shown</b><p>and this</p></div>"), ["p|[B:shown]", "p|and this"]);
+    // ...but the text written in that element itself still is, and so is a share of nothing.
+    assert_eq!(dump("<span class='c' style='font-size:0'>NO</span><p class='c' style='font-size:1px'>NO</p>after"), ["p|after"]);
+    assert_eq!(dump("<div style='font-size:0'><span class='t' style='font-size:150%'>NO</span></div>after"), ["p|after"]);
+    // Without a class or an id anywhere it is as in a browser: nothing shows.
+    assert_eq!(dump("<div style='font-size:0'>NO<b>NO</b><p>NO</p><table><tr><td>NO</td></tr></table></div>after"), ["p|after"]);
+    // What is really hidden stays hidden, class or no class.
+    assert_eq!(dump("<div class='pre' style='display:none;font-size:0'><span class='t'>NO</span></div>after"), ["p|after"]);
+}
+
+#[test]
 fn what_is_hidden_from_outlook_alone_is_shown() {
     // The button every program but Outlook gets, beside the one drawn for Outlook in a comment
     // that only Outlook reads: the comment is dropped, so the other one must stay.

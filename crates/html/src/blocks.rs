@@ -75,9 +75,13 @@ struct Style {
     link: Option<Rc<str>>,
     /// The font size in force is too small to be meant to be read (2 pixels or less): text
     /// written at it is not shown. It lasts until an element inside names a size that can be
-    /// read, and it hides nothing but text: newsletters set a size of nothing around their
-    /// pictures and columns to close the gaps between them.
+    /// read, or carries a class or an id ([`Delta::hooked`]), and it hides nothing but text:
+    /// newsletters set a size of nothing around their pictures and columns to close the gaps
+    /// between them.
     tiny: bool,
+    /// The element that asked for that size carries a class or an id itself: what is in the
+    /// elements inside it is not held to it.
+    tiny_hooked: bool,
 }
 
 impl Style {
@@ -127,6 +131,11 @@ struct Delta {
     /// above a table does not make the table bold). Colour, size and alignment are inherited, as
     /// in a browser, and a link around a table still leads somewhere.
     cell: bool,
+    /// The element carries a `class` or an `id`: the hooks by which a style sheet gives sizes.
+    /// Style sheets are not read here, so a size of nothing around such an element says nothing
+    /// of the size its text really has (builders set nothing on every cell and the sizes that
+    /// count by class), and its text is shown.
+    hooked: bool,
 }
 
 impl Delta {
@@ -147,6 +156,10 @@ impl Delta {
     /// The style inside the element.
     fn apply(&self, parent: &Style) -> Style {
         let mut style = parent.clone();
+        // A size of nothing is inherited, as in a browser, but not past a class or an id: not
+        // by an element that carries one, and not from an element that does.
+        style.tiny = parent.tiny && !parent.tiny_hooked && !self.hooked;
+        style.tiny_hooked = false;
         if self.cell {
             style.bold = false;
             style.italic = false;
@@ -180,7 +193,10 @@ impl Delta {
                     style.size = Some(px);
                     style.tiny = false;
                 }
-                None => style.tiny = true,
+                None => {
+                    style.tiny = true;
+                    style.tiny_hooked = self.hooked;
+                }
             }
         }
         style
@@ -1135,7 +1151,7 @@ impl Builder {
             last_row: false,
         };
         let hidden = css.hidden || tag.has("hidden");
-        if !self.push_node("table", Kind::Table(Box::new(build)), Delta::of(&css), hidden) {
+        if !self.push_node("table", Kind::Table(Box::new(build)), Delta { hooked: hooked(tag), ..Delta::of(&css) }, hidden) {
             self.overflow = self.overflow.saturating_add(1);
         }
     }
@@ -1162,7 +1178,7 @@ impl Builder {
             t.last_row = t.rows.len() + 1 >= MAX_TABLE_ROWS;
         }
         let css = css_of(tag);
-        let mut delta = Delta::of(&css);
+        let mut delta = Delta { hooked: hooked(tag), ..Delta::of(&css) };
         delta.align = delta.align.or_else(|| tag.attr("align").and_then(|a| style::attr_align(&a)));
         let background = css.background.or_else(|| tag.attr("bgcolor").and_then(|c| style::attr_color(&c))).filter(|bg| Some(*bg) != self.backdrop());
         let row = RowBuild { cells: Vec::new(), background, full: false };
@@ -1229,7 +1245,7 @@ impl Builder {
                 Sides { top, right, bottom, left }
             },
         };
-        let mut delta = Delta::of(&css);
+        let mut delta = Delta { hooked: hooked(tag), ..Delta::of(&css) };
         delta.cell = true;
         delta.bold = delta.bold.or(header.then_some(true));
         delta.align = delta.align.or_else(|| tag.attr("align").and_then(|a| style::attr_align(&a)));
@@ -1322,6 +1338,7 @@ impl Builder {
         delta.color = own.color.or(delta.color);
         delta.size = own.size.or(delta.size);
         delta.background = css.background.or(delta.background);
+        delta.hooked = hooked(tag);
         let marker = css.mso_list == Some(MsoList::Ignore);
         let kind = if marker {
             Kind::Marker
@@ -1387,7 +1404,7 @@ impl Builder {
         self.close_paragraph();
         self.flush();
         let css = css_of(tag);
-        let mut delta = Delta::of(&css);
+        let mut delta = Delta { hooked: hooked(tag), ..Delta::of(&css) };
         if name == "center" {
             delta.align = delta.align.or(Some(Align::Center));
         }
@@ -1477,7 +1494,7 @@ impl Builder {
 
     fn open_structure(&mut self, name: &'static str, kind: Kind, tag: &Tag<'_>) -> bool {
         let css = css_of(tag);
-        let mut delta = Delta::of(&css);
+        let mut delta = Delta { hooked: hooked(tag), ..Delta::of(&css) };
         delta.align = delta.align.or_else(|| tag.attr("align").and_then(|a| style::attr_align(&a)));
         // A heading is bold unless it says it is not.
         if matches!(kind, Kind::Heading(_)) {
@@ -1663,6 +1680,11 @@ impl Builder {
 /// The whitelisted facts of a tag's `style` attribute.
 fn css_of(tag: &Tag<'_>) -> Css {
     tag.attr("style").map(|s| Css::parse(&s)).unwrap_or_default()
+}
+
+/// Whether an element carries a class or an id ([`Delta::hooked`]).
+fn hooked(tag: &Tag<'_>) -> bool {
+    tag.has("class") || tag.has("id")
 }
 
 /// Whether a background is white, or as good as.

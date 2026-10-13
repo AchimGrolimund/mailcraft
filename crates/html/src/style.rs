@@ -13,7 +13,7 @@
 //! | alignment | `text-align` |
 //! | font size | `font-size`, the size in `font` |
 //! | hidden | `display:none`, `visibility:hidden`, `opacity:0`, `max-height:0`, `max-width:0`, a zero `height` or `width` with `overflow:hidden` |
-//! | text too small to read | a font size of 2 pixels or less: the text at that size is not shown; what is inside at a size of its own is, and so are pictures |
+//! | text too small to read | a font size of 2 pixels or less: the text at that size is not shown; what is inside at a size of its own is, and so are pictures, and so is the text of an element with a `class` or an `id` (or inside one that asks for the size and has one): its size is given in a style sheet, and style sheets are not read |
 //! | a margin or none | `margin`, `margin-top`, `margin-bottom`: only whether there is one to speak of (over 6 pixels) |
 //! | a border or none | `border` and its sides, `border-style`, `border-width`: only whether there is one |
 //! | Outlook's lists | `mso-list` (the level, and the marker text to replace) |
@@ -29,7 +29,10 @@
 //! everybody else gets in its place) is shown, or the message would have neither. And a font
 //! size of nothing around pictures and columns (`font-size:0`, to close the gaps between them)
 //! hides the text written at that size, not the pictures and not the text inside that names a
-//! size of its own.
+//! size of its own. Nor the text inside that gets its size from a style sheet: a builder sets
+//! nothing on every cell and the sizes that count by class, in a `<style>` block that is not
+//! read here, so an element with a `class` or an `id` is not held to the nothing around it
+//! (without that, such a message showed no text at all).
 
 use crate::{Align, Length, MAX_FONT_PX, MIN_FONT_PX, Rgb, truncate};
 
