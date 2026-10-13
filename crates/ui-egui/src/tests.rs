@@ -275,6 +275,8 @@ fn about_names_the_initial_contributor() {
         );
         harness.run_steps(4);
         assert!(harness.query_by_label_contains("Initial contributor: William Daugherty").is_some(), "{id}");
+        // Their link follows the name, shown as where it leads.
+        assert!(harness.query_by_label_contains("linkedin.com/in/wdaugherty").is_some(), "{id}");
     }
 }
 
