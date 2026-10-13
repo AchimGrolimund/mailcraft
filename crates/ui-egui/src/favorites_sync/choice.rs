@@ -210,7 +210,8 @@ pub(crate) fn options_row(app: &mut MailApp, ui: &mut Ui, t: &Tokens, account: I
 /// Do what a link under a quiet line says ([`super::Step`]).
 pub(crate) fn step_taken(app: &mut MailApp, account: Id, step: super::Step) {
     let done = match step {
-        super::Step::CopyLink => app.run("ui.copyAdminConsentLink", json!({"account": account})),
+        super::Step::CopyMessage => app.run("ui.copyAdminMessage", json!({"account": account})),
+        super::Step::Help => app.run("ui.approvalHelp", json!({"account": account})),
         super::Step::Use(source) => app.run("ui.favoritesSource", json!({"account": account, "source": source.code()})),
     };
     if let Err(e) = done {

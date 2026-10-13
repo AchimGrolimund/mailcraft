@@ -263,8 +263,9 @@ pub fn status_bar(app: &mut MailApp, ui: &mut Ui) {
                         let _ = app.run("ui.dialog", json!({"name": "syncProblems"}));
                     }
                     if !sync.is_empty() {
-                        // Waiting for the owner in the browser can be given up from here.
-                        if app.signing_in() && ui.link(tl!("Cancel")).clicked() {
+                        // Waiting for the owner in the browser (or for an administrator on
+                        // Microsoft's approval page) can be given up from here.
+                        if (app.signing_in() || app.approving()) && ui.link(tl!("Cancel")).clicked() {
                             let _ = app.run("ui.cancelSignIn", json!({}));
                         }
                         // So can a Send/Receive that is taking long: what it brought stays.

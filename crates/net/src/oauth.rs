@@ -34,6 +34,15 @@
 //! [`Tokens::tenant`] is the directory a sign-in names (the identity token's `tid`), which
 //! tells an organisation's account from a personal one.
 //!
+//! Where an organisation lets only its administrators approve a new application, a sign-in ends
+//! on a page of Microsoft's that says so, and it is not certain that anything comes back from
+//! it. [`sign_in_explained`] says how a sign-in that brought no tokens ended ([`SignInEnd`]), so
+//! that the owner can be told what to do next. What there is to do is for an administrator to
+//! approve the application once, for everybody: [`admin_consent`] opens Microsoft's page for
+//! that in the browser and waits on a loopback port for its answer (for an owner who is one),
+//! and [`admin_consent_url`] is the same page's address for an owner to pass on to one. Either
+//! names the application, the directory and the permissions, and nothing of the owner.
+//!
 //! Nothing here keeps anything: the tokens are the caller's, to hold in memory. The password is
 //! typed into the provider's page and never comes this way; the code, the PKCE verifier and the
 //! tokens never appear in an error or a log line.
@@ -143,9 +152,15 @@ const CONSENT_CODES: [u64; 3] = [65_001, 65_004, 90_094];
 /// organisation keeps the permission for its administrators to give. Microsoft's error
 /// reference names them `AdminConsentRequired` (90094), `AdminConsentRequiredRequestAccess`
 /// (90095: the same, where the organisation lets its people ask for it) and, on its page about
-/// consent troubles, `AdminConsentRequiredDueToRiskyApp` (900941). Once an administrator has
-/// approved, the same question gets a yes.
-const APPROVAL_CODES: [u64; 3] = [90_094, 90_095, 900_941];
+/// consent troubles, `AdminConsentRequiredDueToRiskyApp` (900941); the same page gives 90093
+/// beside 90094 for "permissions that you aren't authorized to grant". Once an administrator
+/// has approved, the same question gets a yes.
+const APPROVAL_CODES: [u64; 4] = [90_093, 90_094, 90_095, 900_941];
+/// And for a no that was given on the page itself: `UserDeclinedConsent` (65004). Microsoft's
+/// page about consent troubles says the same number is what comes back from the page that told
+/// somebody an administrator has to approve first, when they leave it by its way back to the
+/// application: so it does not tell the owner's own no from the organisation's.
+const DECLINED_CODES: [u64; 1] = [65_004];
 /// And for a no that an approval of these permissions would not turn into a yes: the
 /// organisation doesn't let this person use the application (50105, `EntitlementGrantsNotFound`),
 /// its Conditional Access refuses the token (53003, `BlockedByConditionalAccess`), it has
@@ -275,6 +290,50 @@ pub fn sign_in_at(endpoints: &Endpoints, oauth: &OAuth, login_hint: &str, open: 
     sign_in_within(endpoints, oauth, login_hint, open, cancel, SIGN_IN_TIMEOUT)
 }
 
+/// [`sign_in_at`], saying how a sign-in that brought no tokens ended ([`SignInEnd`]): what the
+/// owner is told depends on whose no it was, and on whether anything came back at all.
+pub fn sign_in_explained(
+    endpoints: &Endpoints,
+    oauth: &OAuth,
+    login_hint: &str,
+    open: &dyn Fn(&str),
+    cancel: &AtomicBool,
+) -> Result<Tokens, SignInEnd> {
+    sign_in_refused(endpoints, oauth, login_hint, open, cancel, SIGN_IN_TIMEOUT).map_err(SignInEnd::from)
+}
+
+/// How a sign-in on the provider's page ended without tokens ([`sign_in_explained`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SignInEnd {
+    /// The organisation the account belongs to lets only an administrator approve this
+    /// application, and none has: the page came back saying so (Microsoft's own numbers for
+    /// it). Signing in again changes nothing until one has ([`admin_consent`],
+    /// [`admin_consent_url`]).
+    Approval,
+    /// The page came back with a no that was given on it. That is the owner's own no; and it is
+    /// also what Microsoft sends when the owner leaves the page that said an administrator has
+    /// to approve first, so the two can't be told apart here.
+    Declined,
+    /// Nothing came back in the time that is waited: the page was closed, or left open.
+    TimedOut,
+    /// Called off from here.
+    Cancelled,
+    /// Anything else, in the provider's words or as it went wrong.
+    Other(NetError),
+}
+
+impl From<Refused> for SignInEnd {
+    fn from(refused: Refused) -> SignInEnd {
+        match (refused.policy, &refused.error) {
+            (Policy::Approval, _) => SignInEnd::Approval,
+            (_, NetError::SignInTimedOut) => SignInEnd::TimedOut,
+            (_, NetError::SignInCancelled) => SignInEnd::Cancelled,
+            (Policy::None, _) if refused.declined => SignInEnd::Declined,
+            _ => SignInEnd::Other(refused.error),
+        }
+    }
+}
+
 /// [`sign_in_at`], waiting no longer than `patience` for the owner (each time, should the
 /// sign-in be tried a second time).
 fn sign_in_within(
@@ -285,6 +344,18 @@ fn sign_in_within(
     cancel: &AtomicBool,
     patience: Duration,
 ) -> Result<Tokens, NetError> {
+    sign_in_refused(endpoints, oauth, login_hint, open, cancel, patience).map_err(|refused| refused.error)
+}
+
+/// [`sign_in_within`], with what a no was about and whose it was.
+fn sign_in_refused(
+    endpoints: &Endpoints,
+    oauth: &OAuth,
+    login_hint: &str,
+    open: &dyn Fn(&str),
+    cancel: &AtomicBool,
+    patience: Duration,
+) -> Result<Tokens, Refused> {
     let (mut consent, lesser) = (endpoints.consent.trim(), endpoints.lesser.trim());
     let mut outcome = attempt(endpoints, consent, oauth, login_hint, open, cancel, patience);
     // The page won't have all it was asked for (the provider has no such permission for this
@@ -301,9 +372,9 @@ fn sign_in_within(
         // need: once more, for the tokens alone.
         Err(refused) if refused.about == About::Scope && !consent.is_empty() => {
             log::debug!("the sign-in was refused for what it asked for; asking again without the extra permissions");
-            attempt(endpoints, "", oauth, login_hint, open, cancel, patience).map_err(|refused| refused.error)
+            attempt(endpoints, "", oauth, login_hint, open, cancel, patience)
         }
-        outcome => outcome.map_err(|refused| refused.error),
+        outcome => outcome,
     }
 }
 
@@ -326,32 +397,175 @@ pub enum FavoritesRefusal {
     Other(NetError),
 }
 
-/// The address of Microsoft's page where an administrator of an organisation approves this
-/// application, once for everybody in it, for what reading the Favorites of Outlook takes the
-/// way `source` names: Graph's two permissions (the mailbox's configuration items, and its
-/// folders by name), or Exchange Web Services. Nothing else is asked for there. For the owner
-/// to pass on: nothing here opens it.
+/// What an administrator of an organisation is asked to approve, once for everybody in it:
+/// everything this program asks an owner for, so that one approval covers what is asked later
+/// too. That is what a sign-in's page asks for (IMAP, SMTP, a refresh token and who signs in;
+/// Microsoft Graph's sending, calendar, contacts and mailbox settings) and what reading the
+/// Favorites of Outlook through Graph takes. Exchange Web Services is in it only where `source`
+/// says the owner chose that way: it stays the owner's separate choice.
+///
+/// A sign-in asks for no more than is here: a page that asked for one permission an
+/// administrator had not approved would send the owner to find one again.
+fn admin_scope(source: mailcraft_model::FavoritesSource) -> String {
+    let who: Vec<&str> = SIGN_IN_SCOPE.split(' ').collect();
+    let mail = MICROSOFT_SCOPE.split(' ').filter(|scope| !who.contains(scope));
+    let ews = (source == mailcraft_model::FavoritesSource::Ews).then_some(MICROSOFT_EWS);
+    let all = mail.chain([MICROSOFT_GRAPH, MICROSOFT_GRAPH_EXTRAS, MICROSOFT_GRAPH_FAVORITES]).chain(ews).chain([SIGN_IN_SCOPE]);
+    all.collect::<Vec<_>>().join(" ")
+}
+
+/// The permissions of `scope` service by service (what stands before a permission's own name
+/// says whose it is), each with the ones that belong to no service (who signs in): for a
+/// provider that won't have the permissions of several services on one page.
+fn apart(scope: &str) -> Vec<String> {
+    let service = |permission: &str| permission.rsplit_once('/').map(|(service, _)| service.to_string());
+    let (of_services, of_nobody): (Vec<&str>, Vec<&str>) = scope.split(' ').filter(|p| !p.is_empty()).partition(|p| service(p).is_some());
+    let mut services: Vec<String> = Vec::new();
+    for found in of_services.iter().filter_map(|permission| service(permission)) {
+        if !services.contains(&found) {
+            services.push(found);
+        }
+    }
+    let one = |wanted: &String| {
+        let own = of_services.iter().copied().filter(|permission| service(permission).as_ref() == Some(wanted));
+        own.chain(of_nobody.iter().copied()).collect::<Vec<_>>().join(" ")
+    };
+    services.iter().map(one).collect()
+}
+
+/// Microsoft's admin-consent page for the directory `tenant`, in the form the Microsoft
+/// identity platform documents (`https://login.microsoftonline.com/{tenant}/v2.0/adminconsent`).
 ///
 /// `tenant` is the organisation's directory when it is known (the id an identity token names,
-/// or a domain of its own); empty for `organizations`, which lets the administrator's own
-/// sign-in say which it is. (`common` and the directory of personal accounts have no
-/// administrator: they read as `organizations` too.) The address names the application, the
-/// permissions and where the page goes afterwards (the address the application is registered
-/// with, on the administrator's own machine, where nothing is waiting: the approval is given
-/// before the browser goes there). No secret is in it.
-pub fn admin_consent_url(oauth: &OAuth, tenant: &str, source: mailcraft_model::FavoritesSource) -> Result<String, NetError> {
-    let client_id = client_id(oauth)?;
-    let scope = match source {
-        mailcraft_model::FavoritesSource::Ews => MICROSOFT_EWS,
-        _ => MICROSOFT_GRAPH_FAVORITES,
-    };
+/// or a domain of its own, which the documentation takes as well); empty for `organizations`,
+/// which lets the administrator's own sign-in say which it is. (`common` and the directory of
+/// personal accounts have no administrator: they read as `organizations` too, as the
+/// documentation asks.) What can't be part of an address is refused.
+fn admin_consent_page(oauth: &OAuth, tenant: &str) -> Result<String, NetError> {
     let named = OAuth { tenant: tenant.trim().to_string(), ..oauth.clone() };
     let tenant = match self::tenant(&named)? {
         tenant if mailcraft_model::Directory::of_tenant(tenant) == mailcraft_model::Directory::Organisation => tenant,
         _ => "organizations",
     };
-    let fields = [("client_id", client_id), ("scope", scope), ("redirect_uri", REGISTERED_REDIRECT)];
-    Ok(format!("{MICROSOFT_LOGIN}/{tenant}/{MICROSOFT_ADMIN_CONSENT}?{}", http::form(&fields)))
+    Ok(format!("{MICROSOFT_LOGIN}/{tenant}/{MICROSOFT_ADMIN_CONSENT}"))
+}
+
+/// The address of Microsoft's page where an administrator of an organisation approves this
+/// application, once for everybody in it, for everything the program asks an owner for (and
+/// for Exchange Web Services with it where `source` says the owner chose that way of reading
+/// the Favorites of Outlook). For the owner to pass on to an administrator: nothing here opens
+/// it. [`admin_consent`] is for an owner who is one.
+///
+/// `tenant` is the organisation's directory when it is known, else empty (as for
+/// [`admin_consent`]). The address names the application, the directory, the permissions and
+/// where the page goes afterwards (the address the application is registered with, on the
+/// administrator's own machine, where nothing is waiting: the approval is given before the
+/// browser goes there). Nothing of the owner and no secret is in it.
+pub fn admin_consent_url(oauth: &OAuth, tenant: &str, source: mailcraft_model::FavoritesSource) -> Result<String, NetError> {
+    let client_id = client_id(oauth)?;
+    let scope = admin_scope(source);
+    let fields = [("client_id", client_id), ("scope", scope.as_str()), ("redirect_uri", REGISTERED_REDIRECT)];
+    Ok(format!("{}?{}", admin_consent_page(oauth, tenant)?, http::form(&fields)))
+}
+
+/// Why an administrator's approval wasn't had ([`admin_consent`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AdminRefusal {
+    /// Whoever signed in on Microsoft's page may not approve for the organisation: the page
+    /// came back with Microsoft's own numbers for "an administrator has to approve". With it,
+    /// what Microsoft said, in a line.
+    NotAdministrator(String),
+    /// The page came back without the approval: it was declined there, or left by its way
+    /// back. With it, what Microsoft said, in a line.
+    Declined(String),
+    /// Nothing came back in the time that is waited: the page was closed, or left open.
+    TimedOut,
+    /// Called off from here.
+    Cancelled,
+    /// Anything else, in Microsoft's words or as it went wrong.
+    Other(NetError),
+}
+
+impl From<Refused> for AdminRefusal {
+    fn from(refused: Refused) -> AdminRefusal {
+        // What the provider said, without what this program puts before it.
+        let words = |error: &NetError| match error {
+            NetError::Proto(ProtoError::Auth(text) | ProtoError::Rejected(text)) => text.clone(),
+            other => other.to_string(),
+        };
+        match (refused.policy, &refused.error) {
+            (Policy::Approval, said) => AdminRefusal::NotAdministrator(words(said)),
+            (_, NetError::SignInTimedOut) => AdminRefusal::TimedOut,
+            (_, NetError::SignInCancelled) => AdminRefusal::Cancelled,
+            (Policy::None, said) if refused.declined => AdminRefusal::Declined(words(said)),
+            _ => AdminRefusal::Other(refused.error),
+        }
+    }
+}
+
+/// Have an administrator approve this application for a whole organisation, on Microsoft's
+/// admin-consent page in the owner's browser: for an owner who is an administrator, or has one
+/// beside them. `open` is given the address of the page (it must not wait); the page comes back
+/// to a loopback port of this machine with a yes or a no and nothing else, and `Ok` is the yes.
+/// Blocks for as long as that takes, five minutes at most; setting `cancel` ends the wait.
+///
+/// What is asked for is what [`admin_consent_url`] asks for, and `tenant` and `source` are as
+/// there. No tokens come of it: the account is signed in afterwards, as any other
+/// ([`sign_in`]). Should Microsoft not take the permissions of several services on one page, it
+/// is asked again service by service (`open` is then given an address for each).
+///
+/// Nothing of what comes back is believed about who anybody is: the directory the page names
+/// is not read at all.
+pub fn admin_consent(
+    oauth: &OAuth,
+    tenant: &str,
+    source: mailcraft_model::FavoritesSource,
+    open: &dyn Fn(&str),
+    cancel: &AtomicBool,
+) -> Result<(), AdminRefusal> {
+    admin_consent_within(oauth, tenant, source, open, cancel, SIGN_IN_TIMEOUT)
+}
+
+/// [`admin_consent`], waiting no longer than `patience` for each page.
+fn admin_consent_within(
+    oauth: &OAuth,
+    tenant: &str,
+    source: mailcraft_model::FavoritesSource,
+    open: &dyn Fn(&str),
+    cancel: &AtomicBool,
+    patience: Duration,
+) -> Result<(), AdminRefusal> {
+    let all = admin_scope(source);
+    match ask_administrator(oauth, tenant, &all, open, cancel, patience) {
+        // The page won't have what it was asked for together: once more, a page for each service.
+        Err(refused) if refused.about == About::Scope && apart(&all).len() > 1 => {
+            log::debug!("the approval page was refused for what it asked for; asking service by service");
+            for part in apart(&all) {
+                ask_administrator(oauth, tenant, &part, open, cancel, patience)?;
+            }
+            Ok(())
+        }
+        outcome => outcome.map_err(AdminRefusal::from),
+    }
+}
+
+/// One go at an administrator's approval of `scope`: the page, and the wait for its answer.
+fn ask_administrator(oauth: &OAuth, tenant: &str, scope: &str, open: &dyn Fn(&str), cancel: &AtomicBool, patience: Duration) -> Result<(), Refused> {
+    let client_id = client_id(oauth)?;
+    let page = admin_consent_page(oauth, tenant)?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err(NetError::SignInCancelled.into());
+    }
+    let redirect = Redirect::listen()?;
+    // As for a sign-in: the registered address, on whichever port is free here.
+    let redirect_uri = format!("http://localhost:{}", redirect.port);
+    // Only the page that was given the state can send it back: nobody else on this machine can
+    // say yes or no in its place.
+    let state = random(24)?;
+    log::debug!("waiting on port {} for the administrator's approval to come back", redirect.port);
+    let fields = [("client_id", client_id), ("scope", scope), ("redirect_uri", redirect_uri.as_str()), ("state", state.as_str())];
+    open(&format!("{page}?{}", http::form(&fields)));
+    redirect.wait_for(&state, cancel, patience, judge_consent)
 }
 
 /// Ask the owner, on the provider's page, to let this program use Exchange Web Services as
@@ -647,6 +861,9 @@ struct Refused {
     about: About,
     /// Whose no it is, when it is not the owner's to turn into a yes.
     policy: Policy,
+    /// The no was given on the provider's page, or the page sent whoever was on it back with
+    /// one: `access_denied`, `consent_required`, or Microsoft's number for it.
+    declined: bool,
 }
 
 /// A no that is not the owner's to turn into a yes: whose it is.
@@ -665,8 +882,16 @@ enum Policy {
 
 impl From<NetError> for Refused {
     fn from(error: NetError) -> Refused {
-        Refused { error, about: About::Other, policy: Policy::None }
+        Refused { error, about: About::Other, policy: Policy::None, declined: false }
     }
+}
+
+/// Whether a no was given on the provider's page: the error code says so (RFC 6749 §4.1.2.1's
+/// `access_denied`; `consent_required`, which is what Microsoft's admin-consent page comes back
+/// with), or Microsoft's number for it does.
+fn declined(error: &str, description: &str) -> bool {
+    let error = error.trim().to_ascii_lowercase();
+    matches!(error.as_str(), "access_denied" | "consent_required") || aadsts(description).any(|code| DECLINED_CODES.contains(&code))
 }
 
 /// Whose no it is, by Microsoft's numbers for it (listed in `codes`, or named in the
@@ -840,6 +1065,8 @@ fn tokens_from(answer: &Answer, earlier_refresh: &str, now: i64, secrets: &[&str
             error: refusal(&hide(text("error")), &hide(text("error_description"))),
             about: about(text("error"), text("suberror"), text("error_description"), &codes),
             policy: by_policy(text("error_description"), &codes),
+            // (The token endpoint is asked by this program, not by a person on a page.)
+            declined: false,
         });
     }
     if answer.status != 200 {
@@ -932,6 +1159,13 @@ const NOT_ALLOWED: Page =
     Page { status: "405 Method Not Allowed", title: "Nothing here", text: "This address only brings a sign-in back to MailCraft." };
 const TOO_LARGE: Page =
     Page { status: "431 Request Header Fields Too Large", title: "Too much", text: "This address only brings a sign-in back to MailCraft." };
+const APPROVED: Page =
+    Page { status: "200 OK", title: "MailCraft is approved for your organisation", text: "You can close this tab and return to MailCraft." };
+const NOT_APPROVED: Page = Page {
+    status: "200 OK",
+    title: "The approval didn't go through",
+    text: "You can close this tab and return to MailCraft, which says what went wrong.",
+};
 
 impl Page {
     /// The whole answer: a page that stands on its own, with no script and nothing to fetch.
@@ -960,36 +1194,86 @@ fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |differences, (x, y)| differences | (x ^ y)) == 0
 }
 
-/// The page a request is answered with and, when it is the one waited for, how the sign-in
-/// went: the code, or why there is none. `None` when the wait goes on.
-fn judge(request: &[u8], state: &str) -> (&'static Page, Option<Result<String, Refused>>) {
+/// What a request to the loopback port brings, when it is the one that is waited for: the names
+/// and values the provider's page sent back with `state`. Otherwise the page it is answered
+/// with, and the wait goes on.
+fn brought(request: &[u8], state: &str) -> Result<Vec<(String, String)>, &'static Page> {
     // `GET /?code=…&state=… HTTP/1.1`.
     let line = request.split(|b| *b == b'\n').next().unwrap_or(&[]);
     let line = String::from_utf8_lossy(line);
     let mut words = line.split_ascii_whitespace();
     let (method, target) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
     if method != "GET" {
-        return (&NOT_ALLOWED, None);
+        return Err(&NOT_ALLOWED);
     }
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     // A browser also asks for `/favicon.ico`.
     if path != "/" {
-        return (&NOT_FOUND, None);
+        return Err(&NOT_FOUND);
     }
     let fields = http::pairs(query);
-    let field = |name: &str| fields.iter().find(|(n, _)| n == name).map_or("", |(_, value)| value.as_str());
     // Only the page that was given the state can send it back. Anything else on this machine
     // that finds the port can neither slip a code in nor call the sign-in off.
-    if state.is_empty() || !same(field("state"), state) {
-        return (&NOT_OURS, None);
+    let sent = fields.iter().find(|(name, _)| name == "state").map_or("", |(_, value)| value.as_str());
+    if state.is_empty() || !same(sent, state) {
+        return Err(&NOT_OURS);
     }
-    if !field("error").is_empty() {
-        let (error, description) = (field("error"), field("error_description"));
-        let refused = Refused {
-            error: refusal(error, description),
-            about: about(error, field("error_subcode"), description, &[]),
-            policy: by_policy(description, &[]),
-        };
+    Ok(fields)
+}
+
+/// The no a provider's page came back with (`error` and what goes with it), when it is one.
+fn page_refusal(fields: &[(String, String)]) -> Option<Refused> {
+    let field = |name: &str| fields.iter().find(|(n, _)| n == name).map_or("", |(_, value)| value.as_str());
+    let (error, description) = (field("error"), field("error_description"));
+    if !error.is_empty() {
+        // For whoever has to find out why a sign-in ended: the code and Microsoft's numbers for
+        // it, never the words, which may name the owner or the organisation.
+        let numbers: Vec<String> = aadsts(description).map(|number| number.to_string()).collect();
+        log::info!(
+            "the provider's page came back with a no: \"{}\"{}",
+            shown(&http::tidy(error)),
+            if numbers.is_empty() { String::new() } else { format!(" (AADSTS {})", numbers.join(", ")) }
+        );
+    }
+    (!error.is_empty()).then(|| Refused {
+        error: refusal(error, description),
+        about: about(error, field("error_subcode"), description, &[]),
+        policy: by_policy(description, &[]),
+        declined: declined(error, description),
+    })
+}
+
+/// [`judge`] for Microsoft's admin-consent page, which comes back with `admin_consent=True` and,
+/// when the approval wasn't given, with an `error` beside it (Microsoft identity platform,
+/// "Admin consent protocols"). Whatever else it sends (the directory, the permissions) is not
+/// read: the documentation itself warns against believing the directory, and nothing here
+/// needs either.
+fn judge_consent(request: &[u8], state: &str) -> (&'static Page, Option<Result<(), Refused>>) {
+    let fields = match brought(request, state) {
+        Ok(fields) => fields,
+        Err(page) => return (page, None),
+    };
+    if let Some(refused) = page_refusal(&fields) {
+        return (&NOT_APPROVED, Some(Err(refused)));
+    }
+    let said = fields.iter().find(|(name, _)| name == "admin_consent").map_or("", |(_, value)| value.as_str());
+    if said.trim().eq_ignore_ascii_case("true") {
+        (&APPROVED, Some(Ok(())))
+    } else {
+        let broken = ProtoError::Protocol("the approval page came back without an answer".into());
+        (&NOT_APPROVED, Some(Err(NetError::Proto(broken).into())))
+    }
+}
+
+/// The page a request is answered with and, when it is the one waited for, how the sign-in
+/// went: the code, or why there is none. `None` when the wait goes on.
+fn judge(request: &[u8], state: &str) -> (&'static Page, Option<Result<String, Refused>>) {
+    let fields = match brought(request, state) {
+        Ok(fields) => fields,
+        Err(page) => return (page, None),
+    };
+    let field = |name: &str| fields.iter().find(|(n, _)| n == name).map_or("", |(_, value)| value.as_str());
+    if let Some(refused) = page_refusal(&fields) {
         return (&FAILED, Some(Err(refused)));
     }
     let code = field("code");
@@ -1134,6 +1418,17 @@ impl Redirect {
     /// Wait for the browser to come back with the code that goes with `state`, answering what
     /// else turns up (a favicon, a stranger) on the way.
     fn wait(&self, state: &str, cancel: &AtomicBool, patience: Duration) -> Result<String, Refused> {
+        self.wait_for(state, cancel, patience, judge)
+    }
+
+    /// [`wait`](Self::wait) for whatever `judge` reads out of the request that brings `state` back.
+    fn wait_for<T>(
+        &self,
+        state: &str,
+        cancel: &AtomicBool,
+        patience: Duration,
+        judge: impl Fn(&[u8], &str) -> (&'static Page, Option<Result<T, Refused>>),
+    ) -> Result<T, Refused> {
         let started = Instant::now();
         let mut visitors: Vec<Visitor> = Vec::new();
         loop {

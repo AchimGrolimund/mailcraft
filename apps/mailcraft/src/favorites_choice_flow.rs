@@ -350,7 +350,7 @@ fn graph_that_an_administrator_has_to_approve_says_so_with_a_link_and_offers_exc
     let state = flow.state();
     assert_eq!(
         (state["line"].clone(), state["text"].clone(), state["steps"].clone(), state["from"].clone()),
-        (json!("approval"), json!(NEEDS_APPROVAL), json!(["copyLink", "useEws"]), json!("mailbox"))
+        (json!("approval"), json!(NEEDS_APPROVAL), json!(["copyMessage", "help", "useEws"]), json!("mailbox"))
     );
     // Nothing else is any different: the owner's favourites, the calendar, no dialog, no problem.
     assert_eq!(flow.listed(), own);
@@ -359,12 +359,19 @@ fn graph_that_an_administrator_has_to_approve_says_so_with_a_link_and_offers_exc
     assert!(flow.app.dialog.is_none() && !flow.app.has_sync_problems());
 
     // The link for the administrator: Microsoft's admin-consent page, for this application and
-    // the two permissions, in the organisation's own directory. Nothing is opened or sent.
+    // everything it asks an owner for (the two permissions among it, so that one approval
+    // covers the rest as well), in the organisation's own directory. Nothing is opened or sent.
     let copied = flow.app.execute("ui.copyAdminConsentLink", json!({"account": flow.account})).unwrap();
     let link = copied["url"].as_str().unwrap();
     assert!(link.starts_with(&format!("https://login.microsoftonline.com/{ORGANISATION}/v2.0/adminconsent?client_id={APPLICATION}&")), "{link}");
     assert!(link.contains("MailboxConfigItem.Read") && link.contains("Mail.ReadBasic") && link.contains("redirect_uri=http%3A%2F%2Flocalhost"));
+    assert!(link.contains("IMAP.AccessAsUser.All") && link.contains("Calendars.ReadWrite"));
     assert!(!link.contains("EWS") && !link.contains("avery") && !link.contains(graph::TOKEN) && copied["source"] == "graph");
+    // The window's own link copies a message for the administrator with that address in it,
+    // and nothing of the owner.
+    let message = flow.app.execute("ui.copyAdminMessage", json!({"account": flow.account})).unwrap();
+    let text = message["text"].as_str().unwrap();
+    assert!(message["url"] == link && text.lines().any(|line| line == link) && !text.contains("avery") && !text.contains('@'));
 
     // Not asked again that day, however often the servers are looked at.
     let asked = flow.sign_ins().len();

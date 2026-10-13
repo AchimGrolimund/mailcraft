@@ -18,6 +18,8 @@
 #[cfg(target_os = "macos")]
 mod apple_events;
 #[cfg(test)]
+mod approval_flow;
+#[cfg(test)]
 mod calendar_flow;
 mod control_server;
 #[cfg(test)]
@@ -38,8 +40,8 @@ use mailcraft_engine::Session;
 use mailcraft_model::Mailbox;
 use mailcraft_model::sync::Tokens;
 use mailcraft_ui_egui::{
-    CalendarCheckRequest, CalendarCheckResult, CalendarCheckStep, EwsRequest, EwsResult, FreeBusyRequest, FreeBusyResult, GraphRequest, GraphResult,
-    MailApp, Services, SignInRequest, UiState,
+    AdminConsentAnswer, AdminConsentRequest, CalendarCheckRequest, CalendarCheckResult, CalendarCheckStep, EwsRequest, EwsResult, FreeBusyRequest,
+    FreeBusyResult, GraphRequest, GraphResult, MailApp, Services, SignInRequest, UiState,
     window_geometry::{WindowGeometry, take_rescue},
 };
 
@@ -213,30 +215,87 @@ fn microsoft_client_id() -> String {
     if id.len() <= 200 && id.chars().all(|c| c.is_ascii_alphanumeric() || "-._".contains(c)) { id.to_string() } else { String::new() }
 }
 
+/// Open one of Microsoft's pages in the system's browser: whether a browser could be started.
+/// (The same call the window's own links end in; made here so that a browser that can't be
+/// started is known of, instead of leaving the owner looking at a page that waits.) The address
+/// is not for the log: it names who is signing in.
+fn open_in_browser(url: &str) -> bool {
+    match webbrowser::open(url) {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!("couldn't start a browser for Microsoft's page ({:?})", e.kind());
+            false
+        }
+    }
+}
+
 /// Sign an account's owner in: quietly with what was kept from last time when there is any, on
 /// the provider's page in the system's browser otherwise.
 fn sign_in(ctx: &egui::Context, request: SignInRequest) -> Result<Tokens, String> {
-    let open = |url: &str| {
-        ctx.open_url(egui::OpenUrl::new_tab(url));
+    sign_in_with(request, &|url| {
+        let opened = open_in_browser(url);
         ctx.request_repaint();
+        opened
+    })
+}
+
+/// [`sign_in`], with `open_page` in the browser's place: it opens the address it is given, and
+/// says whether it could.
+///
+/// A sign-in on the provider's page that ends without tokens is answered in the words the
+/// window knows each way by (`mailcraft_ui_egui::approval`): an administrator has to approve
+/// first, the page came back with a no, nothing came back, no browser could be started.
+/// Anything else is said as it is.
+fn sign_in_with(request: SignInRequest, open_page: &dyn Fn(&str) -> bool) -> Result<Tokens, String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use mailcraft_net::oauth::{Endpoints, Resource, SignInEnd};
+    use mailcraft_ui_egui::approval::{NEEDS_APPROVAL, NO_BROWSER, SIGN_IN_DECLINED, SIGN_IN_TIMED_OUT};
+    // No browser could be started: nothing can come back, so the wait is called off at once,
+    // and that is what is said.
+    let no_browser = AtomicBool::new(false);
+    let open = |url: &str| {
+        if !open_page(url) {
+            no_browser.store(true, Ordering::Relaxed);
+            request.cancel.store(true, Ordering::Relaxed);
+        }
     };
+    let unopened = |said: String| if no_browser.load(Ordering::Relaxed) { NO_BROWSER.to_string() } else { said };
     // "Show Outlook's Favorites": the owner asked, so the page comes up, for what Microsoft Graph
     // was asked for before and the two permissions that reading the Favorites takes. A no that
     // is not the owner's to change is said in the words the window knows it by; nothing is
     // asked a second time.
     if request.graph && request.favorites {
-        return mailcraft_net::oauth::sign_in_for_favorites(&request.oauth, &request.email, &open, &request.cancel).map_err(favorites_refusal);
+        let asked = mailcraft_net::oauth::sign_in_for_favorites(&request.oauth, &request.email, &open, &request.cancel);
+        return asked.map_err(|refusal| unopened(favorites_refusal(refusal)));
     }
     // The owner chose Exchange Web Services for Outlook's Favorites, and the sign-in doesn't
     // cover it: the page comes up for that permission alone. Nothing is asked a second time.
     if request.ews {
-        return mailcraft_net::oauth::sign_in_for_ews(&request.oauth, &request.email, &open, &request.cancel).map_err(favorites_refusal);
+        let asked = mailcraft_net::oauth::sign_in_for_ews(&request.oauth, &request.email, &open, &request.cancel);
+        return asked.map_err(|refusal| unopened(favorites_refusal(refusal)));
     }
+    // A sign-in on the page, at `endpoints`: how it ended, when it brought no tokens. (How, and
+    // never in whose words, is what the log is told.)
+    let on_the_page = |endpoints: &Endpoints| {
+        let asked = mailcraft_net::oauth::sign_in_explained(endpoints, &request.oauth, &request.email, &open, &request.cancel);
+        asked.map_err(|end| {
+            let (how, said) = match end {
+                SignInEnd::Approval => ("an administrator has to approve the application first", NEEDS_APPROVAL.to_string()),
+                _ if no_browser.load(Ordering::Relaxed) => ("no browser could be started", NO_BROWSER.to_string()),
+                SignInEnd::Declined => ("the page came back with a no", SIGN_IN_DECLINED.to_string()),
+                SignInEnd::TimedOut => ("nothing came back in time", SIGN_IN_TIMED_OUT.to_string()),
+                SignInEnd::Cancelled => ("it was called off", mailcraft_net::NetError::SignInCancelled.to_string()),
+                SignInEnd::Other(e) => ("it failed", e.to_string()),
+            };
+            log::info!("sign-in on Microsoft's page, account {}: {how}", request.account);
+            said
+        })
+    };
     // "Connect calendar and contacts": the owner asked, so the page comes up, for what Microsoft
     // Graph needs rather than for mail.
     if request.graph {
-        let graph = mailcraft_net::oauth::Resource::Graph;
-        return mailcraft_net::oauth::sign_in_for(&request.oauth, &request.email, &open, &request.cancel, graph).map_err(|e| e.to_string());
+        return on_the_page(&Endpoints::for_resource(&request.oauth, Resource::Graph));
     }
     if !request.refresh.is_empty() {
         match mailcraft_net::oauth::refresh(&request.oauth, &request.refresh) {
@@ -253,11 +312,45 @@ fn sign_in(ctx: &egui::Context, request: SignInRequest) -> Result<Tokens, String
     }
     if request.mail_only {
         // Without the calendar and contacts along: for when the provider's page won't have both.
-        let mail =
-            mailcraft_net::oauth::Endpoints { consent: String::new(), lesser: String::new(), ..mailcraft_net::oauth::Endpoints::of(&request.oauth) };
-        return mailcraft_net::oauth::sign_in_at(&mail, &request.oauth, &request.email, &open, &request.cancel).map_err(|e| e.to_string());
+        let mail = Endpoints { consent: String::new(), lesser: String::new(), ..Endpoints::of(&request.oauth) };
+        return on_the_page(&mail);
     }
-    mailcraft_net::oauth::sign_in(&request.oauth, &request.email, &open, &request.cancel).map_err(|e| e.to_string())
+    on_the_page(&Endpoints::of(&request.oauth))
+}
+
+/// Have an administrator approve this program for an organisation: Microsoft's admin-consent
+/// page in the system's browser, and the wait for its yes or no. Only ever because the owner
+/// said "I'm an administrator". No tokens come of it, and nothing is believed of what comes
+/// back but the yes or the no.
+fn admin_consent(ctx: &egui::Context, request: AdminConsentRequest) -> AdminConsentAnswer {
+    admin_consent_with(request, &|url| {
+        let opened = open_in_browser(url);
+        ctx.request_repaint();
+        opened
+    })
+}
+
+/// [`admin_consent`], with `open_page` in the browser's place.
+fn admin_consent_with(request: AdminConsentRequest, open_page: &dyn Fn(&str) -> bool) -> AdminConsentAnswer {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use mailcraft_net::oauth::AdminRefusal;
+    let no_browser = AtomicBool::new(false);
+    let open = |url: &str| {
+        if !open_page(url) {
+            no_browser.store(true, Ordering::Relaxed);
+            request.cancel.store(true, Ordering::Relaxed);
+        }
+    };
+    match mailcraft_net::oauth::admin_consent(&request.oauth, &request.tenant, request.source, &open, &request.cancel) {
+        Ok(()) => AdminConsentAnswer::Approved,
+        Err(_) if no_browser.load(Ordering::Relaxed) => AdminConsentAnswer::NoBrowser,
+        Err(AdminRefusal::NotAdministrator(words)) => AdminConsentAnswer::NotAdministrator(words),
+        Err(AdminRefusal::Declined(words)) => AdminConsentAnswer::Declined(words),
+        Err(AdminRefusal::TimedOut) => AdminConsentAnswer::TimedOut,
+        Err(AdminRefusal::Cancelled) => AdminConsentAnswer::Cancelled,
+        Err(AdminRefusal::Other(e)) => AdminConsentAnswer::Failed(e.to_string()),
+    }
 }
 
 /// Why the owner's yes to reading Outlook's Favorites wasn't had, in the words the window knows
@@ -696,6 +789,7 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
     let busy_ctx = ctx.clone();
     let check_ctx = ctx.clone();
     let ews_ctx = ctx.clone();
+    let approval_ctx = ctx.clone();
     let (sync_ctx, sign_in_ctx, graph_ctx, mx_ctx, test_ctx) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone(), ctx);
     let sync_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel = sync_cancel.clone();
@@ -751,8 +845,14 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
         check_calendar: Some(Box::new(move |request| background(&check_ctx, "calendar check", move || check_calendar(request)))),
         // Outlook's Favorites through Exchange Web Services, for an account whose owner chose that.
         ews: Some(Box::new(move |request| background(&ews_ctx, "exchange web services", move || ews(request)))),
-        // The address an administrator approves this application at: made here, opened by nobody.
+        // The address an administrator approves this application at: made here, for the owner to
+        // pass on in a message.
         admin_consent_link: Some(Box::new(|oauth, tenant, source| mailcraft_net::oauth::admin_consent_url(oauth, tenant, source).ok())),
+        // And the same page opened from here, for an owner who is an administrator and said so.
+        admin_consent: Some(Box::new(move |request| {
+            let ctx = approval_ctx.clone();
+            background(&approval_ctx, "admin consent", move || admin_consent(&ctx, request))
+        })),
         secrets: secrets::store(),
         microsoft_client_id: microsoft_client_id(),
         ..Default::default()
