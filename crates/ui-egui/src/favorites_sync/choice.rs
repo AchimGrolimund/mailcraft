@@ -17,15 +17,20 @@ use crate::theme::{Tokens, regular, semibold};
 pub const WIDTH: f32 = 480.0;
 
 /// What a way of reading them is called, and what the owner is told of it: how long it lasts
-/// and whose yes it takes. Neither is promised to work.
+/// and whose yes it takes. Neither is promised to work, and neither is said to need nobody's
+/// approval: a program that is not Microsoft's is approved in an organisation whichever way it
+/// reads (by the owner where the organisation lets them, else by an administrator), and the
+/// approval an administrator gives with MailCraft's link covers Graph's way, not this other one.
 pub(crate) fn words(source: FavoritesSource) -> (&'static str, &'static str) {
     match source {
-        FavoritesSource::Graph => {
-            ("Microsoft Graph", "The lasting way. In an organisation, an administrator may have to approve it once before it works.")
-        }
-        FavoritesSource::Ews => {
-            ("Exchange Web Services", "Needs no administrator where your organisation still allows it. Microsoft switches it off on 1 April 2027.")
-        }
+        FavoritesSource::Graph => (
+            "Microsoft Graph",
+            "The lasting way. In an organisation, an administrator has to approve it once; if they have approved MailCraft already, nothing more is needed.",
+        ),
+        FavoritesSource::Ews => (
+            "Exchange Web Services",
+            "An older way that Microsoft switches off on 1 April 2027. It works where your organisation lets you approve it yourself; elsewhere it needs an administrator too.",
+        ),
         FavoritesSource::None | FavoritesSource::Unset => ("Not now", "MailCraft keeps its own Favorites."),
     }
 }
