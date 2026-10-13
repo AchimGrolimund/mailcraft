@@ -132,6 +132,10 @@ pub struct Tokens {
     pub name: String,
     /// The address the provider knows them by (may be empty).
     pub email: String,
+    /// The directory they signed in to, as the provider names it (may be empty): Microsoft's
+    /// identity token says it, and it tells an organisation's account from a personal one
+    /// ([`crate::Directory::of_tenant`]). An identifier, not a secret; kept in memory like the rest.
+    pub tenant: String,
 }
 
 impl Tokens {
@@ -187,6 +191,16 @@ where
         Maybe::Is(value) => Some(value),
         Maybe::Not(_) => None,
     })
+}
+
+/// [`lenient`] for a value that has a "nothing was said" of its own: that, when what the file
+/// holds in its place isn't one.
+pub(crate) fn lenient_or_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    lenient(deserializer).map(Option::unwrap_or_default)
 }
 
 /// A list from a mailbox file without the entries that aren't what they should be.

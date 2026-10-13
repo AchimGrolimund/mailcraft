@@ -17,7 +17,7 @@ use std::time::Duration;
 use egui::{
     Align, Align2, Key, Layout, Margin, Rect, Response, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui, WidgetInfo, WidgetType, pos2, vec2,
 };
-use mailcraft_model::{Account, AccountKind, Id, OAuth, OAuthProvider, Security, Server, provider};
+use mailcraft_model::{Account, AccountKind, Directory, FavoritesSource, Id, OAuth, OAuthProvider, Security, Server, provider};
 use serde_json::{Map, Value, json};
 
 use crate::forms::kit::{Pass, body, changes, error, field_id, object, shown};
@@ -55,6 +55,10 @@ pub enum Page {
     Password,
     /// The host is trying the password on the servers.
     Checking,
+    /// The account exists, and is one of an organisation that signs in with Microsoft: how the
+    /// folders its owner keeps under Favorites in Outlook are read, if at all. Its mail is under
+    /// way already, and nothing of setting it up waits on this.
+    Favorites,
     /// The account exists.
     Done,
     /// The settings of an account that exists already.
@@ -362,6 +366,11 @@ pub struct AccountSetup {
     /// The owner asked to sign in for mail alone (the provider's page refused the fuller request).
     mail_only: bool,
     outcome: Outcome,
+    /// The account that was just added (0 until there is one), which kind of Microsoft account
+    /// its sign-in said it is, and what its owner picks for its Favorites in Outlook.
+    added: Id,
+    directory: Directory,
+    favorites: Option<FavoritesSource>,
     edit: Option<Editing>,
     /// The window's context, once a frame has run: what the password field left in its memory
     /// is cleared through it.
@@ -431,6 +440,9 @@ impl AccountSetup {
             waiting: false,
             mail_only: false,
             outcome: Outcome::Downloading,
+            added: 0,
+            directory: Directory::Unknown,
+            favorites: None,
             edit: None,
             ctx: None,
         }
@@ -441,6 +453,14 @@ impl AccountSetup {
     /// mailbox of a new installation, which has nothing to change until an address is added.
     pub fn open(app: &MailApp, p: &Value) -> Option<AccountSetup> {
         match p.get("id").and_then(Value::as_u64).filter(|id| *id != 0) {
+            // The last step of adding an account, for one that exists and has that choice (a
+            // script looking at the page; the wizard itself gets there by adding the account).
+            Some(id) if p.get("page").and_then(Value::as_str) == Some("favorites") => {
+                let account = app.session.mailbox.account(id).filter(|_| app.favorites_choice(id))?;
+                let mut w = AccountSetup::blank(Page::Favorites);
+                (w.email, w.oauth, w.added, w.outcome) = (line(&account.email, LINE), account.oauth.clone(), id, Outcome::Later);
+                Some(w)
+            }
             Some(id) => app.session.mailbox.account(id).filter(|a| !a.email.is_empty()).map(AccountSetup::edit),
             None => Some(AccountSetup::new(app, p)),
         }
@@ -514,6 +534,10 @@ impl AccountSetup {
             Some(oauth) => {
                 m.insert("auth".into(), json!("oauth2"));
                 m.insert("provider".into(), json!(oauth.provider.code()));
+                // Which kind of Microsoft account it is, once a sign-in has said.
+                if let Some(kind) = self.directory.code() {
+                    m.insert("directory".into(), json!(kind));
+                }
             }
             None => {
                 m.insert("auth".into(), json!("password"));
@@ -679,6 +703,7 @@ impl AccountSetup {
                 self.check = None;
                 self.go(Page::Password);
             }
+            (Page::Favorites, Action::Go) => self.choose_favorites(app),
             (Page::Done, Action::Go) | (Page::Settings, Action::Back) => return true,
             (Page::Done, Action::Another) => *self = AccountSetup::new(app, &Value::Null),
             (Page::Settings, Action::Go) => return self.save(app),
@@ -863,6 +888,13 @@ impl AccountSetup {
         {
             self.username = signed_in.to_string();
         }
+        // Which kind of Microsoft account it is: the directory the sign-in named says; without
+        // that, whose servers the address was found to use (work or school mail, or Outlook.com).
+        self.directory = match Directory::of_tenant(&tokens.tenant) {
+            Directory::Unknown if self.service == "Microsoft 365" => Directory::Organisation,
+            Directory::Unknown if self.service == "Outlook.com" => Directory::Personal,
+            said => said,
+        };
         let added = match self.add_command(&tokens.name) {
             Some((command, params)) => app.execute(command, params),
             None => Err(tl!("Check the account's settings").to_string()),
@@ -871,6 +903,14 @@ impl AccountSetup {
             Ok(Some(id)) => {
                 app.adopt_tokens(id, tokens);
                 self.finish(app, id);
+                // Its mail is under way. An account of an organisation has one thing more to
+                // choose, which nothing waits on: how Outlook's Favorites are read, if at all.
+                let reads = app.services.graph.is_some() || app.services.ews.is_some();
+                if reads && app.favorites_choice(id) {
+                    self.added = id;
+                    self.favorites = None;
+                    self.go(Page::Favorites);
+                }
             }
             Ok(None) => self.error = tl!("The account couldn't be added").to_string(),
             Err(e) => self.error = e,
@@ -885,6 +925,24 @@ impl AccountSetup {
             Err(_) => Outcome::Later,
         };
         self.go(Page::Done);
+    }
+
+    /// Continue on the Favorites page: `ui.favoritesSource` with what was picked, which keeps
+    /// the choice and starts what follows from it (Microsoft's page, or a read). The wizard
+    /// doesn't wait for that: what comes of it shows under the Favorites heading.
+    fn choose_favorites(&mut self, app: &mut MailApp) {
+        let Some((command, params)) = self.favorites_command() else { return };
+        match app.execute(command, params) {
+            Ok(_) => self.go(Page::Done),
+            Err(e) => self.error = e,
+        }
+    }
+
+    /// `ui.favoritesSource` for the account that was added and the way that was picked; `None`
+    /// until one is.
+    pub fn favorites_command(&self) -> Option<(&'static str, Value)> {
+        let source = self.favorites?.code()?;
+        (self.added != 0).then(|| ("ui.favoritesSource", json!({"account": self.added, "source": source})))
     }
 
     /// Save on Account Settings: run `account.edit` with what changed. `true` when it is done.
@@ -1038,6 +1096,7 @@ impl AccountSetup {
                 let server = shown(self.incoming.host.trim(), 120);
                 waiting_page(ui, &pass, self.page, tl!("Checking the account…"), &fmt(tl!("Signing in to {server}"), &[("server", &server)]))
             }
+            Page::Favorites => self.favorites_page(app, ui, &pass),
             Page::Done => self.done_page(ui, &pass),
             Page::Settings => self.settings_page(app, ui, &mut pass),
         };
@@ -1215,6 +1274,28 @@ impl AccountSetup {
             back = button(ui, tl!("Back"), false, true).clicked();
         });
         if back { Some(Action::Back) } else { (ready && (go || entered(ui, pass))).then_some(Action::Go) }
+    }
+
+    /// The last step for an account of an organisation: how the folders its owner keeps under
+    /// Favorites in Outlook are read, if at all. Nothing is marked to begin with, and Continue
+    /// waits for a pick: neither way is taken for granted, and "Not now" is one of them.
+    fn favorites_page(&mut self, app: &mut MailApp, ui: &mut Ui, pass: &Pass) -> Option<Action> {
+        let t = pass.t;
+        page(ui, &t, |ui| {
+            heading(ui, tl!("Show Outlook's Favorites?"), &t);
+            let set_up = fmt(tl!("{address} is set up, and nothing of that waits on this."), &[("address", &shown(self.email.trim(), 120))]);
+            note(ui, &set_up, t.text_dim);
+            note(ui, tl!(crate::favorites_sync::choice::ABOUT), t.text);
+            if crate::favorites_sync::choice::rows(app, ui, self.added, &mut self.favorites) {
+                self.error.clear();
+            }
+            note(ui, tl!(crate::favorites_sync::choice::AFTER), t.text_dim);
+            error(ui, &self.error);
+        });
+        let ready = self.favorites.is_some();
+        let mut go = false;
+        strip(ui, self.page, |ui| go = button(ui, tl!("Continue"), true, ready).clicked());
+        (ready && (go || entered(ui, pass))).then_some(Action::Go)
     }
 
     fn done_page(&mut self, ui: &mut Ui, pass: &Pass) -> Option<Action> {
@@ -1617,6 +1698,7 @@ mod tests {
             expires_at: mailcraft_time::now() + 3600,
             name: name.into(),
             email: "noor@example.org".into(),
+            tenant: String::new(),
         }
     }
 
@@ -2389,6 +2471,119 @@ mod tests {
         assert_eq!((page(&h), addresses(&h)), (Some(Page::Done), vec!["ada@lumen.example".to_string()]));
     }
 
+    /// (g′) An account of an organisation that signs in with Microsoft has one step more, after
+    /// it is added and its mail is under way: how the folders its owner keeps under Favorites in
+    /// Outlook are read. A personal Microsoft account has no such step.
+    #[test]
+    fn an_account_of_an_organisation_chooses_last_of_all_how_outlooks_favorites_are_read() {
+        const ORGANISATION: &str = "3a1c5e7b-9d2f-4a6c-8e0b-1d3f5a7c9e2b";
+        // A wizard that has just signed `noor@example.org` in to the directory `tenant`, with a
+        // host that could read Outlook's Favorites.
+        let signed_in_to = |tenant: &str| {
+            let mut a = app(false);
+            a.services.microsoft_client_id = APP_ID.into();
+            lookups(&mut a, Some(Ok(vec![MICROSOFT_MX])));
+            let signed = sign_ins(&mut a, Some(Ok(SignedIn { tenant: tenant.into(), ..signed_in("Noor Haddad") })));
+            let synced = syncs(&mut a);
+            a.services.graph = Some(Box::new(|request| {
+                let (tx, rx) = mpsc::channel();
+                tx.send(crate::GraphResult { account: request.account.id, ..Default::default() }).unwrap();
+                rx
+            }));
+            let mut h = open(a, json!({}));
+            connect(&mut h, "noor@example.org");
+            h.run_steps(6);
+            (h, signed, synced)
+        };
+        let pick = |h: &mut Harness<'static, MailApp>, way: &str| {
+            use egui_kittest::kittest::NodeT as _;
+            let named = |node: &egui_kittest::Node<'_>| node.accesskit_node().label().is_some_and(|label| label.contains(way));
+            h.get_all_by_role(Role::RadioButton).find(named).expect("a way to choose").click();
+            h.run_steps(3);
+        };
+        let source = |h: &Harness<'static, MailApp>| h.state().session.mailbox.accounts[0].favorites_source;
+        let directory = |h: &Harness<'static, MailApp>| h.state().session.mailbox.accounts[0].oauth.as_ref().unwrap().directory;
+
+        let (mut h, signed, synced) = signed_in_to(ORGANISATION);
+        assert_eq!(page(&h), Some(Page::Favorites));
+        // The account exists, signed in, and its first Send/Receive is under way already:
+        // nothing of setting it up waits on what is chosen here.
+        assert_eq!((addresses(&h), signed.lock().unwrap().len(), synced.lock().unwrap().len()), (vec!["noor@example.org".to_string()], 1, 1));
+        assert_eq!((source(&h), directory(&h)), (FavoritesSource::Unset, Directory::Organisation));
+        // What is said: the two ways, how long each lasts and whose yes it takes, and "not now".
+        for said in [
+            "Show Outlook's Favorites?",
+            "noor@example.org is set up",
+            "They are only read, never changed",
+            "Microsoft Graph",
+            "an administrator may have to approve it once",
+            "Exchange Web Services",
+            "Microsoft switches it off on 1 April 2027",
+            "Not now",
+            "MailCraft keeps its own Favorites",
+        ] {
+            assert!(says(&h, said), "{said}");
+        }
+        // Nothing is marked to begin with: neither Continue nor Enter goes on without a pick.
+        click(&mut h, "Continue");
+        press(&mut h, Key::Enter);
+        assert_eq!((page(&h), source(&h)), (Some(Page::Favorites), FavoritesSource::Unset));
+        // Not now: kept, and nobody is asked anything.
+        pick(&mut h, "Not now");
+        assert_eq!(
+            wizard(&h).unwrap().favorites_command(),
+            Some(("ui.favoritesSource", json!({"account": h.state().session.mailbox.accounts[0].id, "source": "none"})))
+        );
+        click(&mut h, "Continue");
+        assert_eq!((page(&h), source(&h), signed.lock().unwrap().len()), (Some(Page::Done), FavoritesSource::None, 1));
+        assert!(says(&h, "noor@example.org is set up"));
+        click(&mut h, "Done");
+        assert_eq!(page(&h), None);
+
+        // Microsoft Graph: kept, and Microsoft's page is asked for its two permissions; the
+        // wizard doesn't wait for what comes of that.
+        let (mut h, signed, _) = signed_in_to(ORGANISATION);
+        pick(&mut h, "Microsoft Graph");
+        click(&mut h, "Continue");
+        assert_eq!((page(&h), source(&h), signed.lock().unwrap().len()), (Some(Page::Done), FavoritesSource::Graph, 2));
+        // Exchange Web Services: kept (this host has no such job, which costs the choice nothing).
+        let (mut h, signed, _) = signed_in_to(ORGANISATION);
+        pick(&mut h, "Exchange Web Services");
+        click(&mut h, "Continue");
+        assert_eq!((page(&h), source(&h), signed.lock().unwrap().len()), (Some(Page::Done), FavoritesSource::Ews, 1));
+        // Closing the wizard there chooses nothing: the account is as it was added.
+        let (mut h, _, _) = signed_in_to(ORGANISATION);
+        press(&mut h, Key::Escape);
+        assert_eq!((page(&h), source(&h), addresses(&h)), (None, FavoritesSource::Unset, vec!["noor@example.org".to_string()]));
+
+        // A personal Microsoft account: no such step, and what it is goes down with the account.
+        let (h, _, _) = signed_in_to(Directory::PERSONAL_TENANT);
+        assert_eq!((page(&h), source(&h), directory(&h)), (Some(Page::Done), FavoritesSource::Unset, Directory::Personal));
+        // A sign-in that names no directory: whose servers the address uses says it instead.
+        let (h, _, _) = signed_in_to("");
+        assert_eq!((page(&h), directory(&h)), (Some(Page::Favorites), Directory::Organisation));
+
+        // The step by itself, for an account that exists (a script looking at it), and only for
+        // one that has the choice.
+        let mut a = app(true);
+        let work = json!({"email": "ada@lumen.example", "auth": "oauth2", "provider": "microsoft", "directory": "organisation", "incoming": {"host": "outlook.office365.com"}});
+        let work = a.execute("account.add", work).unwrap()["id"].as_u64().unwrap();
+        let home = json!({"email": "ada@mail.example", "auth": "oauth2", "provider": "microsoft", "directory": "personal", "incoming": {"host": "outlook.office365.com"}});
+        let home = a.execute("account.add", home).unwrap()["id"].as_u64().unwrap();
+        assert!(AccountSetup::open(&a, &json!({"id": home, "page": "favorites"})).is_none());
+        assert!(AccountSetup::open(&a, &json!({"id": 999_999, "page": "favorites"})).is_none());
+        let w = AccountSetup::open(&a, &json!({"id": work, "page": "favorites"})).unwrap();
+        assert_eq!((w.page, w.added, w.favorites_command()), (Page::Favorites, work, None));
+        // From 1 April 2027 by the session's clock there are two ways left to choose from.
+        let later = MailApp::new(Session::at(a.session.mailbox.clone(), 1_806_580_800, 0), Services::default());
+        let mut h = open(later, json!({"id": work, "page": "favorites"}));
+        assert_eq!(page(&h), Some(Page::Favorites));
+        assert!(says(&h, "Microsoft Graph") && says(&h, "Not now") && !says(&h, "Exchange Web Services"));
+        pick(&mut h, "Not now");
+        click(&mut h, "Continue");
+        assert_eq!(page(&h), Some(Page::Done));
+    }
+
     /// (h) Every page lays out, in both themes, in a comfortable window, a small one and one far
     /// too small, with ordinary text and with hostile text.
     #[test]
@@ -2402,6 +2597,7 @@ mod tests {
             Page::SignIn,
             Page::Password,
             Page::Checking,
+            Page::Favorites,
             Page::Done,
             Page::Settings,
         ];
@@ -2440,6 +2636,8 @@ mod tests {
                         w.oauth = matches!(page_in_view, Page::SignIn | Page::ApplicationId).then(OAuth::default);
                         (w.lookup, w.check) = (Some(lookup), Some(check));
                         w.outcome = if hostile { Outcome::Offline } else { Outcome::Downloading };
+                        // (The last step is about an account that exists.)
+                        w.added = cloud.as_u64().unwrap_or(0);
                     }
                     if hostile {
                         for text in [&mut w.error, &mut w.note, &mut w.service, &mut w.name, &mut w.username, &mut w.client_id, &mut w.tenant] {

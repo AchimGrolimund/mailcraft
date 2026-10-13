@@ -302,11 +302,69 @@ fn folder_row(app: &mut MailApp, ui: &mut Ui, f: &Folder, depth: usize, has_chil
     });
 }
 
-/// The quiet line under the Favorites heading, when there is something to say of an account's
+/// A sentence under the Favorites heading that is longer than a row: wrapped to the pane, three
+/// rows at most, in the quiet colour. Where it was put.
+fn quiet_lines(ui: &mut Ui, text: &str) -> Rect {
+    let t = Tokens::get(ui.ctx());
+    let width = (ui.available_width() - NAME_LEFT - COUNT_RIGHT).max(40.0);
+    let mut job = egui::text::LayoutJob::simple(text.to_string(), regular(NAME_SIZE), t.text_dim, width);
+    job.wrap.max_rows = 3;
+    let said = ui.painter().layout_job(job);
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), (said.size().y + 8.0).max(ROW_H)), Sense::hover());
+    ui.painter().galley(pos2(r.min.x + NAME_LEFT, r.min.y + 4.0), said, t.text_dim);
+    r
+}
+
+/// A link under such a sentence, a row of its own: what the owner can do about it.
+fn quiet_link(app: &mut MailApp, ui: &mut Ui, account: Id, step: crate::favorites_sync::Step) {
+    let t = Tokens::get(ui.ctx());
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
+    let resp = ui.interact(highlight(r), ui.id().with(("favorites_step", account, step.code())), Sense::click());
+    let kind = match step {
+        crate::favorites_sync::Step::CopyLink => "favoritesCopyLink",
+        crate::favorites_sync::Step::Use(_) => "favoritesSwitch",
+    };
+    app.hit.add(kind, account, r);
+    if resp.hovered() {
+        ui.painter().rect_filled(highlight(r), 0.0, t.panel.lerp_to_gamma(t.hover, 0.7));
+    }
+    let width = (r.max.x - COUNT_RIGHT - r.min.x - NAME_LEFT).max(0.0);
+    paint_clipped(ui.painter(), pos2(r.min.x + NAME_LEFT, r.center().y - TEXT_RISE), width, tl!(step.label()), regular(NAME_SIZE), t.accent_text);
+    if resp.on_hover_text(tl!(step.about())).clicked() {
+        crate::favorites_sync::choice::step_taken(app, account, step);
+    }
+}
+
+/// What is said under the Favorites heading, when there is something to say of an account's
 /// Favorites in Outlook ([`crate::favorites_sync`]): the offer to show them, why they can't be
-/// had, or why the last look came to nothing, with "Try again" after it. One row, never more.
+/// had, or why the last look came to nothing, with "Try again" after it: one row. When what
+/// stands in the way is somebody else's to change (an administrator has to approve it, the
+/// organisation doesn't allow Exchange Web Services, Microsoft has switched it off), the
+/// sentence that says so, and under it a row for each thing the owner can do about it.
 fn favorites_note(app: &mut MailApp, ui: &mut Ui, account: Id, note: &Note) {
     let t = Tokens::get(ui.ctx());
+    if matches!(note, Note::Approval(_) | Note::Blocked | Note::Ended) {
+        let r = quiet_lines(ui, tl!(note.text()));
+        app.hit.add("favoritesNote", account, r);
+        let about = match note {
+            Note::Approval(_) => {
+                tl!(
+                    "Your organisation keeps this permission for its administrators to give. Once one of them has approved it, choose it again here. Until then the Favorites kept in MailCraft are shown."
+                )
+            }
+            Note::Blocked => {
+                tl!(
+                    "The server turned MailCraft away: your organisation has switched Exchange Web Services off, or lets only the programs on its own list use it. The Favorites kept in MailCraft are shown."
+                )
+            }
+            _ => tl!("Microsoft switched Exchange Web Services off for everybody on 1 April 2027. The Favorites kept in MailCraft are shown."),
+        };
+        ui.interact(r, ui.id().with(("favorites_note", account)), Sense::hover()).on_hover_text(about);
+        for step in app.favorites_steps(account, note) {
+            quiet_link(app, ui, account, step);
+        }
+        return;
+    }
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
     let y = r.center().y - TEXT_RISE;
     let left = r.min.x + NAME_LEFT;
@@ -321,15 +379,30 @@ fn favorites_note(app: &mut MailApp, ui: &mut Ui, account: Id, note: &Note) {
                 ui.painter().rect_filled(highlight(r), 0.0, t.panel.lerp_to_gamma(t.hover, 0.7));
             }
             paint_clipped(ui.painter(), pos2(left, y), width, tl!("Show Outlook's Favorites"), font, t.accent_text);
-            let about = tl!(
-                "Sign in with Microsoft once more to let MailCraft read the folders you keep under Favorites in Outlook. They are only read, never changed, and everything else stays as it is."
-            );
-            if resp.on_hover_text(about).clicked()
-                && let Err(e) = app.run("ui.connectFavorites", json!({"account": account}))
-            {
-                app.status(e);
+            // An account of an organisation has a choice of how they are read; any other signs
+            // in with Microsoft once more for it.
+            let choice = app.favorites_choice(account);
+            let about = if choice {
+                tl!(
+                    "Choose how MailCraft reads the folders you keep under Favorites in Outlook. They are only read, never changed, and everything else stays as it is."
+                )
+            } else {
+                tl!(
+                    "Sign in with Microsoft once more to let MailCraft read the folders you keep under Favorites in Outlook. They are only read, never changed, and everything else stays as it is."
+                )
+            };
+            if resp.on_hover_text(about).clicked() {
+                let asked = match choice {
+                    true => app.run("ui.dialog", json!({"name": "favoritesSource", "account": account})),
+                    false => app.run("ui.connectFavorites", json!({"account": account})),
+                };
+                if let Err(e) = asked {
+                    app.status(e);
+                }
             }
         }
+        // (Said above, in more than a row.)
+        Note::Approval(_) | Note::Blocked | Note::Ended => {}
         Note::Refused(why) => {
             let resp = ui.interact(highlight(r), ui.id().with(("favorites_note", account)), Sense::hover());
             app.hit.add("favoritesNote", account, r);

@@ -165,6 +165,113 @@ pub struct Account {
     /// password. No token is ever stored here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oauth: Option<OAuth>,
+    /// Where the Favorites of the folder pane come from, for an account that signs in with
+    /// Microsoft, once its owner has said ([`FavoritesSource`]). Nothing is written of it until
+    /// then, and a file that says something else in its place reads as not said.
+    #[serde(skip_serializing_if = "FavoritesSource::is_unset", deserialize_with = "crate::sync::lenient_or_default")]
+    pub favorites_source: FavoritesSource,
+}
+
+/// How the folders an account's owner keeps under Favorites in Outlook are read from its server,
+/// when they are: the owner's choice, for an account of an organisation that signs in with
+/// Microsoft. Whichever it is, the list is only ever read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FavoritesSource {
+    /// The owner hasn't said. It is then as it was before there was a choice: Microsoft Graph,
+    /// once the owner has agreed to that.
+    #[default]
+    Unset,
+    /// Not from the server: the Favorites marked here are the account's.
+    None,
+    /// Through Microsoft Graph: lasting; in an organisation an administrator may have to approve
+    /// it once.
+    Graph,
+    /// Through Exchange Web Services: needs no administrator where the organisation still allows
+    /// it, and Microsoft switches it off for everybody on 1 April 2027 ([`FavoritesSource::EWS_ENDS`]).
+    Ews,
+}
+
+impl FavoritesSource {
+    /// The first day on which Exchange Web Services is no longer there (Microsoft's own date for
+    /// switching it off in Exchange Online): from then on it is not offered, and an account set
+    /// to it is told so.
+    pub const EWS_ENDS: (i32, u8, u8) = (2027, 4, 1);
+
+    pub fn is_unset(&self) -> bool {
+        *self == FavoritesSource::Unset
+    }
+
+    pub fn parse(s: &str) -> Option<FavoritesSource> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "none" | "notnow" | "own" => Some(FavoritesSource::None),
+            "graph" => Some(FavoritesSource::Graph),
+            "ews" => Some(FavoritesSource::Ews),
+            _ => None,
+        }
+    }
+
+    /// What a command calls it; `None` for a choice that was never made.
+    pub fn code(self) -> Option<&'static str> {
+        match self {
+            FavoritesSource::Unset => None,
+            FavoritesSource::None => Some("none"),
+            FavoritesSource::Graph => Some("graph"),
+            FavoritesSource::Ews => Some("ews"),
+        }
+    }
+}
+
+/// Which kind of Microsoft account signs in: one of an organisation (work or school), or a
+/// personal one (Outlook.com). The sign-in itself says which, by the directory it names.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Directory {
+    /// Nobody has said yet.
+    #[default]
+    Unknown,
+    /// A work or school account: its organisation's own directory.
+    Organisation,
+    /// A personal Microsoft account.
+    Personal,
+}
+
+impl Directory {
+    /// The directory every personal Microsoft account is in, as an identity token names it
+    /// (its `tid` claim; Microsoft identity platform, "ID token claims reference").
+    pub const PERSONAL_TENANT: &'static str = "9188040d-6c67-4c5b-b112-36a304b66dad";
+
+    pub fn is_unknown(&self) -> bool {
+        *self == Directory::Unknown
+    }
+
+    pub fn parse(s: &str) -> Option<Directory> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "organisation" | "organization" | "work" => Some(Directory::Organisation),
+            "personal" | "consumer" => Some(Directory::Personal),
+            _ => None,
+        }
+    }
+
+    /// What a command calls it; `None` when it isn't known.
+    pub fn code(self) -> Option<&'static str> {
+        match self {
+            Directory::Unknown => None,
+            Directory::Organisation => Some("organisation"),
+            Directory::Personal => Some("personal"),
+        }
+    }
+
+    /// The kind of account that signed in to the directory `tenant`: what an identity token
+    /// names (a GUID), or what the sign-in settings name (`consumers`, `organizations`, a
+    /// directory's id or domain). `common` and nothing say nothing.
+    pub fn of_tenant(tenant: &str) -> Directory {
+        match tenant.trim().to_ascii_lowercase().as_str() {
+            "" | "common" => Directory::Unknown,
+            "consumers" | Directory::PERSONAL_TENANT => Directory::Personal,
+            _ => Directory::Organisation,
+        }
+    }
 }
 
 impl Account {
@@ -221,6 +328,11 @@ pub struct OAuth {
     /// Microsoft: `common`, `consumers`, `organizations` or a directory id; empty means `common`.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub tenant: String,
+    /// Microsoft: whether the account that signs in is an organisation's or a personal one, when
+    /// that is known ([`Directory`]). Written when the account is set up or its owner chooses
+    /// where its Favorites come from, and not otherwise; never the directory's id.
+    #[serde(skip_serializing_if = "Directory::is_unknown", deserialize_with = "crate::sync::lenient_or_default")]
+    pub directory: Directory,
 }
 
 /// A change made here to a message the mail server has, which the server is yet to be told. The
