@@ -21,6 +21,8 @@ mod apple_events;
 mod calendar_flow;
 mod control_server;
 #[cfg(test)]
+mod favorites_choice_flow;
+#[cfg(test)]
 mod favorites_flow;
 mod file_dialogs;
 #[cfg(any(target_os = "windows", test))]
@@ -36,8 +38,8 @@ use mailcraft_engine::Session;
 use mailcraft_model::Mailbox;
 use mailcraft_model::sync::Tokens;
 use mailcraft_ui_egui::{
-    CalendarCheckRequest, CalendarCheckResult, CalendarCheckStep, FreeBusyRequest, FreeBusyResult, GraphRequest, GraphResult, MailApp, Services,
-    SignInRequest, UiState,
+    CalendarCheckRequest, CalendarCheckResult, CalendarCheckStep, EwsRequest, EwsResult, FreeBusyRequest, FreeBusyResult, GraphRequest, GraphResult,
+    MailApp, Services, SignInRequest, UiState,
     window_geometry::{WindowGeometry, take_rescue},
 };
 
@@ -223,15 +225,12 @@ fn sign_in(ctx: &egui::Context, request: SignInRequest) -> Result<Tokens, String
     // is not the owner's to change is said in the words the window knows it by; nothing is
     // asked a second time.
     if request.graph && request.favorites {
-        use mailcraft_net::oauth::FavoritesRefusal;
-        use mailcraft_ui_egui::favorites_sync::{REFUSED_BY_ORGANISATION, REFUSED_FOR_ACCOUNT};
-        return mailcraft_net::oauth::sign_in_for_favorites(&request.oauth, &request.email, &open, &request.cancel).map_err(
-            |refusal| match refusal {
-                FavoritesRefusal::Organisation => REFUSED_BY_ORGANISATION.to_string(),
-                FavoritesRefusal::Account => REFUSED_FOR_ACCOUNT.to_string(),
-                FavoritesRefusal::Other(e) => e.to_string(),
-            },
-        );
+        return mailcraft_net::oauth::sign_in_for_favorites(&request.oauth, &request.email, &open, &request.cancel).map_err(favorites_refusal);
+    }
+    // The owner chose Exchange Web Services for Outlook's Favorites, and the sign-in doesn't
+    // cover it: the page comes up for that permission alone. Nothing is asked a second time.
+    if request.ews {
+        return mailcraft_net::oauth::sign_in_for_ews(&request.oauth, &request.email, &open, &request.cancel).map_err(favorites_refusal);
     }
     // "Connect calendar and contacts": the owner asked, so the page comes up, for what Microsoft
     // Graph needs rather than for mail.
@@ -259,6 +258,85 @@ fn sign_in(ctx: &egui::Context, request: SignInRequest) -> Result<Tokens, String
         return mailcraft_net::oauth::sign_in_at(&mail, &request.oauth, &request.email, &open, &request.cancel).map_err(|e| e.to_string());
     }
     mailcraft_net::oauth::sign_in(&request.oauth, &request.email, &open, &request.cancel).map_err(|e| e.to_string())
+}
+
+/// Why the owner's yes to reading Outlook's Favorites wasn't had, in the words the window knows
+/// each kind of no by: an administrator has to approve it first, the organisation has shut the
+/// door, this kind of account has no such thing. Anything else is said as it is.
+fn favorites_refusal(refusal: mailcraft_net::oauth::FavoritesRefusal) -> String {
+    use mailcraft_net::oauth::FavoritesRefusal;
+    use mailcraft_ui_egui::favorites_sync::{NEEDS_APPROVAL, REFUSED_BY_ORGANISATION, REFUSED_FOR_ACCOUNT};
+    match refusal {
+        FavoritesRefusal::Approval => NEEDS_APPROVAL.to_string(),
+        FavoritesRefusal::Organisation => REFUSED_BY_ORGANISATION.to_string(),
+        FavoritesRefusal::Account => REFUSED_FOR_ACCOUNT.to_string(),
+        FavoritesRefusal::Other(e) => e.to_string(),
+    }
+}
+
+/// Read an account's Favorites of Outlook through Exchange Web Services, for an owner who
+/// chose that way: a token for it from the refresh token when the window handed none (nobody
+/// is asked anything for it), and then the list. It only reads, and nothing else waits on it:
+/// every trouble is a word in the answer.
+fn ews(request: EwsRequest) -> EwsResult {
+    ews_with(request, &mailcraft_net::oauth::refresh_ews)
+}
+
+/// How a read through Exchange Web Services gets its token when the window handed it none.
+type RenewEws<'a> = &'a dyn Fn(&mailcraft_model::OAuth, &str) -> Result<Tokens, mailcraft_net::NetError>;
+
+/// [`ews`], with the token coming from `renew` when the request brings none.
+fn ews_with(request: EwsRequest, renew: RenewEws<'_>) -> EwsResult {
+    use mailcraft_model::remote::{FavoritesDownload, FavoritesOutcome};
+    use mailcraft_net::NetError;
+    let mut out = EwsResult { account: request.account.id, ..Default::default() };
+    let outcome = |outcome: FavoritesOutcome| Some(FavoritesDownload { outcome, ..Default::default() }.for_account(&request.account));
+    let mut access = request.access.clone();
+    if access.is_empty() {
+        match renew(&request.oauth, &request.refresh) {
+            Ok(tokens) => {
+                access = tokens.access.clone();
+                out.tokens = Some(tokens);
+            }
+            // The sign-in is good and doesn't cover this: the owner is asked, if they chose to be.
+            Err(e) if e.is_consent_needed() => {
+                log::info!("favorites (EWS): the sign-in doesn't cover Exchange Web Services");
+                out.consent_needed = true;
+                return out;
+            }
+            // A sign-in that has run out is the mail's to notice and ask about, once: nothing
+            // is said of the Favorites for it, and nothing is asked again before its time.
+            Err(e) if e.is_refused_sign_in() => return out,
+            Err(e) => {
+                log::warn!("favorites (EWS): no token for Exchange Web Services: {e}");
+                out.favorites = outcome(FavoritesOutcome::Failed);
+                out.favorites_error = favorites_words(&e).to_string();
+                return out;
+            }
+        }
+    }
+    match mailcraft_net::ews::favorites(&access) {
+        Ok(download) => out.favorites = Some(download.for_account(&request.account)),
+        // The organisation doesn't allow the service: its own no, said by the server's header.
+        Err(NetError::Blocked(why)) => {
+            log::info!("favorites (EWS): {why}");
+            out.blocked = true;
+        }
+        Err(NetError::Forbidden(_)) => {
+            log::info!("favorites (EWS): the server says this account may not read them (status 403)");
+            out.favorites = outcome(FavoritesOutcome::NotPermitted);
+        }
+        // The token the window had kept is no longer taken: the next look gets another. (One
+        // that was only just obtained and isn't taken either is a read that failed.)
+        Err(e) if e.is_refused_sign_in() && out.tokens.is_none() => out.token_refused = true,
+        // (The error says what was being done and the status: no name, no id.)
+        Err(e) => {
+            log::warn!("favorites (EWS): they couldn't be read: {e}");
+            out.favorites = outcome(FavoritesOutcome::Failed);
+            out.favorites_error = favorites_words(&e).to_string();
+        }
+    }
+    out
 }
 
 /// How far back and ahead of today the calendar is brought down (seconds).
@@ -617,6 +695,7 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
     let pictures_kept = kept_pictures.clone();
     let busy_ctx = ctx.clone();
     let check_ctx = ctx.clone();
+    let ews_ctx = ctx.clone();
     let (sync_ctx, sign_in_ctx, graph_ctx, mx_ctx, test_ctx) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone(), ctx);
     let sync_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel = sync_cancel.clone();
@@ -670,6 +749,10 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
         free_busy: Some(Box::new(move |request| background(&busy_ctx, "free and busy times", move || free_busy(request)))),
         // A check of the calendar connection on the account's real server, when the owner asks.
         check_calendar: Some(Box::new(move |request| background(&check_ctx, "calendar check", move || check_calendar(request)))),
+        // Outlook's Favorites through Exchange Web Services, for an account whose owner chose that.
+        ews: Some(Box::new(move |request| background(&ews_ctx, "exchange web services", move || ews(request)))),
+        // The address an administrator approves this application at: made here, opened by nobody.
+        admin_consent_link: Some(Box::new(|oauth, tenant, source| mailcraft_net::oauth::admin_consent_url(oauth, tenant, source).ok())),
         secrets: secrets::store(),
         microsoft_client_id: microsoft_client_id(),
         ..Default::default()

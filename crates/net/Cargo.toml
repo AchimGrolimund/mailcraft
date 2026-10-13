@@ -27,14 +27,14 @@ flate2 = { workspace = true }
 serde_json = { workspace = true }
 base64 = { workspace = true }
 ring = { workspace = true }
-# The Favorites of Outlook come inside an XML document (`graph::favorites`): read by a reader
-# that takes no DTD and expands no entity.
+# The Favorites of Outlook come inside an XML document (`graph::favorites`), and Exchange Web
+# Services answers in XML (`ews`): read by a reader that takes no DTD and expands no entity.
 quick-xml = { workspace = true }
 
 [features]
-# A stand-in for Microsoft Graph's calendar that holds a client to the documented contract
-# (`graph::standin`), for the tests of the crates that sit on this one. Never in a build that
-# isn't a test's.
+# Stand-ins for Microsoft Graph and for Exchange Web Services that hold a client to the
+# documented contract (`graph::standin`, `ews::standin`), for the tests of the crates that sit
+# on this one. Never in a build that isn't a test's.
 stand-in = []
 
 [dev-dependencies]

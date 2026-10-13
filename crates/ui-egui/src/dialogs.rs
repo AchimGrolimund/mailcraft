@@ -61,6 +61,9 @@ pub enum Dialog {
     Form(Form),
     /// Propose New Time, Forward, or the list of what was proposed ([`crate::meeting_dialogs`]).
     Meeting(crate::meeting_dialogs::MeetingDialog),
+    /// How the Favorites of Outlook are read for an account of an organisation: Microsoft Graph,
+    /// Exchange Web Services, or not now ([`crate::favorites_sync::choice`]).
+    Favorites(crate::favorites_sync::choice::ChoiceDialog),
 }
 
 /// What a [`Dialog::Confirm`] asks.
@@ -112,6 +115,7 @@ impl Dialog {
             Dialog::About => "about",
             Dialog::Form(f) => f.name(),
             Dialog::Meeting(d) => d.name(),
+            Dialog::Favorites(d) => d.name(),
         }
     }
 
@@ -139,6 +143,7 @@ impl Dialog {
             "password" => Dialog::Password { account: id("account")?, password: String::new() },
             "discardDraft" => Dialog::DiscardDraft { then: params.get("then").and_then(Value::as_str).unwrap_or("").to_string() },
             "about" => Dialog::About,
+            "favoritesSource" => Dialog::Favorites(crate::favorites_sync::choice::ChoiceDialog::open(app, params)?),
             "syncProblems" => {
                 let lines = app.sync_problem_lines();
                 if lines.is_empty() {
@@ -967,6 +972,12 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
         }
         // (Enter is nobody's in these: what they send, they send from a button.)
         Dialog::Meeting(dialog) => {
+            let mut done = false;
+            let open = window(ctx, dialog.title(), dialog.width(), |ui| done = dialog.show(app, ui));
+            close |= !open || done;
+        }
+        // (Nor in this one: what it starts, it starts from its button.)
+        Dialog::Favorites(dialog) => {
             let mut done = false;
             let open = window(ctx, dialog.title(), dialog.width(), |ui| done = dialog.show(app, ui));
             close |= !open || done;

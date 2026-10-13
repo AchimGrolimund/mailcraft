@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 
 use mailcraft_model::sync::{Deleted, FlagsPushed, FolderDelta, FolderState, Moved, RemoteFlags, RemoteOp, SyncRequest, SyncResult, summary_line};
 use mailcraft_model::{
-    Account, AccountKind, FlagStatus, Folder, FolderKind, Id, Mailbox, Message, OAuth, OAuthProvider, Pending, Security, Server, Signature,
-    clean_name,
+    Account, AccountKind, Directory, FavoritesSource, FlagStatus, Folder, FolderKind, Id, Mailbox, Message, OAuth, OAuthProvider, Pending, Security,
+    Server, Signature, clean_name,
 };
 use serde_json::{Value, json};
 
@@ -22,6 +22,8 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("account.edit", "Account Settings", "File › Info", edit).params(r#"{"id": number, …the fields of account.add}"#),
         CommandSpec::new("account.remove", "Remove Account", "File › Info", remove).params(r#"{"id": number}"#),
         CommandSpec::new("account.list", "List Accounts", "File › Info", list).pure(),
+        CommandSpec::new("account.favoritesSource", "Where Outlook's Favorites Come From", "File › Options", favorites_source_command)
+            .params(r#"{"account"?: number (default: the first account that signs in with Microsoft), "source"?: "graph" (Microsoft Graph: lasting; in an organisation an administrator may have to approve it once) | "ews" (Exchange Web Services: needs no administrator where the organisation still allows it; Microsoft switches it off on 1 April 2027, and it is refused from that day on by the session's clock, and for a personal Microsoft account) | "none" (not now: the Favorites marked here are the account's, and what was kept of the server's list goes), "directory"?: "organisation"|"personal" (which kind of Microsoft account it is, when the caller knows from the sign-in)} — how the folders the owner keeps under Favorites in Outlook are read for that account; only ever read, whichever it is. It sets the choice and nothing else: a host with sockets does the reading (`ui.favoritesSource` in the app). Without "source" nothing changes. Answers {"account", "source": "graph"|"ews"|"none"|null (null: never chosen, which is as it was before there was a choice: Microsoft Graph once the owner has agreed to it), "directory": "organisation"|"personal"|null, "offered": [string] (what may be chosen now), "ewsEnds": "2027-04-01", "ewsEnded": bool, "from": "server"|"mailbox"}"#),
         CommandSpec::new("account.preset", "Suggest Account Settings", "File › Info", preset)
             .pure()
             .params(r#"{"email": string, "provider"?: "microsoft", "service"?: "microsoft365"|"outlook.com"|"google"|"yahoo"|"icloud"|"fastmail"|"aol"|"zoho", "mx"?: [string] (the domain's mail exchangers, when the host looked them up)} — answers the servers and sign-in an address usually takes; changes nothing"#),
@@ -37,7 +39,7 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-const ACCOUNT: &str = r#"{"email": string, "displayName"?: string, "name"?: string, "username"?: string, "incoming"?: {"host": string, "port"?: number, "security"?: "tls"|"starttls"|"none"} | null, "outgoing"?: same | null, "auth"?: "password"|"oauth2" (oauth2: sign in on the provider's page), "provider"?: "microsoft", "clientId"?: string, "tenant"?: string}"#;
+const ACCOUNT: &str = r#"{"email": string, "displayName"?: string, "name"?: string, "username"?: string, "incoming"?: {"host": string, "port"?: number, "security"?: "tls"|"starttls"|"none"} | null, "outgoing"?: same | null, "auth"?: "password"|"oauth2" (oauth2: sign in on the provider's page), "provider"?: "microsoft", "clientId"?: string, "tenant"?: string, "directory"?: "organisation"|"personal" (which kind of Microsoft account signs in, when the sign-in said)}"#;
 
 fn has_server(s: &Session) -> Option<&'static str> {
     if s.mailbox.accounts.iter().any(|a| a.kind == AccountKind::Imap) {
@@ -97,6 +99,7 @@ fn sign_in(a: &mut Account, v: &Value) -> Result<(), CmdError> {
         None => None,
     };
     let (client_id, tenant) = (word("clientId", 200)?, word("tenant", 64)?);
+    let directory = directory_of(v)?;
     if let Some(o) = a.oauth.as_mut() {
         if let Some(provider) = provider {
             o.provider = provider;
@@ -107,8 +110,99 @@ fn sign_in(a: &mut Account, v: &Value) -> Result<(), CmdError> {
         if let Some(tenant) = tenant {
             o.tenant = tenant;
         }
+        if let Some(directory) = directory {
+            o.directory = directory;
+        }
     }
     Ok(())
+}
+
+/// Which kind of Microsoft account a command says it is (`directory`), when it says.
+fn directory_of(v: &Value) -> Result<Option<Directory>, CmdError> {
+    match v.get("directory") {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => Ok(Some(p::str(v, "directory").and_then(Directory::parse).ok_or_else(|| bad("`directory` is organisation or personal"))?)),
+    }
+}
+
+/// Whether Exchange Web Services is no longer there by the session's clock: Microsoft switches
+/// it off for everybody on 1 April 2027 ([`FavoritesSource::EWS_ENDS`]). From that day on it is
+/// not offered, and an account set to it reads nothing through it.
+pub fn ews_ended(s: &Session) -> bool {
+    let (year, month, day) = FavoritesSource::EWS_ENDS;
+    mailcraft_time::Date::new(year, month, day).is_some_and(|ends| s.today() >= ends)
+}
+
+/// Whether `account` signs in with Microsoft.
+fn signs_in_with_microsoft(account: &Account) -> bool {
+    account.oauth.as_ref().is_some_and(|oauth| oauth.provider == OAuthProvider::Microsoft)
+}
+
+/// How the Favorites of Outlook may be read for an account of this kind today, by what a
+/// command calls each way: Exchange Web Services only for an account that is not known to be a
+/// personal one, and only while it exists.
+pub fn favorites_sources_offered(s: &Session, directory: Directory) -> Vec<&'static str> {
+    let mut offered = vec!["graph"];
+    if directory != Directory::Personal && !ews_ended(s) {
+        offered.push("ews");
+    }
+    offered.push("none");
+    offered
+}
+
+/// `account.favoritesSource`: the owner's choice of how an account's Favorites in Outlook are
+/// read, and nothing else: a setting of the account, undone and redone like its others.
+fn favorites_source_command(s: &mut Session, v: &Value) -> CmdResult {
+    let named = match v.get("account") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(p::req_id(v, "account")?),
+    };
+    let account = match named {
+        Some(id) => s.mailbox.account(id).ok_or_else(|| fail(format!("no account with id {id}")))?,
+        None => s.mailbox.accounts.iter().find(|a| signs_in_with_microsoft(a)).ok_or_else(|| fail("No account signs in with Microsoft"))?,
+    };
+    if !signs_in_with_microsoft(account) {
+        return Err(fail("This account doesn't sign in with Microsoft"));
+    }
+    let id = account.id;
+    let source = match v.get("source") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(p::str(v, "source").and_then(FavoritesSource::parse).ok_or_else(|| bad("`source` is graph, ews or none"))?),
+    };
+    let said = directory_of(v)?;
+    let directory = said.or(account.oauth.as_ref().map(|oauth| oauth.directory)).unwrap_or_default();
+    if source == Some(FavoritesSource::Ews) {
+        if ews_ended(s) {
+            return Err(fail(
+                "Microsoft switched Exchange Web Services off on 1 April 2027. Outlook's Favorites can be read through Microsoft Graph.",
+            ));
+        }
+        if directory == Directory::Personal {
+            return Err(fail("Exchange Web Services is not there for a personal Microsoft account. Its Favorites are read through Microsoft Graph."));
+        }
+    }
+    if let Some(source) = source {
+        let account = s.mailbox.account_mut(id)?;
+        account.favorites_source = source;
+        // Which kind of account it is goes into the file with the choice, and not before.
+        if let Some(oauth) = account.oauth.as_mut().filter(|oauth| said.is_some_and(|said| said != oauth.directory)) {
+            oauth.directory = directory;
+        }
+        // "Not now": what was kept of the server's list goes, and the marks made here count.
+        if source == FavoritesSource::None {
+            s.mailbox.set_server_favorites(id, None);
+        }
+    }
+    let (year, month, day) = FavoritesSource::EWS_ENDS;
+    Ok(json!({
+        "account": id,
+        "source": s.mailbox.account(id).and_then(|a| a.favorites_source.code()),
+        "directory": directory.code(),
+        "offered": favorites_sources_offered(s, directory),
+        "ewsEnds": format!("{year:04}-{month:02}-{day:02}"),
+        "ewsEnded": ews_ended(s),
+        "from": if super::folder::favorites_from_server(s, id) { "server" } else { "mailbox" },
+    }))
 }
 
 /// The servers and sign-in an address usually takes. Nothing is looked up here: the answer comes
@@ -242,7 +336,7 @@ fn list(s: &mut Session, _: &Value) -> CmdResult {
         .accounts
         .iter()
         .map(|a| {
-            json!({"id": a.id, "name": a.name, "email": a.email, "displayName": a.display_name, "kind": a.kind, "username": a.username, "incoming": a.incoming, "outgoing": a.outgoing, "signature": a.signature, "auth": if a.oauth.is_some() { "oauth2" } else { "password" }, "oauth": a.oauth})
+            json!({"id": a.id, "name": a.name, "email": a.email, "displayName": a.display_name, "kind": a.kind, "username": a.username, "incoming": a.incoming, "outgoing": a.outgoing, "signature": a.signature, "auth": if a.oauth.is_some() { "oauth2" } else { "password" }, "oauth": a.oauth, "favoritesSource": a.favorites_source.code()})
         })
         .collect();
     Ok(json!({"accounts": accounts, "signatures": s.mailbox.signatures}))

@@ -85,6 +85,7 @@ fn account(imap: Option<&FakeImap>, smtp: Option<&FakeSmtp>) -> Account {
         username: "ada".into(),
         signature: String::new(),
         oauth: None,
+        ..Default::default()
     }
 }
 

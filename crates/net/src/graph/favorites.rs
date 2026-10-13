@@ -41,7 +41,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD};
 use mailcraft_model::FolderKind;
-use mailcraft_model::remote::{FavoritesDownload, FavoritesOutcome, MAX_FAVORITE_DEPTH, MAX_FAVORITES, RemoteFavorite};
+use mailcraft_model::remote::{FavoritesDownload, FavoritesOutcome, MAX_FAVORITE_DEPTH, MAX_FAVORITES};
 use mailcraft_proto::ProtoError;
 use serde_json::{Value, json};
 
@@ -402,27 +402,11 @@ fn favorites_at(base: &str, token: &str, pause: &dyn Fn(Duration)) -> Result<Fav
     }
     let kind_of = |id: &str| special.get(id).copied().unwrap_or(FolderKind::Custom);
     for (id, name, parent) in &kept {
-        let mut path = vec![(*name).to_string()];
-        let (mut first, mut next, mut whole) = (*id, *parent, false);
-        for _ in 0..MAX_FAVORITE_DEPTH {
-            if next.is_empty() || top == Some(next) {
-                whole = true;
-                break;
-            }
-            // (A ring of folders, or a folder whose parent can't be read, has no path.)
-            let Some((name, parent)) = known.get(next) else { break };
-            path.push(name.clone());
-            (first, next) = (next, parent.as_str());
+        // (A ring of folders, or a folder whose parent can't be read, has no path.)
+        match crate::favorite_paths::favorite_of(id, name, parent, &known, top, &kind_of) {
+            Some(favorite) => download.folders.push(favorite),
+            None => download.unresolved = download.unresolved.saturating_add(1),
         }
-        path.reverse();
-        let kind = kind_of(id);
-        if !whole && kind == FolderKind::Custom {
-            download.unresolved = download.unresolved.saturating_add(1);
-            continue;
-        }
-        let favorite =
-            if whole { RemoteFavorite { path, kind, root: kind_of(first) } } else { RemoteFavorite { path: Vec::new(), kind, root: kind } };
-        download.folders.push(favorite);
     }
     log::info!(
         "favorites: {entries} entries on the server, {} not folders, {} asked about, {} are folders of this mailbox, {} are not ({above} folders above them asked about)",

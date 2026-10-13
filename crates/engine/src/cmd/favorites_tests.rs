@@ -331,3 +331,128 @@ proptest! {
         prop_assert_eq!(marked(&t.s), marks);
     }
 }
+
+/// 31 March 2027 and 1 April 2027, noon UTC: the last day Exchange Web Services is there, and
+/// the first day it isn't.
+const LAST_DAY: i64 = 1_806_494_400;
+const FIRST_DAY_WITHOUT: i64 = LAST_DAY + 86_400;
+
+#[test]
+fn the_owner_chooses_how_outlooks_favorites_are_read_and_nothing_is_written_until_then() {
+    use mailcraft_model::{Directory, FavoritesSource};
+    let mut t = setup();
+    // Never chosen: nothing of it is in the mailbox file, and the answer says so.
+    let before = String::from_utf8(crate::io::write_mailbox(&t.s.mailbox).unwrap()).unwrap();
+    assert!(!before.contains("favoritesSource") && !before.contains("directory"), "{before}");
+    let state = run(&mut t.s, "account.favoritesSource", json!({}));
+    assert_eq!(
+        state,
+        json!({"account": t.account, "source": null, "directory": null, "offered": ["graph", "ews", "none"], "ewsEnds": "2027-04-01", "ewsEnded": false, "from": "mailbox"})
+    );
+    // Asking is no change: the file is the same, byte for byte, and nothing was noted to save.
+    assert_eq!(String::from_utf8(crate::io::write_mailbox(&t.s.mailbox).unwrap()).unwrap(), before);
+
+    // Each of the three, with what kind of account it is when the caller knows.
+    let rev = t.s.rev();
+    let chosen = run(&mut t.s, "account.favoritesSource", json!({"account": t.account, "source": "ews", "directory": "organisation"}));
+    assert_eq!((chosen["source"].clone(), chosen["directory"].clone()), (json!("ews"), json!("organisation")));
+    assert!(t.s.rev() > rev && t.s.dirty);
+    let account = t.s.mailbox.account(t.account).unwrap();
+    assert_eq!((account.favorites_source, account.oauth.as_ref().unwrap().directory), (FavoritesSource::Ews, Directory::Organisation));
+    let file = String::from_utf8(crate::io::write_mailbox(&t.s.mailbox).unwrap()).unwrap();
+    assert!(file.contains(r#""favoritesSource":"ews""#) || file.contains(r#""favoritesSource": "ews""#), "{file}");
+    // It survives the file.
+    let reopened = crate::io::read_mailbox(file.as_bytes()).unwrap();
+    assert_eq!(reopened.account(t.account).unwrap().favorites_source, FavoritesSource::Ews);
+    // It is a setting of the account like its others: undone and redone as one step.
+    run(&mut t.s, "edit.undo", json!({}));
+    assert_eq!(t.s.mailbox.account(t.account).unwrap().favorites_source, FavoritesSource::Unset);
+    run(&mut t.s, "edit.redo", json!({}));
+    assert_eq!(t.s.mailbox.account(t.account).unwrap().favorites_source, FavoritesSource::Ews);
+    assert_eq!(run(&mut t.s, "account.favoritesSource", json!({"source": "graph"}))["source"], "graph");
+    assert_eq!(run(&mut t.s, "account.list", json!({}))["accounts"][1]["favoritesSource"], "graph");
+
+    // "Not now": what was kept of the server's list goes, the marks made here count again, and
+    // a read that was under way brings nothing.
+    apply_favorites(&mut t.s, &read(t.account, vec![favorite(&["Receipts"], FolderKind::Custom, FolderKind::Custom)])).unwrap();
+    assert_eq!(favorites(&t.s), [t.receipts, t.local_inbox]);
+    let none = run(&mut t.s, "account.favoritesSource", json!({"account": t.account, "source": "none"}));
+    assert_eq!((none["source"].clone(), none["from"].clone()), (json!("none"), json!("mailbox")));
+    assert_eq!(favorites(&t.s), [t.local_inbox, t.inbox, t.apollo]);
+    let late = apply_favorites(&mut t.s, &read(t.account, vec![favorite(&["Receipts"], FolderKind::Custom, FolderKind::Custom)])).unwrap();
+    assert_eq!((late["from"].clone(), late["changed"].clone()), (json!("mailbox"), json!(false)));
+    assert!(!favorites_from_server(&t.s, t.account));
+    // And the folders can be marked here again.
+    run(&mut t.s, "folder.favorite", json!({"id": t.receipts, "value": true}));
+
+    // What it can't be, and whose it can't be.
+    for odd in [json!({"source": "imap"}), json!({"source": 7}), json!({"source": ""}), json!({"directory": "elsewhere"}), json!({"account": "x"})] {
+        assert!(matches!(t.s.run("account.favoritesSource", &odd), Err(CmdError::Params(_))), "{odd}");
+    }
+    let local = t.s.mailbox.accounts[0].id;
+    assert!(t.s.run("account.favoritesSource", &json!({"account": local, "source": "graph"})).is_err());
+    assert!(t.s.run("account.favoritesSource", &json!({"account": 9_999, "source": "graph"})).is_err());
+    // A personal Microsoft account has Microsoft Graph and nothing else.
+    let personal = t.s.run("account.favoritesSource", &json!({"account": t.account, "source": "ews", "directory": "personal"}));
+    assert!(personal.unwrap_err().to_string().contains("personal"));
+    assert_eq!(run(&mut t.s, "account.favoritesSource", json!({"directory": "personal"}))["offered"], json!(["graph", "none"]));
+    // (Saying what kind it is without choosing changes nothing.)
+    assert_eq!(t.s.mailbox.account(t.account).unwrap().oauth.as_ref().unwrap().directory, Directory::Organisation);
+}
+
+#[test]
+fn exchange_web_services_is_not_offered_from_the_day_microsoft_switches_it_off() {
+    use mailcraft_model::FavoritesSource;
+    let mailbox = setup().s.mailbox;
+    let account = mailbox.accounts[1].id;
+    // The day before: offered, and taken.
+    let mut s = Session::at(mailbox.clone(), LAST_DAY, 0);
+    let state = run(&mut s, "account.favoritesSource", json!({"source": "ews"}));
+    assert_eq!(
+        (state["ewsEnded"].clone(), state["offered"].clone(), state["source"].clone()),
+        (json!(false), json!(["graph", "ews", "none"]), json!("ews"))
+    );
+    assert!(!super::account::ews_ended(&s));
+    // That day, by the clock of the session: not offered, and refused with the reason.
+    let mut later = Session::at(s.mailbox.clone(), FIRST_DAY_WITHOUT, 0);
+    assert!(super::account::ews_ended(&later));
+    let state = run(&mut later, "account.favoritesSource", json!({}));
+    assert_eq!((state["ewsEnded"].clone(), state["offered"].clone()), (json!(true), json!(["graph", "none"])));
+    // (An account that was set to it stays set: it is told, and offered the other way.)
+    assert_eq!(state["source"], "ews");
+    let refused = later.run("account.favoritesSource", &json!({"source": "ews"})).unwrap_err().to_string();
+    assert!(refused.contains("1 April 2027") && refused.contains("Microsoft Graph"), "{refused}");
+    assert_eq!(run(&mut later, "account.favoritesSource", json!({"source": "graph"}))["source"], "graph");
+    // The day is the one where the session's clock is: still March for somebody west of UTC…
+    let west = Session::at(mailbox.clone(), FIRST_DAY_WITHOUT - 43_200 + 3_600, -600);
+    assert!(!super::account::ews_ended(&west));
+    // …and April already for somebody east of it.
+    let east = Session::at(mailbox, LAST_DAY + 3 * 3_600, 600);
+    assert!(super::account::ews_ended(&east));
+    assert_eq!(account, later.mailbox.accounts[1].id);
+    assert_eq!(FavoritesSource::EWS_ENDS, (2027, 4, 1));
+}
+
+#[test]
+fn a_mailbox_file_that_says_something_else_in_their_place_still_opens() {
+    use mailcraft_model::{Directory, FavoritesSource};
+    let t = setup();
+    let file = String::from_utf8(crate::io::write_mailbox(&t.s.mailbox).unwrap()).unwrap();
+    let mut json: Value = serde_json::from_str(&file).unwrap();
+    for (source, directory, expected) in [
+        (json!("ews"), json!("organisation"), (FavoritesSource::Ews, Directory::Organisation)),
+        (json!("graph"), json!("personal"), (FavoritesSource::Graph, Directory::Personal)),
+        (json!("none"), json!(null), (FavoritesSource::None, Directory::Unknown)),
+        // From a later version, or from anywhere: not said.
+        (json!("carrier pigeon"), json!(7), (FavoritesSource::Unset, Directory::Unknown)),
+        (json!({"via": "ews"}), json!(["organisation"]), (FavoritesSource::Unset, Directory::Unknown)),
+        (json!(null), json!(""), (FavoritesSource::Unset, Directory::Unknown)),
+    ] {
+        json["accounts"][1]["favoritesSource"] = source.clone();
+        json["accounts"][1]["oauth"]["directory"] = directory;
+        let mailbox = crate::io::read_mailbox(json.to_string().as_bytes()).unwrap_or_else(|e| panic!("{source}: {e}"));
+        let account = mailbox.account(t.account).unwrap();
+        assert_eq!((account.favorites_source, account.oauth.as_ref().unwrap().directory), expected, "{source}");
+        assert_eq!(mailbox.folders.len(), t.s.mailbox.folders.len());
+    }
+}

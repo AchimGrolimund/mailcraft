@@ -1,6 +1,6 @@
 # MailCraft architecture
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-13 · **Change:** minor (the Favorites of Outlook: `net`'s `graph::favorites`, `Mailbox::favorites_from_server`, `ui-egui`'s `favorites_sync`) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-13 · **Change:** minor (a second way of reading the Favorites of Outlook: `net`'s `ews`, `Account::favorites_source`, the choice in `ui-egui`'s `favorites_sync`) · **Target:** Microsoft Outlook (Microsoft 365)
 
 How MailCraft is built today. Rules for working in the code are in [`AGENTS.md`](../AGENTS.md). The
 shape — layers, "everything is a command", the swappable egui front end, the control channel, MCP,
@@ -22,7 +22,7 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
 | L2 | `ical` | iCalendar reader and writer: events, to-dos, recurrence rules, alarms, attendees |
 | L2 | `vcard` | vCard 2.1/3.0/4.0 reader, 3.0 writer |
 | L3 | `proto` | IMAP4rev1 and SMTP clients over any `Read + Write` stream (no sockets, so they test against scripted transcripts and build for wasm) |
-| L3 | `net` | TCP + TLS (rustls), sending through SMTP, two-way IMAP synchronisation, OAuth sign-in, MX lookup; empty on wasm |
+| L3 | `net` | TCP + TLS (rustls), sending through SMTP, two-way IMAP synchronisation, OAuth sign-in, MX lookup, Microsoft Graph (`graph`), and Outlook's Favorites through Exchange Web Services (`ews`, read-only); empty on wasm |
 | L4 | `engine` | `Session` (mailbox, selection, view, the message being written, undo), the **command registry** (`cmd/*.rs`), the message list (`list.rs`), the Outlook feature catalog (`catalog.rs`), the sample mailbox, file dispatch (`io.rs`) |
 | L5 | `mcp` | MCP server: tools over the command registry; headless or bridged to the running app |
 | L6 | `ui-egui` | The front end: title bar with search, ribbon, module bar, folder pane, message list, reading pane, composer, calendar, people, tasks, Backstage, dialogs, themes, control channel, headless `ui_shot` example |
@@ -92,6 +92,22 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
   had or the owner prefers them (`view.favorites`). The window asks with its other Graph jobs,
   at most every quarter of an hour (`crates/ui-egui/src/favorites_sync.rs`); the two permissions
   it takes are asked for by themselves, on the owner's say-so, never with a sign-in.
+- **Two ways of reading them, and the owner of an organisation's account chooses.** The same
+  download also comes from `crates/net/src/ews.rs`, which reads the navigation shortcuts that
+  classic Outlook keeps in the mailbox's Common Views folder through Exchange Web Services
+  (`FindFolder`, `FindItem` and `GetFolder`, nothing that writes; `ews/links.rs` says which
+  shortcuts count and in what order, `ews/xml.rs` reads the answers as hostile, and
+  `ews/standin.rs` is a stand-in that holds requests to the documented schema). Which way an
+  account takes is a setting of the account (`Account::favorites_source`:
+  `account.favoritesSource`; nothing is written of it until the owner chooses), and
+  `ui.favoritesSource` does what follows from a choice: Microsoft's page for Graph's two
+  permissions, or a read through Exchange Web Services, which is a host job of its own
+  (`Services::ews`) with a token of its own, kept in memory. Whether an account is an
+  organisation's is read from the directory its sign-in names (the identity token's `tid`);
+  a personal Microsoft account has Graph only. Exchange Web Services ends on 1 April 2027
+  (`FavoritesSource::EWS_ENDS`): from that day by the session's clock the engine refuses it and
+  nothing is asked of it. Everything after the download is shared: `sync.applyFavorites`, the
+  pane, the timing, and falling back to the favourites kept here.
 - **A server's "yes" to a calendar change is checked.** A change made here is noted
   (`Mailbox::event_changes`), sent by the host, and then noted once more as something to be seen
   (`Mailbox::event_checks`): the downloads that follow have to show the event as it was sent.
@@ -137,3 +153,4 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
 | 2026-10-12 | minor | Calendar changes are checked against what comes down; the strict Graph stand-in |
 | 2026-10-12 | minor | Time zones (M3.5): `time::Zone`, the mailbox's zone stamp and how stored times are read |
 | 2026-10-13 | minor | The Favorites of Outlook (M4.2): `graph::favorites` in `net`, the server's list in the mailbox, `favorites_sync` in the front end |
+| 2026-10-13 | minor | The owner chooses how they are read (M4.3): `ews` in `net` (Exchange Web Services, until 1 April 2027), `Account::favorites_source`, the choice and its job in the front end |

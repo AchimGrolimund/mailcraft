@@ -16,7 +16,7 @@ const PATIENCE: Duration = Duration::from_secs(30);
 const TOKENS: &str = r#"{"token_type":"Bearer","scope":"mail.read mail.send","expires_in":3599,"ext_expires_in":3599,"access_token":"acc-ess.tok_en","refresh_token":"re-fresh.tok_en"}"#;
 
 fn oauth() -> OAuth {
-    OAuth { provider: OAuthProvider::Microsoft, client_id: "client-1".into(), tenant: String::new() }
+    OAuth { provider: OAuthProvider::Microsoft, client_id: "client-1".into(), tenant: String::new(), ..Default::default() }
 }
 
 fn response(status: &str, body: &str) -> Vec<u8> {
@@ -822,13 +822,31 @@ fn the_favorites_permissions_are_asked_for_by_themselves_and_never_with_a_sign_i
         "error=invalid_client&error_description=AADSTS900941%3A+An+administrator+has+to+agree.",
     ] {
         let (open, visits) = browser_answering(&[&format!("GET /?{refusal}&state={{state}}"), "GET /?code=x&state={state}"]);
-        assert_eq!(ask(&open), Err(FavoritesRefusal::Organisation), "{refusal}");
+        assert_eq!(ask(&open), Err(FavoritesRefusal::Approval), "{refusal}");
         assert_eq!(visited(&visits), 1, "{refusal}");
     }
+    // The organisation has shut the door for another reason, which no approval of these
+    // permissions would open: its rules for signing in, an application it switched off or
+    // keeps from this person, a service it doesn't have. That is another thing to be told.
+    for refusal in [
+        "error=access_denied&error_description=AADSTS53003%3A+Access+has+been+blocked+by+Conditional+Access+policies.",
+        "error=unauthorized_client&error_description=AADSTS7000112%3A+Application+is+disabled.",
+        "error=access_denied&error_description=AADSTS50105%3A+The+signed+in+user+is+not+assigned+to+a+role+for+the+application.",
+        "error=access_denied&error_description=AADSTS650052%3A+The+app+needs+access+to+a+service+that+your+organization+has+not+enabled.",
+        // (Shut, and an administrator would have to agree as well: shut is what it is.)
+        "error=access_denied&error_description=AADSTS90094%3A+Admin+consent.+AADSTS53003%3A+Blocked.",
+    ] {
+        let (open, visits) = browser_answering(&[&format!("GET /?{refusal}&state={{state}}"), "GET /?code=x&state={state}"]);
+        assert_eq!((ask(&open), visited(&visits)), (Err(FavoritesRefusal::Organisation), 1), "{refusal}");
+    }
     // This kind of account has no such permission.
-    let (open, visits) =
-        browser_answering(&["GET /?error=invalid_scope&error_description=AADSTS70011%3A+No+such+scope.&state={state}", "GET /?code=x&state={state}"]);
-    assert_eq!((ask(&open), visited(&visits)), (Err(FavoritesRefusal::Account), 1));
+    for refusal in [
+        "error=invalid_scope&error_description=AADSTS70011%3A+No+such+scope.",
+        "error=invalid_request&error_description=AADSTS500207%3A+The+account+type+can%27t+be+used+for+the+resource.",
+    ] {
+        let (open, visits) = browser_answering(&[&format!("GET /?{refusal}&state={{state}}"), "GET /?code=x&state={state}"]);
+        assert_eq!((ask(&open), visited(&visits)), (Err(FavoritesRefusal::Account), 1), "{refusal}");
+    }
     // The owner said no, or the page came to nothing: that, and nothing about anybody else.
     let (open, _) = browser_answering(&["GET /?error=access_denied&error_description=AADSTS65004%3A+User+declined+to+consent.&state={state}"]);
     assert!(matches!(ask(&open), Err(FavoritesRefusal::Other(NetError::Proto(ProtoError::Auth(_))))));
@@ -1566,4 +1584,165 @@ proptest! {
         let other = n * 10 + longer;
         prop_assert_eq!(about("invalid_grant", "", &format!("AADSTS{other}{tail}"), &[]), expected(other));
     }
+}
+
+const EWS_SCOPE: &str = "https://outlook.office365.com/EWS.AccessAsUser.All offline_access openid profile email";
+
+#[test]
+fn exchange_web_services_is_asked_for_alone_and_never_with_a_sign_in() {
+    // A sign-in for mail or for Graph asks nothing of Exchange Web Services, on its page or
+    // for its tokens: only an owner who chose that way of reading the Favorites is ever asked.
+    for resource in [Resource::Mail, Resource::Graph] {
+        let endpoints = Endpoints::for_resource(&oauth(), resource);
+        assert!(!format!("{} {} {}", endpoints.scope, endpoints.consent, endpoints.lesser).contains("EWS"), "{resource:?}");
+    }
+    // Asked for, it is that scope and who signs in, with nothing beside it on the page.
+    let ews = Endpoints::for_resource(&oauth(), Resource::Ews);
+    assert_eq!((ews.scope.as_str(), ews.consent.as_str(), ews.lesser.as_str()), (EWS_SCOPE, "", ""));
+    assert_eq!(ews.token, "https://login.microsoftonline.com/common/oauth2/v2.0/token");
+
+    let granted = r#"{"token_type":"Bearer","expires_in":3600,"access_token":"ews-access","refresh_token":"newer-refresh"}"#;
+    let server = FakeHttp::answering(ok(granted));
+    let endpoints = Endpoints { scope: EWS_SCOPE.into(), ..endpoints_of(&server) };
+    let ask = |open: &dyn Fn(&str)| sign_in_for_favorites_within(&endpoints, &oauth(), "ada@example.org", open, &AtomicBool::new(false), PATIENCE);
+    let (open, visits) = browser_answering(&["GET /?code=the-code&state={state}"]);
+    let tokens = ask(&open).unwrap();
+    assert_eq!((tokens.access.as_str(), tokens.refresh.as_str()), ("ews-access", "newer-refresh"));
+    // The page and the tokens are asked for the same, and for nothing of Graph or of mail.
+    assert_eq!((visit_asked(&visits, 0)["scope"].as_str(), form_of(&server, 0)["scope"].as_str()), (EWS_SCOPE, EWS_SCOPE));
+    assert!(!server.request(0).contains("graph.microsoft.com") && !server.request(0).contains("IMAP"));
+
+    // An administrator has to approve it (the default of a new organisation for this very
+    // permission): said as that, once. A personal account has no such thing.
+    let (open, visits) = browser_answering(&["GET /?error=access_denied&error_description=AADSTS90094%3A+Admin+consent+is+required.&state={state}"]);
+    assert_eq!((ask(&open), visited(&visits)), (Err(FavoritesRefusal::Approval), 1));
+    for refusal in [
+        "error=invalid_scope&error_description=AADSTS70011%3A+The+scope+is+not+valid.",
+        "error=invalid_request&error_description=AADSTS500207%3A+Not+for+this+account+type.",
+    ] {
+        let (open, _) = browser_answering(&[&format!("GET /?{refusal}&state={{state}}")]);
+        assert_eq!(ask(&open), Err(FavoritesRefusal::Account), "{refusal}");
+    }
+    let (open, _) = browser_answering(&["GET /?error=access_denied&error_description=AADSTS53003%3A+Blocked.&state={state}"]);
+    assert_eq!(ask(&open), Err(FavoritesRefusal::Organisation));
+    let cancelled = sign_in_for_ews(&oauth(), "", &|_| {}, &AtomicBool::new(true));
+    assert_eq!(cancelled, Err(FavoritesRefusal::Other(NetError::SignInCancelled)));
+    assert_eq!(server.asked(), 1);
+}
+
+#[test]
+fn a_refresh_for_exchange_web_services_tells_consent_that_is_needed_from_a_sign_in_that_is_over() {
+    let bad = |body: &str| response("400 Bad Request", body);
+    let granted = r#"{"token_type":"Bearer","expires_in":3600,"access_token":"ews-access","refresh_token":"newer-refresh"}"#;
+    let mail = r#"{"token_type":"Bearer","expires_in":3600,"access_token":"mail-access"}"#;
+    let ask = |server: &FakeHttp| {
+        let ews = Endpoints { scope: EWS_SCOPE.into(), ..endpoints_of(server) };
+        refresh_ews_at(&ews, &endpoints_of(server), &oauth(), "re-fresh")
+    };
+    // The sign-in covers it: the token is asked for that scope alone, in one question.
+    let server = FakeHttp::answering(ok(granted));
+    let tokens = ask(&server).unwrap();
+    assert_eq!((tokens.access.as_str(), tokens.refresh.as_str()), ("ews-access", "newer-refresh"));
+    assert_eq!((form_of(&server, 0)["scope"].as_str(), form_of(&server, 0)["grant_type"].as_str(), server.asked()), (EWS_SCOPE, "refresh_token", 1));
+
+    // Nobody agreed to it: the sign-in is good, and the owner is to be asked (when they choose to).
+    let unasked = r#"{"error":"invalid_grant","error_description":"AADSTS65001: The user or administrator has not consented to use the application.\r\nTrace ID: 12","error_codes":[65001],"suberror":"consent_required"}"#;
+    let server = FakeHttp::answering(bad(unasked));
+    assert!(consent_needed(ask(&server)).contains("AADSTS65001"));
+    assert_eq!(server.asked(), 1);
+    // A personal account, which has no such scope: the same, for the page to say what it is.
+    let personal = r#"{"error":"invalid_scope","error_description":"AADSTS70011: The provided value for the input parameter 'scope' is not valid.","error_codes":[70011]}"#;
+    assert!(consent_needed(ask(&FakeHttp::answering(bad(personal)))).contains("AADSTS70011"));
+
+    // "No longer good", and no more: mail is asked with the same refresh token. It still works:
+    // the sign-in is good, and Exchange Web Services is what it doesn't cover.
+    let bare = r#"{"error":"invalid_grant"}"#;
+    let server = FakeHttp::start(move |n, _| if n == 0 { bad(bare) } else { ok(mail) });
+    assert_eq!(consent_needed(ask(&server)), "the sign-in doesn't cover Exchange Web Services");
+    assert_eq!((server.asked(), form_of(&server, 1)["scope"].as_str()), (2, "mail.read mail.send offline_access"));
+    // It doesn't: the sign-in is over.
+    let server = FakeHttp::start(move |_, _| bad(bare));
+    let over = ask(&server).unwrap_err();
+    assert!(over.is_refused_sign_in() && !over.is_consent_needed(), "{over:?}");
+    // The provider can't say just now: nothing is concluded, and nothing more is asked.
+    let server = FakeHttp::answering(response("503 Service Unavailable", r#"{"error":"temporarily_unavailable"}"#));
+    let later = ask(&server).unwrap_err();
+    assert!(!later.is_refused_sign_in() && !later.is_consent_needed(), "{later:?}");
+    assert_eq!(server.asked(), 1);
+    // Whatever it comes to, the refresh token is in none of it.
+    for answer in [unasked, personal, bare, r#"{"error":"invalid_grant","error_description":"re-fresh is not good"}"#] {
+        let error = ask(&FakeHttp::start(move |_, _| bad(answer))).unwrap_err();
+        assert!(!format!("{error} {error:?}").contains("re-fresh"), "{error:?}");
+    }
+    assert_eq!(auth(refresh_ews(&oauth(), "")), "there is no earlier sign-in to renew");
+}
+
+#[test]
+fn the_link_for_an_administrator_names_the_application_and_the_permissions_and_nothing_else() {
+    use mailcraft_model::FavoritesSource;
+    let settings = OAuth { client_id: "0f6c8d2a-1b3e-4c5d-9e7f-a1b2c3d4e5f6".into(), ..oauth() };
+    let parts = |link: &str| -> (String, HashMap<String, String>) {
+        let (address, query) = link.split_once('?').unwrap();
+        (address.to_string(), fields(query))
+    };
+    // Microsoft Graph: the two permissions that reading the Favorites takes, and no other.
+    let link = admin_consent_url(&settings, "", FavoritesSource::Graph).unwrap();
+    let (address, asked) = parts(&link);
+    assert_eq!(address, "https://login.microsoftonline.com/organizations/v2.0/adminconsent");
+    assert_eq!(asked.len(), 3, "{asked:?}");
+    assert_eq!(asked["client_id"], "0f6c8d2a-1b3e-4c5d-9e7f-a1b2c3d4e5f6");
+    assert_eq!(asked["scope"], "https://graph.microsoft.com/MailboxConfigItem.Read https://graph.microsoft.com/Mail.ReadBasic");
+    assert_eq!(asked["redirect_uri"], "http://localhost");
+    // (A choice that was never made is read through Graph, so that is what it asks for too.)
+    assert_eq!(admin_consent_url(&settings, "", FavoritesSource::Unset).unwrap(), link);
+    // Exchange Web Services: that scope alone.
+    let (_, asked) = parts(&admin_consent_url(&settings, "", FavoritesSource::Ews).unwrap());
+    assert_eq!(asked["scope"], "https://outlook.office365.com/EWS.AccessAsUser.All");
+    // The organisation's own directory when it is known, by its id or by a domain of its own.
+    for tenant in ["3a1c5e7b-9d2f-4a6c-8e0b-1d3f5a7c9e2b", "lumen.example", " Lumen.Example "] {
+        let (address, _) = parts(&admin_consent_url(&settings, tenant, FavoritesSource::Graph).unwrap());
+        assert_eq!(address, format!("https://login.microsoftonline.com/{}/v2.0/adminconsent", tenant.trim()));
+    }
+    // No administrator is to be found in "any directory" or among personal accounts: the
+    // administrator's own sign-in says which organisation it is then.
+    for tenant in ["common", "consumers", "organizations", mailcraft_model::Directory::PERSONAL_TENANT, ""] {
+        let (address, _) = parts(&admin_consent_url(&settings, tenant, FavoritesSource::Graph).unwrap());
+        assert_eq!(address, "https://login.microsoftonline.com/organizations/v2.0/adminconsent", "{tenant}");
+    }
+    // What can't be part of an address isn't put into one.
+    for tenant in ["lumen.example/evil", "a b", "x?y=z", "../common", "lumen.example#frag"] {
+        assert!(matches!(admin_consent_url(&settings, tenant, FavoritesSource::Graph), Err(NetError::Config(_))), "{tenant}");
+    }
+    assert!(matches!(admin_consent_url(&OAuth { client_id: String::new(), ..oauth() }, "", FavoritesSource::Graph), Err(NetError::Config(_))));
+    // Nothing of a sign-in is in it: no state, no hint of who asked, no token.
+    for never in ["state", "login_hint", "code", "token", "@"] {
+        assert!(!link.contains(never), "{never}: {link}");
+    }
+}
+
+#[test]
+fn the_identity_token_says_which_directory_signed_in() {
+    use mailcraft_model::Directory;
+    let work = identity(&id_token(r#"{"name":"Ada Lovelace","email":"ada@lumen.example","tid":"3A1C5E7B-9d2f-4a6c-8e0b-1d3f5a7c9e2b"}"#));
+    assert_eq!((work.tenant.as_str(), Directory::of_tenant(&work.tenant)), ("3a1c5e7b-9d2f-4a6c-8e0b-1d3f5a7c9e2b", Directory::Organisation));
+    let personal = identity(&id_token(r#"{"email":"ada@outlook.example","tid":"9188040d-6c67-4c5b-b112-36a304b66dad"}"#));
+    assert_eq!(Directory::of_tenant(&personal.tenant), Directory::Personal);
+    // Anything that is not shaped like a directory's id says nothing.
+    for tid in [
+        r#""""#,
+        r#""common""#,
+        "12",
+        "null",
+        r#"["3a1c5e7b-9d2f-4a6c-8e0b-1d3f5a7c9e2b"]"#,
+        r#""3a1c5e7b-9d2f-4a6c-8e0b-1d3f5a7c9e2b/../x""#,
+        r#""3a1c5e7b 9d2f 4a6c 8e0b 1d3f5a7c9e2b""#,
+    ] {
+        let tokens = identity(&id_token(&format!(r#"{{"name":"Ada","tid":{tid}}}"#)));
+        assert_eq!((tokens.tenant.as_str(), Directory::of_tenant(&tokens.tenant)), ("", Directory::Unknown), "{tid}");
+    }
+    // The settings of an account say it too, when they name one.
+    assert_eq!(
+        ["", "common", "consumers", "organizations", "lumen.example"].map(Directory::of_tenant),
+        [Directory::Unknown, Directory::Unknown, Directory::Personal, Directory::Organisation, Directory::Organisation]
+    );
 }
