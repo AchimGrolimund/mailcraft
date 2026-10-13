@@ -131,10 +131,10 @@ impl Step {
                 "Says what you and your organisation's administrator can do, and lets an administrator approve MailCraft on Microsoft's page from here."
             }
             Step::Use(FavoritesSource::Ews) => {
-                "Reads Outlook's Favorites through Exchange Web Services, which needs no administrator where your organisation still allows it. Microsoft switches it off on 1 April 2027."
+                "Reads Outlook's Favorites through Exchange Web Services, an older way that Microsoft switches off on 1 April 2027. It works where your organisation lets you approve it yourself; elsewhere it needs an administrator too."
             }
             Step::Use(_) => {
-                "Reads Outlook's Favorites through Microsoft Graph. It lasts; in an organisation an administrator may have to approve it once."
+                "Reads Outlook's Favorites through Microsoft Graph. It lasts; in an organisation an administrator has to approve it once."
             }
         }
     }

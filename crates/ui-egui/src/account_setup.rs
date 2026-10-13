@@ -2588,9 +2588,9 @@ mod tests {
             "noor@example.org is set up",
             "They are only read, never changed",
             "Microsoft Graph",
-            "an administrator may have to approve it once",
+            "an administrator has to approve it once",
             "Exchange Web Services",
-            "Microsoft switches it off on 1 April 2027",
+            "Microsoft switches off on 1 April 2027",
             "Not now",
             "MailCraft keeps its own Favorites",
         ] {
