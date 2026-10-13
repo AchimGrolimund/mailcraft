@@ -338,6 +338,11 @@ pub struct Prefs {
     /// (`sync.applyMailboxSettings`); they are the ones in effect unless `own_work_hours`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mailbox_hours: Option<crate::cmd::calendar_settings::MailboxHours>,
+    /// The folder pane shows the Favorites that are marked here even for an account whose
+    /// server has a list of its own (the ones Outlook shows; `view.favorites`). Off unless the
+    /// owner turns it on: the server's list is shown where there is one.
+    #[serde(skip_serializing_if = "is_false")]
+    pub own_favorites: bool,
     /// The time zone the calendar is shown in, by name (`Europe/Berlin`; `view.timeZone`).
     /// Empty: this computer's own, followed when it changes.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -377,6 +382,7 @@ impl Default for Prefs {
             delete_answered_requests: false,
             own_work_hours: false,
             mailbox_hours: None,
+            own_favorites: false,
             time_zone: String::new(),
             second_zone: String::new(),
             zone_label: String::new(),
@@ -384,6 +390,10 @@ impl Default for Prefs {
             recent_zones: Vec::new(),
         }
     }
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// The clock commands read; tests and scripts pin it.

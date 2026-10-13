@@ -14,6 +14,8 @@ const MAX_DEPTH: usize = 32;
 const MAX_ID: Id = 1 << 53;
 /// Most changes waiting for the mail server that a file may hold ([`Mailbox::pending`]).
 const MAX_PENDING: usize = 100_000;
+/// Most folders one account's Favorites from its server hold ([`Mailbox::server_favorites`]).
+const MAX_SERVER_FAVORITES: usize = crate::remote::MAX_FAVORITES;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -262,6 +264,19 @@ impl Pending {
     }
 }
 
+/// The Favorites of an account as its server lists them (the folders Outlook shows under
+/// Favorites): the mailbox's own folders for them, in the server's order. While an account has
+/// such a list, the folder pane can show it in place of the favourites that are marked here
+/// ([`Folder::favorite`]), which stay as they are. Only ever read from the server, never sent.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ServerFavorites {
+    pub account: Id,
+    /// Folders of that account, in the server's order. May be empty: the server has a list, and
+    /// nothing in it is a folder of this mailbox.
+    pub folders: Vec<Id>,
+}
+
 /// A colour category (`Red category`), applied to messages, events, contacts and tasks by name.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -318,6 +333,11 @@ pub struct Mailbox {
     /// ([`crate::remote::EventCheck`]).
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::sync::lenient_list")]
     pub event_checks: Vec<crate::remote::EventCheck>,
+    /// The Favorites of the accounts whose server has a list of them ([`ServerFavorites`]), one
+    /// entry an account at most ([`Mailbox::server_favorites`]). Nothing is written of it until
+    /// a server's list has been taken in.
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::sync::lenient_list")]
+    pub favorites_from_server: Vec<ServerFavorites>,
     /// The time zone the wall-clock times of the events are written in ([`Event::start`]): the
     /// zone the calendar was shown in when they were written, by its name in the IANA database
     /// (`Europe/Berlin`) or as an offset (`UTC+05:30`). Empty in a mailbox written before zones
@@ -346,6 +366,7 @@ impl Default for Mailbox {
             pending: Vec::new(),
             event_changes: Vec::new(),
             event_checks: Vec::new(),
+            favorites_from_server: Vec::new(),
             zone: String::new(),
             next_id: 1,
         }
@@ -428,7 +449,63 @@ impl Mailbox {
         self.pending.retain(|p| p.account() != id);
         self.event_changes.retain(|change| change.account != id);
         self.event_checks.retain(|check| check.account != id);
+        self.favorites_from_server.retain(|list| list.account != id);
         Ok(())
+    }
+
+    // ---- favourites ----
+
+    /// The folders of `account` that its server lists as Favorites, in the server's order;
+    /// `None` when the mailbox has no list from that account's server. Only folders that the
+    /// account has are named, each once (a file may say anything).
+    pub fn server_favorites(&self, account: Id) -> Option<Vec<Id>> {
+        let list = self.favorites_from_server.iter().find(|list| list.account == account)?;
+        let mut folders: Vec<Id> = Vec::new();
+        for id in list.folders.iter().take(MAX_SERVER_FAVORITES) {
+            if !folders.contains(id) && self.folder(*id).is_some_and(|f| f.account == account) {
+                folders.push(*id);
+            }
+        }
+        Some(folders)
+    }
+
+    /// Keep the Favorites of `account` as its server lists them (`None`: its server has no list,
+    /// and what was kept of one goes). The favourites marked here are not touched. Whether
+    /// anything is different for it.
+    pub fn set_server_favorites(&mut self, account: Id, folders: Option<Vec<Id>>) -> bool {
+        let at = self.favorites_from_server.iter().position(|list| list.account == account);
+        match (folders, at) {
+            (None, None) => false,
+            (None, Some(_)) => {
+                self.favorites_from_server.retain(|list| list.account != account);
+                true
+            }
+            (Some(mut folders), at) => {
+                if self.account(account).is_none() {
+                    return false;
+                }
+                let mut seen: Vec<Id> = Vec::new();
+                folders.retain(|id| {
+                    let fits = seen.len() < MAX_SERVER_FAVORITES && !seen.contains(id) && self.folder(*id).is_some_and(|f| f.account == account);
+                    if fits {
+                        seen.push(*id);
+                    }
+                    fits
+                });
+                match at.and_then(|at| self.favorites_from_server.get_mut(at)) {
+                    Some(list) if list.folders == folders => false,
+                    Some(list) => {
+                        list.folders = folders;
+                        true
+                    }
+                    None => {
+                        // (One list an account: what a file had twice goes with the first.)
+                        self.favorites_from_server.push(ServerFavorites { account, folders });
+                        true
+                    }
+                }
+            }
+        }
     }
 
     // ---- folders ----
@@ -601,6 +678,9 @@ impl Mailbox {
                     self.folders.iter().filter(|f| gone.contains(&f.id) && !f.remote.is_empty()).map(|f| f.remote.clone()).collect();
                 self.folders.retain(|f| !gone.contains(&f.id));
                 self.messages.retain(|_, m| !gone.contains(&m.folder));
+                for list in &mut self.favorites_from_server {
+                    list.folders.retain(|folder| !gone.contains(folder));
+                }
                 self.pending.retain(|p| {
                     let into = matches!(p, Pending::Move { to, .. } if gone.contains(to));
                     let out_of = p.account() == f.account && remotes.iter().any(|remote| remote == p.source().0);
@@ -1168,6 +1248,18 @@ impl Mailbox {
             for e in self.events.values_mut().filter(|e| !known.contains(&e.calendar)) {
                 Arc::make_mut(e).calendar = default;
             }
+        }
+        // The Favorites a server listed: one list an account, of folders that account has.
+        let stated = std::mem::take(&mut self.favorites_from_server);
+        let before: usize = stated.iter().map(|list| list.folders.len().saturating_add(1)).sum();
+        for list in stated.into_iter().take(self.accounts.len().saturating_mul(2)) {
+            if self.favorites_from_server.iter().all(|kept| kept.account != list.account) {
+                self.set_server_favorites(list.account, Some(list.folders));
+            }
+        }
+        let after: usize = self.favorites_from_server.iter().map(|list| list.folders.len().saturating_add(1)).sum();
+        if after != before {
+            fixed.push("the Favorites kept from a mail server corrected".into());
         }
         self.next_id = self.next_id.max(1);
         fixed

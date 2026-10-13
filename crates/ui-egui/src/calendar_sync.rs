@@ -260,12 +260,16 @@ impl MailApp {
     fn calendar_job(&mut self, account: Id, push: bool, now: f64, round: Option<(Timestamp, Timestamp)>) -> bool {
         let Some(owner) = self.session.mailbox.account(account).cloned() else { return false };
         let Some(oauth) = owner.oauth.clone() else { return false };
-        let access = self.graph_tokens.get(&account).filter(|t| t.fresh(mailcraft_time::now())).map(|t| t.access.clone()).unwrap_or_default();
         let kept = self.tokens.get(&account).map(|t| t.refresh.clone()).filter(|r| !r.is_empty());
         let refresh = kept.or_else(|| self.remembered("refresh", &owner.email)).unwrap_or_default();
-        if access.is_empty() && refresh.is_empty() {
+        if refresh.is_empty() && self.graph_access(account, false).is_empty() {
             return false;
         }
+        // The Favorites as Outlook has them ride along when they are due ([`crate::favorites_sync`]).
+        let favorites = round.is_none() && self.favorites_ask(account, now, false);
+        // (A token that is known not to be good for them is not handed on when one that is can
+        // be had; without a way of getting another, the one there is has to do.)
+        let access = if refresh.is_empty() { self.graph_access(account, false) } else { self.graph_access_for(account, favorites) };
         let changes = if push { self.calendar_changes(account) } else { None };
         let carried = changes.is_some();
         if let Some(changes) = &changes {
@@ -285,6 +289,8 @@ impl MailApp {
             changes,
             asks: self.calendar_asks(account, false, Some(stretch)),
             settings,
+            favorites,
+            favorites_scopes: favorites,
         };
         let Some(graph) = &self.services.graph else { return false };
         if settings {
@@ -320,6 +326,8 @@ impl MailApp {
         if result.consent_needed && self.graph_consent_needed.insert(account) {
             self.status(tl!("Calendar and contacts need your permission: File › Info › Connect calendar and contacts"));
         }
+        // The Favorites as Outlook has them, when they came along ([`crate::favorites_sync`]).
+        self.take_in_favorites(account, &mut result);
         self.take_in_calendar_list(account, result.calendars.as_ref(), result.categories.as_ref(), result.extras_missing, &mut errors);
         if let Some(hours) = result.mailbox_hours.take() {
             self.take_in_mailbox_hours(account, &hours);
@@ -545,6 +553,8 @@ impl MailApp {
         }
         if let Some(tokens) = result.tokens.take() {
             self.keep_graph_tokens(account, tokens);
+            // (Asked for as tokens always were: not known to be good for Outlook's Favorites.)
+            self.favorites_token_is_plain(account);
         }
         if result.consent_needed && self.graph_consent_needed.insert(account) {
             self.status(tl!("Calendar and contacts need your permission: File › Info › Connect calendar and contacts"));

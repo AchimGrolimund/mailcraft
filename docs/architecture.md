@@ -1,6 +1,6 @@
 # MailCraft architecture
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-12 · **Change:** minor (time zones: `time::Zone`, how stored times are read; calendar changes are checked against the server; `html` makes the line a message list shows) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-13 · **Change:** minor (the Favorites of Outlook: `net`'s `graph::favorites`, `Mailbox::favorites_from_server`, `ui-egui`'s `favorites_sync`) · **Target:** Microsoft Outlook (Microsoft 365)
 
 How MailCraft is built today. Rules for working in the code are in [`AGENTS.md`](../AGENTS.md). The
 shape — layers, "everything is a command", the swappable egui front end, the control channel, MCP,
@@ -81,6 +81,17 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
   host first asks Graph to send the Outbox and, every quarter of an hour, for the calendar and
   contacts (`crates/net/src/graph.rs`); the engine merges them as server-kept, read-only items
   (`cmd/remote.rs`, `Origin`). Mail itself still goes over IMAP.
+- **The Favorites are Outlook's, read and never written.** For the same accounts the host also
+  reads which folders the owner keeps under Favorites in Outlook (`crates/net/src/graph/favorites.rs`:
+  one configuration item of the mailbox, of which one entry is read with an XML reader that
+  takes no DTD and expands no entity, then each folder looked up by its id, twenty to a batch).
+  What crosses to the engine is where each folder is (its path of names, and which special
+  folder it is), never an id: `sync.applyFavorites` finds the mailbox's own folders for them and
+  keeps the list in the server's order (`Mailbox::favorites_from_server`), beside the favourites
+  marked here, which are kept as they are and shown again whenever the server's list can't be
+  had or the owner prefers them (`view.favorites`). The window asks with its other Graph jobs,
+  at most every quarter of an hour (`crates/ui-egui/src/favorites_sync.rs`); the two permissions
+  it takes are asked for by themselves, on the owner's say-so, never with a sign-in.
 - **A server's "yes" to a calendar change is checked.** A change made here is noted
   (`Mailbox::event_changes`), sent by the host, and then noted once more as something to be seen
   (`Mailbox::event_checks`): the downloads that follow have to show the event as it was sent.
@@ -125,3 +136,4 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
 | 2026-10-12 | patch | `html` also makes the line a message list shows (`preview`, `text_preview`) |
 | 2026-10-12 | minor | Calendar changes are checked against what comes down; the strict Graph stand-in |
 | 2026-10-12 | minor | Time zones (M3.5): `time::Zone`, the mailbox's zone stamp and how stored times are read |
+| 2026-10-13 | minor | The Favorites of Outlook (M4.2): `graph::favorites` in `net`, the server's list in the mailbox, `favorites_sync` in the front end |

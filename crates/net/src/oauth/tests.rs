@@ -39,6 +39,7 @@ fn endpoints_of(server: &FakeHttp) -> Endpoints {
         token: server.url("/token"),
         scope: "mail.read mail.send offline_access".into(),
         consent: String::new(),
+        lesser: String::new(),
     }
 }
 
@@ -786,6 +787,138 @@ fn only_a_refusal_of_the_scopes_is_asked_about_twice() {
     assert_eq!(server.asked(), 0);
 }
 
+const FAVORITES_SCOPES: &str = "https://graph.microsoft.com/MailboxConfigItem.Read https://graph.microsoft.com/Mail.ReadBasic";
+
+#[test]
+fn the_favorites_permissions_are_asked_for_by_themselves_and_never_with_a_sign_in() {
+    // Reading Outlook's Favorites takes two permissions more, of which the reference says one
+    // takes an administrator in an organisation. An ordinary sign-in must not hang on that:
+    // neither its page nor its tokens ask for them, for mail or for the calendar and contacts.
+    for resource in [Resource::Mail, Resource::Graph] {
+        let endpoints = Endpoints::for_resource(&oauth(), resource);
+        let asked = format!("{} {} {}", endpoints.scope, endpoints.consent, endpoints.lesser);
+        assert!(!asked.contains("MailboxConfigItem") && !asked.contains("Mail.ReadBasic"), "{asked}");
+        assert_eq!(endpoints.lesser, "");
+    }
+    // The owner asks for them on a page of their own: what Graph was asked for before, and
+    // these two, in the one request (page and tokens alike), with nothing to fall back to.
+    let granted = r#"{"token_type":"Bearer","expires_in":3600,"access_token":"graph-access","refresh_token":"newer-refresh"}"#;
+    let server = FakeHttp::answering(ok(granted));
+    let wanted = format!("{GRAPH_SCOPES} {FAVORITES_SCOPES} offline_access openid profile email");
+    let endpoints = Endpoints { scope: wanted.clone(), ..endpoints_of(&server) };
+    let ask = |open: &dyn Fn(&str)| sign_in_for_favorites_within(&endpoints, &oauth(), "ada@example.org", open, &AtomicBool::new(false), PATIENCE);
+    let (open, visits) = browser_answering(&["GET /?code=the-code&state={state}"]);
+    let tokens = ask(&open).unwrap();
+    assert_eq!((tokens.access.as_str(), tokens.refresh.as_str()), ("graph-access", "newer-refresh"));
+    assert_eq!((visit_asked(&visits, 0)["scope"].as_str(), form_of(&server, 0)["scope"].as_str()), (wanted.as_str(), wanted.as_str()));
+    assert_eq!(visit_asked(&visits, 0)["login_hint"], "ada@example.org");
+    assert!(!server.request(0).contains("outlook.office.com"));
+
+    // The organisation keeps the permission to its administrators: said as what it is, once,
+    // and the owner is not sent to a second page.
+    for refusal in [
+        "error=access_denied&error_description=AADSTS90094%3A+The+grant+requires+admin+permission.",
+        "error=access_denied&error_subcode=cancel&error_description=AADSTS90095%3A+Approval+is+required.%0D%0ATrace+ID%3A+12",
+        "error=invalid_client&error_description=AADSTS900941%3A+An+administrator+has+to+agree.",
+    ] {
+        let (open, visits) = browser_answering(&[&format!("GET /?{refusal}&state={{state}}"), "GET /?code=x&state={state}"]);
+        assert_eq!(ask(&open), Err(FavoritesRefusal::Organisation), "{refusal}");
+        assert_eq!(visited(&visits), 1, "{refusal}");
+    }
+    // This kind of account has no such permission.
+    let (open, visits) =
+        browser_answering(&["GET /?error=invalid_scope&error_description=AADSTS70011%3A+No+such+scope.&state={state}", "GET /?code=x&state={state}"]);
+    assert_eq!((ask(&open), visited(&visits)), (Err(FavoritesRefusal::Account), 1));
+    // The owner said no, or the page came to nothing: that, and nothing about anybody else.
+    let (open, _) = browser_answering(&["GET /?error=access_denied&error_description=AADSTS65004%3A+User+declined+to+consent.&state={state}"]);
+    assert!(matches!(ask(&open), Err(FavoritesRefusal::Other(NetError::Proto(ProtoError::Auth(_))))));
+    let cancelled = sign_in_for_favorites(&oauth(), "", &|_| {}, &AtomicBool::new(true));
+    assert_eq!(cancelled, Err(FavoritesRefusal::Other(NetError::SignInCancelled)));
+    // Only the first of all those ever got a code to trade in.
+    assert_eq!(server.asked(), 1);
+}
+
+#[test]
+fn a_sign_in_that_does_not_cover_the_favorites_keeps_everything_it_had() {
+    let granted = r#"{"token_type":"Bearer","expires_in":3600,"access_token":"graph-access","refresh_token":"re-fresh-2"}"#;
+    let unasked = r#"{"error":"invalid_grant","error_description":"AADSTS65001: The user or administrator has not consented to use the application with ID 'client-1' named 'MailCraft'.","error_codes":[65001],"suberror":"consent_required"}"#;
+    let over = r#"{"error":"invalid_grant","error_description":"AADSTS70000: The user could not be authenticated as the grant is expired. The user must sign in again."}"#;
+    let most = |server: &FakeHttp| Endpoints { scope: format!("{GRAPH_SCOPES} {FAVORITES_SCOPES} offline_access"), ..endpoints_of(server) };
+    let all = |server: &FakeHttp| Endpoints { scope: format!("{GRAPH_SCOPES} offline_access"), ..endpoints_of(server) };
+    let plain = |server: &FakeHttp| Endpoints { scope: format!("{GRAPH_SCOPES_BEFORE} offline_access"), ..endpoints_of(server) };
+    let ask =
+        |server: &FakeHttp| refresh_graph_with_favorites_at(&most(server), &all(server), &plain(server), &endpoints_of(server), &oauth(), "re-fresh");
+    // The owner agreed to all of it: one question, and the tokens are good for the Favorites.
+    let server = FakeHttp::answering(ok(granted));
+    let got = ask(&server).unwrap();
+    assert_eq!((got.tokens.access.as_str(), got.extras_missing, got.covers_favorites, server.asked()), ("graph-access", false, true, 1));
+    assert!(form_of(&server, 0)["scope"].contains("MailboxConfigItem.Read") && form_of(&server, 0)["scope"].contains("Mail.ReadBasic"));
+
+    // The owner was never asked for the Favorites: the tokens come exactly as they came before
+    // (the mailbox's settings among them), and all that is missing is that.
+    for no in [unasked, over] {
+        let server = FakeHttp::start(move |n, _| if n == 0 { response("400 Bad Request", no) } else { ok(granted) });
+        let got = ask(&server).unwrap();
+        assert_eq!((got.tokens.access.as_str(), got.extras_missing, got.covers_favorites, server.asked()), ("graph-access", false, false, 2));
+        let second = form_of(&server, 1);
+        assert!(!second["scope"].contains("MailboxConfigItem") && !second["scope"].contains("Mail.ReadBasic"), "{second:?}");
+        assert!(second["scope"].contains("MailboxSettings.Read") && second["scope"].contains("Calendars.ReadWrite"));
+    }
+    // A sign-in from before the settings were asked for either: as it was, too.
+    let server = FakeHttp::start(move |n, _| if n < 2 { response("400 Bad Request", unasked) } else { ok(granted) });
+    let got = ask(&server).unwrap();
+    assert_eq!((got.extras_missing, got.covers_favorites, server.asked()), (true, false, 3));
+    // Nobody agreed to Graph at all, and a sign-in that is over: told apart as they always were.
+    let server = FakeHttp::answering(response("400 Bad Request", unasked));
+    assert!(ask(&server).unwrap_err().is_consent_needed());
+    let server = FakeHttp::answering(response("400 Bad Request", over));
+    let refused = ask(&server).unwrap_err();
+    assert!(refused.is_refused_sign_in() && !format!("{refused} {refused:?}").contains("re-fresh"));
+    // The provider can't say just now: nothing is concluded, and nothing more is asked.
+    let busy = r#"{"error":"temporarily_unavailable","error_description":"Try again."}"#;
+    let server = FakeHttp::answering(response("503 Service Unavailable", busy));
+    assert!(ask(&server).is_err());
+    assert_eq!(server.asked(), 1);
+    // Asked for without the Favorites, the tokens are not said to cover them.
+    let server = FakeHttp::answering(ok(granted));
+    let got = refresh_graph_at(&all(&server), &plain(&server), &endpoints_of(&server), &oauth(), "re-fresh").unwrap();
+    assert!(!got.covers_favorites && !form_of(&server, 0)["scope"].contains("MailboxConfigItem"));
+}
+
+#[test]
+fn a_page_that_will_not_have_everything_is_asked_for_what_was_asked_before() {
+    // Were more put on the page of a sign-in than was before (`Endpoints::lesser` says what
+    // was): a page that refuses it, for what it asks or because it is not the owner's to give,
+    // is asked once more for what it was always asked for, and only then for mail alone.
+    let server = FakeHttp::answering(ok(TOKENS));
+    let wide = |server: &FakeHttp| Endpoints { consent: "graph.send graph.more".into(), lesser: "graph.send".into(), ..endpoints_of(server) };
+    for refusal in [
+        "error=invalid_scope&error_description=AADSTS70011%3A+No+such+scope.",
+        "error=access_denied&error_description=AADSTS90094%3A+The+grant+requires+admin+permission.",
+        "error=access_denied&error_description=AADSTS65004%3A+User+declined+to+consent+to+access+the+app.",
+    ] {
+        let (open, visits) = browser_answering(&[&format!("GET /?{refusal}&state={{state}}"), "GET /?code=second-code&state={state}"]);
+        let tokens = sign_in_to(&wide(&server), "ada@example.org", &open).unwrap();
+        assert_eq!(tokens.access, "acc-ess.tok_en", "{refusal}");
+        assert_eq!(visited(&visits), 2, "{refusal}");
+        assert_eq!(visit_asked(&visits, 0)["scope"], "mail.read mail.send offline_access graph.send graph.more");
+        assert_eq!(visit_asked(&visits, 1)["scope"], "mail.read mail.send offline_access graph.send");
+    }
+    // Refused for its scopes again: for mail alone, as before. Three pages at most.
+    let again = "GET /?error=invalid_scope&state={state}";
+    let (open, visits) = browser_answering(&[again, again, "GET /?code=third-code&state={state}"]);
+    assert_eq!(sign_in_to(&wide(&server), "", &open).unwrap().access, "acc-ess.tok_en");
+    assert_eq!((visited(&visits), visit_asked(&visits, 2)["scope"].as_str()), (3, "mail.read mail.send offline_access"));
+    let (open, visits) = browser_answering(&[again, again, again, "GET /?code=fourth-code&state={state}"]);
+    assert!(sign_in_to(&wide(&server), "", &open).is_err());
+    assert_eq!(visited(&visits), 3);
+    // A sign-in that is called off or never finished is not started over.
+    let opened = Mutex::new(0);
+    let open = |_: &str| *opened.lock().unwrap() += 1;
+    let unfinished = sign_in_within(&wide(&server), &oauth(), "", &open, &AtomicBool::new(false), Duration::from_millis(200));
+    assert_eq!((unfinished, *opened.lock().unwrap()), (Err(NetError::SignInTimedOut), 1));
+}
+
 /// What a refresh for `resource` comes to when the token endpoint answers `answer`.
 fn refreshed_for(resource: Resource, answer: Vec<u8>) -> Result<Tokens, NetError> {
     let server = FakeHttp::answering(answer);
@@ -985,7 +1118,7 @@ fn a_server_that_is_not_there_is_a_connection_error() {
         authorize: format!("http://127.0.0.1:{port}/a"),
         token: format!("http://127.0.0.1:{port}/t"),
         scope: "mail".into(),
-        consent: String::new(),
+        ..Default::default()
     };
     assert!(matches!(refresh_at(&endpoints, &oauth(), "re-fresh"), Err(NetError::Connect { .. })));
     // For Graph's tokens as for mail's: neither a refusal nor a lack of consent.
@@ -1039,7 +1172,8 @@ fn settings_that_cannot_work_are_refused_before_anything_happens() {
         ("javascript:alert(1)", "https://login.example.org/token"),
         ("", ""),
     ] {
-        let endpoints = Endpoints { authorize: authorize.into(), token: token.into(), scope: "mail".into(), consent: "more".into() };
+        let endpoints =
+            Endpoints { authorize: authorize.into(), token: token.into(), scope: "mail".into(), consent: "more".into(), lesser: String::new() };
         let why = config(sign_in_at(&endpoints, &oauth(), "", &open, &cancel));
         assert!(why.starts_with("the server's address "), "{why}");
         if !Url::parse(token).is_ok_and(|url| url.secure) {
@@ -1249,14 +1383,14 @@ fn requests_are_judged_by_their_first_line() {
     // A code that couldn't be sent on is as good as none.
     let (status, outcome) = judged("GET /?code=a%0D%0Ab&state=the-state HTTP/1.1\r\n\r\n");
     let no_code = |outcome: &Option<Result<String, Refused>>| {
-        matches!(outcome, Some(Err(Refused { error: NetError::Proto(ProtoError::Protocol(_)), about: About::Other })))
+        matches!(outcome, Some(Err(Refused { error: NetError::Proto(ProtoError::Protocol(_)), about: About::Other, .. })))
     };
     assert!(status == "200 OK" && no_code(&outcome), "{outcome:?}");
     let long = format!("GET /?code={}&state=the-state HTTP/1.1\r\n\r\n", "c".repeat(MAX_TOKEN + 1));
     assert!(no_code(&judged(&long).1));
     // A refusal comes with what it is about.
     let refused = |query: &str| match judged(&format!("GET /?state=the-state&{query} HTTP/1.1\r\n\r\n")) {
-        ("200 OK", Some(Err(Refused { error: NetError::Proto(_), about }))) => about,
+        ("200 OK", Some(Err(Refused { error: NetError::Proto(_), about, .. }))) => about,
         other => panic!("expected a refusal, got {other:?}"),
     };
     assert_eq!(refused("error=invalid_scope"), About::Scope);
@@ -1389,7 +1523,7 @@ proptest! {
 
     #[test]
     fn any_hint_and_scope_make_an_address_that_reads_back(hint in "\\PC{0,40}", scope in "[ -~]{0,40}", state in "[A-Za-z0-9_-]{32}") {
-        let endpoints = Endpoints { authorize: "https://login.example.org/authorize".into(), token: String::new(), scope: scope.clone(), consent: String::new() };
+        let endpoints = Endpoints { authorize: "https://login.example.org/authorize".into(), scope: scope.clone(), ..Default::default() };
         let url = authorize_url(&endpoints, "", "client-1", "http://localhost:49152/", &state, "the-challenge", &hint);
         let (address, query) = url.split_once('?').unwrap();
         prop_assert_eq!(address, "https://login.example.org/authorize");

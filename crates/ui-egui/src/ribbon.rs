@@ -577,7 +577,8 @@ fn send_receive(app: &MailApp) -> Tab {
 }
 
 fn folder(app: &MailApp) -> Tab {
-    let favorite = app.session.mailbox.folder(app.session.view.folder).is_some_and(|f| f.favorite);
+    // (As the folder pane lists it: by Outlook's own list where an account has one.)
+    let favorite = mailcraft_engine::cmd::folder::favorites(&app.session).contains(&app.session.view.folder);
     Tab::of(vec![
         g("New", vec![Item::big("folderNew", "New\nFolder", "folder.new", no()).at(0, 1)]),
         g(

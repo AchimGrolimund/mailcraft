@@ -12,8 +12,8 @@ use mailcraft_time::{Date, DateTime, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Account, Address, Attendee, Category, Event, Id, Importance, Labeled, MAX_NAME, OnlineMeeting, OnlineProvider, PostalAddress, Recurrence,
-    Response, ResponseOptions, Rgb, ShowAs,
+    Account, Address, Attendee, Category, Event, FolderKind, Id, Importance, Labeled, MAX_NAME, OnlineMeeting, OnlineProvider, PostalAddress,
+    Recurrence, Response, ResponseOptions, Rgb, ShowAs,
 };
 
 /// Most events and most contacts one download is taken to hold; what is beyond is left out.
@@ -1092,6 +1092,110 @@ impl CategoriesDownload {
             }
         }
         self.categories = kept;
+    }
+}
+
+/// Most folders one account's Favorites are taken to hold, and the deepest a folder among them
+/// may lie (the names from the top of the mailbox down to it).
+pub const MAX_FAVORITES: usize = 200;
+pub const MAX_FAVORITE_DEPTH: usize = 32;
+
+/// How reading an account's Favorites from its server went ([`FavoritesDownload`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FavoritesOutcome {
+    /// The list was read: [`FavoritesDownload::folders`] is all of it, and may be empty.
+    Read,
+    /// The mailbox has no such list on its server. The mailbox's own Favorites are what there is.
+    Missing,
+    /// The sign-in doesn't cover reading it, or the server won't allow it.
+    NotPermitted,
+    /// It couldn't be read this time: nothing is concluded from that.
+    #[default]
+    Failed,
+}
+
+/// A folder that an account's server lists among the Favorites: where it is, so that the
+/// mailbox can find its own folder for it. Nothing of what the server calls the folder (its id)
+/// is kept.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RemoteFavorite {
+    /// The names of the folders from the top of the mailbox down to it, itself last.
+    pub path: Vec<String>,
+    /// Which of the special folders it is (the Inbox whatever it is called there);
+    /// [`FolderKind::Custom`] for any other.
+    pub kind: FolderKind,
+    /// Which of the special folders the first name of `path` is, for a folder that lies under
+    /// one (a folder in the Inbox, whatever the Inbox is called there); [`FolderKind::Custom`]
+    /// when it is none of them.
+    #[serde(skip_serializing_if = "is_custom")]
+    pub root: FolderKind,
+}
+
+fn is_custom(kind: &FolderKind) -> bool {
+    *kind == FolderKind::Custom
+}
+
+/// An account's Favorites as its server has them (the folders Outlook shows under Favorites), in
+/// the server's order, or why there are none to say.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FavoritesDownload {
+    pub account: Id,
+    /// That account's address, as in [`EventsDownload::email`].
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub email: String,
+    pub outcome: FavoritesOutcome,
+    /// The folders, in the order the server has them. Only with [`FavoritesOutcome::Read`].
+    pub folders: Vec<RemoteFavorite>,
+    /// Entries of the server's list that are not folders (people, categories, groups): left out.
+    pub skipped: u32,
+    /// Entries that name a folder the mailbox doesn't have today (it was deleted, or belongs to
+    /// another mailbox): left out.
+    pub unresolved: u32,
+}
+
+impl FavoritesDownload {
+    /// The download as one for `account`.
+    pub fn for_account(mut self, account: &Account) -> FavoritesDownload {
+        self.account = account.id;
+        self.email = account.email.trim().to_string();
+        self
+    }
+
+    /// Cut to size: names are one line, a folder without a name anywhere on its way is no
+    /// folder, none is there twice, the list is capped; and only a list that was read has folders.
+    pub fn tidy(&mut self) {
+        let listed = std::mem::take(&mut self.folders);
+        if self.outcome != FavoritesOutcome::Read {
+            return;
+        }
+        for mut folder in listed {
+            let deep = folder.path.len() > MAX_FAVORITE_DEPTH;
+            folder.path = folder.path.iter().map(|name| line(name, MAX_NAME)).collect();
+            // The special folders are found by what they are; any other by where it is.
+            let nowhere = folder.path.is_empty() || folder.path.iter().any(String::is_empty) || deep;
+            if nowhere && folder.kind == FolderKind::Custom {
+                continue;
+            }
+            if nowhere {
+                folder.path.clear();
+            }
+            if folder.kind != FolderKind::Custom && folder.path.len() <= 1 {
+                folder.root = folder.kind;
+            }
+            let same = |have: &RemoteFavorite| {
+                (have.kind != FolderKind::Custom && have.kind == folder.kind)
+                    || (have.kind == folder.kind
+                        && have.root == folder.root
+                        && have.path.len() == folder.path.len()
+                        && have.path.iter().zip(&folder.path).all(|(a, b)| a.to_lowercase() == b.to_lowercase()))
+            };
+            if self.folders.len() < MAX_FAVORITES && !self.folders.iter().any(same) {
+                self.folders.push(folder);
+            }
+        }
     }
 }
 

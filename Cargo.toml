@@ -48,6 +48,13 @@ ring = "0.17"
 # runs on it); the backend written in Rust.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
+# An XML reader, for the one document Microsoft Graph hands over as XML (the cached
+# configuration of Outlook on the web, of which the list of Favorites is read:
+# `mailcraft-net`'s `graph::favorites`). MIT, Rust throughout, and nothing but `memchr` under
+# it. It reads no DTD and expands no entity: a reference in the text is handed over as such.
+# Already in the tree (a build tool of the Linux windowing crates uses it); desktop and CLI only.
+quick-xml = { version = "0.41", default-features = false }
+
 # images (screenshots, inline pictures). WebP for the pictures of mail that are kept as nothing
 # else on the web; its decoder (image-webp) is Rust all the way down, like the others here.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

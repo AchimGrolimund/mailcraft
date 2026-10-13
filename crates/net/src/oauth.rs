@@ -15,6 +15,13 @@
 //! provider not take the two together, the sign-in is tried once more for mail alone: mail
 //! never waits on Graph. Graph can be asked for on its own later ([`sign_in_for`]).
 //!
+//! Reading the Favorites of Outlook takes two permissions more (`MailboxConfigItem.Read`,
+//! `Mail.ReadBasic`). They are never on the page of a sign-in: the owner is asked for them by
+//! themselves when he wants those ([`sign_in_for_favorites`]), a no there costs nothing that
+//! was had and says whose no it is ([`FavoritesRefusal`]), and tokens that are good for them
+//! come from [`refresh_graph_with_favorites`], which falls back to what a sign-in covered
+//! before.
+//!
 //! Nothing here keeps anything: the tokens are the caller's, to hold in memory. The password is
 //! typed into the provider's page and never comes this way; the code, the PKCE verifier and the
 //! tokens never appear in an error or a log line.
@@ -82,6 +89,22 @@ const MICROSOFT_GRAPH: &str =
 /// which is where its list of categories and their colours is. Nothing that works without it
 /// depends on it: a sign-in that doesn't cover it keeps everything it had ([`refresh_graph`]).
 const MICROSOFT_GRAPH_EXTRAS: &str = "https://graph.microsoft.com/MailboxSettings.Read";
+/// And what showing the Favorites of Outlook takes on top of that, when the owner wants them:
+/// reading the mailbox's configuration items (of which one holds the list) and reading folders
+/// by name. Only ever read. Nothing else depends on them: a sign-in that doesn't cover them
+/// keeps everything it had ([`refresh_graph_with_favorites`]), and the owner is asked for them
+/// on the provider's page only when he says so ([`sign_in_for_favorites`]).
+const MICROSOFT_GRAPH_FAVORITES: &str = "https://graph.microsoft.com/MailboxConfigItem.Read https://graph.microsoft.com/Mail.ReadBasic";
+/// Whether the page of an ordinary sign-in also puts the Favorites' permissions to the owner,
+/// so that one page settles everything. **Off**: Microsoft's permissions reference lists
+/// `MailboxConfigItem.Read` as one that takes an administrator's consent in an organisation
+/// (its Graph Explorer says the opposite, and the two were not told apart on the real service).
+/// Were that so, a page that asks for it would tell everybody who is not an administrator to
+/// go and find one before they could sign in to their mail at all. So the page of a sign-in
+/// asks for what it always asked for, and these two are asked for by themselves, when the
+/// owner chooses to. With this on, a page that is refused is asked once more without them
+/// ([`Endpoints::lesser`]); what cannot be undone is a page the owner never comes back from.
+const FAVORITES_AT_SIGN_IN: bool = false;
 /// What goes with either: a refresh token, and who it is that signed in.
 const SIGN_IN_SCOPE: &str = "offline_access openid profile email";
 
@@ -92,6 +115,10 @@ const SCOPE_CODES: [u64; 8] = [28_000, 28_002, 28_003, 70_011, 650_053, 650_057,
 /// And for a no that is the owner's to turn into a yes on the sign-in page: nobody has agreed to
 /// what was asked for, the owner said no, or an administrator has to agree.
 const CONSENT_CODES: [u64; 3] = [65_001, 65_004, 90_094];
+/// And for a no that is not the owner's to turn into a yes: the organisation keeps the
+/// permission for its administrators to give (consent required of one, with or without a way
+/// of asking for it, or because of how the application is rated).
+const POLICY_CODES: [u64; 3] = [90_094, 90_095, 900_941];
 /// Most numbers looked at in one answer.
 const MAX_CODES: usize = 16;
 
@@ -120,6 +147,11 @@ pub struct Endpoints {
     /// shown these: the tokens of the sign-in itself are for `scope`. When the provider refuses
     /// the two together, the sign-in is tried once more without them.
     pub consent: String,
+    /// What the owner is asked to agree to instead when the page won't have `consent` (the
+    /// provider has no such permission for this kind of account, or the owner may not give it):
+    /// less than `consent`, and known to be had. Empty for nothing in between: the sign-in is
+    /// then tried without any of it, as above.
+    pub lesser: String,
 }
 
 impl Endpoints {
@@ -149,11 +181,16 @@ impl Endpoints {
                     Resource::Mail => (MICROSOFT_SCOPE.to_string(), format!("{MICROSOFT_GRAPH} {MICROSOFT_GRAPH_EXTRAS}")),
                     Resource::Graph => (format!("{MICROSOFT_GRAPH} {SIGN_IN_SCOPE}"), MICROSOFT_GRAPH_EXTRAS.to_string()),
                 };
+                // (With the Favorites' permissions on the same page, were that wanted: what was
+                // asked for before them is then what a refused page falls back to.)
+                let (consent, lesser) =
+                    if FAVORITES_AT_SIGN_IN { (format!("{consent} {MICROSOFT_GRAPH_FAVORITES}"), consent) } else { (consent, String::new()) };
                 Endpoints {
                     authorize: format!("{MICROSOFT_LOGIN}/{tenant}/oauth2/v2.0/authorize"),
                     token: format!("{MICROSOFT_LOGIN}/{tenant}/oauth2/v2.0/token"),
                     scope,
                     consent,
+                    lesser,
                 }
             }
         }
@@ -206,8 +243,18 @@ fn sign_in_within(
     cancel: &AtomicBool,
     patience: Duration,
 ) -> Result<Tokens, NetError> {
-    let consent = endpoints.consent.trim();
-    match attempt(endpoints, consent, oauth, login_hint, open, cancel, patience) {
+    let (mut consent, lesser) = (endpoints.consent.trim(), endpoints.lesser.trim());
+    let mut outcome = attempt(endpoints, consent, oauth, login_hint, open, cancel, patience);
+    // The page won't have all it was asked for (the provider has no such permission for this
+    // kind of account, or it is not the owner's to give), and there is less that is known to be
+    // had: once more, for that.
+    let unwilling = |refused: &Refused| matches!(refused.about, About::Scope | About::Consent);
+    if !lesser.is_empty() && lesser != consent && outcome.as_ref().is_err_and(unwilling) {
+        log::debug!("the sign-in was refused for what it asked for; asking again for what it asked for before");
+        consent = lesser;
+        outcome = attempt(endpoints, consent, oauth, login_hint, open, cancel, patience);
+    }
+    match outcome {
         // The provider won't have what was asked for, and more was asked for than the tokens
         // need: once more, for the tokens alone.
         Err(refused) if refused.about == About::Scope && !consent.is_empty() => {
@@ -216,6 +263,49 @@ fn sign_in_within(
         }
         outcome => outcome.map_err(|refused| refused.error),
     }
+}
+
+/// Why the owner's yes to the Favorites' permissions wasn't had ([`sign_in_for_favorites`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FavoritesRefusal {
+    /// The organisation the account belongs to doesn't let its people give this permission
+    /// themselves. Asking again changes nothing.
+    Organisation,
+    /// The provider has no such permission for this kind of account.
+    Account,
+    /// Anything else: the owner said no or closed the page, the sign-in was called off or took
+    /// too long, the provider couldn't be reached.
+    Other(NetError),
+}
+
+/// Ask the owner, on the provider's page, to let this program read the Favorites of Outlook
+/// (the mailbox's configuration items, and its folders by name), beside what Microsoft Graph was
+/// asked for before. The tokens that come back are Graph's, for all of it. Asked for by itself
+/// and never with an ordinary sign-in: a page that is refused here costs nothing that was had.
+///
+/// Nothing is tried a second time: a no is the answer, and it says whose it is
+/// ([`FavoritesRefusal`]).
+pub fn sign_in_for_favorites(oauth: &OAuth, login_hint: &str, open: &dyn Fn(&str), cancel: &AtomicBool) -> Result<Tokens, FavoritesRefusal> {
+    let plain = Endpoints::for_resource(oauth, Resource::Graph);
+    let scope = format!("{MICROSOFT_GRAPH} {MICROSOFT_GRAPH_EXTRAS} {MICROSOFT_GRAPH_FAVORITES} {SIGN_IN_SCOPE}");
+    let endpoints = Endpoints { scope, consent: String::new(), lesser: String::new(), ..plain };
+    sign_in_for_favorites_within(&endpoints, oauth, login_hint, open, cancel, SIGN_IN_TIMEOUT)
+}
+
+/// [`sign_in_for_favorites`] at `endpoints`, waiting no longer than `patience` for the owner.
+fn sign_in_for_favorites_within(
+    endpoints: &Endpoints,
+    oauth: &OAuth,
+    login_hint: &str,
+    open: &dyn Fn(&str),
+    cancel: &AtomicBool,
+    patience: Duration,
+) -> Result<Tokens, FavoritesRefusal> {
+    attempt(endpoints, "", oauth, login_hint, open, cancel, patience).map_err(|refused| match (refused.policy, refused.about) {
+        (true, _) => FavoritesRefusal::Organisation,
+        (false, About::Scope) => FavoritesRefusal::Account,
+        (false, _) => FavoritesRefusal::Other(refused.error),
+    })
 }
 
 /// One go at signing in: the page (asked for the tokens' scopes and for `consent`), the wait for
@@ -322,6 +412,10 @@ pub struct GraphTokens {
     /// list of categories): the tokens are for everything else. Asking the owner on the
     /// provider's page ([`sign_in_for`]) adds them.
     pub extras_missing: bool,
+    /// The tokens are also good for reading the Favorites of Outlook: they were asked for with
+    /// that ([`refresh_graph_with_favorites`]) and the sign-in covers it. When not, asking the
+    /// owner on the provider's page ([`sign_in_for_favorites`]) is what adds it.
+    pub covers_favorites: bool,
 }
 
 /// [`refresh_for`] with [`Resource::Graph`], for a sign-in that may be older than what Graph is
@@ -348,13 +442,13 @@ pub fn refresh_graph_at(all: &Endpoints, plain: &Endpoints, mail: &Endpoints, oa
     // A no that could be about what was asked for rather than about who asked.
     let about_scope = |error: &NetError| error.is_consent_needed() || error.is_refused_sign_in();
     let first = match refresh_for_at(all, oauth, refresh_token, Resource::Graph) {
-        Ok(tokens) => return Ok(GraphTokens { tokens, extras_missing: false }),
+        Ok(tokens) => return Ok(GraphTokens { tokens, extras_missing: false, covers_favorites: false }),
         Err(error) if about_scope(&error) && plain.scope != all.scope => error,
         Err(error) => return Err(error),
     };
     log::debug!("the sign-in doesn't cover everything Microsoft Graph is asked for; asking without the extras");
     match refresh_for_at(plain, oauth, refresh_token, Resource::Graph) {
-        Ok(tokens) => Ok(GraphTokens { tokens, extras_missing: true }),
+        Ok(tokens) => Ok(GraphTokens { tokens, extras_missing: true, covers_favorites: false }),
         Err(error) if error.is_consent_needed() => Err(error),
         // "No longer good": for anything at all, or only for Graph?
         Err(error) if error.is_refused_sign_in() => match refresh_for_at(mail, oauth, refresh_token, Resource::Mail) {
@@ -366,6 +460,39 @@ pub fn refresh_graph_at(all: &Endpoints, plain: &Endpoints, mail: &Endpoints, oa
             log::debug!("asking without the extras came to nothing (the first answer was: {first})");
             Err(error)
         }
+    }
+}
+
+/// [`refresh_graph`], asking first for tokens that are also good for reading the Favorites of
+/// Outlook ([`GraphTokens::covers_favorites`]). A sign-in that doesn't cover that (the owner
+/// was never asked, or said no) gets its tokens exactly as [`refresh_graph`] gets them: nothing
+/// that worked stops working, and nothing but that one question is put a second time.
+pub fn refresh_graph_with_favorites(oauth: &OAuth, refresh_token: &str) -> Result<GraphTokens, NetError> {
+    let plain = Endpoints::for_resource(oauth, Resource::Graph);
+    let all = Endpoints { scope: format!("{MICROSOFT_GRAPH} {MICROSOFT_GRAPH_EXTRAS} {SIGN_IN_SCOPE}"), ..plain.clone() };
+    let most =
+        Endpoints { scope: format!("{MICROSOFT_GRAPH} {MICROSOFT_GRAPH_EXTRAS} {MICROSOFT_GRAPH_FAVORITES} {SIGN_IN_SCOPE}"), ..plain.clone() };
+    refresh_graph_with_favorites_at(&most, &all, &plain, &Endpoints::of(oauth), oauth, refresh_token)
+}
+
+/// [`refresh_graph_with_favorites`] at endpoints other than the provider's usual ones: `most`
+/// asks for everything and the Favorites' permissions; the others are [`refresh_graph_at`]'s.
+pub fn refresh_graph_with_favorites_at(
+    most: &Endpoints,
+    all: &Endpoints,
+    plain: &Endpoints,
+    mail: &Endpoints,
+    oauth: &OAuth,
+    refresh_token: &str,
+) -> Result<GraphTokens, NetError> {
+    match refresh_for_at(most, oauth, refresh_token, Resource::Graph) {
+        Ok(tokens) => Ok(GraphTokens { tokens, extras_missing: false, covers_favorites: true }),
+        // A no that could be about what was asked for rather than about who asked.
+        Err(error) if (error.is_consent_needed() || error.is_refused_sign_in()) && most.scope != all.scope => {
+            log::debug!("the sign-in doesn't cover the Favorites; asking for what Microsoft Graph was asked for before them");
+            refresh_graph_at(all, plain, mail, oauth, refresh_token)
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -389,12 +516,19 @@ enum About {
 struct Refused {
     error: NetError,
     about: About,
+    /// The no is the organisation's: it keeps what was asked for to its administrators to give.
+    policy: bool,
 }
 
 impl From<NetError> for Refused {
     fn from(error: NetError) -> Refused {
-        Refused { error, about: About::Other }
+        Refused { error, about: About::Other, policy: false }
     }
+}
+
+/// Whether a no names one of Microsoft's numbers for "an administrator has to agree to this".
+fn by_policy(description: &str, codes: &[u64]) -> bool {
+    codes.iter().take(MAX_CODES).copied().chain(aadsts(description)).any(|code| POLICY_CODES.contains(&code))
 }
 
 /// The numbers of the `AADSTS…` codes a description names (Microsoft's own error numbers).
@@ -551,6 +685,7 @@ fn tokens_from(answer: &Answer, earlier_refresh: &str, now: i64, secrets: &[&str
         return Err(Refused {
             error: refusal(&hide(text("error")), &hide(text("error_description"))),
             about: about(text("error"), text("suberror"), text("error_description"), &codes),
+            policy: by_policy(text("error_description"), &codes),
         });
     }
     if answer.status != 200 {
@@ -690,7 +825,11 @@ fn judge(request: &[u8], state: &str) -> (&'static Page, Option<Result<String, R
     }
     if !field("error").is_empty() {
         let (error, description) = (field("error"), field("error_description"));
-        let refused = Refused { error: refusal(error, description), about: about(error, field("error_subcode"), description, &[]) };
+        let refused = Refused {
+            error: refusal(error, description),
+            about: about(error, field("error_subcode"), description, &[]),
+            policy: by_policy(description, &[]),
+        };
         return (&FAILED, Some(Err(refused)));
     }
     let code = field("code");
