@@ -1,11 +1,17 @@
 # MailCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-12 · **Change:** patch (time zones, of M4, are done) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+> **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-14 · **Change:** minor (superseded for the way to beta by the roadmap reset) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
 
 Forward-looking plan. The summary is [`ROADMAP.md`](../ROADMAP.md); the ranked work list is
 [`gaps.md`](gaps.md); the numbers are in [`target-app-parity.md`](target-app-parity.md).
 
-## Current focus (toward an alpha that works with a real account)
+## Current focus
+
+**Superseded on 2026-10-14** by the roadmap reset: [`specs/roadmap-reset.md`](specs/roadmap-reset.md)
+and [`plans/roadmap-reset.md`](plans/roadmap-reset.md). This page is folded into `ROADMAP.md` in
+step R8.3. What follows is the focus as it was written on 2026-10-11, kept for the record: two-way
+sync, Microsoft sign-in and the first release have landed since.
+
 
 1. **Real servers** (gap #1): a local Dovecot + Postfix in a container as a test target that needs
    no real credentials, then interop notes for the big hosted services. Fix what breaks.
@@ -52,3 +58,4 @@ if that turns out to be what people want most.
 |---|---|---|
 | 2026-10-11 | major | First version |
 | 2026-10-12 | patch | Time zones, listed under M4, are done (M3.5) |
+| 2026-10-14 | minor | Superseded for the way to beta by the roadmap reset |

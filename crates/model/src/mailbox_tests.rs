@@ -361,10 +361,10 @@ fn deleting_mail_the_server_has_waits_to_be_pushed() {
     assert_eq!(mb.pending, [Pending::Move { account, message: a, from: "INBOX".into(), uid: 44, synced: Some(unread(44)), to: deleted }]);
     // And then for good, before the server heard of the move: deleted where the server has it.
     assert_eq!(mb.delete_message(a), Ok(true));
-    assert_eq!(mb.pending, [Pending::Delete { account, from: "INBOX".into(), uid: 44 }]);
+    assert_eq!(mb.pending, [Pending::Delete { account, from: "INBOX".into(), uid: 44, message_id: String::new() }]);
     // For good straight away.
     mb.remove_message(b).unwrap();
-    assert_eq!(mb.pending.last(), Some(&Pending::Delete { account, from: "INBOX".into(), uid: 45 }));
+    assert_eq!(mb.pending.last(), Some(&Pending::Delete { account, from: "INBOX".into(), uid: 45, message_id: String::new() }));
     // What a synchronisation takes out because the server no longer has it is not told back.
     mb.forget_message(c).unwrap();
     // A message that was never on the server is nobody's business.
@@ -519,8 +519,8 @@ fn repair_drops_nonsense_about_the_server() {
         mb.pending,
         [
             Pending::Move { account: 1, message: 16, from: "INBOX".into(), uid: 40, synced: None, to: 6 },
-            Pending::Delete { account: 1, from: "INBOX".into(), uid: 50 },
-            Pending::Delete { account: 2, from: "INBOX".into(), uid: 53 },
+            Pending::Delete { account: 1, from: "INBOX".into(), uid: 50, message_id: String::new() },
+            Pending::Delete { account: 2, from: "INBOX".into(), uid: 53, message_id: String::new() },
         ]
     );
     assert!(mb.repair().is_empty(), "{:?}", mb.clone().repair());
@@ -551,4 +551,20 @@ fn removing_an_account_takes_its_mail() {
     assert!(mb.message(m).is_none() && mb.folder(inbox2).is_none());
     assert!(mb.remove_account(second).is_err());
     assert!(mb.account(account).is_some());
+}
+
+#[test]
+fn a_change_waiting_for_a_mailbox_numbered_anew_is_kept_when_it_can_be_found_again() {
+    let (mut mb, account) = mailbox();
+    let inbox = mb.inbox().unwrap();
+    mb.folder_mut(inbox).unwrap().remote = "INBOX".into();
+    let waiting = Pending::Delete { account, from: "INBOX".into(), uid: 0, message_id: "gone@mail.example".into() };
+    let saved = serde_json::to_value(&waiting).unwrap();
+    assert_eq!(saved["delete"]["messageId"], "gone@mail.example");
+    assert_eq!(serde_json::from_value::<Pending>(saved).unwrap(), waiting);
+    // Without a Message-ID it could never be found again: the repair lets it go.
+    mb.pending = vec![waiting.clone(), Pending::Delete { account, from: "INBOX".into(), uid: 0, message_id: String::new() }];
+    let fixed = mb.repair();
+    assert!(fixed.iter().any(|line| line.contains("waiting for the mail server")), "{fixed:?}");
+    assert_eq!(mb.pending, [waiting]);
 }

@@ -682,6 +682,7 @@ fn take_in_news(s: &mut Session, account: Id, result: &mut SyncResult) -> (Count
     for delta in std::mem::take(&mut result.folders) {
         take_in(mb, account, &mut on_server, delta, &mut counts);
     }
+    result.errors.append(&mut counts.notes);
     if told {
         s.forget_history();
     }
@@ -698,6 +699,8 @@ struct Counts {
     updated: usize,
     /// Messages that came down and were the server's copy of one already here.
     matched: usize,
+    /// What the owner is to be told of (a mailbox the server numbered anew).
+    notes: Vec<String>,
 }
 
 /// What is known, while a result is taken in, about where the server has the account's messages.
@@ -836,7 +839,7 @@ fn move_finished(mb: &mut Mailbox, account: Id, on_server: &mut OnServer, moved:
             mb.pending.push(Pending::Move { account, message, from, uid, synced: synced.map(|flags| flags.at(uid)), to });
         }
         // Deleted for good meanwhile: the next run deletes it where the server has it now.
-        (Some(Pending::Delete { .. }), Some((from, uid))) => mb.pending.push(Pending::Delete { account, from, uid }),
+        (Some(Pending::Delete { message_id, .. }), Some((from, uid))) => mb.pending.push(Pending::Delete { account, from, uid, message_id }),
         // Put back meanwhile: the next run moves it back on the server too.
         (None, Some((from, uid))) => {
             let back = on_server.by_remote.get(&moved.from).copied().filter(|folder| *folder != moved.to_folder);
@@ -946,6 +949,95 @@ fn matched(mb: &mut Mailbox, on_server: &mut OnServer, folder: Id, theirs: &Mess
     Some(id)
 }
 
+/// A server mailbox numbered anew (its UIDVALIDITY changed): the UIDs kept of it mean nothing
+/// any more, and what came from it goes, to come back as the server has it. What was changed
+/// here and not pushed yet is kept, to be found again by Message-ID as the mailbox comes down
+/// afresh: a message whose flags were changed stays, without a UID, until its new copy is
+/// matched to it ([`matched`]); a move or a deletion waits with UID 0 for the copy it is about
+/// ([`waited_for`]). What has no Message-ID to be found by can't be kept, and the owner is told.
+/// Returns the messages that go.
+fn renumbered(mb: &mut Mailbox, account: Id, on_server: &mut OnServer, folder: Id, remote: &str, counts: &mut Counts) -> Vec<Id> {
+    let (mut kept, mut lost) = (0usize, 0usize);
+    let mut pending = std::mem::take(&mut mb.pending);
+    pending.retain_mut(|p| {
+        if p.account() != account || p.source().0 != remote {
+            return true;
+        }
+        let findable = match &*p {
+            Pending::Move { message, .. } => mb.message(*message).is_some_and(|m| !m.message_id.is_empty()),
+            Pending::Delete { message_id, .. } => !message_id.is_empty(),
+        };
+        match p {
+            Pending::Move { uid, synced, .. } if findable => (*uid, *synced) = (0, synced.map(|flags| flags.at(0))),
+            Pending::Delete { uid, .. } if findable => *uid = 0,
+            _ => lost += 1,
+        }
+        kept += usize::from(findable);
+        findable
+    });
+    mb.pending = pending;
+    on_server.leaving.retain(|(f, _)| *f != folder);
+    let here: Vec<(u32, Id)> = on_server.by_uid.iter().filter(|((f, _), _)| *f == folder).map(|((_, uid), id)| (*uid, *id)).collect();
+    let mut gone = Vec::new();
+    for (uid, id) in here {
+        on_server.by_uid.remove(&(folder, uid));
+        let changed = mb.message(id).and_then(|m| Some((m.synced.and_then(|base| flag_changes(m, base))?, !m.message_id.is_empty())));
+        match changed {
+            Some((_, true)) => {
+                if let Ok(m) = mb.message_mut(id) {
+                    m.uid = 0;
+                    m.synced = m.synced.map(|flags| flags.at(0));
+                }
+                on_server.expected.entry(folder).or_default().push(id);
+                kept += 1;
+            }
+            Some((_, false)) => {
+                lost += 1;
+                gone.push(id);
+            }
+            None => gone.push(id),
+        }
+    }
+    if kept + lost > 0 {
+        let name = mb.folder(folder).map_or(remote, |f| f.name.as_str());
+        let mut note = format!("The server numbered the messages in “{name}” anew.");
+        if kept > 0 {
+            note += &format!(" {kept} change(s) made here will be made again as its messages come back.");
+        }
+        if lost > 0 {
+            note += &format!(" {lost} change(s) made here could not be kept: the message had no Message-ID to find it by.");
+        }
+        counts.notes.push(note);
+    }
+    gone
+}
+
+/// Whether `theirs`, come down from server mailbox `remote` after it was numbered anew, is the
+/// copy a move or a deletion made here waits for ([`renumbered`]): it then gets its UID, and the
+/// next run pushes it.
+fn waited_for(mb: &mut Mailbox, account: Id, remote: &str, theirs: &Message) -> bool {
+    if theirs.message_id.is_empty() {
+        return false;
+    }
+    let original = original_id(theirs);
+    let same = |id: &str| !id.is_empty() && (id == theirs.message_id || Some(id) == original);
+    let messages = &mb.messages;
+    let found = mb.pending.iter_mut().find(|p| {
+        p.account() == account
+            && p.source() == (remote, 0)
+            && match p {
+                Pending::Move { message, .. } => messages.get(message).is_some_and(|m| same(&m.message_id)),
+                Pending::Delete { message_id, .. } => same(message_id),
+            }
+    });
+    match found {
+        Some(Pending::Move { uid, synced, .. }) => (*uid, *synced) = (theirs.uid, synced.map(|flags| flags.at(theirs.uid))),
+        Some(Pending::Delete { uid, .. }) => *uid = theirs.uid,
+        None => return false,
+    }
+    true
+}
+
 /// The local folder of a server mailbox that has none yet: the standard folder of its kind when
 /// that follows no mailbox, else a new one named after the last part of the path.
 fn folder_for(mb: &mut Mailbox, account: Id, remote: &str, kind: FolderKind) -> Option<Id> {
@@ -1048,11 +1140,7 @@ fn take_in(mb: &mut Mailbox, account: Id, on_server: &mut OnServer, delta: Folde
         }
     }
     let gone: Vec<Id> = if reset {
-        // UIDs mean nothing after a validity change: what came from the server goes, and comes
-        // back; what was to be pushed about its messages can't be said any more.
-        mb.pending.retain(|p| !(p.account() == account && p.source().0 == delta.remote));
-        on_server.leaving.retain(|(f, _)| *f != folder);
-        on_server.by_uid.iter().filter(|((f, _), _)| *f == folder).map(|(_, id)| *id).collect()
+        renumbered(mb, account, on_server, folder, &delta.remote, counts)
     } else {
         delta.removed.iter().filter_map(|uid| on_server.by_uid.get(&(folder, *uid)).copied()).collect()
     };
@@ -1073,6 +1161,12 @@ fn take_in(mb: &mut Mailbox, account: Id, on_server: &mut OnServer, delta: Folde
         let uid = m.uid;
         // Here already, or on its way out of that mailbox by a change still to be pushed.
         if uid != 0 && (on_server.by_uid.contains_key(&(folder, uid)) || on_server.leaving.contains(&(folder, uid))) {
+            continue;
+        }
+        // The copy a move or deletion made here was waiting for, the mailbox numbered anew.
+        if uid != 0 && waited_for(mb, account, &delta.remote, &m) {
+            on_server.leaving.insert((folder, uid));
+            counts.matched += 1;
             continue;
         }
         if matched(mb, on_server, folder, &m).is_some() {

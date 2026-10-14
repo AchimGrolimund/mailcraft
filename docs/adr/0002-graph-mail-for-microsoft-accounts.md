@@ -1,6 +1,6 @@
 # 0002. Microsoft accounts read and change mail through Microsoft Graph only
 
-> **Status:** proposed · **Date:** 2026-10-14 · **Deciders:** billsecond (owner), Martin Ball
+> **Status:** accepted (2026-10-14, [#1](https://github.com/billsecond/mailcraft/pull/1)) · **Date:** 2026-10-14 · **Deciders:** billsecond, Martin Ball (co-owners)
 
 ## Context
 

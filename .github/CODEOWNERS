@@ -1,0 +1,9 @@
+# Changes to sync, the store, sign-in and secrets are reviewed by a person before they land
+# (docs/specs/roadmap-reset.md, "How the work is done"; plan step R1.6).
+/crates/net/ @benandez
+/crates/proto/ @benandez
+/crates/engine/src/store.rs @benandez
+/crates/engine/src/cmd/account.rs @benandez
+/crates/engine/src/cmd/remote.rs @benandez
+/crates/engine/src/cmd/remote/ @benandez
+/apps/mailcraft/src/secrets.rs @benandez

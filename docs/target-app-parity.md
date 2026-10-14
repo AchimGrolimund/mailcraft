@@ -1,6 +1,11 @@
 # MailCraft vs Outlook: the assessment
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-11 · **Change:** major (first version) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+> **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-14 · **Change:** minor (marked out of date; to be folded into `ROADMAP.md` and `gaps.md` in step R8.3) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+
+> **Out of date.** Written on 2026-10-11 and not kept up since: pictures in mail, invitations,
+> reminders that fire and much else have landed. For what is true now, see [`gaps.md`](gaps.md)
+> and [`ROADMAP.md`](../ROADMAP.md). This page is folded into those two in step R8.3 of the
+> [roadmap reset](plans/roadmap-reset.md).
 
 What MailCraft can and can't do next to the program it is an alternative to. The measured number
 is the ribbon/menu catalog ([`parity-checklist.md`](parity-checklist.md)); everything else here
@@ -55,3 +60,4 @@ pictures and basic layout), #7 (at least rich replies), #9 and #11.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-11 | major | First assessment |
+| 2026-10-14 | minor | Marked out of date |

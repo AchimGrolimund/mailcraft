@@ -902,6 +902,10 @@ fn the_saver_writes_in_the_background_coalesces_and_flushes() {
     assert!(open(&path).unwrap().mailbox == mb);
     assert!(saver.reports().is_empty());
 
+    // The first save queued a sweep, which holds the file's state while it runs: let it finish
+    // before holding that state here, or the sweep waits on this test and the saver on the sweep.
+    until(|| lock(&held.state).swept.is_some());
+
     // A state that gets to the disk after a newer one was written by somebody else (the Save
     // command, quitting) is dropped rather than written over it.
     let mut gate = lock(&held.state);

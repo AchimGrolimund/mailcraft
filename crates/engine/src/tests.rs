@@ -1171,7 +1171,7 @@ mod two_way {
             ..Default::default()
         };
         apply(&mut s, partly);
-        assert_eq!(s.mailbox.pending, [Pending::Delete { account: a, from: "INBOX".into(), uid: 3 }]);
+        assert_eq!(s.mailbox.pending, [Pending::Delete { account: a, from: "INBOX".into(), uid: 3, message_id: "three@mail.example".into() }]);
         assert_eq!((s.mailbox.count(inbox), s.mailbox.count(deleted), unpushed(&s, a)), (0, 0, 1));
         // A download that still lists the message a deletion is waiting for doesn't bring it back.
         let still_there = SyncResult {
@@ -1234,7 +1234,7 @@ mod two_way {
     }
 
     #[test]
-    fn a_mailbox_made_anew_drops_what_waited_for_it() {
+    fn a_mailbox_made_anew_keeps_what_waited_for_it() {
         let (mut s, a, inbox, archive) = synced();
         let deleted = folder(&s, a, FolderKind::Deleted);
         let (one, two, three) = (titled(&s, a, "One"), titled(&s, a, "Two"), titled(&s, a, "Three"));
@@ -1249,20 +1249,37 @@ mod two_way {
             account: a,
             folders: vec![FolderDelta {
                 removed: vec![1],
-                ..news(Some(inbox), "INBOX", FolderKind::Inbox, 70, vec![from_server(1, "Another"), from_server(2, "One")], vec![])
+                ..news(
+                    Some(inbox),
+                    "INBOX",
+                    FolderKind::Inbox,
+                    70,
+                    vec![from_server(1, "Another"), Message { read: true, ..from_server(2, "One") }],
+                    vec![],
+                )
             }],
             ..Default::default()
         };
         let r = apply(&mut s, anew);
-        assert_eq!((r["new"].as_u64(), r["removed"].as_u64()), (Some(2), Some(1)));
-        // What was to be pushed about the old UIDs is dropped; what waits for another mailbox waits on.
+        // One came back and is the message it was, still unread here; Another is new.
+        assert_eq!((r["new"].as_u64(), r["removed"].as_u64(), r["matched"].as_u64()), (Some(1), Some(0), Some(1)));
+        assert_eq!(state(&s, one), (inbox, 2, false, FlagStatus::None));
+        // What was to be pushed about the old UIDs waits for its copy to be found by Message-ID;
+        // what waits for another mailbox waits on.
         assert_eq!(
             s.mailbox.pending,
-            [Pending::Move { account: a, message: filed, from: "Archive".into(), uid: 1, synced: Some(has(1, false, false)), to: deleted }]
+            [
+                Pending::Move { account: a, message: two, from: "INBOX".into(), uid: 0, synced: Some(has(0, false, false)), to: archive },
+                Pending::Delete { account: a, from: "INBOX".into(), uid: 0, message_id: "three@mail.example".into() },
+                Pending::Move { account: a, message: filed, from: "Archive".into(), uid: 1, synced: Some(has(1, false, false)), to: deleted },
+            ]
         );
         assert_eq!(
             request(&s, a).ops,
-            [RemoteOp::Move { message: filed, from: "Archive".into(), uid: 1, to: "Trash".into(), to_folder: deleted, create: vec![] }]
+            [
+                RemoteOp::Move { message: filed, from: "Archive".into(), uid: 1, to: "Trash".into(), to_folder: deleted, create: vec![] },
+                flags("INBOX", 2, Some(false), None, None),
+            ]
         );
         // Everything of the old life is gone from the Inbox, and what is there now came down.
         let mut now: Vec<(u32, String)> = s.mailbox.messages_in(inbox).map(|m| (m.uid, m.subject.clone())).collect();
@@ -1826,6 +1843,58 @@ mod two_way {
             uids.sort_unstable();
             assert_eq!((uids, s.mailbox.folder(inbox).unwrap().uid_seen), (server.clone(), 9), "{taken}");
         }
+    }
+
+    /// A server that numbers a mailbox anew (a new UIDVALIDITY) takes away the UIDs, not what
+    /// was done here meanwhile: each change is made again on the message's new copy, found by
+    /// its Message-ID, and what can't be found that way is said.
+    #[test]
+    fn what_was_done_here_outlives_a_mailbox_the_server_numbers_anew() {
+        let (mut s, a, inbox, archive) = synced();
+        let nameless = Message { message_id: String::new(), ..from_server(4, "Four") };
+        apply(
+            &mut s,
+            SyncResult { account: a, folders: vec![news(Some(inbox), "INBOX", FolderKind::Inbox, 7, vec![nameless], vec![])], ..Default::default() },
+        );
+        let (one, two, three, four) = (titled(&s, a, "One"), titled(&s, a, "Two"), titled(&s, a, "Three"), titled(&s, a, "Four"));
+        // Before the server hears of it: Two read, Three filed, One deleted for good, and Four,
+        // which has no Message-ID, read.
+        run(&mut s, "mail.markRead", json!({"id": two}));
+        run(&mut s, "mail.move", json!({"id": three, "folder": archive}));
+        run(&mut s, "mail.deletePermanently", json!({"id": one}));
+        run(&mut s, "mail.markRead", json!({"id": four}));
+        assert_eq!(unpushed(&s, a), 4);
+
+        // The server's INBOX comes back numbered anew, every message on it under another UID.
+        let anew = vec![
+            from_server(11, "One"),
+            from_server(12, "Two"),
+            from_server(13, "Three"),
+            Message { message_id: String::new(), ..from_server(14, "Four") },
+        ];
+        let r = apply(
+            &mut s,
+            SyncResult { account: a, folders: vec![news(Some(inbox), "INBOX", FolderKind::Inbox, 70, anew, vec![])], ..Default::default() },
+        );
+        let note = r["errors"][0].as_str().unwrap();
+        assert!(note.contains("anew") && note.contains("3 change(s)") && note.contains("1 change(s)"), "{note}");
+
+        // Two is the message it was, read, under its new UID; the server is told it was read.
+        assert_eq!(state(&s, two), (inbox, 12, true, FlagStatus::None));
+        // Three stays filed; One stays deleted. Neither comes back.
+        assert_eq!(state(&s, three), (archive, 0, false, FlagStatus::None));
+        assert!(s.mailbox.message(one).is_none() && s.mailbox.messages_in(inbox).all(|m| m.subject != "One" && m.subject != "Three"));
+        // Four's change couldn't be kept: it is as the server has it.
+        let four = titled(&s, a, "Four");
+        assert_eq!(state(&s, four), (inbox, 14, false, FlagStatus::None));
+        let ops = request(&s, a).ops;
+        assert!(ops.contains(&flags("INBOX", 12, Some(true), None, None)), "{ops:?}");
+        assert!(
+            ops.contains(&RemoteOp::Move { message: three, from: "INBOX".into(), uid: 13, to: "Archive".into(), to_folder: archive, create: vec![] }),
+            "{ops:?}"
+        );
+        assert!(ops.contains(&RemoteOp::Delete { from: "INBOX".into(), uid: 11 }), "{ops:?}");
+        assert_eq!((ops.len(), unpushed(&s, a)), (3, 3));
     }
 }
 

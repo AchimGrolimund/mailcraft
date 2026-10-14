@@ -1,6 +1,6 @@
 # Roadmap reset: from here to beta
 
-> **Status:** proposal, for the project owner (billsecond) to accept, change or refuse · **Written:** 2026-10-14 · **Author:** Martin Ball, with Claude · **Change:** major (first version) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Status:** accepted 2026-10-14 ([#1](https://github.com/billsecond/mailcraft/pull/1)); tracked in [#2](https://github.com/billsecond/mailcraft/issues/2) · **Written:** 2026-10-14 · **Author:** Martin Ball, with Claude · **Change:** major (first version) · **Target:** Microsoft Outlook (Microsoft 365)
 
 The words in this document have the meanings in [`CONTEXT.md`](../../CONTEXT.md). The order of
 the work is in [`docs/plans/roadmap-reset.md`](../plans/roadmap-reset.md); the two decisions that
