@@ -34,12 +34,12 @@ concurrency:
 jobs:
   version:
     name: Version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.v.outputs.version }}
       prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: v
         name: The tag is the version in Cargo.toml
         run: |
@@ -64,11 +64,11 @@ jobs:
     needs: [version, package]
     # Tags only; a run by hand stops at the artifacts.
     if: "!cancelled() && needs.package.result == 'success' && github.ref_type == 'tag'"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
