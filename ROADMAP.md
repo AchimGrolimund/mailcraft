@@ -1,8 +1,8 @@
 # MailCraft roadmap
 
-**Stage: early alpha** · next: alpha that works with a real account
+**Stage: early alpha** · next: beta, as [`CONTEXT.md`](CONTEXT.md) defines it, by the plan in [`docs/plans/roadmap-reset.md`](docs/plans/roadmap-reset.md)
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-13 · **Change:** minor (progress log) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+> **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-14 · **Change:** minor (headline numbers measured again; releases; the roadmap reset) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
 
 MailCraft aims for complete parity with Microsoft Outlook, then goes further on speed, openness,
 privacy and agent control. This page is the summary; the assessment is
@@ -10,22 +10,22 @@ privacy and agent control. This page is the summary; the assessment is
 [`docs/gaps.md`](docs/gaps.md), and milestones and the current focus are in
 [`docs/roadmap.md`](docs/roadmap.md).
 
-## Headline numbers (2026-10-12)
+## Headline numbers (2026-10-14)
 
 | Number | Value | Kind |
 |---|---|---|
-| Ribbon/menu catalog coverage | **164 / 310 (52.9%)** | measured (`cargo xtask parity` → [`docs/parity-checklist.md`](docs/parity-checklist.md)) |
-| Ready for real work with a real account | **~25%** | estimated ([how](docs/target-app-parity.md#methodology)); two-way sync and Microsoft sign-in exist now, but nothing has run against a real server yet |
+| Ribbon/menu catalog coverage | **167 / 310 (53.9%)** | measured (`cargo xtask parity` → [`docs/parity-checklist.md`](docs/parity-checklist.md)) |
+| Ready for real work with a real account | **~25%** | estimated ([how](docs/target-app-parity.md#methodology)); in daily use on one Microsoft 365 mailbox, the author's; no other server and no tester yet. To be replaced by the beta checklist ([spec](docs/specs/roadmap-reset.md)) |
 | Ready as a local viewer and organiser of exported mail | **~55%** | estimated |
-| Commands / crates | 175 commands · 13 crates, 3 apps, `xtask` | measured (source) |
-| Tests | see `cargo xtask stats` (every crate; property tests on every reader) | measured |
-| Builds verified | Windows x64 (native) and the browser build (wasm) | measured |
-| Releases | none published; Windows x64 and Linux x86_64 packages built and installed locally ([releasing.md](docs/releasing.md)) | measured (local builds) |
+| Commands / crates | 185 commands · 12 crates, 3 apps, `xtask` | measured (source) |
+| Tests | 1,587 `#[test]`s (`cargo xtask stats`); property tests on every reader | measured |
+| Builds verified | Windows, macOS and Linux (CI on each), FreeBSD and Windows ARM64 (scheduled), the browser build (wasm) | measured |
+| Releases | four published, v0.1.0 to v0.2.1 ([Releases](https://github.com/billsecond/mailcraft/releases)); unsigned | measured |
 
 The gap between the two readiness numbers is the story of this release: the mailbox, the
 commands, the interface and the file formats are in good shape, and the connection to real mail
-servers is the thinnest part: two-way and with Microsoft sign-in since 2026-10-12, but still never
-run against a real server.
+servers is the thinnest part: two-way and with Microsoft sign-in since 2026-10-12, in use on one
+Microsoft 365 mailbox, and not yet run against any other server.
 
 ## Where it is strong
 
@@ -40,16 +40,19 @@ run against a real server.
 
 ## What stands between here and beta
 
-In order (details and estimates in [`docs/gaps.md`](docs/gaps.md)): run against real servers;
-publisher verification for the Microsoft registration, and sign-in for Google;
-calendar and contacts with a server (Microsoft Graph, CalDAV/CardDAV); inline pictures and basic
-layout in HTML mail; rich-text replies; meeting invitations by mail; reminders that fire; a store
-that scales.
+Since 2026-10-14 the way to beta is the roadmap reset: beta is for Microsoft accounts, with
+the pass/fail checklist in [`docs/specs/roadmap-reset.md`](docs/specs/roadmap-reset.md) and the
+steps R1–R8 in [`docs/plans/roadmap-reset.md`](docs/plans/roadmap-reset.md) (tracked in
+[#2](https://github.com/billsecond/mailcraft/issues/2)): hygiene; Exchange Web Services removed;
+Microsoft Graph for mail; rich-text replies; sign-ins remembered on Linux; message bodies read
+when needed; system notifications and Copy diagnostics; then a beta run with testers.
 
 ## Progress log
 
 | Date | What landed |
 |---|---|
+| 2026-10-14 | R1 (hygiene): a mailbox the server numbers anew (a new UIDVALIDITY) no longer drops what was done here and not yet pushed; flags, moves and deletions are made again on the new copies, found by Message-ID, and the owner is told of any that can't be. A saver test that could wait on itself fixed; the documents' numbers measured again |
+| 2026-10-14 | The roadmap reset, accepted: beta is for Microsoft accounts, a pass/fail checklist, steps R1–R8 ([spec](docs/specs/roadmap-reset.md), [plan](docs/plans/roadmap-reset.md), [ADR 0001](docs/adr/0001-microsoft-accounts-first-beta.md), [ADR 0002](docs/adr/0002-graph-mail-for-microsoft-accounts.md), [`CONTEXT.md`](CONTEXT.md)) |
 | 2026-10-13 | When an organisation has to approve MailCraft before its people can sign in, the program says what to do next (M4.4). The owner of the released 0.2.0 added a Microsoft 365 account, Microsoft's page said "Need admin approval", and MailCraft showed a page that only waited. Now the waiting page says what is happening ("Microsoft's sign-in page is open in your browser"), in what order things come for a work or school account (the sign-in, then how Outlook's Favorites are read), and, without waiting for anything to come back, what to do if Microsoft's page asks for an administrator. "Your organisation has to approve MailCraft first" is a page of its own, shown when the sign-in comes back saying so (Microsoft's numbers 90093, 90094, 90095 and 900941) or from its link: why, and four things to do. "I'm an administrator" opens Microsoft's admin-consent page in the browser (`oauth::admin_consent`: `/{tenant}/v2.0/adminconsent`, for the organisation of the address where it can be known, for everything the program asks an owner for and not Exchange Web Services, with a loopback port for the answer and a state nobody can guess); approved, the wizard says so and goes on to the sign-in, the account and the Favorites' choice by itself; refused, it says what Microsoft answered. "Copy a message for my administrator" puts a short message with the same page's address on the clipboard, with nothing of the owner in it, and sends nothing. "Try again" signs in afresh; "Not now" closes the wizard and leaves nothing behind. A sign-in that ends otherwise says how, in a sentence: the page came back with a no, nothing came back (a closed tab, or five minutes), no browser could be started (the host opens the browser itself now, and knows). An account that exists gets the same page when a Send/Receive its owner asked for is refused for want of an approval, and the line under the Favorites heading leads to it. All of it is commands (`ui.approvalHelp`, `ui.copyAdminMessage`, `ui.adminConsent`, `ui.signInAgain`). Written from Microsoft's identity-platform documentation and tried against stand-ins and the program's own loopback port only: none of it has met the real service, and [`docs/gaps.md`](docs/gaps.md) says what is least certain |
 | 2026-10-13 | The owner of a work or school account chooses how Outlook's Favorites are read (M4.3): through Microsoft Graph (lasting; in an organisation an administrator may have to approve it once), through Exchange Web Services (no administrator where the organisation still allows it; Microsoft switches it off on 1 April 2027), or not now. The choice is the last step of adding the account, after its mail is under way, and is reachable later from the line under the Favorites heading and in File › Options; a personal Microsoft account has Graph only (which kind an account is, the directory its sign-in names says). It is a setting of the account (`account.favoritesSource`), written to the mailbox only once it is made; `ui.favoritesSource` does what follows. When Graph's consent comes back as an administrator's to give, the pane says so, offers a link to copy for the administrator (Microsoft's admin-consent page for this application and the two permissions) and Exchange Web Services instead. The second reader is new in `mailcraft-net` (`ews`): `FindFolder`, `FindItem` and `GetFolder` and nothing that writes, for the navigation shortcuts classic Outlook keeps in the Common Views folder, in the order of their ordinals, with the answers read as hostile XML; it produces the same download as Graph's reader, so the engine and the pane are shared. An organisation that doesn't allow it (403 with `X-EWS-Policy-Reason`) is one quiet line with Graph offered instead; from 1 April 2027 by the session's clock it is not offered, and an account set to it says so. A strict Exchange Web Services stand-in holds the requests to the documented schema; the flows run every branch from the stand-ins to the rows under the heading. The reader is written from the public reference and the open specifications and has not met the real service |
 | 2026-10-13 | The Favorites of the folder pane are the ones Outlook shows (M4.2), for an account that signs in with Microsoft: read from the server through Microsoft Graph, in Outlook's order, and never written (they are changed in Outlook, and `folder.favorite` says so). Graph has no list of them as such; they are one entry of a configuration item of the mailbox (the user configuration API, beta only; what the item holds is documented nowhere and read as hostile: an XML reader that takes no DTD and expands no entity, every size capped, and nothing but the list kept, shown or logged), and of its entries only those are favourites that are folders of the mailbox today, which a batch of look-ups says. What reaches the engine is where each folder is, never an id (`sync.applyFavorites`); the favourites marked here are kept aside and come back when the server has no list, when it can't be read, or when File › Options says so (`view.favorites`). The two permissions it takes are asked for by themselves, from one quiet line under the Favorites heading, and never with a sign-in: Microsoft's permissions reference lists one of them as needing an administrator in an organisation, and where that holds the pane says in one line that the organisation doesn't allow it. A failed look is a line with "Try again", never a dialog. The strict Graph stand-in has the item, folders and throttled batches; the flows run from the stand-in to the rows under the heading |
