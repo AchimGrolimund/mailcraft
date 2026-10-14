@@ -357,8 +357,16 @@ pub enum Pending {
         synced: Option<RemoteFlags>,
         to: Id,
     },
-    /// The message that was `uid` in server mailbox `from` was deleted for good.
-    Delete { account: Id, from: String, uid: u32 },
+    /// The message that was `uid` in server mailbox `from` was deleted for good. `message_id`
+    /// is its Message-ID, by which it is found again when the server numbers the mailbox anew
+    /// (`uid` is 0 until then).
+    Delete {
+        account: Id,
+        from: String,
+        uid: u32,
+        #[serde(default, rename = "messageId", skip_serializing_if = "String::is_empty")]
+        message_id: String,
+    },
 }
 
 impl Pending {
@@ -917,21 +925,21 @@ impl Mailbox {
     /// [`Pending::Delete`] tells the next synchronisation to delete it there too; a message with
     /// a move still waiting is deleted where the server has it.
     pub fn remove_message(&mut self, id: Id) -> Result<Message, ModelError> {
-        let (was_in, account, uid) = {
+        let (was_in, account, uid, message_id) = {
             let m = self.message(id).ok_or(not_found("message", id))?;
-            (m.folder, m.account, m.uid)
+            (m.folder, m.account, m.uid, m.message_id.clone())
         };
         match self.waiting_move(id).and_then(|at| self.pending.get_mut(at)) {
             Some(op) => {
                 if let Pending::Move { account, from, uid, .. } = &mut *op {
-                    let delete = Pending::Delete { account: *account, from: std::mem::take(from), uid: *uid };
+                    let delete = Pending::Delete { account: *account, from: std::mem::take(from), uid: *uid, message_id };
                     *op = delete;
                 }
             }
             None => {
                 let from = self.folder(was_in).filter(|f| f.account == account && !f.remote.is_empty()).map(|f| f.remote.clone());
                 if let (Some(from), true) = (from, uid != 0) {
-                    self.pending.push(Pending::Delete { account, from, uid });
+                    self.pending.push(Pending::Delete { account, from, uid, message_id });
                 }
             }
         }
@@ -1397,7 +1405,14 @@ impl Mailbox {
             let account = op.account();
             let (from, uid) = op.source();
             let source = self.folders.iter().find(|f| f.account == account && !from.is_empty() && f.remote == from).map(|f| f.id);
-            let Some(source) = source.filter(|source| uid != 0 && !on_server.contains(&(*source, uid))) else { continue };
+            // UID 0: waiting for the copy it is about in a mailbox the server numbered anew, to
+            // be found by its Message-ID.
+            let waiting = uid == 0
+                && match &op {
+                    Pending::Move { message, .. } => self.messages.get(message).is_some_and(|m| !m.message_id.is_empty()),
+                    Pending::Delete { message_id, .. } => !message_id.is_empty(),
+                };
+            let Some(source) = source.filter(|source| (uid != 0 || waiting) && !on_server.contains(&(*source, uid))) else { continue };
             if let Pending::Move { message, synced, to, .. } = &mut op {
                 let fits = self.messages.get(message).is_some_and(|m| m.account == account && m.folder == *to && m.uid == 0);
                 if !fits || *to == source || moved.contains(message) {
@@ -1409,7 +1424,7 @@ impl Mailbox {
                 }
                 moved.insert(*message);
             }
-            if sources.insert((source, uid)) {
+            if waiting || sources.insert((source, uid)) {
                 kept.push(op);
             }
         }
