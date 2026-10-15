@@ -295,3 +295,50 @@ fn a_signature_pasted_from_outlook_on_the_web_keeps_its_formatting() {
     assert!(runs.iter().any(|r| r.style.link.as_deref() == Some("https://lumen.example/")));
     assert!(text.pictures().is_empty());
 }
+
+#[test]
+fn a_signature_made_from_details_has_working_links_and_follows_them_until_edited_by_hand() {
+    let mut s = session();
+    run(&mut s, "signature.set", json!({"name": "Card", "text": ""}));
+    run(&mut s, "signature.picture.add", json!({"name": "Card", "data": png(), "file": "lumen-logo.png"}));
+    let details = json!({"name": "Avery Quinn", "title": "Designer", "organisation": "Lumen Studio", "phone": "+44 (0)20 7946 0000", "mobile": "07700 900000", "email": "avery@lumen.example", "website": "lumen.example", "address": "1 Example Street\nLondon"});
+    let r = run(&mut s, "signature.details", json!({"name": "Card", "details": details}));
+    assert_eq!((r["laidOut"].as_bool(), r["handEdited"].as_bool()), (Some(true), Some(false)));
+    let sig = s.mailbox.signature("Card").unwrap();
+    assert_eq!(sig.layout, mailcraft_model::signature::Layout::PictureLeft);
+    assert_eq!(sig.body().pictures().len(), 1);
+    let html = mailcraft_mime::rich::signature_html(sig, &|p| format!("p{}", p.id));
+    for link in ["href=\"tel:+442079460000\"", "href=\"tel:07700900000\"", "href=\"mailto:avery@lumen.example\"", "href=\"https://lumen.example\""] {
+        assert!(html.contains(link), "{link} in {html}");
+    }
+    assert!(html.contains("<table") && html.contains("cid:p1"), "{html}");
+    // In plain text a number says its link, so it isn't written out again.
+    assert!(sig.plain().contains("Phone: +44 (0)20 7946 0000\n") && !sig.plain().contains("<tel:"), "{}", sig.plain());
+    // Changing a detail lays it out again.
+    let mut changed = details.clone();
+    changed["title"] = json!("Director");
+    run(&mut s, "signature.details", json!({"name": "Card", "details": changed}));
+    assert!(s.mailbox.signature("Card").unwrap().plain().contains("Director"));
+    // After a hand edit the details are kept but no longer lay it out, until the owner starts again.
+    run(&mut s, "signature.open", json!({"name": "Card"}));
+    // (The logo is the first paragraph.)
+    run(&mut s, "compose.select", json!({"from": 2}));
+    run(&mut s, "compose.type", json!({"text": "Dr "}));
+    changed["title"] = json!("Partner");
+    let r = run(&mut s, "signature.details", json!({"details": changed}));
+    assert_eq!((r["laidOut"].as_bool(), r["handEdited"].as_bool()), (Some(false), Some(true)));
+    let e = s.signature_edit.as_ref().unwrap();
+    assert!(e.body.plain().contains("Dr Avery") && !e.body.plain().contains("Partner"));
+    assert_eq!(e.signature.details.as_ref().unwrap().title, "Partner");
+    let r = run(&mut s, "signature.details", json!({"details": changed, "restart": true}));
+    assert_eq!(r["laidOut"].as_bool(), Some(true));
+    let e = s.signature_edit.as_ref().unwrap();
+    assert!(e.body.plain().contains("Partner") && !e.body.plain().contains("Dr "));
+    // Starting again is one step of the editor's undo.
+    run(&mut s, "compose.undo", json!({}));
+    assert!(s.signature_edit.as_ref().unwrap().body.plain().contains("Dr Avery"));
+    run(&mut s, "signature.save", json!({}));
+    assert!(s.mailbox.signature("Card").unwrap().details.is_some());
+    // Junk is refused.
+    assert!(s.run("signature.details", &json!({"name": "Card", "details": "x"})).is_err());
+}

@@ -37,6 +37,9 @@ pub fn specs() -> Vec<CommandSpec> {
             .params(r#"{"name": string, "id": number}"#),
         CommandSpec::new("signature.layout", "Picture Layout", "File › Options › Signatures", layout)
             .params(r#"{"name": string, "value": "inline"|"pictureLeft"|"pictureAbove"}"#),
+        CommandSpec::new("signature.details", "Create from Details", "File › Options › Signatures", details).params(
+            r#"{"name": string, "details": {"name"?, "title"?, "organisation"?, "phone"?, "mobile"?, "email"?, "website"?, "address"?: string}, "restart"?: bool (lay it out again after it was edited by hand)} — lays the signature out from the details (the logo is its first picture); after a hand edit only keeps them, unless restart"#,
+        ),
         CommandSpec::new("signature.open", "Edit Signature", "File › Options › Signatures", open)
             .pure()
             .params(r#"{"name": string} — the editing commands work on it until signature.close"#),
@@ -76,6 +79,38 @@ fn reopen(s: &mut Session, name: &str) {
     {
         *e = SignatureEdit { signature: sig.clone(), body: RichBody::new(sig.body().clone()), dirty: false };
     }
+}
+
+fn details(s: &mut Session, v: &Value) -> CmdResult {
+    let given = v.get("details").filter(|d| d.is_object()).ok_or_else(|| bad("`details` is an object of the details"))?;
+    let mut d: mailcraft_model::signature::Details =
+        serde_json::from_value(given.clone()).map_err(|e| bad(format!("`details` is not the details: {e}")))?;
+    let restart = p::bool(v, "restart") == Some(true);
+    let open = names_open(s, v);
+    let mut sig = match s.signature_edit.as_ref().filter(|_| open) {
+        Some(e) => edited(e)?,
+        None => named(s, v)?.clone(),
+    };
+    let laid = restart || !sig.hand_edited();
+    if laid {
+        sig.lay_out(d).map_err(|e| fail(e.to_string()))?;
+    } else {
+        // Kept for when the owner starts again from them; the text is the owner's.
+        d.made = sig.details.as_ref().map_or(0, |old| old.made);
+        sig.details = Some(d.clean());
+    }
+    let answer = json!({"laidOut": laid, "handEdited": sig.hand_edited()});
+    match s.signature_edit.as_mut().filter(|_| open) {
+        Some(e) => {
+            if laid {
+                e.body.replace(sig.body().clone()).map_err(|err| fail(err.to_string()))?;
+            }
+            e.signature = sig;
+            e.dirty = true;
+        }
+        None => *named(s, v)? = sig,
+    }
+    Ok(answer)
 }
 
 fn open(s: &mut Session, v: &Value) -> CmdResult {

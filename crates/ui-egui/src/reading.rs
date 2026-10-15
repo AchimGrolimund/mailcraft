@@ -62,6 +62,8 @@ pub enum Place {
     Window(u64),
     /// Under the owner's text in a reply or forward being written: the original it carries.
     Quote,
+    /// File › Signatures: a sample reply with the signature, as a recipient sees it.
+    Preview,
 }
 
 /// The reading pane: the selected message, or a word on why there is none to show.
@@ -162,6 +164,12 @@ fn quote_message(app: &MailApp, ctx: &egui::Context) -> Option<Arc<Message>> {
     let m = Arc::new(m);
     ctx.data_mut(|d| d.insert_temp(key, m.clone()));
     Some(m)
+}
+
+/// `m` shown read-only through the display blocks, as at `place` ([`Place::Preview`]): its own
+/// pictures only, nothing from the web.
+pub(crate) fn show_plain_view(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, place: Place) {
+    view::show(app, ui, m, place, Access::Blocked);
 }
 
 /// Pictures the host has brought are taken in, whatever is on screen ([`remote::tick`]).
