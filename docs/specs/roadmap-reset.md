@@ -1,6 +1,6 @@
 # Roadmap reset: from here to beta
 
-> **Status:** accepted 2026-10-14 ([#1](https://github.com/UCS-Care-Group/mailcraft/pull/1)); tracked in [#2](https://github.com/UCS-Care-Group/mailcraft/issues/2) · **Written:** 2026-10-14 · **Author:** Martin Ball, with Claude · **Change:** minor (B2: working days) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Status:** accepted 2026-10-14 ([#1](https://github.com/UCS-Care-Group/mailcraft/pull/1)); tracked in [#2](https://github.com/UCS-Care-Group/mailcraft/issues/2) · **Written:** 2026-10-14 · **Author:** Martin Ball, with Claude · **Change:** minor (rich signatures with pictures, R4.5) · **Target:** Microsoft Outlook (Microsoft 365)
 
 The words in this document have the meanings in [`CONTEXT.md`](../../CONTEXT.md). The order of
 the work is in [`docs/plans/roadmap-reset.md`](../plans/roadmap-reset.md); the two decisions that
@@ -90,8 +90,10 @@ Every item must pass. Each is checked by testers' reports and GitHub issues, not
 ### Out (until after beta)
 
 IMAP accounts as a supported path (Gmail, Fastmail, Dovecot: the milestone after beta, starting
-with a local Dovecot test server); rich composing beyond the minimal set (tables, styles, inline
-pictures, spell check; sharing WordCraft's editor is its own decision); the per-message store
+with a local Dovecot test server); rich composing beyond the minimal set (tables, paragraph styles,
+pictures other than a signature's, spell check; sharing WordCraft's editor is its own decision; R4.5
+adds text colour, a choice of fonts, and pictures and a picture-beside-text layout in signatures,
+[its spec](r4-5-signatures.md)); the per-message store
 (gap 8 in full); notifications while MailCraft is closed; Propose New Time, rooms, Teams
 meetings; `.pst`/`.msg`; languages; printing; S/MIME and OpenPGP; BSD and ARM as beta
 platforms; a Discord channel for testers.
@@ -139,3 +141,4 @@ These need billsecond's accounts or money, and are B10:
 |---|---|---|
 | 2026-10-14 | major | First version, from a review of the repository and a decision session with Martin Ball |
 | 2026-10-15 | minor | B2, B4: 14 working days rather than 14 calendar days, as a work mailbox is used (from the first tester sign-up, #33) |
+| 2026-10-15 | minor | Out list: R4.5 brings text colour, fonts, and pictures in signatures (Martin Ball's decision; [spec](r4-5-signatures.md)) |
