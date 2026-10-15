@@ -273,7 +273,7 @@ pub fn show(app: &mut MailApp, ui: &mut Ui, message: &Arc<Message>, place: Place
     let t = Tokens::get(&ctx);
     // In steps of a few points, so that dragging the pane's edge does not lay a long message out
     // again for every pixel.
-    let width = ((ui.available_width().min(super::MAX_BODY_WIDTH) / WIDTH_STEP).floor() * WIDTH_STEP).max(1.0);
+    let width = ((ui.available_width().min(super::MAX_TEXT_WIDTH) / WIDTH_STEP).floor() * WIDTH_STEP).max(1.0);
     let store = Store::of(&ctx);
     let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
     #[cfg(test)]
