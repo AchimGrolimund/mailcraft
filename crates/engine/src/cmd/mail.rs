@@ -163,6 +163,12 @@ fn previous(s: &mut Session, _: &Value) -> CmdResult {
 
 fn get(s: &mut Session, v: &Value) -> CmdResult {
     let id = p::id(v, "id").or(s.sel.focus()).ok_or_else(|| fail("select a message first"))?;
+    if s.mailbox.message(id).is_none() {
+        return Err(fail(format!("no message with id {id}")));
+    }
+    // Its text, from where the mailbox keeps it when it isn't in memory (a text that can't be
+    // read says so in its place).
+    let _ = s.load_where(id, |_| false);
     let m = s.mailbox.message(id).ok_or_else(|| fail(format!("no message with id {id}")))?;
     Ok(message_json(s, m))
 }
@@ -403,7 +409,9 @@ fn save_attachment(s: &mut Session, v: &Value) -> CmdResult {
         Some((stem, ext)) if !ext.is_empty() && ext.len() <= 8 && ext.chars().all(char::is_alphanumeric) => (stem, ext),
         _ => (a.name.as_str(), "bin"),
     };
-    deliver(v, &file_name(stem, ext), a.data.as_ref().clone())
+    // The file's bytes, from where the mailbox keeps them when they aren't in memory.
+    let bytes = s.content(id, crate::Part::Attachment(index))?;
+    deliver(v, &file_name(stem, ext), bytes.as_ref().clone())
 }
 
 fn remove_attachment(s: &mut Session, v: &Value) -> CmdResult {

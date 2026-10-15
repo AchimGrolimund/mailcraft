@@ -121,9 +121,14 @@ fn new(s: &mut Session, v: &Value) -> CmdResult {
     Ok(json!({"composing": true}))
 }
 
+/// The message a command answers, forwards or opens again, whole: its body and its files in
+/// memory, fetched from where the mailbox keeps them when they weren't (`Session::content`).
 fn source_message(s: &Session, v: &Value) -> Result<Message, CmdError> {
     let id = p::id(v, "id").or(s.sel.focus()).ok_or_else(|| fail("select a message first"))?;
-    s.mailbox.message(id).cloned().ok_or_else(|| fail(format!("no message with id {id}")))
+    if s.mailbox.message(id).is_none() {
+        return Err(fail(format!("no message with id {id}")));
+    }
+    s.loaded_message(id).map(|m| Message::clone(&m))
 }
 
 /// `RE: subject`, unless it already starts that way.

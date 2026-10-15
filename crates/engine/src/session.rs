@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use mailcraft_model::{Attachment, Id, Importance, Mailbox, Message, RichBody};
+use mailcraft_model::{Attachment, ContentRef, Id, Importance, Mailbox, Message, RichBody};
 use mailcraft_time::{Date, DateTime, Timestamp, Weekday, Zone};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,19 @@ use crate::{CmdError, Registry};
 
 /// Undo steps kept.
 const MAX_HISTORY: usize = 100;
+
+/// How long a search spends bringing the bodies of older mail into memory before it answers with
+/// what it has searched (and says what it hasn't).
+const SEARCH_TIME: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// One part of a message whose bytes [`Session::content`] fetches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Part {
+    Text,
+    Html,
+    /// An attachment, by its index in `Message::attachments`.
+    Attachment(usize),
+}
 
 /// The part of the app in front: mail, calendar, people or tasks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -519,6 +532,17 @@ pub struct Session {
     redo: Vec<Undo>,
     rev: u64,
     list_cache: Option<(String, Arc<Vec<Row>>)>,
+    /// Where the content that isn't in memory comes from ([`Session::content`]). `None`: the
+    /// content folder beside the mailbox file, where there is one (the desktop); the browser,
+    /// which keeps everything in memory, never asks.
+    pub content_source: Option<Arc<dyn crate::io::ContentSource>>,
+    /// Counts the parts brought into memory (caches that read bodies key on it with `rev`).
+    loads: u64,
+    /// Messages the last search left out because their bodies weren't in memory and loading them
+    /// ran past [`Session::search_time`]; the list says so.
+    pub unsearched: usize,
+    /// How long one search spends bringing bodies into memory before it goes with what it has.
+    pub search_time: std::time::Duration,
 }
 
 impl Session {
@@ -548,6 +572,10 @@ impl Session {
             redo: Vec::new(),
             rev: 0,
             list_cache: None,
+            content_source: None,
+            loads: 0,
+            unsearched: 0,
+            search_time: SEARCH_TIME,
         };
         s.view.date = s.today();
         s.normalize();
@@ -684,17 +712,229 @@ impl Session {
         self.sel.focus().and_then(|id| self.mailbox.message(id))
     }
 
-    /// The rows of the message list for the folder, filter, search and sort in view.
+    /// Counts the times content was brought into memory or let go of ([`Session::load_where`]):
+    /// not a change to the mailbox, but what is shown of it (a preview, a search) may differ.
+    pub fn loads(&self) -> u64 {
+        self.loads
+    }
+
+    /// The rows of the message list for the folder, filter, search and sort in view. A search
+    /// that reads bodies brings the bodies it lacks into memory first, newest first, for as long
+    /// as [`Session::search_time`] allows; what it didn't get to is counted in
+    /// [`Session::unsearched`].
     pub fn rows(&mut self) -> Arc<Vec<Row>> {
-        let key = format!("{}|{}|{}", self.rev, self.today().to_days(), serde_json::to_string(&self.view).unwrap_or_default());
+        let key = |s: &Session| format!("{}|{}|{}|{}", s.rev, s.loads, s.today().to_days(), serde_json::to_string(&s.view).unwrap_or_default());
         if let Some((k, rows)) = &self.list_cache
-            && *k == key
+            && *k == key(self)
         {
             return rows.clone();
         }
+        self.load_bodies_for_search();
+        let key = key(self);
         let rows = Arc::new(crate::list::rows(self));
         self.list_cache = Some((key, rows.clone()));
         rows
+    }
+
+    // ---- content that isn't in memory ----
+
+    /// Where content comes from: what the host set, else the content folder beside the mailbox
+    /// file (`crate::store`), where this build has one.
+    fn source(&self) -> Option<Arc<dyn crate::io::ContentSource>> {
+        if let Some(source) = &self.content_source {
+            return Some(source.clone());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let beside: Option<Arc<dyn crate::io::ContentSource>> = Some(Arc::new(crate::store::Content));
+        #[cfg(target_arch = "wasm32")]
+        let beside = None;
+        beside
+    }
+
+    /// Fetch what `r` names from the source.
+    fn fetch(&self, r: &ContentRef) -> Result<Arc<Vec<u8>>, CmdError> {
+        let kept_nowhere = || CmdError::Failed("the mailbox isn't kept in a file, so content outside memory can't be read".into());
+        let path = self.path.as_deref().ok_or_else(kept_nowhere)?;
+        let source = self.source().ok_or_else(kept_nowhere)?;
+        source.fetch(path, r).map_err(CmdError::Failed)
+    }
+
+    /// The bytes of one part of a message: from memory when they are there, else from where the
+    /// mailbox keeps them (the content folder beside its file on the desktop). The one way to
+    /// the bytes of an attachment, wherever they are. An error names what is wrong: no such
+    /// message or part, or a part whose file is missing or damaged.
+    pub fn content(&self, message: Id, part: Part) -> Result<Arc<Vec<u8>>, CmdError> {
+        let m = self.mailbox.message(message).ok_or_else(|| CmdError::Failed(format!("no message with id {message}")))?;
+        let kept = m.kept.as_deref().filter(|k| !k.failed);
+        match part {
+            Part::Text => match kept.and_then(|k| k.text).filter(|_| m.body.text.is_empty()) {
+                Some(r) => self.fetch(&r),
+                None => Ok(Arc::new(m.body.text.as_bytes().to_vec())),
+            },
+            Part::Html => match kept.and_then(|k| k.html).filter(|_| m.body.html.is_none()) {
+                Some(r) => self.fetch(&r),
+                None => Ok(Arc::new(m.body.html.as_deref().unwrap_or("").as_bytes().to_vec())),
+            },
+            Part::Attachment(i) => {
+                let a = m.attachments.get(i).ok_or_else(|| CmdError::Failed(format!("the message has no attachment {i}")))?;
+                match a.kept.filter(|_| a.data.is_empty()) {
+                    Some(r) => self.fetch(&r),
+                    None => Ok(a.data.clone()),
+                }
+            }
+        }
+    }
+
+    /// A copy of message `id` with its body and the attachments `pick` chooses in memory (the
+    /// message itself when nothing had to be fetched), without changing the mailbox: for what
+    /// writes a message out (MIME to send or export, a forward).
+    pub fn loaded_message_where(&self, id: Id, pick: impl Fn(&Attachment) -> bool) -> Result<Arc<Message>, CmdError> {
+        let m = self.mailbox.messages.get(&id).ok_or_else(|| CmdError::Failed(format!("no message with id {id}")))?;
+        if !m.body_is_kept() && m.attachments.iter().all(|a| a.is_loaded() || !pick(a)) {
+            return Ok(m.clone());
+        }
+        let mut copy = Message::clone(m);
+        loaded_into(&mut copy, |part| self.content(id, part), &pick)?;
+        Ok(Arc::new(copy))
+    }
+
+    /// [`Session::loaded_message_where`] with every attachment.
+    pub fn loaded_message(&self, id: Id) -> Result<Arc<Message>, CmdError> {
+        self.loaded_message_where(id, |_| true)
+    }
+
+    /// Bring the body of message `id` and the attachments `pick` chooses into memory, in the
+    /// mailbox itself, so that everything that reads the message finds them. Not a change to the
+    /// mailbox (nothing to undo or save), though caches that read bodies see it. Returns whether
+    /// anything was brought in. A body whose file is missing or damaged says so in its text from
+    /// then on, and the error says why.
+    pub fn load_where(&mut self, id: Id, pick: impl Fn(&Attachment) -> bool) -> Result<bool, CmdError> {
+        let Some(m) = self.mailbox.messages.get(&id) else { return Err(CmdError::Failed(format!("no message with id {id}"))) };
+        if !m.body_is_kept() && m.attachments.iter().all(|a| a.is_loaded() || !pick(a)) {
+            return Ok(false);
+        }
+        let mut copy = Message::clone(m);
+        let loaded = loaded_into(&mut copy, |part| self.content(id, part), &pick);
+        if let Err(e) = &loaded
+            && copy.body_is_kept()
+            && let Some(kept) = copy.kept.as_deref_mut()
+        {
+            // Said once, in the message, instead of being asked for again every frame.
+            log::warn!("message {id}: its text couldn't be read ({e})");
+            kept.failed = true;
+            copy.body.text = crate::store_placeholder().to_string();
+            copy.body.html = None;
+        }
+        self.mailbox.messages.insert(id, Arc::new(copy));
+        self.loads += 1;
+        loaded.map(|_| true)
+    }
+
+    /// Bring everything of message `id` into memory ([`Session::load_where`]).
+    pub fn load_message(&mut self, id: Id) -> Result<bool, CmdError> {
+        self.load_where(id, |_| true)
+    }
+
+    /// Bring in what showing message `id` needs: its body, the pictures its HTML shows in place
+    /// (`cid:`), and any calendar part (an invitation's bar reads it). Other attachments wait
+    /// until they are opened or saved.
+    pub fn load_for_display(&mut self, id: Id) -> Result<bool, CmdError> {
+        // The body first: which pictures are shown is in its HTML.
+        let body = self.load_where(id, |_| false)?;
+        let Some(m) = self.mailbox.message(id) else { return Ok(body) };
+        let html = m.body.html.clone().unwrap_or_default();
+        let parts = self.load_where(id, move |a| is_calendar_part(a) || shown_in(&html, a))?;
+        Ok(body || parts)
+    }
+
+    /// Whether showing message `id` would bring anything into memory ([`Session::load_for_display`]).
+    pub fn needs_load_for_display(&self, id: Id) -> bool {
+        let Some(m) = self.mailbox.message(id) else { return false };
+        if m.body_is_kept() {
+            return true;
+        }
+        let html = m.body.html.as_deref().unwrap_or("");
+        m.attachments.iter().any(|a| !a.is_loaded() && (is_calendar_part(a) || shown_in(html, a)))
+    }
+
+    /// The whole mailbox with every part in memory, as a self-contained file needs it (File ›
+    /// Save As, an export, saving to another place): a copy when anything had to be fetched. An
+    /// error names the message whose content couldn't be read.
+    pub fn loaded_mailbox(&self) -> Result<Mailbox, CmdError> {
+        let mut mailbox = self.mailbox.clone();
+        for (id, m) in &self.mailbox.messages {
+            if !m.is_loaded() {
+                mailbox.messages.insert(*id, self.loaded_message(*id)?);
+            }
+        }
+        Ok(mailbox)
+    }
+
+    /// The messages of the Outbox `outbox` holds, whole, for a synchronisation to send: a
+    /// message whose content can't be read is left out of this run, with a line in the log,
+    /// rather than sent without its files.
+    pub fn loaded_outbox(&self, outbox: Vec<Message>) -> Vec<Message> {
+        outbox
+            .into_iter()
+            .filter_map(|m| {
+                if m.is_loaded() {
+                    return Some(m);
+                }
+                match self.loaded_message(m.id) {
+                    Ok(loaded) => Some(Message::clone(&loaded)),
+                    Err(e) => {
+                        log::warn!("message {} stays in the Outbox this time: {e}", m.id);
+                        None
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// Before the list is built for a search that reads bodies: the bodies it lacks, newest
+    /// first, within [`Session::search_time`]; the rest are counted as not searched.
+    fn load_bodies_for_search(&mut self) {
+        self.unsearched = 0;
+        let query = mailcraft_model::search::Query::parse(&self.view.search);
+        if query.is_empty() || !query.reads_bodies() {
+            return;
+        }
+        // The messages the list looks at (`list::rows`): the folder in view, or everywhere but
+        // Deleted Items and Junk E-mail.
+        let everywhere = self.view.scope == Scope::Everywhere;
+        let mb = &self.mailbox;
+        let hidden: Vec<Id> = if everywhere {
+            mb.folders
+                .iter()
+                .filter(|f| matches!(f.kind, mailcraft_model::FolderKind::Deleted | mailcraft_model::FolderKind::Junk))
+                .flat_map(|f| mb.subtree(f.id))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let folder = self.view.folder;
+        let mut wanted: Vec<(Timestamp, Id)> = mb
+            .messages
+            .values()
+            .filter(|m| if everywhere { !hidden.contains(&m.folder) } else { m.folder == folder })
+            .filter(|m| m.body_is_kept())
+            .map(|m| (m.date, m.id))
+            .collect();
+        if wanted.is_empty() {
+            return;
+        }
+        wanted.sort_unstable_by(|a, b| b.cmp(a));
+        let deadline = std::time::Instant::now() + self.search_time;
+        let mut left = wanted.len();
+        for (_, id) in wanted {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            // A body that can't be read says so in its place, and is not asked for again.
+            let _ = self.load_where(id, |_| false);
+            left -= 1;
+        }
+        self.unsearched = left;
     }
 
     /// Keep the view and the selection pointing at things that exist.
@@ -878,4 +1118,50 @@ impl Session {
         }
         result
     }
+}
+
+/// Whether an attachment is a calendar part (an invitation, an answer to one).
+fn is_calendar_part(a: &Attachment) -> bool {
+    let kind = a.mime.trim().to_ascii_lowercase();
+    kind.starts_with("text/calendar") || kind.starts_with("application/ics") || a.name.to_ascii_lowercase().ends_with(".ics")
+}
+
+/// Whether `html` shows the picture `a` in place (`cid:`).
+fn shown_in(html: &str, a: &Attachment) -> bool {
+    !a.content_id.is_empty() && html.contains(&format!("cid:{}", a.content_id))
+}
+
+/// Bring the body of `m` and the attachments `pick` chooses into it, through `fetch`. Stops at
+/// the first part that can't be read, with the message changed as far as it got.
+fn loaded_into(m: &mut Message, fetch: impl Fn(Part) -> Result<Arc<Vec<u8>>, CmdError>, pick: &impl Fn(&Attachment) -> bool) -> Result<(), CmdError> {
+    if m.body_is_kept()
+        && let Some(kept) = m.kept.as_deref().copied()
+    {
+        let text = kept.text.filter(|_| m.body.text.is_empty()).map(|_| fetch(Part::Text)).transpose()?;
+        let html = kept.html.filter(|_| m.body.html.is_none()).map(|_| fetch(Part::Html)).transpose()?;
+        if let Some(text) = text {
+            m.body.text = text_of(&text);
+        }
+        if let Some(html) = html {
+            m.body.html = Some(text_of(&html));
+        }
+        m.kept = None;
+    }
+    for i in 0..m.attachments.len() {
+        let Some(a) = m.attachments.get(i) else { break };
+        if a.is_loaded() || !pick(a) {
+            continue;
+        }
+        let bytes = fetch(Part::Attachment(i))?;
+        if let Some(a) = m.attachments.get_mut(i) {
+            a.data = bytes;
+            a.kept = None;
+        }
+    }
+    Ok(())
+}
+
+/// Bytes as the text they hold; what isn't UTF-8 is read as well as it can be.
+fn text_of(bytes: &[u8]) -> String {
+    String::from_utf8(bytes.to_vec()).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }

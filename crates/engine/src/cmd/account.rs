@@ -326,6 +326,8 @@ pub fn sync_request(s: &Session, account: Id) -> Result<SyncRequest, CmdError> {
         })
         .collect();
     let (ops, _) = remote_ops(&s.mailbox, account, MAX_OPS);
+    // What is sent goes whole: the files a message keeps on disk are read for it.
+    let outbox = s.loaded_outbox(outbox);
     Ok(SyncRequest { account: a.clone(), folders, outbox, max_per_folder: s.prefs.sync_limit, ops, ..Default::default() })
 }
 

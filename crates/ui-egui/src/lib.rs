@@ -1490,7 +1490,8 @@ impl MailApp {
         }
         let mail = mailcraft_engine::cmd::graph_mail::graph_mail_request(&self.session, account).map_err(|e| e.to_string())?;
         let outbox: Vec<mailcraft_model::Message> = match self.session.mailbox.folder_of_kind(account, mailcraft_model::FolderKind::Outbox) {
-            Some(folder) => self.session.mailbox.messages_in(folder).map(|m| m.as_ref().clone()).collect(),
+            // Whole: the files a message keeps on disk are read for it.
+            Some(folder) => self.session.loaded_outbox(self.session.mailbox.messages_in(folder).map(|m| m.as_ref().clone()).collect()),
             None => Vec::new(),
         };
         // The calendar and the contacts as for any account that signs in with Microsoft: the
