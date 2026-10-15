@@ -19,7 +19,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("compose.select", "Select Text", "Message", select).pure().params(r#"{"from": number, "to"?: number} (to: the caret, default from)"#).when(needs_compose),
         CommandSpec::new("compose.type", "Type", "Message", type_text)
             .pure()
-            .params(r#"{"text": string} — over the selection, in the formatting at the caret; a line break starts a paragraph"#)
+            .params(r#"{"text": string} — over the selection, in the formatting at the caret; a line break starts a paragraph (of the same kind; a line break alone in an empty list item ends the list there)"#)
             .when(needs_compose),
         CommandSpec::new("compose.delete", "Delete Text", "Message", delete)
             .pure()
@@ -49,6 +49,22 @@ pub fn specs() -> Vec<CommandSpec> {
             .pure()
             .params(r#"{"url"?: string (http, https, mailto or tel; none: remove the link), "from"?: number, "to"?: number}"#)
             .when(needs_html),
+        CommandSpec::new("format.indent", "Increase Indent", "Message › Basic Text", indent)
+            .pure()
+            .params(r#"{"from"?: number, "to"?: number} — the list items there a level deeper (eight levels)"#)
+            .when(needs_html),
+        CommandSpec::new("format.outdent", "Decrease Indent", "Message › Basic Text", outdent)
+            .pure()
+            .params(r#"{"from"?: number, "to"?: number} — the list items there a level out; from the outermost level, out of the list"#)
+            .when(needs_html),
+        CommandSpec::new("edit.copy", "Copy", "Message › Clipboard", copy)
+            .pure()
+            .params(r#"{"from"?: number, "to"?: number} — answers the selection as {"html", "text"} for the clipboard (HTML only in an HTML message); changes nothing"#)
+            .when(needs_compose),
+        CommandSpec::new("edit.cut", "Cut", "Message › Clipboard", cut)
+            .pure()
+            .params(r#"{"from"?: number, "to"?: number} — answers the selection as edit.copy does, and takes it out of the text"#)
+            .when(needs_compose),
         CommandSpec::new("edit.paste", "Paste", "Message › Clipboard", paste)
             .pure()
             .params(r#"{"html"?: string, "text"?: string} — over the selection; HTML is reduced to bold, italic, underline, a size, links and lists (to plain text in a plain-text message)"#)
@@ -222,6 +238,47 @@ fn link(s: &mut Session, v: &Value) -> CmdResult {
     };
     edit(s, v, |c| c.body.set_link(url.as_deref()))?;
     Ok(state(s))
+}
+
+fn indent(s: &mut Session, v: &Value) -> CmdResult {
+    edit(s, v, |c| c.body.indent(1))?;
+    Ok(json!({"level": s.compose.as_ref().map_or(0, |c| c.body.text().level_at(c.body.selection().start()))}))
+}
+
+fn outdent(s: &mut Session, v: &Value) -> CmdResult {
+    edit(s, v, |c| c.body.indent(-1))?;
+    let c = s.compose.as_ref();
+    Ok(json!({
+        "level": c.map_or(0, |c| c.body.text().level_at(c.body.selection().start())),
+        "list": c.map(|c| c.body.text().list_at(c.body.selection().start())),
+    }))
+}
+
+/// The selection (after the params' range, when they name one) as the clipboard takes it: HTML
+/// of the set, written as the message's own HTML part is, and its plain text.
+fn clipboard(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
+    let c = compose_mut(s)?;
+    select_range(c, v)?;
+    let sel = c.body.selection();
+    if sel.is_empty() {
+        return Err(fail("nothing is selected in the message"));
+    }
+    let part = c.body.text().slice(sel.start(), sel.end()).map_err(model)?;
+    let html = (c.format == BodyFormat::Html).then(|| mailcraft_mime::rich::to_html(&part));
+    Ok(json!({"text": part.to_plain(), "html": html}))
+}
+
+fn copy(s: &mut Session, v: &Value) -> CmdResult {
+    clipboard(s, v)
+}
+
+fn cut(s: &mut Session, v: &Value) -> CmdResult {
+    let out = clipboard(s, v)?;
+    edit(s, &json!({}), |c| {
+        let sel = c.body.selection();
+        c.body.delete(sel.start(), sel.end())
+    })?;
+    Ok(out)
 }
 
 /// Most HTML or text one paste takes, in bytes.

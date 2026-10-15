@@ -226,3 +226,33 @@ fn a_reply_is_written_the_way_the_original_was() {
     run(&mut s, "compose.formatHtml", json!({}));
     assert!(s.enabled("format.bold"));
 }
+
+#[test]
+fn list_items_indent_and_the_selection_is_copied_as_html_and_text() {
+    let mut s = session();
+    run(&mut s, "mail.new", json!({}));
+    run(&mut s, "compose.set", json!({"body": "a\nb"}));
+    run(&mut s, "format.bullets", json!({"from": 0, "to": 3}));
+    let r = run(&mut s, "format.indent", json!({"from": 2}));
+    assert_eq!(r["level"], 1);
+    let levels: Vec<u8> = compose(&s).body.text().paragraphs().iter().map(|p| p.level).collect();
+    assert_eq!(levels, [0, 1]);
+    // The selection as the clipboard takes it: the set's HTML (a list in an item) and the text.
+    let copied = run(&mut s, "edit.copy", json!({"from": 0, "to": 3}));
+    assert_eq!(copied["text"], "- a\n   - b");
+    let html = copied["html"].as_str().unwrap();
+    assert!(html.starts_with("<ul") && html.contains("<li>a\r\n<ul") && html.contains("<li>b</li>"), "{html}");
+    assert_eq!(compose(&s).body.plain(), "a\nb", "copying changes nothing");
+    // Out a level, then out of the list.
+    assert_eq!(run(&mut s, "format.outdent", json!({"from": 2}))["level"], 0);
+    assert_eq!(run(&mut s, "format.outdent", json!({"from": 2}))["list"], "none");
+    // Cut takes it out; with nothing selected there is nothing to copy or cut.
+    let cut = run(&mut s, "edit.cut", json!({"from": 0, "to": 1}));
+    assert_eq!(cut["text"], "- a");
+    assert_eq!(compose(&s).body.plain(), "\nb");
+    assert!(s.run("edit.copy", &json!({})).is_err() && s.run("edit.cut", &json!({})).is_err());
+    // In a plain-text message the clipboard gets text only.
+    run(&mut s, "compose.formatPlain", json!({}));
+    assert!(run(&mut s, "edit.copy", json!({"from": 0, "to": 2}))["html"].is_null());
+    assert!(s.run("format.indent", &json!({})).is_err());
+}

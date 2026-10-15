@@ -56,6 +56,8 @@ pub enum Place {
     Pane,
     /// A window of its own, by the window's number.
     Window(u64),
+    /// Under the owner's text in a reply or forward being written: the original it carries.
+    Quote,
 }
 
 /// The reading pane: the selected message, or a word on why there is none to show.
@@ -114,6 +116,48 @@ pub fn show_message(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, place: Pla
             });
         });
     });
+}
+
+/// The original a reply or forward in HTML carries below the owner's text, read-only, through the
+/// same display blocks as the reading pane: nothing in it runs, its own pictures (`cid:`) are
+/// shown, and pictures on the web only as the original's would be (the owner asked for them for
+/// that message, its sender or its sender's domain, or for all mail; never in Junk E-mail but
+/// message by message), while it is on screen.
+pub(crate) fn show_quote(app: &mut MailApp, ui: &mut Ui) {
+    let ctx = ui.ctx().clone();
+    let Some(m) = quote_message(app, &ctx) else { return };
+    remote::tick(app, &ctx);
+    let doc = view::doc_where(&ctx, &m, Place::Quote, remote::available(app));
+    let access = if doc.remote.is_empty() { Access::Blocked } else { remote::access(app, &m) };
+    if access == Access::Allowed {
+        remote::want(app, &ctx, &m, &doc);
+    }
+    view::show(app, ui, &m, Place::Quote, access);
+}
+
+/// The carried original as a message to show: the original's sender, date and place (what its
+/// pictures are allowed by), with the quote's HTML for a body and the pictures the quote takes
+/// along. Kept from frame to frame while the quote stays the same.
+fn quote_message(app: &MailApp, ctx: &egui::Context) -> Option<Arc<Message>> {
+    let c = app.session.compose.as_ref()?;
+    let quote = c.quote.as_ref()?;
+    let key = egui::Id::new("mailcraft-compose-quote");
+    let kept: Option<Arc<Message>> = ctx.data(|d| d.get_temp(key));
+    let source = c.source.and_then(|id| app.session.mailbox.messages.get(&id));
+    let pictures = if quote.pictures.is_empty() { &c.attachments } else { &quote.pictures };
+    let same = |m: &Arc<Message>| {
+        m.body.html.as_deref() == Some(quote.html.as_str()) && m.id == source.map_or(0, |s| s.id) && m.attachments.len() == pictures.len()
+    };
+    if let Some(m) = kept.filter(same) {
+        return Some(m);
+    }
+    let mut m = source.map(|s| (**s).clone()).unwrap_or_default();
+    m.body = mailcraft_model::Body { text: quote.text.clone(), html: Some(quote.html.clone()) };
+    // A forward carries the original's attachments itself, its pictures among them.
+    m.attachments = pictures.clone();
+    let m = Arc::new(m);
+    ctx.data_mut(|d| d.insert_temp(key, m.clone()));
+    Some(m)
 }
 
 /// Pictures the host has brought are taken in, whatever is on screen ([`remote::tick`]).

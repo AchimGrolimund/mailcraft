@@ -15,6 +15,7 @@ fn check(t: &RichText) {
     assert!(!t.paragraphs().is_empty());
     assert_eq!(t.len(), t.text().chars().count());
     for p in t.paragraphs() {
+        assert!(p.level <= MAX_LEVEL && (p.list != ListKind::None || p.level == 0), "{t:?}");
         for r in &p.runs {
             assert!(!r.text.is_empty(), "{t:?}");
             assert!(r.text.chars().all(|c| c == '\t' || !c.is_control()), "{t:?}");
@@ -315,6 +316,94 @@ fn toggling_a_selection_turns_it_on_unless_all_of_it_is() {
 }
 
 #[test]
+fn list_items_have_levels_numbered_level_by_level() {
+    let item = |text: &str, list, level| Paragraph::new(vec![Run::plain(text)], list).at_level(level);
+    let doc = RichText::from_paragraphs(vec![
+        item("a", ListKind::Numbered, 0),
+        item("a1", ListKind::Numbered, 1),
+        item("a2", ListKind::Numbered, 1),
+        item("dot", ListKind::Bullet, 2),
+        item("a3", ListKind::Numbered, 1),
+        item("b", ListKind::Numbered, 0),
+        item("b1", ListKind::Numbered, 1),
+        item("x", ListKind::Bullet, 1),
+        item("b2", ListKind::Numbered, 1),
+        item("plain", ListKind::None, 5),
+        item("c", ListKind::Numbered, 99),
+    ]);
+    assert_eq!(numbers(doc.paragraphs()), [1, 1, 2, 0, 3, 2, 1, 0, 1, 0, 1]);
+    assert_eq!(doc.paragraphs()[9].level, 0, "an ordinary paragraph has no level");
+    assert_eq!(doc.paragraphs()[10].level, MAX_LEVEL);
+    assert!(doc.to_plain().starts_with("1. a\n   1. a1\n   2. a2\n      - dot\n   3. a3\n2. b"));
+    // Stored before levels: no level, 0; stored with a level out of bounds: the deepest.
+    let old: RichText = serde_json::from_str(r#"{"paragraphs":[{"runs":[{"text":"x"}],"list":"bullet"}]}"#).unwrap();
+    assert_eq!(old.paragraphs()[0].level, 0);
+    let deep: RichText = serde_json::from_str(r#"{"paragraphs":[{"runs":[{"text":"x"}],"list":"bullet","level":200}]}"#).unwrap();
+    assert_eq!(deep.paragraphs()[0].level, MAX_LEVEL);
+    assert!(!serde_json::to_string(&old).unwrap().contains("level"));
+}
+
+#[test]
+fn tab_and_shift_tab_move_items_between_levels() {
+    let mut b = RichBody::from_plain("a\nb\nc");
+    b.select(0, 5).unwrap();
+    b.toggle_list(ListKind::Bullet).unwrap();
+    b.select(2, 2).unwrap();
+    for _ in 0..20 {
+        b.indent(1).unwrap();
+    }
+    assert_eq!(b.text().paragraphs().iter().map(|p| p.level).collect::<Vec<_>>(), [0, MAX_LEVEL, 0]);
+    assert!(!b.indent(1).unwrap(), "no deeper than the deepest");
+    // Enter on an empty item a level deep goes a level out, then out of the list.
+    b.select(5, 5).unwrap();
+    b.type_text("\n").unwrap();
+    b.indent(1).unwrap();
+    assert_eq!(b.text().paragraphs()[3].level, 1);
+    b.type_text("\n").unwrap();
+    assert_eq!((b.text().paragraphs()[3].level, b.text().paragraphs()[3].list), (0, ListKind::Bullet));
+    b.type_text("\n").unwrap();
+    assert_eq!(b.text().paragraphs()[3].list, ListKind::None);
+    // Shift+Tab: a level out; at the outermost level, out of the list.
+    b.select(0, 5).unwrap();
+    b.indent(-1).unwrap();
+    assert_eq!(
+        b.text().paragraphs().iter().map(|p| (p.list, p.level)).take(3).collect::<Vec<_>>(),
+        [(ListKind::None, 0), (ListKind::Bullet, MAX_LEVEL - 1), (ListKind::None, 0)]
+    );
+    // Ordinary paragraphs don't indent; the step is one undo.
+    let mut plain = RichBody::from_plain("x");
+    assert!(!plain.indent(1).unwrap() && !plain.can_undo());
+    b.undo();
+    assert_eq!(b.text().paragraphs()[1].level, MAX_LEVEL);
+}
+
+#[test]
+fn enter_goes_on_with_a_list_and_ends_it_on_an_empty_item() {
+    let mut b = RichBody::from_plain("one");
+    b.select(0, 0).unwrap();
+    b.toggle_list(ListKind::Numbered).unwrap();
+    b.select(3, 3).unwrap();
+    b.type_text("\n").unwrap();
+    b.type_text("two").unwrap();
+    b.type_text("\n").unwrap();
+    let kinds = |b: &RichBody| b.text().paragraphs().iter().map(|p| p.list).collect::<Vec<_>>();
+    assert_eq!(kinds(&b), [ListKind::Numbered; 3]);
+    // Enter on the empty item: no new paragraph, the item is an ordinary paragraph now.
+    b.type_text("\n").unwrap();
+    assert_eq!(kinds(&b), [ListKind::Numbered, ListKind::Numbered, ListKind::None]);
+    assert_eq!((b.plain().as_str(), b.selection()), ("one\ntwo\n", Selection::caret(8)));
+    // Once more, an ordinary new paragraph; and one undo step brings the item back.
+    b.type_text("\n").unwrap();
+    assert_eq!(b.plain(), "one\ntwo\n\n");
+    b.undo();
+    b.undo();
+    assert_eq!(kinds(&b), [ListKind::Numbered; 3]);
+    assert_eq!(b.text().paragraph_span(5), Some((4, 7)));
+    assert_eq!(b.text().paragraph_span(99), None);
+    assert!(b.text().paragraph_is_empty(8) && !b.text().paragraph_is_empty(0) && !b.text().paragraph_is_empty(99));
+}
+
+#[test]
 fn lists_toggle_and_backspace_ends_an_item() {
     let mut b = RichBody::from_plain("a\nb\nc");
     b.select(0, 3).unwrap();
@@ -429,6 +518,7 @@ enum Op {
     Link(String),
     Unlink,
     List(u8),
+    Indent(bool),
     Clear,
     Plain(String),
     Undo,
@@ -450,6 +540,7 @@ fn op() -> impl Strategy<Value = Op> {
         prop_oneof![Just("https://example.org".to_string()), Just("javascript:x".to_string()), "\\PC{0,8}"].prop_map(Op::Link),
         Just(Op::Unlink),
         (0u8..3).prop_map(Op::List),
+        any::<bool>().prop_map(Op::Indent),
         Just(Op::Clear),
         text().prop_map(Op::Plain),
         Just(Op::Undo),
@@ -480,6 +571,7 @@ proptest! {
                 Op::Link(u) => b.set_link(Some(&u)),
                 Op::Unlink => b.set_link(None),
                 Op::List(k) => b.toggle_list([ListKind::None, ListKind::Bullet, ListKind::Numbered][k as usize]).map(|_| ()),
+                Op::Indent(deeper) => b.indent(if deeper { 1 } else { -1 }).map(|_| ()),
                 Op::Clear => b.clear_formatting(),
                 Op::Plain(s) => b.set_plain(&s),
                 Op::Undo => { b.undo(); Ok(()) }
@@ -494,10 +586,11 @@ proptest! {
 
     /// Any documents, cleaned, survive being stored.
     #[test]
-    fn documents_survive_storing(texts in proptest::collection::vec(("\\PC{0,8}", any::<bool>(), any::<u8>(), 0u8..3), 1..8)) {
-        let paragraphs = texts.into_iter().map(|(text, b, size, list)| Paragraph {
+    fn documents_survive_storing(texts in proptest::collection::vec(("\\PC{0,8}", any::<bool>(), any::<u8>(), 0u8..3, any::<u8>()), 1..8)) {
+        let paragraphs = texts.into_iter().map(|(text, b, size, list, level)| Paragraph {
             runs: vec![Run::new(text, Style { bold: b, size: Some(size), ..Style::default() })],
             list: [ListKind::None, ListKind::Bullet, ListKind::Numbered][list as usize],
+            level,
         }).collect();
         let t = RichText::from_paragraphs(paragraphs);
         check(&t);

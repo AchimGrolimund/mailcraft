@@ -590,6 +590,66 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
             pen.frect(5.5, 6.5, 14.5, 10.5, soft);
         }
         "tick" => pen.check(10.0, 10.5, 1.5, c),
+        // Formatting the text of a message being written
+        "bold" => pen.text(10.0, 10.3, 15.0, "B", c, true),
+        "italic" => {
+            pen.line(&[(11.8, 4.0), (8.2, 16.0)]);
+            pen.line(&[(9.0, 4.0), (14.5, 4.0)]);
+            pen.line(&[(5.5, 16.0), (11.0, 16.0)]);
+        }
+        "underline" => {
+            pen.line(&[(6.0, 3.5), (6.0, 10.0)]);
+            pen.arc(10.0, 10.0, 4.0, 0.0, 180.0, c);
+            pen.line(&[(14.0, 3.5), (14.0, 10.0)]);
+            pen.line_c(&[(4.5, 17.0), (15.5, 17.0)], a);
+        }
+        "fontSize" => {
+            pen.text(7.5, 10.5, 15.0, "A", c, false);
+            pen.text(15.5, 12.5, 9.0, "A", c, false);
+        }
+        "bullets" => {
+            for y in [5.0, 10.0, 15.0] {
+                pen.fcircle(4.5, y, 1.4, a);
+                pen.line(&[(8.0, y), (17.0, y)]);
+            }
+        }
+        "numbering" => {
+            for (y, n) in [(5.0, "1"), (10.0, "2"), (15.0, "3")] {
+                pen.text(4.5, y, 6.0, n, a, true);
+                pen.line(&[(8.0, y), (17.0, y)]);
+            }
+        }
+        "insertLink" => {
+            // Two links of a chain.
+            let s = pen.s();
+            let link = |x0: f32, x1: f32, color: Color32| {
+                pen.p.rect_stroke(Rect::from_min_max(pen.pt(x0, 7.0), pen.pt(x1, 13.0)), 3.0 * s, pen.stroke(color), egui::StrokeKind::Middle);
+            };
+            link(2.5, 11.5, c);
+            link(8.5, 17.5, a);
+        }
+        "clearFormatting" => {
+            pen.text(8.0, 9.5, 13.0, "A", c, false);
+            pen.line_c(&[(10.5, 17.0), (17.0, 10.5)], red);
+            pen.line_c(&[(10.5, 10.5), (17.0, 17.0)], red);
+        }
+        "formatHtml" => pen.text(10.0, 10.0, 8.5, "</>", c, true),
+        "increaseIndent" | "decreaseIndent" => {
+            pen.line(&[(3.0, 4.0), (17.0, 4.0)]);
+            pen.line(&[(9.5, 8.0), (17.0, 8.0)]);
+            pen.line(&[(9.5, 12.0), (17.0, 12.0)]);
+            pen.line(&[(3.0, 16.0), (17.0, 16.0)]);
+            if name == "increaseIndent" {
+                pen.fill(&[(3.0, 7.0), (7.0, 10.0), (3.0, 13.0)], a);
+            } else {
+                pen.fill(&[(7.0, 7.0), (3.0, 10.0), (7.0, 13.0)], a);
+            }
+        }
+        "formatPlain" => {
+            pen.line(&[(4.0, 5.5), (16.0, 5.5)]);
+            pen.line(&[(4.0, 10.0), (16.0, 10.0)]);
+            pen.line(&[(4.0, 14.5), (11.5, 14.5)]);
+        }
         // Anything else: a lettered tile, so a missing drawing is visible rather than empty.
         _ => {
             pen.rect(3.5, 3.5, 16.5, 16.5, c);
@@ -767,4 +827,16 @@ pub const NAMES: &[&str] = &[
     "server",
     "device",
     "tick",
+    "bold",
+    "italic",
+    "underline",
+    "fontSize",
+    "bullets",
+    "numbering",
+    "insertLink",
+    "clearFormatting",
+    "formatHtml",
+    "formatPlain",
+    "increaseIndent",
+    "decreaseIndent",
 ];

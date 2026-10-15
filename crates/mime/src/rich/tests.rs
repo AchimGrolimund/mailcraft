@@ -1,4 +1,4 @@
-use mailcraft_model::rich::{Format, ListKind, MAX_SIZE, MIN_SIZE, Paragraph, RichText, Run, Style, safe_link};
+use mailcraft_model::rich::{Format, ListKind, MAX_LEVEL, MAX_SIZE, MIN_SIZE, Paragraph, RichText, Run, Style, safe_link};
 use proptest::prelude::*;
 
 use super::*;
@@ -141,6 +141,31 @@ fn sizes_survive_the_trip_in_points() {
     assert_eq!(px_to_points(255), MAX_SIZE);
 }
 
+#[test]
+fn nested_lists_are_lists_in_items_and_come_back_at_their_levels() {
+    let item = |text: &str, list, level| Paragraph::new(vec![Run::plain(text)], list).at_level(level);
+    let t = RichText::from_paragraphs(vec![
+        item("a", ListKind::Numbered, 0),
+        item("a1", ListKind::Bullet, 1),
+        item("deep", ListKind::Bullet, 3),
+        item("b", ListKind::Numbered, 0),
+        item("end", ListKind::None, 0),
+    ]);
+    let html = to_html(&t);
+    let ol = "<ol style=\"margin-top:0;margin-bottom:0\">";
+    let ul = "<ul style=\"margin-top:0;margin-bottom:0\">";
+    assert_eq!(html, format!("{ol}<li>a\r\n{ul}<li>a1\r\n{ul}{ul}<li>deep</li>\r\n</ul></ul></li></ul></li><li>b</li>\r\n</ol><div>end</div>\r\n"));
+    assert_in_set(&html);
+    assert_eq!(from_html(&to_html_document(&t, None)), t);
+    // What Outlook, Word and the web's editors paste: lists in items, a level per list, as deep
+    // as the model goes.
+    let pasted = from_html(
+        "<ul><li>one<ul><li>two<ol><li>three<ul><ul><ul><ul><ul><ul><ul><li>far</li></ul></ul></ul></ul></ul></ul></ul></li></ol></li></ul></li></ul>",
+    );
+    let levels: Vec<(ListKind, u8)> = pasted.paragraphs().iter().map(|p| (p.list, p.level)).collect();
+    assert_eq!(levels, [(ListKind::Bullet, 0), (ListKind::Bullet, 1), (ListKind::Numbered, 2), (ListKind::Bullet, MAX_LEVEL)]);
+}
+
 fn arb_style() -> impl Strategy<Value = Style> {
     (
         any::<bool>(),
@@ -158,14 +183,15 @@ fn arb_style() -> impl Strategy<Value = Style> {
 }
 
 fn arb_text() -> impl Strategy<Value = RichText> {
-    proptest::collection::vec((proptest::collection::vec(("\\PC{0,12}", arb_style()), 0..4), 0u8..3), 1..8).prop_map(|ps| {
+    proptest::collection::vec((proptest::collection::vec(("\\PC{0,12}", arb_style()), 0..4), 0u8..3, any::<u8>()), 1..8).prop_map(|ps| {
         RichText::from_paragraphs(
             ps.into_iter()
-                .map(|(runs, list)| {
+                .map(|(runs, list, level)| {
                     Paragraph::new(
                         runs.into_iter().map(|(t, s)| Run::new(t, s)).collect(),
                         [ListKind::None, ListKind::Bullet, ListKind::Numbered][list as usize],
                     )
+                    .at_level(level)
                 })
                 .collect(),
         )
@@ -183,10 +209,10 @@ fn arb_exact() -> impl Strategy<Value = RichText> {
         proptest::option::of(Just("https://example.org/x".to_string())),
     )
         .prop_map(|(bold, italic, underline, size, link)| Style { bold, italic, underline, size, link });
-    let paragraph = (proptest::collection::vec(("[a-zA-Z0-9&<>\"'é]{1,6}", style), 0..4), 0u8..3).prop_map(|(runs, list)| {
+    let paragraph = (proptest::collection::vec(("[a-zA-Z0-9&<>\"'é]{1,6}", style), 0..4), 0u8..3, 0..=MAX_LEVEL).prop_map(|(runs, list, level)| {
         let runs: Vec<Run> = runs.into_iter().enumerate().map(|(i, (t, s))| Run::new(if i == 0 { t } else { format!(" {t}") }, s)).collect();
         let list = if runs.is_empty() { ListKind::None } else { [ListKind::None, ListKind::Bullet, ListKind::Numbered][list as usize] };
-        Paragraph::new(runs, list)
+        Paragraph::new(runs, list).at_level(level)
     });
     proptest::collection::vec(paragraph, 1..8).prop_map(|ps| RichText::from_paragraphs(at_most_three_blank_lines(ps)))
 }

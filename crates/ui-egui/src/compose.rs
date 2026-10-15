@@ -4,8 +4,12 @@ use egui::{Align2, Rect, Sense, Stroke, Ui, pos2, vec2};
 use mailcraft_engine::ComposeMode;
 use serde_json::json;
 
-use crate::theme::{Tokens, paint_clipped, regular, semibold};
+use crate::theme::{Tokens, paint_clipped, regular};
 use crate::{MailApp, icons};
+
+pub(crate) mod editor;
+#[cfg(test)]
+mod tests;
 
 const LABEL_W: f32 = 62.0;
 
@@ -163,9 +167,43 @@ fn recipient_field(app: &mut MailApp, ui: &mut Ui, key: &str, label: &str, text:
     ui.data_mut(|d| d.insert_temp(store, st));
 }
 
+/// What the window shows of the message being written besides its body (copied out of the
+/// session once a frame, so the commands it runs can change the message meanwhile).
+struct Shown {
+    mode: ComposeMode,
+    dirty: bool,
+    draft: bool,
+    account: u64,
+    to: String,
+    cc: String,
+    bcc: String,
+    subject: String,
+    /// Each attachment's name and size.
+    attachments: Vec<(String, String)>,
+    quote: bool,
+}
+
+impl Shown {
+    fn of(app: &MailApp) -> Option<Shown> {
+        let c = app.session.compose.as_ref()?;
+        Some(Shown {
+            mode: c.mode,
+            dirty: c.dirty,
+            draft: c.draft.is_some(),
+            account: c.account,
+            to: c.to.clone(),
+            cc: c.cc.clone(),
+            bcc: c.bcc.clone(),
+            subject: c.subject.clone(),
+            attachments: c.attachments.iter().map(|a| (a.name.clone(), a.size_label())).collect(),
+            quote: c.quote.is_some(),
+        })
+    }
+}
+
 pub fn show(app: &mut MailApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
-    let Some(c) = app.session.compose.clone() else { return };
+    let Some(c) = Shown::of(app) else { return };
     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
 
     // What this is, and the actions.
@@ -189,7 +227,7 @@ pub fn show(app: &mut MailApp, ui: &mut Ui) {
         if crate::widgets::icon_text_button(ui, "attach", tl!("Attach"), true).clicked() {
             let _ = app.run("ui.attach", json!({}));
         }
-        if crate::widgets::icon_text_button(ui, "saveDraft", tl!("Save draft"), c.dirty || c.draft.is_none()).clicked() {
+        if crate::widgets::icon_text_button(ui, "saveDraft", tl!("Save draft"), c.dirty || !c.draft).clicked() {
             let _ = app.run("compose.saveDraft", json!({}));
         }
         if crate::widgets::icon_text_button(ui, "discard", tl!("Discard"), true).clicked() {
@@ -201,7 +239,7 @@ pub fn show(app: &mut MailApp, ui: &mut Ui) {
             }
             let state = if c.dirty {
                 tl!("Not saved")
-            } else if c.draft.is_some() {
+            } else if c.draft {
                 tl!("Saved to Drafts")
             } else {
                 ""
@@ -267,8 +305,8 @@ pub fn show(app: &mut MailApp, ui: &mut Ui) {
         egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 12, top: 6, bottom: 6 }).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                for (i, a) in c.attachments.iter().enumerate() {
-                    let label = format!("{}  ({})", a.name, a.size_label());
+                for (i, (name, size)) in c.attachments.iter().enumerate() {
+                    let label = format!("{name}  ({size})");
                     let w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(label.clone(), regular(12.0), t.text).size().x).min(260.0);
                     let (r, _) = ui.allocate_exact_size(vec2(w + 52.0, 26.0), Sense::hover());
                     ui.painter().rect(r, 5.0, t.panel, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
@@ -296,42 +334,16 @@ pub fn show(app: &mut MailApp, ui: &mut Ui) {
         ui.painter().line_segment([pos2(r.min.x + 16.0, r.min.y), pos2(r.max.x - 12.0, r.min.y)], Stroke::new(1.0, t.border));
     }
 
-    // The body takes what is left.
-    let mut body = c.body.plain();
+    // The body takes what is left: the owner's text, and under it the original of a reply or
+    // forward in HTML, as the reading pane shows it.
     egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("compose_body").show(ui, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 10, bottom: 16 }).show(ui, |ui| {
-            let quote = c.quote.as_ref().map(|q| q.html.as_str());
-            let rows = if quote.is_some() { 8 } else { ((ui.available_height() / 19.0) as usize).max(8) };
-            let edit = egui::TextEdit::multiline(&mut body)
-                .id(ui.id().with("compose_body_edit"))
-                .frame(egui::Frame::NONE)
-                .font(regular(13.0))
-                .desired_width(f32::INFINITY)
-                .desired_rows(rows)
-                .hint_text(tl!("Write your message"));
-            let resp = ui.add(edit);
-            if fresh && !focus_to {
-                resp.request_focus();
-                // The caret goes to the top, above the quoted original.
-                if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), resp.id) {
-                    state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(0))));
-                    state.store(ui.ctx(), resp.id);
-                }
-            }
-            if resp.changed() {
-                let _ = app.execute("compose.set", json!({"body": body}));
-            }
-            // The original of an HTML reply goes out below as it came; here it is read through
-            // `mailcraft_html` (nothing in it runs or is fetched) and can't be edited.
-            if let Some(html) = quote {
-                let key = ui.id().with(("compose_quote", html.len(), egui::Id::new(html)));
-                let text: std::sync::Arc<str> = ui.ctx().memory_mut(|m| {
-                    m.data.get_temp_mut_or_insert_with(key, || -> std::sync::Arc<str> { std::sync::Arc::from(mailcraft_html::to_text(html)) }).clone()
-                });
+            let room = if c.quote { 8.0 * 19.0 } else { (ui.available_height() - 26.0).max(8.0 * 19.0) };
+            editor::show(app, ui, room, fresh && !focus_to);
+            if c.quote {
                 ui.add_space(8.0);
-                ui.label(egui::RichText::new(text.as_ref()).font(regular(13.0)).color(t.text_dim));
+                crate::reading::show_quote(app, ui);
             }
         });
     });
-    let _ = semibold;
 }
