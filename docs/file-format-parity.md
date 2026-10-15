@@ -1,6 +1,6 @@
 # File formats and protocols
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-12 · **Change:** minor (time zones in the mailbox file and in `.ics`) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-15 · **Change:** minor (the mailbox file in format 3, a log of records, R6; earlier: time zones in the mailbox file and in `.ics`) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
 
 What MailCraft reads, writes and speaks, and how far each goes. Everything is implemented from the
 public specifications; every reader is fed arbitrary bytes by property tests and must never panic.
@@ -9,7 +9,7 @@ public specifications; every reader is fed arbitrary bytes by property tests and
 
 | Format | Read | Write | Notes |
 |---|---|---|---|
-| **`.mailcraft`** (the mailbox, JSON) | yes | yes | Everything in one file; `repair()` makes any file consistent. Will be replaced by a per-message store (gap #8). Event times are clock times, and the file says by which zone's clock (`zone`, an IANA name); an event may name zones of its own (`startZone`, `endZone`) and which of two passes of a repeated hour it is in (`startRepeated`, `endRepeated`). A file from before 2026-10-12 says none of that: it is read as written by this computer's clock, as it always was, and stamped |
+| **`.mailcraft`** (the mailbox) | yes | yes | One self-contained JSON file (format 1: exports, the browser, Save As), or on the desktop a log of records (format 3: the rest of the mailbox and one record per message, contact, event or task, each with a checksum, closed by commits; a save appends what changed) with bodies and attachments over a kilobyte in `<file>.blobs/` named by their SHA-256. Formats 1 and 2 (JSON with the content folder) open and become format 3 at the first changed save, the old file kept beside it. `repair()` makes any file consistent. Event times are clock times, and the file says by which zone's clock (`zone`, an IANA name); an event may name zones of its own (`startZone`, `endZone`) and which of two passes of a repeated hour it is in (`startRepeated`, `endRepeated`). A file from before 2026-10-12 says none of that: it is read as written by this computer's clock, as it always was, and stamped |
 | **`.eml`** (RFC 5322 + MIME) | yes | yes | Multipart trees, encoded words, RFC 2231 names, quoted-printable and base64, attachments and inline parts, importance, keywords, status flags; round-trips its own output. No uuencode, TNEF (`winmail.dat`), `format=flowed` |
 | **`.mbox`** (RFC 4155, mboxrd-tolerant) | yes | yes | `Content-Length` variants not honoured |
 | **`.ics`** (iCalendar, RFC 5545) | yes | yes | Events, to-dos, attendees, alarms, recurrence (the common rules), skipped days, changed instances read as separate events. Time zones: `TZID` by the file's own `VTIMEZONE` (which decides the moment), by IANA and Windows names, UTC and floating times; an item with a zone is written with its `VTIMEZONE`, a calendar export in the calendar's zone. A zone nobody knows is kept at the offset the file gives, else at its clock time, and reported. No `RDATE`, recurring to-dos |
@@ -38,3 +38,4 @@ Interoperability with real servers has not been tested (gap #1).
 |---|---|---|
 | 2026-10-11 | major | First version |
 | 2026-10-12 | minor | Time zones (M3.5): the mailbox file's `zone` and an event's own zones; `VTIMEZONE` read and written |
+| 2026-10-15 | minor | The mailbox file in format 3, a log of records a save appends to (R6); formats 1 and 2 migrated with the old file kept |

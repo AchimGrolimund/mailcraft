@@ -1,6 +1,6 @@
 # MailCraft architecture
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-15 · **Change:** minor (cargo-deny, pinned actions, zizmor, Scorecard, the threat model; R3.1: a Microsoft account kept in step through Graph behind a switch for testing, server ids, `graph::pace`; the Secret Service on Linux and FreeBSD behind `Services::secrets`; `StoreTrouble`; Exchange Web Services removed: the Favorites of Outlook are read through Microsoft Graph alone, and there is no choice of a way) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-15 · **Change:** minor (R6: the mailbox file is a log of records, format 3, `store_index.rs`; a damaged save costs only itself and `file.open` says so; cargo-deny, pinned actions, zizmor, Scorecard, the threat model; R3.1: a Microsoft account kept in step through Graph behind a switch for testing, server ids, `graph::pace`; the Secret Service on Linux and FreeBSD behind `Services::secrets`; `StoreTrouble`; Exchange Web Services removed: the Favorites of Outlook are read through Microsoft Graph alone, and there is no choice of a way) · **Target:** Microsoft Outlook (Microsoft 365)
 
 How MailCraft is built today. Rules for working in the code are in [`AGENTS.md`](../AGENTS.md). The
 shape — layers, "everything is a command", the swappable egui front end, the control channel, MCP,
@@ -66,12 +66,25 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
   clock, and only stamped. Everything that converts goes through `mailcraft_model::zoned`.
 - **Conversations are grouped by topic** (the subject without `RE:`/`FW:` prefixes) within an
   account, as the incumbent does, not by `References` chains.
-- **A mailbox file, and its content beside it.** On the desktop `mailbox.mailcraft` is JSON holding
-  everything but content; bodies and attachments over a kilobyte are write-once files named by
-  their SHA-256 in `mailbox.mailcraft.blobs/` (`crates/engine/src/store.rs`). A save after a read
-  mark writes a few megabytes on a background thread, atomically; a self-contained single file is
-  still what the browser, exports and `file.saveAs` use. Everything is in memory while the app
-  runs, which is the next limit (see `docs/gaps.md`).
+- **A mailbox file, and its content beside it.** On the desktop `mailbox.mailcraft` holds
+  everything but content as a log of records (format 3, `crates/engine/src/store_index.rs`): the
+  rest of the mailbox, and one record per message, contact, event or task; bodies and attachments
+  over a kilobyte are write-once files named by their SHA-256 in `mailbox.mailcraft.blobs/`
+  (`crates/engine/src/store.rs`). A save appends the records of what changed and a commit in one
+  flushed write, on a background thread: a read mark costs a few hundred bytes however large the
+  mailbox. What was last written is remembered item by item (its fingerprint, and a weak pointer
+  to the copy in memory that it is), so a save looks only at items whose copy changed; when the
+  appended records outgrow the mailbox, the file is written whole to a temporary file and renamed
+  over. Opening reads records to the last commit and parses items on several threads. A save a
+  crash cut short is records no commit closes, and isn't read; a save with a damaged record is
+  left out and the saves after it are read; either way `store::Opened::notice` says what was left
+  out (`file.open` returns it as `lostSaves`, `unfinished` and `notice`; the window's status bar
+  and the CLI show it), and the file is kept aside as `<file>.damaged-<time>` before it is next
+  written, and the sweep keeps every content file a kept-aside file names. Formats 1 and 2 (JSON)
+  are still read and become format 3 at the first changed save, the old file kept beside it as
+  `<file>.format1` or `.format2`. A self-contained single file is still what the browser, exports
+  and `file.saveAs` use. Everything is in memory while the app runs, which is the next limit
+  (R6.1, see `docs/gaps.md`).
 - **A Send/Receive arrives in pieces.** `mailcraft_net::sync_with` emits what was sent, what the
   server was told, then mail folder by folder (the Inbox first, newest first, fifty at a time),
   each piece safe to apply by itself (`apply_sync_part`), so mail shows while the rest is on its
@@ -179,3 +192,4 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
 | 2026-10-15 | minor | Sign-ins remembered on Linux and FreeBSD (R5): the Secret Service behind `Services::secrets`, and `SecretStore::take_trouble` for a store that can't be used |
 | 2026-10-15 | minor | Exchange Web Services removed (R2): Graph is the one way of reading the Favorites; a mailbox that chose the other opens and says so once |
 | 2026-10-15 | minor | R3.1: `AccountKind::Microsoft` behind the switch for testing; server ids (`ServerFolder`, `ServerMessage`, `Mailbox::queued`); Graph's own sync types; `graph::mail` and `graph::pace` in `net`; `cmd/graph_mail.rs` in the engine |
+| 2026-10-15 | minor | R6 (prerequisite of R6.1): the mailbox file in format 3, a log of records a save appends to (`store_index.rs`), crash-safe, formats 1 and 2 migrated with the old file kept; a damaged save costs only itself (`Opened::notice`, `file.open`'s `lostSaves`) |
