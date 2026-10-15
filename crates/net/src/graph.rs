@@ -306,6 +306,7 @@ enum Doing {
     Categories,
     Favorites,
     Folders,
+    Mail,
 }
 
 fn nonsense(text: &str) -> NetError {
@@ -541,6 +542,7 @@ fn refusal(doing: Doing, reply: &Reply, sent: &[&str], now: Timestamp) -> NetErr
                 Doing::Categories => "this account may not read its list of categories through Microsoft Graph",
                 Doing::Favorites => "this account may not read its Favorites through Microsoft Graph",
                 Doing::Folders => "this account may not read or change its folders through Microsoft Graph",
+                Doing::Mail => "this account may not read its mail through Microsoft Graph",
             };
             NetError::Forbidden(format!("{what}{}", code()))
         }
@@ -1807,7 +1809,7 @@ pub use favorites::favorites;
 pub mod pace;
 
 pub mod mail;
-pub use mail::{sync_folders, sync_mail};
+pub use mail::{fetch_messages, sync_folders, sync_mail};
 
 mod check;
 pub use check::{CHECK_TITLE, CalendarCheck, CheckStep, STEPS as CHECK_STEPS, check_calendar, check_start, no_sign_in};

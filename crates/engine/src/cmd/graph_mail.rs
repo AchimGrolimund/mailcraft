@@ -19,7 +19,8 @@
 use std::collections::{HashMap, HashSet};
 
 use mailcraft_model::sync::{
-    ChangeOutcome, FolderChange, FolderListing, GraphFolder, GraphLink, GraphMailRequest, GraphMailResult, MAX_FOLDER_CHANGES,
+    ChangeOutcome, FolderChange, FolderListing, GraphFetchRequest, GraphFetchResult, GraphFolder, GraphLink, GraphMailRequest, GraphMailResult,
+    MAX_FOLDER_CHANGES,
 };
 use mailcraft_model::{AccountKind, Folder, FolderKind, Id, Mailbox, Queued, ServerFolder, clean_name};
 use serde_json::{Value, json};
@@ -37,6 +38,13 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("sync.applyGraph", "Apply Send/Receive with Microsoft Graph", "Send / Receive", apply)
             .pure()
             .params(r#"{"result": GraphMailResult}"#),
+        CommandSpec::new("sync.graphFetchRequest", "Download Messages in Full", "Send / Receive", fetch_request)
+            .pure()
+            .params(r#"{"account"?: number, "message"?: number (one message, at once), "most"?: number (default 10)} — answers which messages a host should fetch whole: the one asked for, or the next ones in the background (not fetched, within the account's Download messages in full, newest first)"#)
+            .when(has_graph_account),
+        CommandSpec::new("sync.applyGraphFetch", "Apply Downloaded Messages", "Send / Receive", apply_fetch)
+            .pure()
+            .params(r#"{"result": GraphFetchResult}"#),
     ]
 }
 
@@ -142,6 +150,56 @@ fn request(s: &mut Session, v: &Value) -> CmdResult {
         .or_else(|| s.mailbox.accounts.iter().find(|a| a.kind == AccountKind::Microsoft).map(|a| a.id))
         .ok_or_else(|| fail("no account is kept in step through Microsoft Graph"))?;
     serde_json::to_value(graph_mail_request(s, account)?).map_err(|e| fail(e.to_string()))
+}
+
+/// Which messages of `account` a host should fetch whole: `message` at once (the owner opened it,
+/// or is replying to it), else the next `most` in the background (R3 spec S12).
+pub fn graph_fetch_request(s: &Session, account: Id, message: Option<Id>, most: usize) -> Result<GraphFetchRequest, CmdError> {
+    let a = s.mailbox.account(account).ok_or_else(|| fail(format!("no account with id {account}")))?;
+    if a.kind != AccountKind::Microsoft {
+        return Err(fail(format!("{} isn't kept in step through Microsoft Graph", a.name)));
+    }
+    let ids = match message {
+        Some(id) => {
+            let m = s.mailbox.message(id).filter(|m| m.account == account).ok_or_else(|| fail(format!("no message with id {id} in {}", a.name)))?;
+            m.server.as_ref().filter(|_| m.unfetched).map(|server| vec![server.id.clone()]).unwrap_or_default()
+        }
+        None => graph_down::fetch_queue(&s.mailbox, account, most.clamp(1, 100)),
+    };
+    Ok(GraphFetchRequest { account, email: a.email.clone(), ids, background: message.is_none() })
+}
+
+/// Take in messages fetched whole. Not an undo step.
+pub fn apply_graph_fetch(s: &mut Session, result: GraphFetchResult) -> CmdResult {
+    let account = result.account;
+    let a = s.mailbox.account(account).ok_or_else(|| fail(format!("no account with id {account}")))?;
+    if !result.email.is_empty() && !a.email.trim().eq_ignore_ascii_case(result.email.trim()) {
+        return Err(fail(format!("these messages were for another account, not for {}", a.name)));
+    }
+    let mut index = std::mem::take(&mut s.graph_index);
+    let taken = result.fetched.iter().filter(|f| graph_down::take_fetched(&mut s.mailbox, &mut index, account, &f.id, &f.mime)).count();
+    s.graph_index = index;
+    if taken > 0 {
+        s.mailbox_changed();
+    }
+    let (waiting, large) = graph_down::not_fetched(&s.mailbox, account);
+    Ok(
+        json!({"fetched": taken, "missing": result.missing.len(), "waiting": waiting, "large": large, "errors": result.errors, "offline": result.offline, "busyFor": result.busy_for}),
+    )
+}
+
+fn fetch_request(s: &mut Session, v: &Value) -> CmdResult {
+    let account = p::id(v, "account")
+        .or_else(|| s.mailbox.accounts.iter().find(|a| a.kind == AccountKind::Microsoft).map(|a| a.id))
+        .ok_or_else(|| fail("no account is kept in step through Microsoft Graph"))?;
+    let most = p::id(v, "most").and_then(|n| usize::try_from(n).ok()).unwrap_or(10);
+    serde_json::to_value(graph_fetch_request(s, account, p::id(v, "message"), most)?).map_err(|e| fail(e.to_string()))
+}
+
+fn apply_fetch(s: &mut Session, v: &Value) -> CmdResult {
+    let result: GraphFetchResult =
+        serde_json::from_value(v.get("result").cloned().ok_or_else(|| bad("`result` is required"))?).map_err(|e| bad(format!("`result`: {e}")))?;
+    apply_graph_fetch(s, result)
 }
 
 fn apply(s: &mut Session, v: &Value) -> CmdResult {

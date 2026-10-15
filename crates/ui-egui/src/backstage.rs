@@ -151,6 +151,10 @@ fn info(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
                 let _ = app.run("account.remove", json!({"id": a.id}));
             }
         }
+        // Which messages are kept whole on this computer (R3.2).
+        if a.kind == AccountKind::Microsoft {
+            download_in_full(app, ui, a);
+        }
     }
     if tile(
         ui,
@@ -207,6 +211,37 @@ fn info(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     if tile(ui, "categorize", tl!("Categories"), tl!("Names and colours for sorting mail, events, people and tasks"), t) {
         let _ = app.run("ui.dialog", json!({"name": "categories"}));
     }
+}
+
+/// "Download messages in full" for a Microsoft account: everything, or up to a size (larger ones
+/// download when opened).
+fn download_in_full(app: &mut MailApp, ui: &mut Ui, a: &mailcraft_model::Account) {
+    use mailcraft_model::DownloadInFull;
+    let choices = [
+        (DownloadInFull::UpTo10Mb, "upTo10Mb", tl!("Up to 10 MB")),
+        (DownloadInFull::UpTo25Mb, "upTo25Mb", tl!("Up to 25 MB")),
+        (DownloadInFull::UpTo50Mb, "upTo50Mb", tl!("Up to 50 MB")),
+        (DownloadInFull::Everything, "everything", tl!("Everything")),
+    ];
+    let now = choices.iter().find(|(c, _, _)| *c == a.download_in_full).map_or("", |(_, _, label)| *label);
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.add_space(12.0);
+        ui.label(tl!("Download messages in full:"));
+        egui::ComboBox::from_id_salt(("download-in-full", a.id))
+            .selected_text(now)
+            .show_ui(ui, |ui| {
+                for (choice, code, label) in choices {
+                    if ui.selectable_label(a.download_in_full == choice, label).clicked() && a.download_in_full != choice {
+                        let _ = app.run("account.edit", json!({"id": a.id, "downloadInFull": code}));
+                        app.resume_fetch();
+                    }
+                }
+            })
+            .response
+            .on_hover_text(tl!("Larger messages download when you open them. Choosing less removes nothing already downloaded."));
+    });
+    ui.add_space(8.0);
 }
 
 fn open(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {

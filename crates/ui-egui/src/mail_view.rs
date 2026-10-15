@@ -363,6 +363,22 @@ fn list(app: &mut MailApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
     list_header(app, ui);
+    // A search covers what is here: of a message not fetched yet, its headers and preview (R3.2).
+    if !app.session.view.search.trim().is_empty() {
+        let folder = app.session.view.folder;
+        let everywhere = app.session.view.scope == mailcraft_engine::Scope::Everywhere;
+        let partly = app.session.mailbox.messages.values().filter(|m| m.unfetched && (everywhere || m.folder == folder)).count();
+        if partly > 0 {
+            let said = crate::i18n::fmt(
+                tl!("{count} messages weren't searched in full: only their beginning is here until they download."),
+                &[("count", &partly.to_string())],
+            );
+            egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 12, top: 4, bottom: 4 }).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(egui::RichText::new(said).font(regular(11.5)).color(t.text_dim));
+            });
+        }
+    }
     let rows = app.session.rows();
     if rows.is_empty() {
         let r = ui.available_rect_before_wrap();

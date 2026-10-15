@@ -201,6 +201,56 @@ pub struct ServerMessage {
     /// still gone from every folder then, it is removed here (R3 spec S9).
     #[serde(skip_serializing_if = "is_false")]
     pub gone: bool,
+    /// Its size on the server in bytes, when the server said (0: not said): what the background
+    /// fetch's limit is held against (R3 spec S12).
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub size: u64,
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
+}
+
+/// Messages of a Microsoft account to fetch whole (their MIME), by server id, in this order
+/// (R3 spec S12).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GraphFetchRequest {
+    pub account: Id,
+    pub email: String,
+    pub ids: Vec<String>,
+    /// Nobody is waiting: it gets the share of requests background work has.
+    #[serde(skip_serializing_if = "is_false")]
+    pub background: bool,
+}
+
+/// What fetching brought: each message's MIME as it came, and what the server no longer has.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GraphFetchResult {
+    pub account: Id,
+    pub email: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fetched: Vec<GraphFetched>,
+    /// Server ids the server answered "not found" for (deleted or moved meanwhile; the next run
+    /// says which).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<String>,
+    /// The server could not be reached: whatever wasn't fetched waits until it can.
+    #[serde(skip_serializing_if = "is_false")]
+    pub offline: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub busy_for: Option<u32>,
+}
+
+/// One message fetched whole.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GraphFetched {
+    pub id: String,
+    pub mime: Vec<u8>,
 }
 
 /// A value from a mailbox file, or `None` when what the file holds in its place isn't one (a

@@ -189,3 +189,124 @@ pub fn progress_words(mb: &Mailbox, account: Id, progress: &GraphProgress) -> St
         format!("Receiving {name} · folder {} of {}", progress.number, progress.folders)
     }
 }
+
+/// The next messages of `account` to fetch whole in the background (R3 spec S12): not fetched,
+/// not gone, no larger than the account's "Download messages in full", newest first; `most` of
+/// them at most, by server id.
+pub fn fetch_queue(mb: &Mailbox, account: Id, most: usize) -> Vec<String> {
+    let limit = mb.account(account).and_then(|a| a.download_in_full.limit());
+    let mut waiting: Vec<(i64, &str)> = mb
+        .messages
+        .values()
+        .filter(|m| m.account == account && m.unfetched)
+        .filter_map(|m| m.server.as_ref().filter(|s| !s.gone && limit.is_none_or(|limit| s.size <= limit)).map(|s| (m.received, s.id.as_str())))
+        .collect();
+    let most = most.min(waiting.len());
+    if most == 0 {
+        return Vec::new();
+    }
+    // The newest `most`, without sorting them all.
+    if most < waiting.len() {
+        waiting.select_nth_unstable_by(most - 1, |a, b| b.0.cmp(&a.0));
+        waiting.truncate(most);
+    }
+    waiting.sort_by_key(|w| std::cmp::Reverse(w.0));
+    waiting.into_iter().map(|(_, id)| id.to_string()).collect()
+}
+
+/// How many messages of `account` aren't fetched, and how many of those are larger than its
+/// "Download messages in full" (they wait until they are opened).
+pub fn not_fetched(mb: &Mailbox, account: Id) -> (usize, usize) {
+    let limit = mb.account(account).and_then(|a| a.download_in_full.limit());
+    mb.messages.values().filter(|m| m.account == account && m.unfetched).fold((0, 0), |(all, large), m| {
+        let size = m.server.as_ref().map_or(0, |s| s.size);
+        (all + 1, large + usize::from(limit.is_some_and(|limit| size > limit)))
+    })
+}
+
+/// Take in a message fetched whole: its text, attachments and headers from its MIME, with what
+/// the mailbox keeps of it (where it is, its marks, its server state) as it was. Whether there
+/// was such a message.
+pub fn take_fetched(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, id: &str, mime: &[u8]) -> bool {
+    let Some(m) = index.find(mb, account, id) else { return false };
+    let read = crate::mime::parse(mime);
+    let Ok(m) = mb.message_mut(m) else { return false };
+    m.message_id = read.message_id;
+    m.in_reply_to = read.in_reply_to;
+    m.references = read.references;
+    m.reply_to = read.reply_to;
+    m.bcc = read.bcc;
+    if !read.from.email.is_empty() {
+        m.from = read.from;
+    }
+    if !read.to.is_empty() {
+        m.to = read.to;
+    }
+    if !read.cc.is_empty() {
+        m.cc = read.cc;
+    }
+    if !read.subject.is_empty() {
+        m.subject = read.subject;
+    }
+    if read.date != 0 {
+        m.date = read.date;
+    }
+    m.body = read.body;
+    m.attachments = read.attachments;
+    m.headers = read.headers;
+    m.unfetched = false;
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use mailcraft_model::sync::ServerMessage;
+    use mailcraft_model::{AccountKind, DownloadInFull, FlagStatus, Folder, FolderKind, Mailbox, Message};
+
+    use super::*;
+
+    fn mailbox() -> (Mailbox, Id, Id) {
+        let mut mb = Mailbox::with_local_account("avery@mail.example", "Avery");
+        let account = mb.accounts[0].id;
+        mb.accounts[0].kind = AccountKind::Microsoft;
+        let folder = mb.alloc_id();
+        mb.folders.push(Folder { id: folder, account, name: "Inbox".into(), kind: FolderKind::Inbox, ..Default::default() });
+        for (n, size) in [(1, 1_000), (2, 30 << 20), (3, 0), (4, 2_000)] {
+            let server = ServerMessage { id: format!("AAkA{n}"), folder: "F".into(), size, ..Default::default() };
+            let m =
+                Message { folder, received: n * 60, unfetched: n != 4, server: Some(server), subject: format!("Preview {n}"), ..Default::default() };
+            mb.add_message(m).unwrap();
+        }
+        (mb, account, folder)
+    }
+
+    #[test]
+    fn the_newest_not_fetched_within_the_limit_come_first() {
+        let (mut mb, account, _) = mailbox();
+        // Number 4 is fetched; number 2 is larger than 10 MB; number 3 didn't say its size.
+        assert_eq!(fetch_queue(&mb, account, 10), ["AAkA3", "AAkA1"]);
+        assert_eq!(fetch_queue(&mb, account, 1), ["AAkA3"]);
+        assert_eq!(not_fetched(&mb, account), (3, 1));
+        mb.accounts[0].download_in_full = DownloadInFull::Everything;
+        assert_eq!(fetch_queue(&mb, account, 10), ["AAkA3", "AAkA2", "AAkA1"]);
+        assert_eq!(not_fetched(&mb, account), (3, 0));
+    }
+
+    #[test]
+    fn a_fetched_message_keeps_what_was_done_to_it_here() {
+        let (mut mb, account, folder) = mailbox();
+        let id = mb.messages.values().find(|m| m.subject == "Preview 1").unwrap().id;
+        {
+            let m = mb.message_mut(id).unwrap();
+            m.read = true;
+            m.flag = FlagStatus::Flagged;
+        }
+        let mime = b"From: Kit <kit@example.org>\r\nTo: avery@mail.example\r\nSubject: The whole of it\r\nMessage-ID: <w1@example.org>\r\nContent-Type: text/plain\r\n\r\nAll of the text.\r\n";
+        let mut index = ServerIndex::default();
+        assert!(take_fetched(&mut mb, &mut index, account, "AAkA1", mime));
+        assert!(!take_fetched(&mut mb, &mut index, account, "AAkA9", mime));
+        let m = mb.message(id).unwrap();
+        assert_eq!((m.subject.as_str(), m.body.text.trim(), m.from.email.as_str()), ("The whole of it", "All of the text.", "kit@example.org"));
+        assert!(!m.unfetched && m.read && m.flag == FlagStatus::Flagged && m.folder == folder && m.server.as_ref().unwrap().id == "AAkA1");
+    }
+}

@@ -306,6 +306,11 @@ pub fn status_bar(app: &mut MailApp, ui: &mut Ui) {
                         st(ui, tl!("This mailbox is on this device only"), t.text_dim)
                             .on_hover_text(tl!("Add a mail server account in File › Add Account to send and receive."));
                     }
+                    // Messages being fetched whole in the background (R3.2).
+                    let fetching = app.fetching.progress.clone();
+                    if !fetching.is_empty() {
+                        st(ui, &fetching, t.text_dim);
+                    }
                 });
             });
         });
