@@ -46,6 +46,13 @@ fmv-macos-events = "=0.1.0"
 # store (Windows Credential Manager, the macOS keychain), never to a file of ours.
 keyring = { version = "3.6", default-features = false, features = ["windows-native", "apple-native"] }
 
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+# On Linux and FreeBSD the store is the desktop's Secret Service (GNOME Keyring, KWallet,
+# KeePassXC…), spoken to over D-Bus. These features keep it pure Rust: zbus rather than libdbus,
+# so neither building nor installing needs a system library, and the secret travels to the
+# service encrypted (a Diffie-Hellman session, RustCrypto) rather than in the clear.
+keyring = { version = "3.6", default-features = false, features = ["async-secret-service", "async-io", "crypto-rust"] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd = { workspace = true }
 # Waits for an `rfd::AsyncFileDialog` on a background thread (the dialogs don't block the UI);

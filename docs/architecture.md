@@ -1,6 +1,6 @@
 # MailCraft architecture
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-13 · **Change:** minor (a second way of reading the Favorites of Outlook: `net`'s `ews`, `Account::favorites_source`, the choice in `ui-egui`'s `favorites_sync`) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-15 · **Change:** minor (the Secret Service on Linux and FreeBSD behind `Services::secrets`; `StoreTrouble`) · **Target:** Microsoft Outlook (Microsoft 365)
 
 How MailCraft is built today. Rules for working in the code are in [`AGENTS.md`](../AGENTS.md). The
 shape — layers, "everything is a command", the swappable egui front end, the control channel, MCP,
@@ -126,7 +126,8 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
   send that reached the server. Not pushed yet: folder renames and deletes, drafts, categories.
 - **Secrets stay out of our files.** A password or an OAuth refresh token lives in memory, and in
   the operating system's credential store when the owner wants it remembered (`Services::secrets`;
-  Windows and macOS so far). The mailbox file, `ui.json` and logs never hold one.
+  Windows, macOS, and the Secret Service on Linux and FreeBSD; a store that can't be used is
+  `StoreTrouble`, said once a session). The mailbox file, `ui.json` and logs never hold one.
 - **Signing in on the provider's page.** Microsoft accounts use OAuth 2.0 (authorization code with
   PKCE, a loopback redirect, the system's browser) and XOAUTH2. The engine only knows that an
   account signs in that way (`Account::oauth`); the host with sockets does it and hands tokens in.
@@ -154,3 +155,4 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
 | 2026-10-12 | minor | Time zones (M3.5): `time::Zone`, the mailbox's zone stamp and how stored times are read |
 | 2026-10-13 | minor | The Favorites of Outlook (M4.2): `graph::favorites` in `net`, the server's list in the mailbox, `favorites_sync` in the front end |
 | 2026-10-13 | minor | The owner chooses how they are read (M4.3): `ews` in `net` (Exchange Web Services, until 1 April 2027), `Account::favorites_source`, the choice and its job in the front end |
+| 2026-10-15 | minor | Sign-ins remembered on Linux and FreeBSD (R5): the Secret Service behind `Services::secrets`, and `SecretStore::take_trouble` for a store that can't be used |

@@ -1463,7 +1463,7 @@ fn entered(ui: &Ui, pass: &Pass) -> bool {
 
 /// Where a password that works is kept, for the line under its field.
 fn kept_where(app: &MailApp) -> &'static str {
-    if app.ui.remember_sign_in && app.services.secrets.is_some() {
+    if app.ui.remember_sign_in && app.services.secrets.is_some() && app.secrets_trouble.is_none() {
         tl!("Once it has worked, your system's credential store keeps it for next time. It is never written to the mailbox.")
     } else {
         tl!("MailCraft keeps it in memory until you close the app. It is never written to disk.")

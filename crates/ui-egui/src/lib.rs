@@ -98,8 +98,9 @@ pub struct Services {
     /// the account is added.
     pub test_account: Option<Box<dyn Fn(mailcraft_model::Account, String) -> Receiver<Result<(), String>>>>,
     /// Desktop: the operating system's credential store (Windows Credential Manager, the macOS
-    /// keychain), where a password or a refresh token is remembered between runs when the owner
-    /// wants that. Never the mailbox file, the settings or a log.
+    /// keychain, the Secret Service on Linux and FreeBSD), where a password or a refresh token is
+    /// remembered between runs when the owner wants that. Never the mailbox file, the settings or
+    /// a log.
     pub secrets: Option<Box<dyn SecretStore>>,
     /// The application (client) id this build presents to Microsoft when neither the account nor
     /// the settings name one; empty when the build has none.
@@ -165,6 +166,34 @@ pub trait SecretStore {
     fn get(&self, key: &str) -> Option<String>;
     fn set(&self, key: &str, secret: &str) -> Result<(), String>;
     fn delete(&self, key: &str);
+    /// Why the store itself couldn't be used the last time something was asked of it (none is
+    /// running, or it is locked), as opposed to there being nothing kept under a key. Taking it
+    /// clears it.
+    fn take_trouble(&self) -> Option<StoreTrouble> {
+        None
+    }
+}
+
+/// Why the system's credential store couldn't keep or give back a sign-in
+/// ([`SecretStore::take_trouble`]). Then nothing is remembered between runs: the owner is asked
+/// at each start, as on a system without a store, and is told why once a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoreTrouble {
+    /// No store answered: on Linux, no Secret Service (GNOME Keyring, KWallet) is running.
+    Unavailable,
+    /// The store is locked, or unlocking it was refused.
+    Locked,
+}
+
+impl StoreTrouble {
+    /// What the owner is told: in the status bar once, and under the switch in File › Options.
+    pub fn notice(self) -> String {
+        let why = match self {
+            StoreTrouble::Unavailable => tl!("No credential store answered (on Linux, GNOME Keyring or KWallet provides one)"),
+            StoreTrouble::Locked => tl!("The system's credential store is locked, or unlocking it was refused"),
+        };
+        i18n::fmt(tl!("{why}, so sign-ins aren't remembered: MailCraft asks again each time it starts."), &[("why", why)])
+    }
 }
 
 /// The pictures from the web that the host keeps on disk between runs
@@ -662,6 +691,9 @@ pub struct MailApp {
     pub(crate) reveal_selection: bool,
     /// Passwords typed this session, per account. Never saved.
     passwords: std::collections::HashMap<Id, String>,
+    /// Why the system's credential store couldn't be used this session, once that has been found
+    /// out; the owner has been told.
+    pub(crate) secrets_trouble: Option<StoreTrouble>,
     /// What signing in on a provider's page brought back this session, per account. Never saved.
     tokens: std::collections::HashMap<Id, Tokens>,
     /// Microsoft Graph tokens obtained this session, per account. Never saved.
@@ -778,6 +810,7 @@ impl MailApp {
             compose_bcc: false,
             reveal_selection: false,
             passwords: Default::default(),
+            secrets_trouble: None,
             tokens: Default::default(),
             graph_tokens: Default::default(),
             graph_rx: None,
@@ -1177,6 +1210,18 @@ impl MailApp {
             && let Err(e) = store.set(&Self::secret_key(kind, address), secret)
         {
             log::warn!("couldn't keep the sign-in for next time: {e}");
+        }
+    }
+
+    /// Tell the owner, once a session, when the system's credential store can't be used, so that
+    /// being asked again at the next start is no surprise.
+    pub(crate) fn check_secret_store(&mut self) {
+        let Some(trouble) = self.services.secrets.as_ref().and_then(|store| store.take_trouble()) else {
+            return;
+        };
+        if self.secrets_trouble.is_none() {
+            self.secrets_trouble = Some(trouble);
+            self.status(trouble.notice());
         }
     }
 
@@ -1873,6 +1918,7 @@ impl MailApp {
         self.poll_calendar_check();
         self.poll_free_busy();
         self.poll_sync();
+        self.check_secret_store();
         self.auto_sync();
         // The calendar by itself, between Send/Receive runs ([`calendar_sync`]).
         self.calendar_tick(ctx);
