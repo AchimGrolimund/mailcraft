@@ -16,6 +16,8 @@ pub mod format;
 mod format_tests;
 pub mod mail;
 pub mod people;
+#[cfg(test)]
+mod quote_tests;
 pub mod remote;
 pub mod rules;
 pub mod tasks;

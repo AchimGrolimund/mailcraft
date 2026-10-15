@@ -286,6 +286,22 @@ pub enum BodyFormat {
     Plain,
 }
 
+/// The original under a reply or forward that has HTML, carried as it came: it goes out below
+/// the owner's text and is never edited or reduced here.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Quote {
+    /// The original's header lines and text, for the plain-text part.
+    pub text: String,
+    /// The original's header lines and its HTML as it came (the inside of its `<body>`, and the
+    /// style sheets of its head), for the HTML part.
+    pub html: String,
+    /// The original's pictures its HTML shows (`cid:`), sent with a reply so the quote keeps
+    /// them. A forward carries every attachment anyway.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pictures: Vec<Attachment>,
+}
+
 /// The message being written. Recipient lines are text, as typed (`Ada <ada@example.org>; bob@…`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -306,6 +322,10 @@ pub struct Compose {
     pub body: RichBody,
     /// HTML with a plain-text part, or plain text only.
     pub format: BodyFormat,
+    /// The original of a reply or forward in HTML, below the owner's text. A plain-text original
+    /// is quoted in the body instead, as text the owner can edit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote: Option<Quote>,
     pub attachments: Vec<Attachment>,
     pub importance: Importance,
     pub in_reply_to: String,
