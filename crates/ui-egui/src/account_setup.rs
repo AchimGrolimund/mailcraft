@@ -343,6 +343,8 @@ struct Editing {
 /// The Add Account wizard, and Account Settings for an account that exists.
 pub struct AccountSetup {
     page: Page,
+    /// Google refused the password: the password page links to Google's App passwords page.
+    app_passwords: bool,
     email: String,
     /// The owner's name, as recipients see it.
     name: String,
@@ -448,6 +450,7 @@ impl AccountSetup {
             advanced: false,
             manual: false,
             picked: false,
+            app_passwords: false,
             service: String::new(),
             note: String::new(),
             oauth: None,
@@ -675,6 +678,7 @@ impl AccountSetup {
     fn go(&mut self, page: Page) {
         self.page = page;
         self.error.clear();
+        self.app_passwords = false;
         self.focus = true;
     }
 
@@ -1086,7 +1090,14 @@ impl AccountSetup {
         self.check = None;
         match answer {
             Ok(()) => self.add_with_password(app),
-            Err(e) => self.refuse(e),
+            Err(e) => {
+                let google = self.incoming.server().is_some_and(|s| is_google(&s.host));
+                self.refuse(e);
+                if google && self.error.starts_with("sign-in failed") {
+                    self.error = tl!("Google didn't accept the password. An account with 2-Step Verification needs an app password: make one on Google's App passwords page, then paste it here in place of your usual password.").to_string();
+                    self.app_passwords = true;
+                }
+            }
         }
     }
 
@@ -1293,6 +1304,11 @@ impl AccountSetup {
             }
         });
         problem(ui, &self.error);
+        if self.app_passwords {
+            egui::Frame::NONE.inner_margin(Margin { left: PAD, right: PAD, top: 0, bottom: 0 }).show(ui, |ui| {
+                ui.hyperlink(GOOGLE_APP_PASSWORDS);
+            });
+        }
         let ready = !asks || !self.password.0.is_empty();
         let (mut go, mut back) = (false, false);
         strip(ui, self.page, |ui| {
@@ -1543,6 +1559,15 @@ fn indented(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
 }
 
 /// What went wrong, in red above the buttons, where it stays in view however long the page is.
+/// Where a Google account's app passwords are made.
+const GOOGLE_APP_PASSWORDS: &str = "https://myaccount.google.com/apppasswords";
+
+/// Whether `host` is Google's mail server (Gmail, Google Workspace).
+fn is_google(host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    host == "gmail.com" || host.ends_with(".gmail.com") || host.ends_with(".googlemail.com")
+}
+
 fn problem(ui: &mut Ui, message: &str) {
     if message.is_empty() {
         return;
@@ -2205,6 +2230,25 @@ mod tests {
         assert_eq!(page(&h), Some(Page::Choose));
         click(&mut h, "Back");
         assert_eq!(page(&h), Some(Page::Address));
+    }
+
+    /// (#44) Google refuses an everyday password where 2-Step Verification is on: the page says
+    /// an app password is wanted, in plain words, and links to where one is made.
+    #[test]
+    fn google_asks_for_an_app_password_in_plain_words() {
+        let mut a = app(false);
+        let refusal = "sign-in failed: [ALERT] Application-specific password required: https://support.google.com/accounts/answer/185833 (Failure)";
+        let _tried = checks(&mut a, Some(Err(refusal)));
+        let mut h = open(a, json!({}));
+        connect(&mut h, "noor@gmail.com");
+        type_password(&mut h);
+        press(&mut h, Key::Enter);
+        assert_eq!(page(&h), Some(Page::Password));
+        assert!(says(&h, "Google didn't accept the password") && says(&h, GOOGLE_APP_PASSWORDS) && !says(&h, "[ALERT]"));
+        // Going back clears it.
+        click(&mut h, "Back");
+        assert!(wizard(&h).is_some_and(|w| !w.app_passwords));
+        assert!(is_google("imap.gmail.com") && is_google("IMAP.GMAIL.COM.") && !is_google("imap.example.org") && !is_google("notgmail.com"));
     }
 
     /// (b) A provider that takes a password: the servers are tried before the account is added.

@@ -60,5 +60,5 @@ requests only with a key the program keeps in a file in your settings folder.
 ## Changes and contact
 
 This statement lives in the project's repository, and its history shows every change:
-<https://github.com/billsecond/mailcraft/blob/main/PRIVACY.md>. Questions and reports:
-<https://github.com/billsecond/mailcraft/issues>.
+<https://github.com/UCS-Care-Group/mailcraft/blob/main/PRIVACY.md>. Questions and reports:
+<https://github.com/UCS-Care-Group/mailcraft/issues>.
