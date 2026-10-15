@@ -601,6 +601,16 @@ pub(crate) fn show_doc(app: &mut MailApp, ui: &mut Ui, which: Which, min_height:
 
     // The keyboard.
     let focused = editable && (resp.has_focus() || ctx.memory(|m| m.has_focus(id)));
+    // Coming back to the window: the system's input method is armed again (some desktops leave
+    // it off after the window was left, and then nothing typed arrives), and what it was
+    // composing when the window was left is forgotten.
+    let (left, came_back) = ui.input(|i| {
+        let seen = |to: bool| i.events.iter().any(|e| matches!(e, Event::WindowFocused(f) if *f == to));
+        (seen(false), seen(true))
+    });
+    if left || came_back {
+        st.preedit.clear();
+    }
     if focused {
         ctx.memory_mut(|m| {
             m.set_focus_lock_filter(id, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: false })
@@ -773,7 +783,7 @@ pub(crate) fn show_doc(app: &mut MailApp, ui: &mut Ui, which: Which, min_height:
                 purpose: egui::IMEPurpose::Normal,
                 rect: to_global * rect,
                 cursor_rect: to_global * caret,
-                should_interrupt_composition: false,
+                should_interrupt_composition: came_back,
             });
         });
     }

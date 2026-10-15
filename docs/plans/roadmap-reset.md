@@ -1,6 +1,6 @@
 # Roadmap reset: implementation plan
 
-> **Status:** accepted 2026-10-14, with [the spec](../specs/roadmap-reset.md); tracked in [#2](https://github.com/UCS-Care-Group/mailcraft/issues/2) · **Written:** 2026-10-14 · **Change:** minor (R8.5: working days)
+> **Status:** accepted 2026-10-14, with [the spec](../specs/roadmap-reset.md); tracked in [#2](https://github.com/UCS-Care-Group/mailcraft/issues/2) · **Written:** 2026-10-14 · **Change:** minor (R4.5 added)
 
 The order of the work to beta. Each step is one pull request or a short series, small enough to
 take or refuse on its own. Task ids are `R<step>.<n>` and go in commit messages
@@ -58,6 +58,7 @@ Runs beside R3.
 | R4.2 | The editor in `ui-egui`: typing, selection, the formatting keys and ribbon buttons | Screenshots light and dark; keyboard tests |
 | R4.3 | Reply and forward quote the original's HTML intact below the owner's text (shown through `crates/html`, sent as it came, header-injection rules kept) | A reply to a formatted newsletter keeps its quoted layout in Outlook on the web (stand-in round trip) |
 | R4.4 | Paste reduced to the set; HTML out with a plain-text part (`crates/mime`) | Property test: arbitrary pasted HTML never escapes the set |
+| R4.5 | Rich signatures with a logo, two per account, a better editor than Outlook's: [spec](../specs/r4-5-signatures.md), [plan](r4-5-signatures.md) (#37) | As in its plan, R4.5.1–R4.5.4 |
 
 ## R5. Sign-ins remembered on Linux (6–10 h) [review]
 
@@ -109,3 +110,4 @@ Total before the beta run: about 130–220 hours of focused work.
 | 2026-10-14 | major | First version |
 | 2026-10-15 | minor | R3 detailed in its own spec and plan; R3.6: imported mail can't be uploaded through Graph |
 | 2026-10-15 | minor | R8.5: 14 working days (spec B2) |
+| 2026-10-15 | minor | R4.5 rich signatures added (its own spec and plan) |

@@ -21,6 +21,7 @@ A glossary of the words the project uses with one meaning. Not a spec: how thing
 - **Delete**: move to Deleted Items, here and on the server. Undo moves it back.
 - **Delete for good**: remove from every folder (Shift+Del, or emptying Deleted Items). As in Outlook, the server keeps it recoverable for its retention period; MailCraft never removes anything past that.
 - **Held message**: a message in the Outbox that MailCraft will not send by itself, because it may already have gone (the server didn't say) or the server refused it. The owner looks and decides.
+- **Signature**: text, and at most a few pictures (a logo), that the owner chooses to end their messages with. Kept on this computer only: Microsoft offers no way to keep signatures in step, so another device has its own. Each account names one for new messages and one for replies and forwards, either of which may be none. A plain-text message carries its words only.
 - **Local folder**: a folder that exists only on this computer, never on a server. The only place mail may be changed without the server knowing.
 - **In step**: an account is in step when every change the owner made to its mail has reached the server or been refused with a reason, and what the server holds is what MailCraft shows. Undoing a change that reached the server is another change sent to it.
 
