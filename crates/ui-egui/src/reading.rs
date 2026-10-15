@@ -46,8 +46,12 @@ pub(crate) use select::{inspect as selection_inspect, select_all_params};
 use crate::theme::{Tokens, paint_clipped, regular, semibold};
 use crate::{MailApp, icons};
 
-/// The widest a message's body is laid out, in points: lines longer than this are hard to read.
+/// The widest a picture in a message's body is shown, in points. Its text fills the pane, as
+/// Outlook's does, and as the body of a reply being written does above the original (#47).
 pub const MAX_BODY_WIDTH: f32 = 860.0;
+/// The widest a message's text is laid out, in points: wider than any screen's pane, a bound on
+/// the work of laying it out, not a measure.
+pub const MAX_TEXT_WIDTH: f32 = 4_000.0;
 
 /// Where a message is shown. One that is on screen in two places is laid out for each.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

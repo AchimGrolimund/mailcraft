@@ -3383,3 +3383,16 @@ fn the_original_under_a_reply_is_shown_as_the_reading_pane_shows_it() {
     // Nothing of it can be selected or edited: the keys stay with the owner's text.
     assert!(harness.state().text_selection.at(Place::Quote).is_none());
 }
+
+/// (#47) In a wide pane a message's text fills it, as the body of a reply does above the
+/// original: no measure of its own holds it to one side.
+#[test]
+fn a_wide_pane_is_filled() {
+    let (app, ids) = corpus_app(false);
+    let id = id_of(&ids, "receipt");
+    let mut harness = window(app, (2400.0, 800.0));
+    select(&mut harness, id);
+    harness.run_steps(8);
+    let width = super::view::kept_at(&harness.ctx, Place::Pane, id, |laid, _| laid.width()).unwrap();
+    assert!(width > super::MAX_BODY_WIDTH + 400.0, "{width}");
+}
