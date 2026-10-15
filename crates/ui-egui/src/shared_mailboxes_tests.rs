@@ -3,6 +3,7 @@
 //! runs that start by themselves. Hosts are fakes; every address is invented.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -15,6 +16,15 @@ use crate::{GraphRequest, GraphResult, MailApp, Services, SignInRequest};
 
 const OWNER: &str = "noor@example.org";
 const SHARED: &str = "support@example.org";
+
+/// Set when anything asked for a mail-protocol run: a shared mailbox is read through Graph alone.
+/// Tests run on threads of one process, so each test reads it only through [`no_imap`], which
+/// every test here shares: none of them may ever set it.
+static IMAP_USED: AtomicBool = AtomicBool::new(false);
+
+fn no_imap() {
+    assert!(!IMAP_USED.load(Ordering::Relaxed), "a mail-protocol run was started");
+}
 
 type Answers = Arc<Mutex<VecDeque<(GraphResult, Vec<GraphMailResult>)>>>;
 /// What each Graph job was asked: the account, the refresh token, the mail request, the Outbox's
@@ -48,6 +58,14 @@ fn window() -> (MailApp, Id, Answers, Jobs, SignIns) {
             }
         }
         tx.send(answer).unwrap();
+        rx
+    }));
+    // The desktop host can open mail connections; a shared mailbox never uses them (it has no
+    // IMAP leg), which [`no_imap`] checks at the end of every test.
+    app.services.sync = Some(Box::new(|req: mailcraft_model::sync::SyncRequest| {
+        IMAP_USED.store(true, Ordering::Relaxed);
+        let (tx, rx) = mpsc::channel();
+        tx.send(mailcraft_model::sync::SyncResult { account: req.account.id, ..Default::default() }).unwrap();
         rx
     }));
     let log = sign_ins.clone();
@@ -97,6 +115,7 @@ fn a_shared_mailbox_is_read_with_its_owners_sign_in_and_its_permission_is_asked_
     assert_eq!(app.graph_tokens.get(&shared).map(|t| t.access.as_str()), Some("shared-access-2"));
     assert_eq!(app.tokens.get(&owner).map(|t| (t.access.as_str(), t.refresh.as_str())), Some(("own-access", "ref-3")));
     assert_eq!(sign_ins.lock().unwrap().len(), 1, "asked once");
+    no_imap();
 }
 
 #[test]
@@ -123,6 +142,7 @@ fn a_shared_mailbox_the_server_wont_open_waits_for_the_owner_to_ask() {
     assert_eq!(jobs.lock().unwrap().len(), 2);
     assert!(!app.shared_denied.contains(&shared), "it opened this time");
     assert!(sign_ins.lock().unwrap().is_empty(), "nobody was sent to a sign-in page");
+    no_imap();
 }
 
 #[test]
@@ -167,4 +187,5 @@ fn the_add_shared_mailbox_dialog_collects_the_address_and_runs_the_command() {
     let (id, of) = added.unwrap();
     assert_eq!(of, Some(owner));
     assert!(jobs.lock().unwrap().iter().any(|(account, ..)| *account == id), "read at once");
+    no_imap();
 }
