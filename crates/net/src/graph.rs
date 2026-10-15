@@ -316,7 +316,7 @@ fn nonsense(text: &str) -> NetError {
 struct Graph<'a> {
     base: Url,
     token: &'a str,
-    /// Every request asks for immutable ids (`Prefer: IdType="ImmutableId"`, R3 spec S4).
+    /// Whether every request asks for immutable ids (`Prefer: IdType="ImmutableId"`): mail only, R3 spec S4.
     immutable: bool,
     /// The ground rules of a mailbox's mail ([`pace`]): its gate, who is waiting, and how a
     /// request is asked again. `None`: one try, as it always was.

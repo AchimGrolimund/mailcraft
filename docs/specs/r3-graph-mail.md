@@ -1,6 +1,6 @@
 # R3: Graph mail for Microsoft accounts
 
-> **Status:** proposed · **Written:** 2026-10-15 · **Author:** Martin Ball, with Claude · **Change:** major (first version) · **Target:** Microsoft Outlook (Microsoft 365, Outlook.com)
+> **Status:** proposed · **Written:** 2026-10-15 · **Author:** Martin Ball, with Claude · **Change:** minor (S4: immutable ids for mail only) · **Target:** Microsoft Outlook (Microsoft 365, Outlook.com)
 
 The words in this document have the meanings in [`CONTEXT.md`](../../CONTEXT.md). It details step
 R3 of [the roadmap reset](roadmap-reset.md); the decisions behind it are
@@ -52,10 +52,14 @@ up to 200,000 messages are usable within minutes of being added.
 
 ### Identity
 
-4. Every Graph request asks for immutable ids (`Prefer: IdType="ImmutableId"`). A message is known
+4. Every Graph request for mail asks for immutable ids (`Prefer: IdType="ImmutableId"`). A message is known
    by its immutable id, which stays the same when it moves between folders of the mailbox; a folder
    by its Graph id, which stays the same when it is renamed or moved. A folder's path is for
    showing only. The Message-ID is kept and never trusted to say two messages are the same.
+   Requests for the calendar, the contacts and the Favorites keep Graph's ordinary ids: the mailbox
+   files of 0.2.x and 0.3.x key events and contacts by them, and immutable ids there would make
+   every event and contact look gone and new. Moving those to immutable ids waits for a step that
+   re-keys them.
 5. Everything taken in from the server is matched by server id, so a delta page that arrives twice
    (Microsoft warns that it can) changes nothing.
 
@@ -212,3 +216,4 @@ milestone after beta); importing into server folders.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-15 | major | First version, from a decision session with Martin Ball |
+| 2026-10-15 | minor | S4: immutable ids are asked for on mail requests only; calendar, contacts and Favorites keep ordinary ids (found in R3.1, #39) |
