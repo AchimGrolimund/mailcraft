@@ -1536,6 +1536,18 @@ fn a_mailto_link_handed_to_the_program_starts_a_message() {
     assert!(b.session.compose.is_none());
 }
 
+/// D1: the title bar's pill copies the same report as Help › Copy Diagnostics.
+#[test]
+fn the_title_bar_pill_copies_diagnostics() {
+    let mut a = app();
+    a.services.diagnostics = Some(Box::new(|| "the host's report".into()));
+    let mut harness = window(a);
+    use egui_kittest::kittest::Queryable as _;
+    harness.get_by_label("Copy Diagnostics").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().status_msg.as_ref().map(|(s, _)| s.as_str()), Some("Diagnostics copied. Nothing was sent."));
+}
+
 #[test]
 fn copy_diagnostics_takes_the_hosts_report_or_says_what_it_can() {
     let mut a = app();

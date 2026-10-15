@@ -4,7 +4,7 @@ use egui::{Align2, Rect, Sense, Stroke, Ui, pos2, vec2};
 use mailcraft_engine::{Module, Pane, Scope};
 use serde_json::json;
 
-use crate::theme::{Tokens, TypeRung, paint_text, regular, semibold, text_width};
+use crate::theme::{Tokens, TypeRung, medium, paint_text, regular, semibold, text_width};
 use crate::{MailApp, icons};
 
 fn qat_button(ui: &mut Ui, app: &mut MailApp, icon: &str, tip: &str, id: &str) -> egui::Response {
@@ -22,6 +22,33 @@ fn qat_button(ui: &mut Ui, app: &mut MailApp, icon: &str, tip: &str, id: &str) -
         let _ = app.run(id, json!({}));
     }
     resp
+}
+
+/// "Copy Diagnostics", beside the window's own buttons, so a tester finds it (D1): the same command
+/// as Help › Copy Diagnostics.
+fn diagnostics_pill(ui: &mut Ui, app: &mut MailApp, h: f32) {
+    let t = Tokens::get(ui.ctx());
+    let label = tl!("Copy Diagnostics");
+    let font = medium(11.5);
+    let w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(label.to_string(), font.clone(), t.text).size().x);
+    let (r, resp) = ui.allocate_exact_size(vec2(w + 34.0, h), Sense::click());
+    let fill = if resp.is_pointer_button_down_on() {
+        t.pressed
+    } else if resp.hovered() {
+        t.hover
+    } else {
+        t.title_bar
+    };
+    ui.painter().rect(r, h / 2.0, fill, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+    icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 15.0, r.center().y), vec2(14.0, 14.0)), "copy", t.icon, t.accent);
+    ui.painter().text(pos2(r.min.x + 26.0, r.center().y), Align2::LEFT_CENTER, label, font, t.text);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    let tip = tl!(
+        "Copy the version, the platform and the end of MailCraft's own record, to paste into a problem report. No message, address, password or token is in it, and nothing is sent."
+    );
+    if resp.on_hover_text(tip).clicked() {
+        let _ = app.run("ui.copyDiagnostics", json!({}));
+    }
 }
 
 /// The title row: its height, the height of the search box in it, and the side of a quick button
@@ -166,6 +193,8 @@ pub fn title_bar(app: &mut MailApp, ui: &mut Ui) {
                     if resp.on_hover_text(tip).clicked() {
                         let _ = app.run("ui.backstage", json!({"value": true, "page": "info"}));
                     }
+                    ui.add_space(8.0);
+                    diagnostics_pill(ui, app, avatar_h.min(26.0));
                     right_start = ui.min_rect().min.x;
                 });
             });
