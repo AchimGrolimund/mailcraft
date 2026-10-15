@@ -109,7 +109,9 @@ pub(crate) fn trail(app: &mut MailApp, ctx: &egui::Context) {
     for e in ctx.input(|i| i.raw.events.clone()) {
         let entry = match e {
             Event::Text(t) => format!("text {}", t.chars().count()),
-            Event::Key { key, pressed, modifiers, .. } => format!("key {} {}{}", key.name(), if pressed { "down" } else { "up" }, if modifiers.any() { " +mods" } else { "" }),
+            Event::Key { key, pressed, modifiers, .. } => {
+                format!("key {} {}{}", key.name(), if pressed { "down" } else { "up" }, if modifiers.any() { " +mods" } else { "" })
+            }
             Event::PointerButton { pressed, .. } => format!("button {}", if pressed { "down" } else { "up" }),
             Event::WindowFocused(f) => format!("windowFocused {f}"),
             Event::Ime(ImeEvent::Preedit { text, .. }) => format!("ime preedit {}", text.chars().count()),

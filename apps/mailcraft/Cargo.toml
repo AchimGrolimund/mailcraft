@@ -14,6 +14,7 @@ workspace = true
 mailcraft-time = { workspace = true }
 mailcraft-model = { workspace = true }
 mailcraft-engine = { workspace = true }
+image = { workspace = true }
 mailcraft-ui-egui = { workspace = true }
 # The control key file's location (shared with the MCP bridge).
 mailcraft-control-key = { workspace = true }
@@ -55,7 +56,7 @@ keyring = { version = "3.6", default-features = false, features = ["async-secret
 # Under Wayland the clipboard is the compositor's (its data-control protocol, which KDE Plasma
 # and the wlroots compositors have); where it isn't offered (GNOME), arboard falls back to the
 # X11 clipboard through XWayland.
-arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control", "image-data"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd = { workspace = true }
@@ -71,4 +72,4 @@ webbrowser = "1.2"
 # The system's clipboard with HTML on it, for copying and pasting formatted text in a message
 # being written (egui's own clipboard carries text only). Already in the tree: egui's window
 # layer copies text through it.
-arboard = { version = "3.6", default-features = false }
+arboard = { version = "3.6", default-features = false, features = ["image-data"] }

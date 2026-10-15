@@ -21,8 +21,8 @@
 //! answer) says so in a bar between its header and its body, with the ways to answer it
 //! ([`invitation`]).
 
-mod colors;
-mod images;
+pub(crate) mod colors;
+pub(crate) mod images;
 mod invitation;
 mod layout;
 pub(crate) mod remote;

@@ -71,6 +71,7 @@ struct Style {
     color: Option<Rgb>,
     background: Option<Rgb>,
     size: Option<u8>,
+    font: Option<Rc<str>>,
     align: Align,
     link: Option<Rc<str>>,
     /// The font size in force is too small to be meant to be read (2 pixels or less): text
@@ -97,6 +98,7 @@ impl Style {
             color: self.color,
             background: self.background,
             size: self.size,
+            font: self.font.as_deref().map(str::to_string),
         }
     }
 
@@ -109,6 +111,7 @@ impl Style {
             && self.color == span.color
             && self.background == span.background
             && self.size == span.size
+            && self.font.as_deref() == span.font.as_deref()
             && self.link.as_deref() == span.link.as_deref()
     }
 }
@@ -125,6 +128,7 @@ struct Delta {
     color: Option<Option<Rgb>>,
     background: Option<Rgb>,
     size: Option<Size>,
+    font: Option<Rc<str>>,
     align: Option<Align>,
     link: Option<Option<Rc<str>>>,
     /// A table cell: formatting elements and highlights from outside stop here (an unclosed `<b>`
@@ -148,6 +152,7 @@ impl Delta {
             strike: css.strike,
             color: css.color.map(Some),
             size: css.size,
+            font: css.font.as_deref().map(Rc::from),
             align: css.align,
             ..Delta::default()
         }
@@ -181,6 +186,9 @@ impl Delta {
         }
         if let Some(align) = self.align {
             style.align = align;
+        }
+        if self.font.is_some() {
+            style.font = self.font.clone();
         }
         if let Some(link) = &self.link {
             style.link = link.clone();
@@ -1339,6 +1347,7 @@ impl Builder {
         delta.strike = own.strike.or(delta.strike);
         delta.color = own.color.or(delta.color);
         delta.size = own.size.or(delta.size);
+        delta.font = own.font.or(delta.font);
         delta.background = css.background.or(delta.background);
         delta.hooked = hooked(tag);
         let marker = css.mso_list == Some(MsoList::Ignore);
@@ -1552,6 +1561,7 @@ impl Builder {
                 let delta = Delta {
                     color: tag.attr("color").and_then(|c| style::attr_color(&c)).map(Some),
                     size: tag.attr("size").and_then(|s| style::font_tag_size(&s)),
+                    font: tag.attr("face").and_then(|f| style::family(&f)).map(|f| Rc::from(f.as_str())),
                     ..Delta::default()
                 };
                 self.open_inline("font", true, tag, delta);

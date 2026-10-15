@@ -12,6 +12,7 @@
 //! | underline, strike | `text-decoration`, `text-decoration-line` |
 //! | alignment | `text-align` |
 //! | font size | `font-size`, the size in `font` |
+//! | font family | `font-family`, `<font face>`: the first family's name only, for pasting into the composer (the reading pane draws in its own font) |
 //! | hidden | `display:none`, `visibility:hidden`, `opacity:0`, `max-height:0`, `max-width:0`, a zero `height` or `width` with `overflow:hidden` |
 //! | text too small to read | a font size of 2 pixels or less: the text at that size is not shown; what is inside at a size of its own is, and so are pictures, and so is the text of an element with a `class` or an `id` (or inside one that asks for the size and has one): its size is given in a style sheet, and style sheets are not read |
 //! | a margin or none | `margin`, `margin-top`, `margin-bottom`: only whether there is one to speak of (over 6 pixels) |
@@ -99,6 +100,8 @@ pub(crate) struct Css {
     pub strike: Option<bool>,
     pub align: Option<Align>,
     pub size: Option<Size>,
+    /// The first family of `font-family` ([`family`]).
+    pub font: Option<String>,
     pub hidden: bool,
     /// Whether the margin above (below) is given, and given as none to speak of: zero, or a
     /// few pixels (a line's own leading is more than that).
@@ -164,6 +167,7 @@ impl Css {
                 }
                 "text-align" => css.align = align(value).or(css.align),
                 "font-size" => css.size = font_size(value).or(css.size),
+                "font-family" => css.font = family(value).or(css.font.take()),
                 "display" => css.hidden |= value == "none",
                 "visibility" => css.hidden |= matches!(value, "hidden" | "collapse"),
                 "opacity" => css.hidden |= number(value.trim_end_matches('%')).is_some_and(|n| n <= 0.0),
@@ -344,6 +348,14 @@ fn is_slight(value: &str) -> Option<bool> {
         "%" => n <= 0.0,
         _ => length_px(value).map_or(n <= 0.0, |px| px <= SLIGHT_MARGIN_PX),
     })
+}
+
+/// The first family of a `font-family` list (or `<font face>`), lower case and unquoted, when it
+/// is a plain name (letters, digits, spaces and hyphens, at most 32 of them).
+pub(crate) fn family(value: &str) -> Option<String> {
+    let first = value.split(',').next()?.trim().trim_matches(['\'', '"']).trim().to_ascii_lowercase();
+    let plain = !first.is_empty() && first.len() <= 32 && first.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-');
+    plain.then_some(first)
 }
 
 fn weight(value: &str) -> Option<bool> {
@@ -776,11 +788,19 @@ mod tests {
     #[test]
     fn everything_else_is_ignored() {
         let css = Css::parse(
-            "position:absolute; left:-9999px; float:left; padding:40px; font-family:'Comic Sans MS'; line-height:0; \
+            "position:absolute; left:-9999px; float:left; padding:40px; line-height:0; \
              background-image:url(https://tracker.example/p.gif); content:'x'; behavior:url(x.htc); width:50%; z-index:9; \
              transform:scale(9); animation:spin 1s; letter-spacing:4em; text-transform:uppercase",
         );
         assert_eq!(css, Css::default());
+    }
+
+    #[test]
+    fn a_font_family_is_its_first_name_alone() {
+        assert_eq!(Css::parse("font-family:'Comic Sans MS', cursive").font.as_deref(), Some("comic sans ms"));
+        assert_eq!(Css::parse("font-family:\"Calibri\",sans-serif").font.as_deref(), Some("calibri"));
+        assert_eq!(Css::parse("font-family:url(x);").font, None);
+        assert_eq!(Css::parse(&format!("font-family:{}", "a".repeat(40))).font, None);
     }
 
     #[test]

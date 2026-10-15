@@ -131,6 +131,8 @@ pub(crate) enum Menu {
     RibbonLayout,
     TimeScale,
     FontSize,
+    Font,
+    FontColor,
 }
 
 /// How a control is drawn in the classic layout.
@@ -521,37 +523,47 @@ fn home_tasks(app: &MailApp) -> Tab {
 
 /// How the text the selection covers looks (with nothing selected, how the next character typed
 /// will), for the buttons that say so.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Look {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
     /// The size all of it has: `Some(None)` the message's own.
     pub size: Option<Option<u8>>,
+    /// The font and the colour all of it has, the same way.
+    pub font: Option<Option<mailcraft_model::rich::Font>>,
+    pub color: Option<Option<String>>,
     pub bullets: bool,
     pub numbering: bool,
     pub link: bool,
     pub plain: bool,
 }
 
-pub(crate) fn look(c: &mailcraft_engine::Compose) -> Look {
+/// How the selection of the text being edited looks ([`mailcraft_engine::Session::doc`]).
+pub(crate) fn look_now(app: &MailApp) -> Look {
+    app.session.doc().map(|(body, plain)| look(body, plain)).unwrap_or_default()
+}
+
+pub(crate) fn look(body: &mailcraft_model::RichBody, plain: bool) -> Look {
     use mailcraft_model::rich::ListKind;
-    let sel = c.body.selection();
-    let text = c.body.text();
+    let sel = body.selection();
+    let text = body.text();
     let (from, to) = (sel.start(), sel.end());
     let all = |f: &dyn Fn(&mailcraft_model::rich::Style) -> bool| {
-        if sel.is_empty() { f(&c.body.typing_style()) } else { text.all(from, to, f).unwrap_or(false) }
+        if sel.is_empty() { f(&body.typing_style()) } else { text.all(from, to, f).unwrap_or(false) }
     };
-    let first = if sel.is_empty() { c.body.typing_style().size } else { text.style_at(from + 1).size };
+    let first = if sel.is_empty() { body.typing_style() } else { text.style_at(from + 1) };
     Look {
         bold: all(&|s| s.bold),
         italic: all(&|s| s.italic),
         underline: all(&|s| s.underline),
-        size: all(&|s| s.size == first).then_some(first),
+        size: all(&|s| s.size == first.size).then_some(first.size),
+        font: all(&|s| s.font == first.font).then_some(first.font),
+        color: all(&|s| s.color == first.color).then(|| first.color.clone()),
         bullets: text.all_lists(from, to, ListKind::Bullet).unwrap_or(false),
         numbering: text.all_lists(from, to, ListKind::Numbered).unwrap_or(false),
         link: if sel.is_empty() { text.link_span(sel.head).is_some() } else { text.all(from, to, |s| s.link.is_some()).unwrap_or(false) },
-        plain: c.format == mailcraft_engine::BodyFormat::Plain,
+        plain,
     }
 }
 
@@ -560,13 +572,15 @@ pub(crate) const FONT_SIZES: [u8; 12] = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 2
 
 fn message(app: &MailApp) -> Tab {
     let importance = app.session.compose.as_ref().map(|c| c.importance);
-    let look = app.session.compose.as_ref().map(look).unwrap_or_default();
+    let look = look_now(app);
     Tab::of(vec![
         g("Send", vec![Item::big("send", "Send", "compose.send", no()).at(0, 1)]),
         g(
             "Basic Text",
             vec![
+                Item::small_menu("font", "font", "Font", "Font", Menu::Font).at(1, 4).plain(),
                 Item::small_menu("fontSize", "fontSize", "Font Size", "Font Size", Menu::FontSize).at(1, 4).plain(),
+                Item::small_menu("fontColor", "fontColor", "Font Color", "Font Color", Menu::FontColor).at(1, 3).plain(),
                 Item::small("bold", "Bold", "Bold", "format.bold", no()).checked(look.bold && !look.plain).at(1, 2).plain(),
                 Item::small("italic", "Italic", "Italic", "format.italic", no()).checked(look.italic && !look.plain).at(1, 2).plain(),
                 Item::small("underline", "Underline", "Underline", "format.underline", no()).checked(look.underline && !look.plain).at(1, 2).plain(),
@@ -941,7 +955,7 @@ fn menu_contents(ui: &mut Ui, app: &mut MailApp, menu: Menu) {
             }
             ui.separator();
             if plain_item(ui, tl!("Signatures…")) {
-                let _ = app.run("ui.backstage", json!({"value": true, "page": "options"}));
+                let _ = app.run("ui.backstage", json!({"value": true, "page": "signatures"}));
             }
         }
         Menu::MoveFolder => {
@@ -985,22 +999,88 @@ fn menu_contents(ui: &mut Ui, app: &mut MailApp, menu: Menu) {
             }
         }
         Menu::TimeScale => crate::calendar_view::time_scale_menu(ui, app),
-        Menu::FontSize => {
-            let now = app.session.compose.as_ref().map(look).and_then(|l| l.size);
-            mi_check(ui, app, "Default", now == Some(None), "format.size", json!({"size": null}));
-            let enabled = app.enabled("format.size");
-            for size in FONT_SIZES {
-                let checked = now == Some(Some(size));
-                // A number reads the same in every language.
-                let mark = egui::RichText::new("✓");
-                let mark = if checked { mark } else { mark.color(egui::Color32::TRANSPARENT) };
-                if ui.add_enabled(enabled, egui::Button::new((mark, size.to_string())).selected(checked).min_size(vec2(190.0, 0.0))).clicked() {
-                    let _ = app.run("format.size", json!({"size": size}));
-                    ui.close();
-                }
-            }
+        Menu::Font => font_menu(ui, app),
+        Menu::FontColor => color_menu(ui, app),
+        Menu::FontSize => size_menu(ui, app),
+    }
+}
+
+/// The font sizes (`format.size`), each in a menu entry.
+pub(crate) fn size_menu(ui: &mut Ui, app: &mut MailApp) {
+    let now = look_now(app).size;
+    mi_check(ui, app, "Default", now == Some(None), "format.size", json!({"size": null}));
+    let enabled = app.enabled("format.size");
+    for size in FONT_SIZES {
+        let checked = now == Some(Some(size));
+        // A number reads the same in every language.
+        let mark = egui::RichText::new("✓");
+        let mark = if checked { mark } else { mark.color(egui::Color32::TRANSPARENT) };
+        if ui.add_enabled(enabled, egui::Button::new((mark, size.to_string())).selected(checked).min_size(vec2(190.0, 0.0))).clicked() {
+            let _ = app.run("format.size", json!({"size": size}));
+            ui.close();
         }
     }
+}
+
+/// The fonts a message may ask for (`format.font`), each in a menu entry.
+pub(crate) fn font_menu(ui: &mut Ui, app: &mut MailApp) {
+    use mailcraft_model::rich::Font;
+    let now = look_now(app).font;
+    mi_check(ui, app, "Default", now == Some(None), "format.font", json!({"value": null}));
+    for f in Font::ALL {
+        mi_check(ui, app, f.label(), now == Some(Some(f)), "format.font", json!({"value": f.label()}));
+    }
+}
+
+/// Text colours offered: an original palette, readable on white.
+pub(crate) const COLORS: [(&str, &str); 10] = [
+    ("Black", "#000000"),
+    ("Grey", "#595959"),
+    ("Dark Red", "#c00000"),
+    ("Orange", "#c55a11"),
+    ("Gold", "#bf8f00"),
+    ("Green", "#2e7d32"),
+    ("Teal", "#00796b"),
+    ("Navy", "#1f4e79"),
+    ("Blue", "#0563c1"),
+    ("Purple", "#7030a0"),
+];
+
+/// The text colours (`format.color`): Automatic, the palette as swatches, and a value of the
+/// owner's own (`#rrggbb`).
+pub(crate) fn color_menu(ui: &mut Ui, app: &mut MailApp) {
+    let now = look_now(app).color;
+    let enabled = app.enabled("format.color");
+    mi_check(ui, app, "Automatic", now == Some(None), "format.color", json!({"value": null}));
+    ui.horizontal_wrapped(|ui| {
+        ui.set_max_width(190.0);
+        for (name, hex) in COLORS {
+            let Ok(c) = egui::Color32::from_hex(hex) else { continue };
+            let chosen = now.as_ref().is_some_and(|n| n.as_deref() == Some(hex));
+            let (r, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), egui::Sense::click());
+            ui.painter().rect_filled(r, 2.0, c);
+            if chosen || resp.hovered() {
+                ui.painter().rect_stroke(r.expand(1.5), 2.0, egui::Stroke::new(1.5, ui.visuals().text_color()), egui::StrokeKind::Outside);
+            }
+            if resp.on_hover_text(tl!(name)).clicked() && enabled {
+                let _ = app.run("format.color", json!({"value": hex}));
+                ui.close();
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        let key = egui::Id::new("mailcraft-custom-color");
+        let mut typed: String = ui.data(|d| d.get_temp(key)).unwrap_or_else(|| now.clone().flatten().unwrap_or_default());
+        ui.add(egui::TextEdit::singleline(&mut typed).hint_text("#rrggbb").desired_width(90.0).char_limit(7));
+        let valid = mailcraft_model::rich::safe_color(&typed);
+        if ui.add_enabled(enabled && valid.is_some(), egui::Button::new(tl!("Apply"))).clicked()
+            && let Some(hex) = valid
+        {
+            let _ = app.run("format.color", json!({"value": hex}));
+            ui.close();
+        }
+        ui.data_mut(|d| d.insert_temp(key, typed));
+    });
 }
 
 /// A control that runs a command, as an entry of a menu: its name on one line, its key, a mark
