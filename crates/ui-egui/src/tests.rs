@@ -258,9 +258,10 @@ fn everything_lays_out_without_panicking() {
     }
 }
 
-/// About says who began the program: in the Help tab's window and on the File page.
+/// About credits the contributors, with a link to them: in the Help tab's window and on the File
+/// page. Nobody is named above the rest.
 #[test]
-fn about_names_the_initial_contributor() {
+fn about_credits_the_contributors() {
     use egui_kittest::kittest::Queryable as _;
     for (id, params) in [("ui.dialog", json!({"name": "about"})), ("ui.backstage", json!({"value": true, "page": "about"}))] {
         let mut a = app();
@@ -274,9 +275,9 @@ fn about_names_the_initial_contributor() {
             a,
         );
         harness.run_steps(4);
-        assert!(harness.query_by_label_contains("Initial contributor: William Daugherty").is_some(), "{id}");
-        // Their link follows the name, shown as where it leads.
-        assert!(harness.query_by_label_contains("linkedin.com/in/wdaugherty").is_some(), "{id}");
+        assert!(harness.query_by_label_contains("Made by its contributors").is_some(), "{id}");
+        assert!(harness.query_by_label_contains("github.com/UCS-Care-Group/mailcraft/graphs/contributors").is_some(), "{id}");
+        assert!(harness.query_by_label_contains("Initial contributor").is_none(), "{id}");
     }
 }
 
