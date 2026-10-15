@@ -275,6 +275,17 @@ pub enum ComposeMode {
     Draft,
 }
 
+/// How the message being written is sent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BodyFormat {
+    /// HTML, with the same text as a plain-text part beside it.
+    #[default]
+    Html,
+    /// Plain text only: the formatting stays in the message being written but is not sent.
+    Plain,
+}
+
 /// The message being written. Recipient lines are text, as typed (`Ada <ada@example.org>; bob@…`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -293,6 +304,8 @@ pub struct Compose {
     /// What the owner writes, in rich text, with its selection and its own undo. Stored as plain
     /// text before rich text; that still reads.
     pub body: RichBody,
+    /// HTML with a plain-text part, or plain text only.
+    pub format: BodyFormat,
     pub attachments: Vec<Attachment>,
     pub importance: Importance,
     pub in_reply_to: String,

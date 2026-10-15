@@ -5,7 +5,7 @@ use mailcraft_model::{AccountKind, Address, Attachment, Body, FolderKind, Id, Im
 use serde_json::{Value, json};
 
 use super::{bad, base64_decode, done, fail, needs_compose, needs_message, source};
-use crate::{CmdError, CmdResult, CommandSpec, Compose, ComposeMode, Session, p};
+use crate::{BodyFormat, CmdError, CmdResult, CommandSpec, Compose, ComposeMode, Session, p};
 
 /// Largest single attachment and most attachments on one message.
 const MAX_ATTACHMENT: usize = 64 << 20;
@@ -165,6 +165,8 @@ fn respond(s: &mut Session, v: &Value, mode: ComposeMode) -> CmdResult {
         cc: format_list(&cc),
         subject: prefixed(if mode == ComposeMode::Forward { "FW" } else { "RE" }, &m.subject),
         body: RichBody::from_plain(&format!("{}{body}", signature_block(s, m.account, None))),
+        // A reply is written the way the original was: HTML to HTML, plain text to plain text.
+        format: if m.body.html.is_some() { BodyFormat::Html } else { BodyFormat::Plain },
         attachments: if mode == ComposeMode::Forward { m.attachments.clone() } else { Vec::new() },
         in_reply_to: if mode == ComposeMode::Forward { String::new() } else { m.message_id.clone() },
         references: if mode == ComposeMode::Forward { Vec::new() } else { references },
@@ -199,7 +201,12 @@ fn edit_draft(s: &mut Session, v: &Value) -> CmdResult {
         cc: format_list(&m.cc),
         bcc: format_list(&m.bcc),
         subject: m.subject.clone(),
-        body: RichBody::from_plain(&m.body.text),
+        // A draft written in HTML opens in rich text, reduced to what can be written here.
+        body: match &m.body.html {
+            Some(html) => RichBody::new(mailcraft_mime::rich::from_html(html)),
+            None => RichBody::from_plain(&m.body.text),
+        },
+        format: if m.body.html.is_some() { BodyFormat::Html } else { BodyFormat::Plain },
         attachments: m.attachments.clone(),
         importance: m.importance,
         in_reply_to: m.in_reply_to.clone(),
@@ -380,12 +387,21 @@ fn build(s: &Session, c: &Compose, strict: bool) -> Result<Message, CmdError> {
         subject: c.subject.trim().to_string(),
         date: now,
         received: now,
-        body: Body { text: c.body.text().to_plain(), html: None },
+        body: body_of(c),
         attachments: c.attachments.clone(),
         read: true,
         importance: c.importance,
         ..Default::default()
     })
+}
+
+/// What is sent of the owner's text: HTML with a plain-text part, or plain text only.
+fn body_of(c: &Compose) -> Body {
+    let text = c.body.text();
+    match c.format {
+        BodyFormat::Html => Body { text: text.to_plain(), html: Some(mailcraft_mime::rich::to_html_document(text, None)) },
+        BodyFormat::Plain => Body { text: text.to_plain(), html: None },
+    }
 }
 
 fn send(s: &mut Session, _: &Value) -> CmdResult {

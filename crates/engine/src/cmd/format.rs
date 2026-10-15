@@ -5,12 +5,12 @@
 //! are not on the mailbox's undo history. The message has its own (`compose.undo`).
 //! Positions count characters of the body's text, a paragraph break being one.
 
-use mailcraft_model::ModelError;
 use mailcraft_model::rich::{Format, ListKind, MAX_SIZE, MIN_SIZE};
+use mailcraft_model::{ModelError, RichText};
 use serde_json::{Value, json};
 
 use super::{bad, fail, needs_compose};
-use crate::{CmdError, CmdResult, CommandSpec, Compose, Session, p};
+use crate::{BodyFormat, CmdError, CmdResult, CommandSpec, Compose, Session, p};
 
 const RANGE: &str = r#"{"from"?: number, "to"?: number} (default: the selection)"#;
 
@@ -35,21 +35,36 @@ pub fn specs() -> Vec<CommandSpec> {
             Some(c) if !c.body.can_redo() => Some("nothing to redo in the message"),
             Some(_) => None,
         }),
-        CommandSpec::new("format.bold", "Bold", "Message › Basic Text", bold).pure().params(RANGE).when(needs_compose),
-        CommandSpec::new("format.italic", "Italic", "Message › Basic Text", italic).pure().params(RANGE).when(needs_compose),
-        CommandSpec::new("format.underline", "Underline", "Message › Basic Text", underline).pure().params(RANGE).when(needs_compose),
+        CommandSpec::new("format.bold", "Bold", "Message › Basic Text", bold).pure().params(RANGE).when(needs_html),
+        CommandSpec::new("format.italic", "Italic", "Message › Basic Text", italic).pure().params(RANGE).when(needs_html),
+        CommandSpec::new("format.underline", "Underline", "Message › Basic Text", underline).pure().params(RANGE).when(needs_html),
         CommandSpec::new("format.size", "Font Size", "Message › Basic Text", size)
             .pure()
             .params(r#"{"size": number (points, 8–36) | null (the message's own size), "from"?: number, "to"?: number}"#)
-            .when(needs_compose),
-        CommandSpec::new("format.bullets", "Bullets", "Message › Basic Text", bullets).pure().params(RANGE).when(needs_compose),
-        CommandSpec::new("format.numbering", "Numbering", "Message › Basic Text", numbering).pure().params(RANGE).when(needs_compose),
-        CommandSpec::new("format.clear", "Clear All Formatting", "Message › Basic Text", clear).pure().params(RANGE).when(needs_compose),
+            .when(needs_html),
+        CommandSpec::new("format.bullets", "Bullets", "Message › Basic Text", bullets).pure().params(RANGE).when(needs_html),
+        CommandSpec::new("format.numbering", "Numbering", "Message › Basic Text", numbering).pure().params(RANGE).when(needs_html),
+        CommandSpec::new("format.clear", "Clear All Formatting", "Message › Basic Text", clear).pure().params(RANGE).when(needs_html),
         CommandSpec::new("compose.link", "Link", "Message › Include", link)
             .pure()
             .params(r#"{"url"?: string (http, https, mailto or tel; none: remove the link), "from"?: number, "to"?: number}"#)
+            .when(needs_html),
+        CommandSpec::new("edit.paste", "Paste", "Message › Clipboard", paste)
+            .pure()
+            .params(r#"{"html"?: string, "text"?: string} — over the selection; HTML is reduced to bold, italic, underline, a size, links and lists (to plain text in a plain-text message)"#)
             .when(needs_compose),
+        CommandSpec::new("compose.formatHtml", "HTML", "Format Text › Format", format_html).pure().when(needs_compose),
+        CommandSpec::new("compose.formatPlain", "Plain Text", "Format Text › Format", format_plain).pure().when(needs_compose),
     ]
+}
+
+/// Enabled only while a message in HTML is being written.
+fn needs_html(s: &Session) -> Option<&'static str> {
+    match &s.compose {
+        None => Some("no message is being written"),
+        Some(c) if c.format == BodyFormat::Plain => Some("the message is plain text; switch it to HTML first"),
+        Some(_) => None,
+    }
 }
 
 fn compose_mut(s: &mut Session) -> Result<&mut Compose, CmdError> {
@@ -207,4 +222,39 @@ fn link(s: &mut Session, v: &Value) -> CmdResult {
     };
     edit(s, v, |c| c.body.set_link(url.as_deref()))?;
     Ok(state(s))
+}
+
+/// Most HTML or text one paste takes, in bytes.
+const MAX_PASTE: usize = 4 << 20;
+
+fn paste(s: &mut Session, v: &Value) -> CmdResult {
+    let plain = s.compose.as_ref().is_some_and(|c| c.format == BodyFormat::Plain);
+    let fragment = match (p::str(v, "html"), p::str(v, "text")) {
+        (Some(html), _) if html.len() <= MAX_PASTE => {
+            let rich = mailcraft_mime::rich::from_html(html);
+            if plain { RichText::from_plain(&rich.text()) } else { rich }
+        }
+        (None, Some(text)) if text.len() <= MAX_PASTE => RichText::from_plain(text),
+        (None, None) => return Err(bad("`html` or `text` (string) is required")),
+        _ => return Err(fail("that is too much to paste into one message")),
+    };
+    edit(s, &json!({}), |c| c.body.paste(&fragment))?;
+    Ok(state(s))
+}
+
+fn set_format(s: &mut Session, format: BodyFormat) -> CmdResult {
+    let c = compose_mut(s)?;
+    if c.format != format {
+        c.format = format;
+        c.dirty = true;
+    }
+    Ok(json!({"format": c.format}))
+}
+
+fn format_html(s: &mut Session, _: &Value) -> CmdResult {
+    set_format(s, BodyFormat::Html)
+}
+
+fn format_plain(s: &mut Session, _: &Value) -> CmdResult {
+    set_format(s, BodyFormat::Plain)
 }

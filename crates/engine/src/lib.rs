@@ -22,7 +22,9 @@ use serde_json::Value;
 pub use mailcraft_html as html;
 pub use mailcraft_model as model;
 pub use mailcraft_time as time;
-pub use session::{CalView, Clock, Compose, ComposeMode, Filter, Module, Pane, Prefs, Scope, Selection, Session, SortBy, TaskFilter, ViewState};
+pub use session::{
+    BodyFormat, CalView, Clock, Compose, ComposeMode, Filter, Module, Pane, Prefs, Scope, Selection, Session, SortBy, TaskFilter, ViewState,
+};
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq)]
 pub enum CmdError {

@@ -136,3 +136,93 @@ fn a_plain_edit_keeps_the_formatting_around_it() {
     run(&mut s, "compose.undo", json!({}));
     assert_eq!(mine(&s), "Hello world");
 }
+
+#[test]
+fn a_formatted_message_goes_out_as_html_with_a_plain_text_part() {
+    let mut s = session();
+    run(&mut s, "mail.new", json!({"to": "maya@lumen.example", "subject": "Plan", "body": "Agenda\nfirst\nsecond\nsee <the> site"}));
+    run(&mut s, "format.bold", json!({"from": 0, "to": 6}));
+    run(&mut s, "format.numbering", json!({"from": 7, "to": 19}));
+    run(&mut s, "compose.link", json!({"url": "https://example.org/?a=1&b=2", "from": 30, "to": 34}));
+    let id = run(&mut s, "compose.send", json!({}))["id"].as_u64().unwrap();
+    let m = s.mailbox.message(id).unwrap().clone();
+    assert!(m.body.text.starts_with("Agenda\n1. first\n2. second\nsee <the> site <https://example.org/?a=1&b=2>"), "{:?}", m.body.text);
+    let html = m.body.html.clone().unwrap();
+    assert!(
+        html.contains("<div><b>Agenda</b></div>")
+            && html.contains("<ol ")
+            && html.contains("see &lt;the&gt; <a href=\"https://example.org/?a=1&amp;b=2\">site</a>"),
+        "{html}"
+    );
+    // On the wire: both forms, as alternatives, and they read back.
+    let bytes = mailcraft_mime::write(&m, &mailcraft_mime::WriteOptions::default());
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("multipart/alternative") && text.contains("text/plain") && text.contains("text/html"));
+    let back = mailcraft_mime::parse(&bytes);
+    assert_eq!(mailcraft_mime::rich::from_html(back.body.html.as_deref().unwrap()), mailcraft_mime::rich::from_html(&html));
+}
+
+#[test]
+fn a_formatted_draft_reopens_formatted() {
+    let mut s = session();
+    run(&mut s, "mail.new", json!({"to": "maya@lumen.example", "body": "\n\nbold and plain"}));
+    run(&mut s, "format.bold", json!({"from": 2, "to": 6}));
+    run(&mut s, "format.bullets", json!({"from": 2}));
+    let d = run(&mut s, "compose.saveDraft", json!({}))["draft"].as_u64().unwrap();
+    let written = compose(&s).body.text().clone();
+    run(&mut s, "compose.close", json!({}));
+    run(&mut s, "mail.editDraft", json!({"id": d}));
+    assert_eq!(compose(&s).body.text(), &written);
+    assert_eq!(compose(&s).format, crate::BodyFormat::Html);
+    // A draft saved before rich text (plain text only) opens as plain text.
+    s.mailbox.message_mut(d).unwrap().body = mailcraft_model::Body { text: "Old\ndraft".into(), html: None };
+    run(&mut s, "compose.close", json!({}));
+    run(&mut s, "mail.editDraft", json!({"id": d}));
+    assert_eq!(compose(&s).body.plain(), "Old\ndraft");
+    assert_eq!(compose(&s).format, crate::BodyFormat::Plain);
+}
+
+#[test]
+fn pasted_html_is_reduced_to_the_set() {
+    let mut s = session();
+    run(&mut s, "mail.new", json!({"to": "maya@lumen.example"}));
+    run(&mut s, "compose.select", json!({"from": 0}));
+    run(
+        &mut s,
+        "edit.paste",
+        json!({"html": "<script>alert(1)</script><p style=\"color:red\"><b>Hi</b> <a href=\"javascript:x\">there</a></p><table><tr><td><i>cell</i></td></tr></table><img src=\"https://tracker.example/p.gif\">"}),
+    );
+    let t = compose(&s).body.text().clone();
+    assert!(t.text().starts_with("Hi there\n\ncell"), "{:?}", t.text());
+    assert!(t.paragraphs().iter().flat_map(|p| &p.runs).all(|r| r.style.link.is_none()));
+    assert!(t.all(0, 2, |st| st.bold).unwrap());
+    // Plain text in a plain-text message, and nothing formatted can be asked for there.
+    run(&mut s, "compose.formatPlain", json!({}));
+    assert!(s.run("format.bold", &json!({})).is_err());
+    run(&mut s, "compose.select", json!({"from": 0}));
+    run(&mut s, "edit.paste", json!({"html": "<b>more</b>"}));
+    assert!(compose(&s).body.plain().starts_with("moreHi"));
+    assert!(!compose(&s).body.text().all(0, 4, |st| st.bold).unwrap());
+    let id = run(&mut s, "compose.send", json!({}))["id"].as_u64().unwrap();
+    assert!(s.mailbox.message(id).unwrap().body.html.is_none());
+}
+
+#[test]
+fn a_paste_needs_something_to_paste() {
+    let mut s = session();
+    run(&mut s, "mail.new", json!({}));
+    assert!(s.run("edit.paste", &json!({})).is_err());
+    assert!(s.run("edit.paste", &json!({"html": 5})).is_err());
+    assert!(s.run("edit.paste", &json!({"text": "x".repeat(5 << 20)})).is_err());
+}
+
+#[test]
+fn a_reply_is_written_the_way_the_original_was() {
+    let mut s = session();
+    let plain = s.mailbox.messages.values().find(|m| m.body.html.is_none() && !m.draft).map(|m| m.id).unwrap();
+    run(&mut s, "mail.reply", json!({"id": plain}));
+    assert_eq!(compose(&s).format, crate::BodyFormat::Plain);
+    assert!(!s.enabled("format.bold"));
+    run(&mut s, "compose.formatHtml", json!({}));
+    assert!(s.enabled("format.bold"));
+}

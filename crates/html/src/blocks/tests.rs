@@ -1,6 +1,17 @@
 use super::*;
 use crate::{MAX_FONT_PX, MIN_FONT_PX};
 
+#[test]
+fn a_list_without_margins_has_no_gap_around_it() {
+    let spaces = |html: &str| parse(html).iter().map(|b| b.space).collect::<Vec<_>>();
+    assert_eq!(spaces("<div>a</div><ul><li>b</li><li>c</li></ul><div>d</div>"), [0, 1, 0, 1]);
+    assert_eq!(spaces("<div>a</div><ul style=\"margin-top:0;margin-bottom:0\"><li>b</li></ul><div>d</div>"), [0, 0, 0]);
+    assert_eq!(spaces("<div>a</div><ol style=\"margin:0\"><li>b</li></ol><div>d</div>"), [0, 0, 0]);
+    assert_eq!(spaces("<div>a</div><ul style=\"margin-top:0in\"><li>b</li></ul><div>d</div>"), [0, 0, 1]);
+    // A blank line before such a list is the owner's, and stays.
+    assert_eq!(spaces("<div>a</div><div><br></div><ul style=\"margin:0\"><li>b</li></ul>"), [0, 1]);
+}
+
 fn para(text: &str) -> Block {
     Block::new(BlockKind::Paragraph, vec![Span::plain(text)])
 }
