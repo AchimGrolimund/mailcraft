@@ -61,11 +61,15 @@ const IO: Duration = Duration::from_secs(10);
 /// Most addresses of one host that are tried, and most that a lookup may give.
 const MAX_ADDRESSES: usize = 4;
 const MAX_LOOKED_UP: usize = 16;
-/// What every request says of its sender: nothing about this machine or its owner.
-const USER_AGENT: &str = "MailCraft";
+/// What every request says of its sender: nothing about this machine or its owner. In the
+/// browsers' form, because web firewalls (ModSecurity's rules among them) refuse a request whose
+/// sender doesn't read like one, most often with 406 (#46).
+const USER_AGENT: &str = "Mozilla/5.0 (compatible; MailCraft)";
 /// The kinds of picture asked for. Servers that keep a picture in several kinds send a newer
 /// one (WebP, AVIF) only to those who name it, so naming none of them gets the plain kinds.
-const ACCEPT: &str = "image/png, image/jpeg, image/gif, image/*;q=0.5";
+/// Anything else is taken last rather than refused with 406 (#46): what comes is checked to be
+/// a picture by its own bytes whatever it says it is.
+const ACCEPT: &str = "image/png, image/jpeg, image/gif, image/*;q=0.5, */*;q=0.1";
 /// How the picture is to come: as it is, not packed.
 const ACCEPT_ENCODING: &str = "identity";
 /// How much of an answer's beginning is kept, to read where a redirect leads.
@@ -769,7 +773,12 @@ fn ask(url: &Url, reach: &Reach<'_>, limits: &Limits, max_bytes: usize, deadline
     let mut kept = Kept { inner: &mut line, head: Vec::new() };
     let started = Instant::now();
     let reply = http::read_reply(&mut kept, started, deadline.saturating_duration_since(started), max_bytes).map_err(reading)?;
-    log::debug!("a picture's server answered {} ({} bytes)", reply.status, reply.body.len());
+    // A refusal is worth seeing in Copy Diagnostics; the address never is.
+    if reply.status >= 400 {
+        log::info!("a picture's server answered {} ({} bytes)", reply.status, reply.body.len());
+    } else {
+        log::debug!("a picture's server answered {} ({} bytes)", reply.status, reply.body.len());
+    }
     Ok(Answer { status: reply.status, body: reply.body, said: said(&kept.head) })
 }
 
@@ -885,8 +894,8 @@ mod tests {
             headers,
             [
                 ("host", format!("127.0.0.1:{}", server.port).as_str()),
-                ("user-agent", "MailCraft"),
-                ("accept", "image/png, image/jpeg, image/gif, image/*;q=0.5"),
+                ("user-agent", "Mozilla/5.0 (compatible; MailCraft)"),
+                ("accept", "image/png, image/jpeg, image/gif, image/*;q=0.5, */*;q=0.1"),
                 ("accept-encoding", "identity"),
                 ("connection", "close"),
             ]
@@ -1312,6 +1321,16 @@ mod tests {
                 "/hero.webp" => answer("200 OK", "Content-Type: image/webp\r\nVary: Accept\r\n", &webp()),
                 "/hero.jpg" => answer("200 OK", "Content-Type: image/webp\r\n", &webp()),
                 "/hero.avif" => answer("200 OK", "Content-Type: image/avif\r\n", b"\0\0\0\x1cftypavif\0\0\0\0avifmif1miaf"),
+                // (#46) A web firewall: 406 to a sender that doesn't read like a browser, or that
+                // won't take whatever it has.
+                "/guarded.png" => {
+                    let lower = request.to_ascii_lowercase();
+                    if lower.contains("user-agent: mozilla/5.0") && lower.contains("*/*") {
+                        answer("200 OK", "Content-Type: application/octet-stream\r\n", &png)
+                    } else {
+                        answer("406 Not Acceptable", "", b"")
+                    }
+                }
                 _ => answer("404 Not Found", "", b""),
             }
         });
@@ -1340,6 +1359,7 @@ mod tests {
         for path in ["/brotli.png", "/zstd.png", "/thrice.png", "/cut.png", "/garbled.png", "/garbled-deflate.png"] {
             assert_eq!(get(path), Err(PictureError::Packed), "{path}");
         }
+        assert_eq!(get("/guarded.png"), Ok(picture()));
         assert_eq!(get("/hero.webp"), Ok(webp()));
         assert_eq!(get("/hero.jpg"), Ok(webp()));
         assert!(get("/hero.avif").is_ok_and(|bytes| bytes.get(4..12) == Some(&b"ftypavif"[..])));
