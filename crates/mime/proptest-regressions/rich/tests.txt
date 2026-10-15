@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 79bdb69bebd0494a4ce1206fc0b28270a910764da580aa3c74dd1578a524ad94 # four blank lines between two lines of text
+cc 1ef31e329034d8209868d60233fbdbd8a04e7ffc65bdf2e64d50e34ec2d8d97c # shrinks to t = RichText { paragraphs: [Paragraph { runs: [], list: None, level: 0 }] }, pictures = 1, layout = 1, cid = "", alt = "", width = None

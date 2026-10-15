@@ -5,7 +5,7 @@
 //! are not on the mailbox's undo history. The message has its own (`compose.undo`).
 //! Positions count characters of the body's text, a paragraph break being one.
 
-use mailcraft_model::rich::{Format, ListKind, MAX_SIZE, MIN_SIZE};
+use mailcraft_model::rich::{Font, Format, ListKind, MAX_SIZE, MIN_SIZE, safe_color};
 use mailcraft_model::{ModelError, RichText};
 use serde_json::{Value, json};
 
@@ -41,6 +41,14 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("format.size", "Font Size", "Message › Basic Text", size)
             .pure()
             .params(r#"{"size": number (points, 8–36) | null (the message's own size), "from"?: number, "to"?: number}"#)
+            .when(needs_html),
+        CommandSpec::new("format.color", "Font Color", "Message › Basic Text", color)
+            .pure()
+            .params(r##"{"value": "#rrggbb" | null (the message's own colour), "from"?: number, "to"?: number}"##)
+            .when(needs_html),
+        CommandSpec::new("format.font", "Font", "Message › Basic Text", font)
+            .pure()
+            .params(r#"{"value": "Arial"|"Calibri"|"Georgia"|"Verdana"|"System" | null (the message's own font), "from"?: number, "to"?: number}"#)
             .when(needs_html),
         CommandSpec::new("format.bullets", "Bullets", "Message › Basic Text", bullets).pure().params(RANGE).when(needs_html),
         CommandSpec::new("format.numbering", "Numbering", "Message › Basic Text", numbering).pure().params(RANGE).when(needs_html),
@@ -196,6 +204,28 @@ fn underline(s: &mut Session, v: &Value) -> CmdResult {
     Ok(json!({"underline": on}))
 }
 
+fn color(s: &mut Session, v: &Value) -> CmdResult {
+    let value = match v.get("value") {
+        Some(Value::Null) => None,
+        Some(_) => Some(p::str(v, "value").and_then(safe_color).ok_or_else(|| bad("`value` is a colour written #rrggbb, or null"))?),
+        None => return Err(bad("`value` (#rrggbb, or null) is required")),
+    };
+    edit(s, v, |c| c.body.format(Format::Color(value.clone())))?;
+    Ok(json!({"value": value}))
+}
+
+fn font(s: &mut Session, v: &Value) -> CmdResult {
+    let value = match v.get("value") {
+        Some(Value::Null) => None,
+        Some(_) => {
+            Some(p::str(v, "value").and_then(Font::parse).ok_or_else(|| bad("`value` is Arial, Calibri, Georgia, Verdana or System, or null"))?)
+        }
+        None => return Err(bad("`value` (a font, or null) is required")),
+    };
+    edit(s, v, |c| c.body.format(Format::Font(value)))?;
+    Ok(json!({"value": value.map(Font::label)}))
+}
+
 fn size(s: &mut Session, v: &Value) -> CmdResult {
     let size = match v.get("size") {
         Some(Value::Null) => None,
@@ -282,7 +312,7 @@ fn cut(s: &mut Session, v: &Value) -> CmdResult {
 }
 
 /// Most HTML or text one paste takes, in bytes.
-const MAX_PASTE: usize = 4 << 20;
+pub(crate) const MAX_PASTE: usize = 4 << 20;
 
 fn paste(s: &mut Session, v: &Value) -> CmdResult {
     let plain = s.compose.as_ref().is_some_and(|c| c.format == BodyFormat::Plain);

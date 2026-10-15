@@ -483,15 +483,21 @@ fn signatures(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
             if is_default {
                 ui.label(egui::RichText::new(tl!("(used for new messages)")).color(t.text_dim));
             } else if ui.small_button(tl!("Use for new messages")).clicked() {
-                let _ = app.run("signature.set", json!({"name": s.name, "text": s.text, "default": true}));
+                let _ = app.run("signature.set", json!({"name": s.name, "body": s.body(), "default": true}));
             }
             if ui.small_button(tl!("Delete")).clicked() {
                 let _ = app.run("signature.remove", json!({"name": s.name}));
             }
         });
-        let mut text = s.text.clone();
-        if ui.add(egui::TextEdit::multiline(&mut text).desired_rows(3).desired_width(420.0)).changed() {
-            let _ = app.execute("signature.set", json!({"name": s.name, "text": text}));
+        // ponytail: a plain text box until the signature page (R4.5.3); a signature with
+        // formatting or pictures is shown, not edited here, so nothing of it is lost.
+        if s.body().has_formatting() {
+            ui.label(egui::RichText::new(s.plain()).color(t.text_dim));
+        } else {
+            let mut text = s.plain();
+            if ui.add(egui::TextEdit::multiline(&mut text).desired_rows(3).desired_width(420.0)).changed() {
+                let _ = app.execute("signature.set", json!({"name": s.name, "text": text}));
+            }
         }
     }
     if ui.button(tl!("New Signature")).clicked() {

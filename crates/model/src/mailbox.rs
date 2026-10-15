@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::sync::RemoteFlags;
-use crate::{Action, Calendar, Contact, Event, Id, Message, ModelError, Rgb, Rule, Task, clean_name};
+use crate::{Action, Calendar, Contact, Event, Id, Message, ModelError, Rgb, Rule, Signature, Task, clean_name};
 
 /// Deepest a folder tree may nest (a hostile file could otherwise chain folders without end).
 const MAX_DEPTH: usize = 32;
@@ -201,9 +201,13 @@ pub struct Account {
     /// Login name; the password is never stored in the mailbox.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub username: String,
-    /// The signature new messages start with (a [`Signature`] name).
+    /// The signature new messages start with (a [`Signature`] name; empty for none).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub signature: String,
+    /// The signature replies and forwards start with (empty for none); `None` for an account from
+    /// before there were two, which has [`Account::signature`] for both ([`Account::reply_signature`]).
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "crate::sync::lenient")]
+    pub reply_signature: Option<String>,
     /// Set when the owner signs in on the provider's own page (OAuth 2.0) instead of with a
     /// password. No token is ever stored here.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -280,6 +284,11 @@ impl Directory {
 }
 
 impl Account {
+    /// The name of the signature replies and forwards start with (empty for none).
+    pub fn reply_signature(&self) -> &str {
+        self.reply_signature.as_deref().unwrap_or(&self.signature)
+    }
+
     pub fn address(&self) -> crate::Address {
         crate::Address::new(self.display_name.clone(), self.email.clone())
     }
@@ -428,13 +437,6 @@ pub struct ServerFavorites {
 pub struct Category {
     pub name: String,
     pub color: Rgb,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Signature {
-    pub name: String,
-    pub text: String,
 }
 
 /// The categories a new mailbox starts with (our own colours).

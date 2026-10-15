@@ -1,10 +1,16 @@
 //! The text of a message being written, in rich text: paragraphs of runs.
 //!
 //! The set is deliberately small (the roadmap's minimal rich-text reply): bold, italic,
-//! underline, one font size, links to `http`, `https`, `mailto` and `tel` addresses, and
-//! paragraphs that are plain, bulleted or numbered. Nothing else can be expressed, so nothing
-//! else can be sent: pasted formatting is reduced to this set before it gets here
-//! (`mailcraft_mime::rich`), and the HTML that goes out is written from it.
+//! underline, one font size, a text colour, a font from a short list ([`Font`]), links to `http`,
+//! `https`, `mailto` and `tel` addresses, and paragraphs that are plain, bulleted or numbered.
+//! Nothing else can be expressed, so nothing else can be sent: pasted formatting is reduced to
+//! this set before it gets here (`mailcraft_mime::rich`), and the HTML that goes out is written
+//! from it.
+//!
+//! A picture is a run of its own holding one [`OBJECT`] character and the picture's id
+//! ([`Run::picture`]); the picture itself (its bytes, width and description) is kept beside the
+//! text by whatever holds it (a signature, R4.5). Typed or pasted text never holds the object
+//! character, so only that holder can put a picture in.
 //!
 //! A position is a count of characters into [`RichText::text`]: the paragraphs' text joined by
 //! one `\n` each. That is also the text a plain editor shows, so a position means the same in
@@ -40,6 +46,77 @@ pub const MAX_LINK: usize = 2048;
 /// The deepest a list item may be indented: levels 0 (the outermost) to this, eight in all.
 pub const MAX_LEVEL: u8 = 7;
 
+/// The character a picture stands as in the text (U+FFFC OBJECT REPLACEMENT CHARACTER).
+pub const OBJECT: char = '\u{fffc}';
+
+/// A font the composer offers: widely installed families, written as their names with fallbacks.
+/// No font is shipped with MailCraft.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Font {
+    Arial,
+    Calibri,
+    Georgia,
+    Verdana,
+    /// The reader's own interface font (Segoe UI on Windows, the system's elsewhere).
+    System,
+}
+
+impl Font {
+    pub const ALL: [Font; 5] = [Font::Arial, Font::Calibri, Font::Georgia, Font::Verdana, Font::System];
+
+    /// The name a menu shows.
+    pub fn label(self) -> &'static str {
+        match self {
+            Font::Arial => "Arial",
+            Font::Calibri => "Calibri",
+            Font::Georgia => "Georgia",
+            Font::Verdana => "Verdana",
+            Font::System => "System",
+        }
+    }
+
+    /// The CSS `font-family` it is written as.
+    pub fn css(self) -> &'static str {
+        match self {
+            Font::Arial => "Arial, Helvetica, sans-serif",
+            Font::Calibri => "Calibri, Carlito, sans-serif",
+            Font::Georgia => "Georgia, serif",
+            Font::Verdana => "Verdana, Geneva, sans-serif",
+            Font::System => "'Segoe UI', system-ui, sans-serif",
+        }
+    }
+
+    /// The font a CSS `font-family` list asks for first, when it is one of these.
+    pub fn from_css(families: &str) -> Option<Font> {
+        let first = families.split(',').next()?.trim().trim_matches(['\'', '"']).to_ascii_lowercase();
+        Some(match first.as_str() {
+            "arial" | "helvetica" => Font::Arial,
+            "calibri" | "carlito" => Font::Calibri,
+            "georgia" => Font::Georgia,
+            "verdana" | "geneva" => Font::Verdana,
+            "segoe ui" | "system-ui" | "-apple-system" => Font::System,
+            _ => return None,
+        })
+    }
+
+    /// From a menu's name or a command's (`"arial"`, `"Calibri"`).
+    pub fn parse(name: &str) -> Option<Font> {
+        Font::ALL.into_iter().find(|f| f.label().eq_ignore_ascii_case(name.trim()))
+    }
+}
+
+/// A text colour as `#rrggbb` (lower case), from `#rgb`, `#rrggbb` or `rrggbb`; `None` otherwise.
+pub fn safe_color(value: &str) -> Option<String> {
+    let hex = value.trim().trim_start_matches('#');
+    let full: String = match hex.len() {
+        3 => hex.chars().flat_map(|c| [c, c]).collect(),
+        6 => hex.to_string(),
+        _ => return None,
+    };
+    full.chars().all(|c| c.is_ascii_hexdigit()).then(|| format!("#{}", full.to_ascii_lowercase()))
+}
+
 /// What a paragraph is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +147,12 @@ pub struct Style {
     /// Where the text leads: always an address [`safe_link`] accepts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// Text colour, `#rrggbb` ([`safe_color`]); `None` for the message's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Font; `None` for the message's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font: Option<Font>,
 }
 
 impl Style {
@@ -77,6 +160,7 @@ impl Style {
     pub fn clean(mut self) -> Style {
         self.size = self.size.map(clamp_size);
         self.link = self.link.as_deref().and_then(safe_link);
+        self.color = self.color.as_deref().and_then(safe_color);
         self
     }
 
@@ -106,10 +190,10 @@ pub fn safe_link(url: &str) -> Option<String> {
     ok.then(|| url.to_string())
 }
 
-/// Text as a body may hold it: no control characters but the tab, and no line breaks (they
-/// split paragraphs, see [`lines`]).
+/// Text as a body may hold it: no control characters but the tab, no line breaks (they split
+/// paragraphs, see [`lines`]), and no [`OBJECT`] (only a picture run holds one).
 fn clean_line(s: &str) -> String {
-    s.chars().filter(|c| *c == '\t' || !c.is_control()).collect()
+    s.chars().filter(|c| (*c == '\t' || !c.is_control()) && *c != OBJECT).collect()
 }
 
 /// The lines of `text`, whatever ends them (`\r\n`, `\r`, `\n`), each cleaned.
@@ -117,18 +201,26 @@ fn lines(text: &str) -> Vec<String> {
     text.replace("\r\n", "\n").split(['\n', '\r']).map(clean_line).collect()
 }
 
-/// Text that looks one way.
+/// Text that looks one way, or one picture.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Run {
     pub text: String,
     #[serde(flatten)]
     pub style: Style,
+    /// A picture's id, kept by the text's holder: the run's text is then one [`OBJECT`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub picture: Option<u32>,
 }
 
 impl Run {
     pub fn new(text: impl Into<String>, style: Style) -> Run {
-        Run { text: text.into(), style }
+        Run { text: text.into(), style, picture: None }
+    }
+
+    /// The picture `id`, as it stands in the text.
+    pub fn picture(id: u32, style: Style) -> Run {
+        Run { text: OBJECT.to_string(), style, picture: Some(id) }
     }
 
     pub fn plain(text: impl Into<String>) -> Run {
@@ -196,7 +288,7 @@ impl Paragraph {
                 continue;
             }
             match out.last_mut() {
-                Some(last) if last.style == run.style => last.text.push_str(&run.text),
+                Some(last) if last.style == run.style && last.picture.is_none() && run.picture.is_none() => last.text.push_str(&run.text),
                 _ => out.push(run),
             }
         }
@@ -217,7 +309,7 @@ impl Paragraph {
                 let byte = run.text.char_indices().nth(offset - seen).map_or(run.text.len(), |(b, _)| b);
                 let tail = run.text.split_off(byte);
                 let style = run.style.clone();
-                self.runs.insert(i + 1, Run { text: tail, style });
+                self.runs.insert(i + 1, Run::new(tail, style));
                 return i + 1;
             }
             seen += n;
@@ -290,6 +382,10 @@ pub enum Format {
     Size(Option<u8>),
     /// An address [`safe_link`] accepts, or `None` to remove the link.
     Link(Option<String>),
+    /// A `#rrggbb` colour ([`safe_color`]), or `None` for the message's own.
+    Color(Option<String>),
+    /// A font, or `None` for the message's own.
+    Font(Option<Font>),
     /// Back to plain text, links and all.
     Clear,
 }
@@ -302,6 +398,8 @@ impl Format {
             Format::Underline(on) => style.underline = *on,
             Format::Size(size) => style.size = size.map(clamp_size),
             Format::Link(url) => style.link = url.as_deref().and_then(safe_link),
+            Format::Color(color) => style.color = color.as_deref().and_then(safe_color),
+            Format::Font(font) => style.font = *font,
             Format::Clear => *style = Style::default(),
         }
     }
@@ -356,6 +454,14 @@ impl RichText {
             let mut cur = Paragraph { runs: Vec::new(), list: p.list, level };
             for run in p.runs {
                 let style = run.style.clean();
+                if let Some(id) = run.picture {
+                    if budget == 0 {
+                        break 'all;
+                    }
+                    budget -= 1;
+                    cur.runs.push(Run::picture(id, style));
+                    continue;
+                }
                 for (i, line) in lines(&run.text).into_iter().enumerate() {
                     if i > 0 {
                         cur.normalize();
@@ -368,7 +474,7 @@ impl RichText {
                     let n = line.chars().count();
                     let line = if n > budget { line.chars().take(budget).collect() } else { line };
                     budget = budget.saturating_sub(n.min(budget));
-                    cur.runs.push(Run { text: line, style: style.clone() });
+                    cur.runs.push(Run::new(line, style.clone()));
                 }
             }
             cur.normalize();
@@ -405,12 +511,23 @@ impl RichText {
 
     /// Whether anything in it is more than plain text.
     pub fn has_formatting(&self) -> bool {
-        self.paragraphs.iter().any(|p| p.list != ListKind::None || p.runs.iter().any(|r| !r.style.is_plain()))
+        self.paragraphs.iter().any(|p| p.list != ListKind::None || p.runs.iter().any(|r| !r.style.is_plain() || r.picture.is_some()))
+    }
+
+    /// The pictures' ids, in the order they stand.
+    pub fn pictures(&self) -> Vec<u32> {
+        self.paragraphs.iter().flat_map(|p| &p.runs).filter_map(|r| r.picture).collect()
     }
 
     /// The text as it goes in a plain-text part: bullets as `- `, numbers as `1. `, and a link's
-    /// address after its text when the text doesn't say it.
+    /// address after its text when the text doesn't say it. Pictures are left out.
     pub fn to_plain(&self) -> String {
+        self.to_plain_with(|_| None)
+    }
+
+    /// [`RichText::to_plain`], with a picture as its description in brackets when `describe` has
+    /// one for it (`[Lumen Studio logo]`), else left out.
+    pub fn to_plain_with(&self, describe: impl Fn(u32) -> Option<String>) -> String {
         let mut out = String::new();
         let numbers = numbers(&self.paragraphs);
         for (i, p) in self.paragraphs.iter().enumerate() {
@@ -428,6 +545,12 @@ impl RichText {
                 ListKind::Numbered => out.push_str(&format!("{}. ", numbers.get(i).copied().unwrap_or(1))),
             }
             for run in &p.runs {
+                if let Some(id) = run.picture {
+                    if let Some(text) = describe(id).map(|t| clean_line(&t)).filter(|t| !t.trim().is_empty()) {
+                        out.push_str(&format!("[{}]", text.trim()));
+                    }
+                    continue;
+                }
                 out.push_str(&run.text);
                 if let Some(url) = &run.style.link {
                     let shown = run.text.trim();
@@ -662,6 +785,11 @@ impl RichText {
             && safe_link(url).is_none()
         {
             return Err(ModelError::Invalid("a link goes to an http, https, mailto or tel address".into()));
+        }
+        if let Format::Color(Some(color)) = change
+            && safe_color(color).is_none()
+        {
+            return Err(ModelError::Invalid("a colour is written #rrggbb".into()));
         }
         for (i, a, b) in self.pieces(from, to)? {
             if let Some(p) = self.paragraphs.get_mut(i) {
