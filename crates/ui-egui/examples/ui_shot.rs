@@ -5,7 +5,8 @@
 //!
 //! The script is JSON lines: control-channel requests (`{"method": …, "params": …}`, see
 //! `docs/control-protocol.md`), `{"shot": "/abs/out.png"}` to save the window as PNG,
-//! `{"steps": n}` to run extra frames, or `{"wait": ms}` to keep running frames for a while. The
+//! `{"steps": n}` to run extra frames (a request with `"agent": {"allow": [...]}` comes as the MCP
+//! bridge's would: what needs the owner puts its question over the window), or `{"wait": ms}` to keep running frames for a while. The
 //! window is 1440×900 pt at 2× (override with `{"width": w, "height": h}` and `{"scale": s}` on
 //! any line; `{"scale": 1}` is a screen at 100 %, where the fonts' hinting shows) and opens the
 //! sample mailbox, as of a fixed Wednesday afternoon so shots compare, unless the first line is
@@ -232,6 +233,10 @@ fn main() {
             }
         } else if let Some(m) = l.get("method").and_then(|v| v.as_str()) {
             let (req, reply) = ControlRequest::new(m, l.get("params").cloned().unwrap_or_default());
+            let req = match l.get("agent") {
+                Some(a) => req.from_agent(mailcraft_ui_egui::control::agent_allow(a)),
+                None => req,
+            };
             tx.send(req).expect("send");
             for _ in 0..60 {
                 step(&mut harness);

@@ -512,6 +512,9 @@ pub struct Session {
     pub graph_mail: bool,
     /// Messages kept in step through Graph, by server id: kept between the pages of a run.
     pub(crate) graph_index: crate::cmd::graph_down::ServerIndex,
+    /// Set while a command an agent asked for runs (with what the owner allowed it): what the
+    /// command did is checked against that ([`crate::agent`]), and undone when it oversteps.
+    pub agent: Option<Vec<crate::agent::Class>>,
     history: Vec<Undo>,
     redo: Vec<Undo>,
     rev: u64,
@@ -540,6 +543,7 @@ impl Session {
             sync_status: String::new(),
             graph_mail: false,
             graph_index: Default::default(),
+            agent: None,
             history: Vec::new(),
             redo: Vec::new(),
             rev: 0,
@@ -837,6 +841,14 @@ impl Session {
                 log::error!("command `{id}` panicked; the mailbox was restored");
                 Err(CmdError::Failed(format!("{} failed unexpectedly; nothing was changed", spec.label)))
             }
+        };
+        // An agent's command that did more than it was allowed (mail into an Outbox, messages
+        // gone for good) is undone, whatever path it took there.
+        let result = match (result, &self.agent) {
+            (Ok(_), Some(allow)) if let Some(c) = crate::agent::overstep(&before.mailbox, &self.mailbox, allow) => {
+                Err(CmdError::Failed(crate::agent::needs_owner(id, c, "do more than an agent is allowed to; nothing was changed")))
+            }
+            (r, _) => r,
         };
         match &result {
             Ok(_) => {
