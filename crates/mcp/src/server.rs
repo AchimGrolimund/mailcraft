@@ -133,9 +133,9 @@ impl Server {
                 Ok(json!({
                     "protocolVersion": version,
                     "capabilities": {"tools": {}, "resources": {}},
-                    "serverInfo": {"name": "mailcraft", "title": "MailCraft", "version": env!("CARGO_PKG_VERSION"), "websiteUrl": "https://github.com/billsecond/mailcraft"},
+                    "serverInfo": {"name": "mailcraft", "title": "MailCraft", "version": env!("CARGO_PKG_VERSION"), "websiteUrl": "https://github.com/UCS-Care-Group/mailcraft"},
                     "instructions": format!(
-                        "{INSTRUCTIONS} Backend: {}. Project: https://github.com/billsecond/mailcraft",
+                        "{INSTRUCTIONS} Backend: {}. Project: https://github.com/UCS-Care-Group/mailcraft",
                         self.backend.describe()
                     ),
                 }))

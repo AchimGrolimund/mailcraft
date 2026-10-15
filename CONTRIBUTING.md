@@ -11,7 +11,7 @@ much as the work. The words here have the meanings in [`CONTEXT.md`](CONTEXT.md)
    private and hostile, no vendor assets, clean room. None of it is negotiable.
 2. **Read the plan.** Work to beta follows [the roadmap reset](docs/specs/roadmap-reset.md), its
    [plan](docs/plans/roadmap-reset.md) and the decisions in [`docs/adr/`](docs/adr/), tracked in
-   [#2](https://github.com/billsecond/mailcraft/issues/2). Work that goes against an accepted
+   [#2](https://github.com/UCS-Care-Group/mailcraft/issues/2). Work that goes against an accepted
    decision won't be merged, however good it is; propose a change to the decision first.
 3. **Claim an issue.** Every task in the plan is an issue labelled with its step (`R3`, `R4`, …).
    Comment "I'd like to take this" on one that has no assignee. A maintainer assigns it to you and
@@ -47,9 +47,9 @@ Ask in an issue first, and don't put any of these into a pull request until the 
 ## Testing MailCraft
 
 Want to use it rather than build it? Sign up with the
-[tester form](https://github.com/billsecond/mailcraft/issues/new?template=tester-signup.yml).
+[tester form](https://github.com/UCS-Care-Group/mailcraft/issues/new?template=tester-signup.yml).
 Found something wrong? Use the
-[problem report](https://github.com/billsecond/mailcraft/issues/new?template=problem.yml).
+[problem report](https://github.com/UCS-Care-Group/mailcraft/issues/new?template=problem.yml).
 
 ## Revision history
 
