@@ -1,11 +1,14 @@
 # The gates every change must pass: formatting, clippy with warnings as errors, the tests, asset
-# attribution, crate layering and the wasm build (`cargo xtask ci`), on the three desktop systems.
+# attribution, crate layering and the wasm build (`cargo xtask ci`), on the three desktop systems
+# (clippy and wasm on Linux only). Changes to documentation alone don't run it.
 name: CI
 
 on:
   push:
     branches: [main]
+    paths: ['**', '!docs/**', '!**/*.md', 'ATTRIBUTION.md']
   pull_request:
+    paths: ['**', '!docs/**', '!**/*.md', 'ATTRIBUTION.md']
   workflow_dispatch:
 
 permissions:
@@ -33,4 +36,8 @@ jobs:
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgtk-3-dev
+      # Clippy and the wasm check run on Linux only: wasm is the same from any host, and the
+      # tests still build every platform's code.
       - run: cargo xtask ci
+        env:
+          XTASK_CI_SKIP: ${{ runner.os != 'Linux' && 'clippy,wasm' || '' }}
