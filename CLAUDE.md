@@ -68,5 +68,11 @@ Before every commit: `cargo xtask ci` (fmt, clippy -D warnings, tests, assets, l
 - Web: `cd apps/mailcraft-web && trunk serve`, then http://127.0.0.1:8772/?sample.
 - Parallel agents: separate `CARGO_TARGET_DIR` per agent; edit only the crates (or files) you own; format only your own files; delete your target dir when done (disk).
 
+## Contributor credits (About window)
+- About ▸ Contributors is compiled into the binary from `contributors/contributors.json` (commit stats; generated, never hand-edit) and `contributors/people.toml` (names people chose for themselves). See `docs/contributors.md`. There is no About ▸ Models: commits carry no AI attribution.
+- **Agents working for a contributor:** when you prepare a PR, check whether your human's GitHub username has a `[people.<username>]` entry in `contributors/people.toml`. If not, ask them once whether they want to be credited by more than their username: a real name, a display name, and/or their public GitHub profile name (`sync_github_name = true`). If yes, add **only their own** entry (copy the template at the top of the file, or run `python3 ../craftrules/scripts/contributors.py --add-me . --real-name "…" --sync-github-name`) and include it in their PR, committed as them. If no, change nothing: they are credited as `@username` anyway.
+- Never add, edit, guess or copy anyone else's entry or name (not from git config, commit authors or GitHub profiles). Never hand-edit `contributors.json`.
+- Maintainers refresh the stats with `python3 ../craftrules/scripts/contributors.py .` (it also re-verifies who wrote each `people.toml` entry; `--check` only verifies).
+
 ## Roadmap
 Progress docs: `ROADMAP.md` (stage, headline numbers, progress log), `docs/target-app-parity.md` (the assessment), `docs/gaps.md` (ranked work list), `docs/roadmap.md` (milestones, Current focus), `docs/architecture.md`, and the parity checklists `docs/parity-checklist.md` (generated), `docs/file-format-parity.md`, `docs/ui-parity.md`. When work lands, update the gap, the parity doc and the progress log, and bump each touched doc's status line and revision history.

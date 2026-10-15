@@ -542,6 +542,10 @@ fn about(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     ui.label(tl!("Open source under the MIT License or the Apache License 2.0, at your option."));
     section(ui, tl!("Contributors"), t);
     contributors(ui);
+    if ui.button(tl!("Show Contributors")).clicked() {
+        app.ui.backstage = false;
+        let _ = app.run("ui.dialog", json!({"name": "contributors"}));
+    }
     section(ui, tl!("What it is made of"), t);
     ui.label(tl!("The interface fonts are Inter, Source Sans 3 and JetBrains Mono (SIL Open Font License 1.1). Every icon is drawn in code and is original work. No artwork, fonts or text from other mail programs are included."));
     section(ui, tl!("Your mail stays yours"), t);
