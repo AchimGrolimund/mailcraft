@@ -116,6 +116,14 @@ pub struct ServerFolder {
     /// listing that was cut short); empty until its mail has been read once (R3.2).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub delta: String,
+    /// `delta` is a delta link: the folder's mail has been read to the end once, and the link
+    /// brings what changed since. Otherwise it is the next page of a round not yet ended.
+    #[serde(skip_serializing_if = "is_false")]
+    pub caught_up: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -220,6 +228,38 @@ pub struct Account {
     /// file, never written to one: the next save drops it.
     #[serde(rename = "favoritesSource", skip_serializing, deserialize_with = "retired_favorites_choice")]
     pub retired_favorites_choice: bool,
+    /// For a Microsoft account: which messages are fetched in the background (R3 spec S12).
+    #[serde(skip_serializing_if = "DownloadInFull::is_default", deserialize_with = "crate::sync::lenient_or_default")]
+    pub download_in_full: DownloadInFull,
+}
+
+/// Which messages of a Microsoft account are **fetched** in the background ("Download messages in
+/// full", per account; R3 spec S12). A larger one is fetched when it is opened, replied to,
+/// forwarded or saved.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DownloadInFull {
+    #[default]
+    UpTo10Mb,
+    UpTo25Mb,
+    UpTo50Mb,
+    Everything,
+}
+
+impl DownloadInFull {
+    pub fn is_default(&self) -> bool {
+        *self == DownloadInFull::default()
+    }
+
+    /// The largest message fetched in the background, in bytes; `None` for no limit.
+    pub fn limit(self) -> Option<u64> {
+        match self {
+            DownloadInFull::UpTo10Mb => Some(10 << 20),
+            DownloadInFull::UpTo25Mb => Some(25 << 20),
+            DownloadInFull::UpTo50Mb => Some(50 << 20),
+            DownloadInFull::Everything => None,
+        }
+    }
 }
 
 /// Whether what a mailbox file says where `favoritesSource` was is a choice that no longer

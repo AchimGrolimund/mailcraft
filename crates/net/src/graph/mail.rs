@@ -285,7 +285,7 @@ fn listing(graph: &Graph<'_>, known: &Known) -> Result<FolderListing, (FolderLis
                 }
             }
             let kind = known.kinds.get(&entry.id).copied().unwrap_or_default();
-            out.folders.push(GraphFolder { id: entry.id, parent: parent.clone(), name: entry.name, kind });
+            out.folders.push(GraphFolder { id: entry.id, parent: parent.clone(), name: entry.name, kind, ..Default::default() });
         }
     }
     Ok(out)
@@ -372,7 +372,7 @@ fn done(known: &Known, reply: &Reply, parent: &str) -> Result<ChangeOutcome, Net
     let json = serde_json::from_slice::<Value>(&reply.body).unwrap_or(Value::Null);
     let entry = entry_of(&json).ok_or_else(|| nonsense("Microsoft Graph's answer about a folder isn't one"))?;
     let kind = known.kinds.get(&entry.id).copied().unwrap_or_default();
-    Ok(ChangeOutcome::Done { folder: GraphFolder { id: entry.id, parent: known.parent_here(parent), name: entry.name, kind } })
+    Ok(ChangeOutcome::Done { folder: GraphFolder { id: entry.id, parent: known.parent_here(parent), name: entry.name, kind, ..Default::default() } })
 }
 
 /// [`done`] for a folder that stayed where it was: the answer says where that is.
@@ -402,7 +402,7 @@ fn child_named(graph: &Graph<'_>, known: &Known, parent: &str, name: &str) -> Re
     graph.list(Doing::Folders, graph.url(&path), &[], MAX_LISTED_FOLDERS, &mut |value| {
         if let Some(entry) = entry_of(value).filter(|entry| found.is_none() && entry.name.to_lowercase() == wanted) {
             let kind = known.kinds.get(&entry.id).copied().unwrap_or_default();
-            found = Some(GraphFolder { id: entry.id, parent: parent.to_string(), name: entry.name, kind });
+            found = Some(GraphFolder { id: entry.id, parent: parent.to_string(), name: entry.name, kind, ..Default::default() });
         }
     })?;
     Ok(found)

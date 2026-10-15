@@ -6,7 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Account, FlagStatus, FolderKind, Id, Importance, Message};
+use crate::{Account, Address, FlagStatus, FolderKind, Id, Importance, Message};
+use mailcraft_time::Timestamp;
 
 /// A folder as the mailbox knows it, for the server side to continue from.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,6 +196,11 @@ pub struct ServerMessage {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
     pub importance: Importance,
+    /// The server said it left `folder` (deleted, or moved out: Graph's `@removed`). It is kept
+    /// until every folder's delta has ended in the run, in case it turns up in another folder;
+    /// still gone from every folder then, it is removed here (R3 spec S9).
+    #[serde(skip_serializing_if = "is_false")]
+    pub gone: bool,
 }
 
 /// A value from a mailbox file, or `None` when what the file holds in its place isn't one (a
@@ -549,6 +555,66 @@ pub struct GraphMailRequest {
     /// Nobody is waiting for this run: it gets the share of requests background work has.
     #[serde(skip_serializing_if = "is_false")]
     pub background: bool,
+    /// Where each folder's mail goes on from (the folder's server id and its link, and whether
+    /// the link is a delta link); a folder that isn't here is read from its start (R3 spec S10).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<GraphLink>,
+}
+
+/// Where a folder's message delta goes on from.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GraphLink {
+    pub folder: String,
+    pub link: String,
+    /// It is a delta link (the folder's round has ended once), not the next page of a round.
+    #[serde(skip_serializing_if = "is_false")]
+    pub caught_up: bool,
+}
+
+/// A message as a folder's delta gives it: what the message list needs (R3 spec S9).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GraphMessage {
+    /// The server's state of it: its immutable id, the folder, read, flag, categories, importance.
+    pub server: ServerMessage,
+    /// `Message-ID` without angle brackets.
+    pub message_id: String,
+    pub subject: String,
+    pub from: Address,
+    pub to: Vec<Address>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cc: Vec<Address>,
+    /// When it was sent, and when it arrived.
+    pub sent: Timestamp,
+    pub received: Timestamp,
+    pub preview: String,
+    #[serde(skip_serializing_if = "is_false")]
+    pub has_attachments: bool,
+}
+
+/// One page of a folder's message delta, taken in whole with the link that goes on from it, so
+/// that a mailbox file never holds the one without the other (R3 spec S10).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MessagePage {
+    /// The folder's server id.
+    pub folder: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<GraphMessage>,
+    /// The server ids of the messages that left the folder (`@removed`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<String>,
+    /// Where the folder goes on from after this page.
+    pub link: String,
+    /// `link` is a delta link: this page ended the round.
+    #[serde(skip_serializing_if = "is_false")]
+    pub caught_up: bool,
+    /// The server no longer took the folder's link (`410 Gone`, `syncStateNotFound`): this page
+    /// begins a fresh listing, and what the complete listing doesn't have is removed when it ends
+    /// (R3 spec S11).
+    #[serde(skip_serializing_if = "is_false")]
+    pub afresh: bool,
 }
 
 /// One folder of a Microsoft account's mailbox, as the server lists it.
@@ -564,6 +630,16 @@ pub struct GraphFolder {
     pub name: String,
     /// Which special folder it is, when the server says it is one of them.
     pub kind: FolderKind,
+    /// How many messages it has, and how many of them are unread, as the server counts them:
+    /// for progress (R3 spec S15).
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub total: u32,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub unread: u32,
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 /// Every folder the server has, parents before what lies in them. Hidden folders and search
@@ -621,11 +697,42 @@ pub struct GraphMailResult {
     /// account waits that long (R3 spec S14).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub busy_for: Option<u32>,
+    /// Pages of message delta, in the order they came: each is taken in by itself (R3 spec S10).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pages: Vec<MessagePage>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R3.2: what a folder's delta brings is kept with the message and the folder, and a file
+    /// from before reads as whole messages, no link, and the default download limit.
+    #[test]
+    fn delta_state_reads_from_older_files_and_round_trips() {
+        let old: Message = serde_json::from_str(r#"{"id": 4, "subject": "Hi", "server": {"id": "AAkA", "folder": "F1"}}"#).unwrap();
+        assert!(!old.unfetched && !old.server.as_ref().unwrap().gone);
+        let account: Account = serde_json::from_str(r#"{"email": "ada@example.org", "downloadInFull": "everything"}"#).unwrap();
+        assert_eq!((account.download_in_full, account.download_in_full.limit()), (crate::DownloadInFull::Everything, None));
+        let account: Account = serde_json::from_str(r#"{"email": "ada@example.org", "downloadInFull": "upTo999Mb"}"#).unwrap();
+        assert_eq!(account.download_in_full.limit(), Some(10 << 20), "unknown: the default");
+        assert!(!serde_json::to_string(&account).unwrap().contains("downloadInFull"));
+        let folder: crate::ServerFolder = serde_json::from_str(r#"{"id": "F1", "name": "Inbox", "delta": "https://x/d"}"#).unwrap();
+        assert!(!folder.caught_up);
+
+        let mut m = old.clone();
+        m.unfetched = true;
+        if let Some(server) = m.server.as_mut() {
+            server.gone = true;
+        }
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains(r#""gone":true"#) && json.contains(r#""unfetched":true"#), "{json}");
+        assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), m);
+        let page =
+            MessagePage { folder: "F1".into(), removed: vec!["AAkB".into()], link: "https://x/d".into(), caught_up: true, ..Default::default() };
+        let result = GraphMailResult { pages: vec![page], ..Default::default() };
+        assert_eq!(serde_json::from_str::<GraphMailResult>(&serde_json::to_string(&result).unwrap()).unwrap(), result);
+    }
 
     #[test]
     fn the_password_never_shows() {
