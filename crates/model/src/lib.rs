@@ -16,6 +16,7 @@ pub mod remote;
 pub mod rich;
 mod rule;
 pub mod search;
+pub mod signature;
 pub mod sync;
 mod task;
 pub mod zoned;
@@ -30,13 +31,14 @@ pub use calendar::{
 pub use contact::{Contact, Labeled, PostalAddress};
 pub use mailbox::{
     Account, AccountKind, Category, Directory, Folder, FolderKind, Mailbox, OAuth, OAuthProvider, Pending, Queued, Security, Server, ServerFavorites,
-    ServerFolder, Signature,
+    ServerFolder,
 };
 pub use mailcraft_time as time;
 pub use message::{Attachment, Body, FlagStatus, Importance, Message, normalize_subject};
 pub use remote::Origin;
 pub use rich::{RichBody, RichText};
 pub use rule::{Action, Condition, Rule};
+pub use signature::Signature;
 pub use task::Task;
 
 /// An item's identity inside one mailbox. 0 means "not assigned yet".

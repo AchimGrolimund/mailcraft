@@ -1,7 +1,7 @@
 //! Writing mail: new messages, replies, forwards, drafts, sending.
 
 use mailcraft_model::rich::Style;
-use mailcraft_model::{AccountKind, Address, Attachment, Body, FolderKind, Id, Importance, Message, RichBody, format_list};
+use mailcraft_model::{AccountKind, Address, Attachment, Body, FolderKind, Id, Importance, Message, RichBody, Signature, format_list};
 use serde_json::{Value, json};
 
 use super::{bad, base64_decode, done, fail, needs_compose, needs_message, source};
@@ -52,11 +52,16 @@ fn compose_mut(s: &mut Session) -> Result<&mut Compose, CmdError> {
     s.compose.as_mut().ok_or_else(|| fail("no message is being written"))
 }
 
-/// The signature block for an account (`\n\n-- \nname`), or nothing.
-fn signature_block(s: &Session, account: Id, name: Option<&str>) -> String {
-    let name = name.map(str::to_string).or_else(|| s.mailbox.account(account).map(|a| a.signature.clone())).unwrap_or_default();
-    match s.mailbox.signature(&name) {
-        Some(sig) if !sig.text.trim().is_empty() => format!("\n\n{}", sig.text.trim_end()),
+/// The signature block for an account (`\n\n` and the signature's words; no `-- ` line, as in
+/// Outlook), or nothing: the signature `name` names, else the account's for new messages, or for
+/// replies and forwards when `reply`.
+// ponytail: plain words until R4.5.2 puts the signature in as rich text with its pictures.
+fn signature_block(s: &Session, account: Id, name: Option<&str>, reply: bool) -> String {
+    let name = name
+        .map(str::to_string)
+        .or_else(|| s.mailbox.account(account).map(|a| if reply { a.reply_signature().to_string() } else { a.signature.clone() }));
+    match s.mailbox.signature(&name.unwrap_or_default()).map(Signature::plain) {
+        Some(words) if !words.trim().is_empty() => format!("\n\n{}", words.trim_end()),
         _ => String::new(),
     }
 }
@@ -79,7 +84,7 @@ fn new(s: &mut Session, v: &Value) -> CmdResult {
         cc: text("cc", link.cc.join("; ")),
         bcc: text("bcc", link.bcc.join("; ")),
         subject: text("subject", link.subject),
-        body: RichBody::from_plain(&format!("{body}{}", signature_block(s, account, None))),
+        body: RichBody::from_plain(&format!("{body}{}", signature_block(s, account, None, false))),
         ..Default::default()
     };
     s.compose = Some(c);
@@ -230,7 +235,7 @@ fn respond(s: &mut Session, v: &Value, mode: ComposeMode) -> CmdResult {
         to: format_list(&to),
         cc: format_list(&cc),
         subject: prefixed(if mode == ComposeMode::Forward { "FW" } else { "RE" }, &m.subject),
-        body: RichBody::from_plain(&format!("{}{body}", signature_block(s, m.account, None))),
+        body: RichBody::from_plain(&format!("{}{body}", signature_block(s, m.account, None, true))),
         // A reply is written the way the original was: HTML to HTML, plain text to plain text.
         format: if m.body.html.is_some() { BodyFormat::Html } else { BodyFormat::Plain },
         quote,
@@ -374,7 +379,8 @@ fn signature(s: &mut Session, v: &Value) -> CmdResult {
     {
         return Err(fail(format!("no signature named \"{name}\"")));
     }
-    let block = signature_block(s, account, p::str(v, "name"));
+    let reply = s.compose.as_ref().is_some_and(|c| matches!(c.mode, ComposeMode::Reply | ComposeMode::ReplyAll | ComposeMode::Forward));
+    let block = signature_block(s, account, p::str(v, "name"), reply);
     if block.is_empty() {
         return Err(fail("this account has no signature; add one in File › Options"));
     }

@@ -303,7 +303,7 @@ pub fn mailbox(now: Timestamp, offset: i32) -> Mailbox {
     calendar(&mut b);
     tasks(&mut b);
 
-    b.mb.signatures.push(Signature { name: "Standard".into(), text: "Avery Quinn\nLumen Studio".into() });
+    b.mb.signatures.push(Signature::plain_text("Standard", "Avery Quinn\nLumen Studio"));
     if let Ok(a) = b.mb.account_mut(account) {
         a.signature = "Standard".into();
     }

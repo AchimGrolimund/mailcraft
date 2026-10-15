@@ -1,4 +1,5 @@
-use mailcraft_model::rich::{Format, ListKind, MAX_LEVEL, MAX_SIZE, MIN_SIZE, Paragraph, RichText, Run, Style, safe_link};
+use mailcraft_model::rich::{Font, Format, ListKind, MAX_LEVEL, MAX_SIZE, MIN_SIZE, Paragraph, RichText, Run, Style, safe_color, safe_link};
+use mailcraft_model::signature::{Layout, MAX_WIDTH, Signature};
 use proptest::prelude::*;
 
 use super::*;
@@ -38,11 +39,44 @@ fn assert_in_set(html: &str) {
             || tag
                 .strip_prefix("<a href=\"")
                 .and_then(|t| t.strip_suffix("\">"))
-                .is_some_and(|url| !url.contains(['"', '<', '>']) && safe_link(&mailcraft_html::unescape(url)).is_some());
+                .is_some_and(|url| !url.contains(['"', '<', '>']) && safe_link(&mailcraft_html::unescape(url)).is_some())
+            || tag.strip_prefix("<span style=\"color:").and_then(|t| t.strip_suffix("\">")).is_some_and(|c| safe_color(c).as_deref() == Some(c))
+            || tag
+                .strip_prefix("<span style=\"font-family:")
+                .and_then(|t| t.strip_suffix("\">"))
+                .is_some_and(|f| Font::ALL.iter().any(|font| font.css() == f))
+            || is_cid_img(tag)
+            || SIGNATURE_TABLE.contains(&tag);
         assert!(ok, "{tag:?} is outside the set in {html:?}");
         rest = &after[end + 1..];
     }
     assert!(!html.contains(['\0']));
+}
+
+/// The tags of a signature's picture-beside-text table.
+const SIGNATURE_TABLE: [&str; 7] = [
+    "<table cellpadding=\"0\" cellspacing=\"0\" border=\"0\">",
+    "<tr>",
+    "<td style=\"vertical-align:top;padding-right:12px\">",
+    "<td style=\"vertical-align:top\">",
+    "</td>",
+    "</tr>",
+    "</table>",
+];
+
+/// `<img src="cid:…" [width="n"] alt="…" style="border:0">`, nothing else in it.
+fn is_cid_img(tag: &str) -> bool {
+    let Some(rest) = tag.strip_prefix("<img src=\"cid:").and_then(|t| t.strip_suffix("\" style=\"border:0\">")) else { return false };
+    let Some((cid, rest)) = rest.split_once('"') else { return false };
+    let rest = match rest.strip_prefix(" width=\"") {
+        Some(w) => match w.split_once('"') {
+            Some((n, rest)) if n.parse::<u16>().is_ok_and(|n| (1..=MAX_WIDTH).contains(&n)) => rest,
+            _ => return false,
+        },
+        None => rest,
+    };
+    let Some(alt) = rest.strip_prefix(" alt=\"") else { return false };
+    !cid.is_empty() && !cid.contains(['<', '>', ' ']) && !alt.contains(['"', '<', '>'])
 }
 
 /// What any document read from HTML holds is within the set.
@@ -52,6 +86,8 @@ fn assert_clean(t: &RichText) {
             assert!(!r.text.is_empty() && r.text.chars().all(|c| c == '\t' || !c.is_control()), "{r:?}");
             assert!(r.style.size.is_none_or(|n| (MIN_SIZE..=MAX_SIZE).contains(&n)), "{r:?}");
             assert!(r.style.link.as_deref().is_none_or(|l| safe_link(l).as_deref() == Some(l)), "{r:?}");
+            assert!(r.style.color.as_deref().is_none_or(|c| safe_color(c).as_deref() == Some(c)), "{r:?}");
+            assert!(r.picture.is_none(), "a picture came in from HTML: {r:?}");
         }
     }
 }
@@ -179,7 +215,15 @@ fn arb_style() -> impl Strategy<Value = Style> {
             "\\PC{0,20}",
         ]),
     )
-        .prop_map(|(bold, italic, underline, size, link)| Style { bold, italic, underline, size, link })
+        .prop_map(|(bold, italic, underline, size, link)| Style { bold, italic, underline, size, link, ..Style::default() })
+        .prop_flat_map(|s| {
+            (
+                Just(s),
+                proptest::option::of(prop_oneof![Just("#1f6feb".to_string()), Just("red".to_string()), "\\PC{0,8}"]),
+                proptest::option::of(0usize..5),
+            )
+                .prop_map(|(s, color, font)| Style { color, font: font.and_then(|f| Font::ALL.get(f).copied()), ..s })
+        })
 }
 
 fn arb_text() -> impl Strategy<Value = RichText> {
@@ -208,7 +252,8 @@ fn arb_exact() -> impl Strategy<Value = RichText> {
         proptest::option::of(MIN_SIZE..=24u8),
         proptest::option::of(Just("https://example.org/x".to_string())),
     )
-        .prop_map(|(bold, italic, underline, size, link)| Style { bold, italic, underline, size, link });
+        .prop_map(|(bold, italic, underline, size, link)| Style { bold, italic, underline, size, link, ..Style::default() })
+        .prop_flat_map(|s| (Just(s), proptest::option::of(Just("#1f6feb".to_string()))).prop_map(|(s, color)| Style { color, ..s }));
     let paragraph = (proptest::collection::vec(("[a-zA-Z0-9&<>\"'é]{1,6}", style), 0..4), 0u8..3, 0..=MAX_LEVEL).prop_map(|(runs, list, level)| {
         let runs: Vec<Run> = runs.into_iter().enumerate().map(|(i, (t, s))| Run::new(if i == 0 { t } else { format!(" {t}") }, s)).collect();
         let list = if runs.is_empty() { ListKind::None } else { [ListKind::None, ListKind::Bullet, ListKind::Numbered][list as usize] };
@@ -295,5 +340,71 @@ proptest! {
         // And the body comes back as it was sent.
         let back = crate::parse(&bytes);
         prop_assert_eq!(back.body.html.as_deref().map(from_html), Some(from_html(&to_html_document(&t, None))));
+    }
+}
+
+/// A PNG's signature and a few bytes.
+fn png() -> Vec<u8> {
+    b"\x89PNG\r\n\x1a\nIHDR".to_vec()
+}
+
+fn logo_signature(layout: Layout) -> Signature {
+    let mut sig = Signature::plain_text("Work", "Avery Quinn\nLumen Studio");
+    let mut body = sig.body().clone();
+    body.format(0, 11, &Format::Color(Some("#1f6feb".into()))).unwrap();
+    body.format(0, 11, &Format::Font(Some(Font::Georgia))).unwrap();
+    sig.set_body(body).unwrap();
+    let id = sig.add_picture("lumen-logo.png", png(), Some("Lumen \"Studio\" <logo>"), Some(0)).unwrap();
+    sig.set_picture(id, Some(Some(120)), None).unwrap();
+    sig.layout = layout;
+    sig
+}
+
+#[test]
+fn a_signature_is_written_with_its_colours_fonts_and_pictures() {
+    let cid = |p: &mailcraft_model::signature::Picture| format!("sig-{}@mailcraft.invalid", p.id);
+    let inline = signature_html(&logo_signature(Layout::Inline), &cid);
+    assert!(
+        inline.starts_with(
+            "<div><img src=\"cid:sig-1@mailcraft.invalid\" width=\"120\" alt=\"Lumen &quot;Studio&quot; &lt;logo&gt;\" style=\"border:0\">"
+        ),
+        "{inline}"
+    );
+    assert!(inline.contains("<span style=\"color:#1f6feb\"><span style=\"font-family:Georgia, serif\">Avery Quinn</span></span>"), "{inline}");
+    assert_in_set(&inline);
+    let left = signature_html(&logo_signature(Layout::PictureLeft), &cid);
+    assert!(
+        left.starts_with(
+            "<table cellpadding=\"0\" cellspacing=\"0\" border=\"0\"><tr><td style=\"vertical-align:top;padding-right:12px\"><img src=\"cid:sig-1@"
+        ),
+        "{left}"
+    );
+    assert_eq!(left.matches("<img").count(), 1);
+    assert_in_set(&left);
+    let above = signature_html(&logo_signature(Layout::PictureAbove), &cid);
+    assert!(above.starts_with("<div><img") && !above.contains("<table"), "{above}");
+    assert_in_set(&above);
+    // What a reader gets back is the words in their colour, and no picture.
+    let back = from_html(&left);
+    assert_eq!(back.text(), "Avery Quinn\nLumen Studio");
+    assert_eq!(back.style_at(3).color.as_deref(), Some("#1f6feb"));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(200))]
+
+    /// Whatever a signature holds, and however its pictures are named, its HTML is within the set.
+    #[test]
+    fn any_signature_is_written_within_the_set(t in arb_text(), pictures in 0usize..4, layout in 0usize..3, cid in "\\PC{0,12}", alt in "\\PC{0,12}", width in proptest::option::of(any::<u16>())) {
+        let mut sig = Signature::plain_text("S", "");
+        sig.set_body(t).unwrap();
+        for n in 0..pictures {
+            let id = sig.add_picture("p.png", png(), Some(&alt), Some(n * 3)).unwrap();
+            sig.set_picture(id, Some(width), None).unwrap();
+        }
+        sig.layout = [Layout::Inline, Layout::PictureLeft, Layout::PictureAbove][layout];
+        let html = signature_html(&sig, &|p| format!("{cid}{}", p.id));
+        assert_in_set(&html);
+        prop_assert!(html.matches("<img").count() <= pictures);
     }
 }

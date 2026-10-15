@@ -9,11 +9,11 @@ use std::collections::{HashMap, HashSet};
 use mailcraft_model::sync::{Deleted, FlagsPushed, FolderDelta, FolderState, Moved, RemoteFlags, RemoteOp, SyncRequest, SyncResult, summary_line};
 use mailcraft_model::{
     Account, AccountKind, Directory, FlagStatus, Folder, FolderKind, Id, Mailbox, Message, OAuth, OAuthProvider, Pending, Security, Server,
-    Signature, clean_name,
+    clean_name,
 };
 use serde_json::{Value, json};
 
-use super::{bad, done, fail};
+use super::{bad, fail};
 use crate::{CmdError, CmdResult, CommandSpec, Session, p};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -25,9 +25,6 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("account.preset", "Suggest Account Settings", "File › Info", preset)
             .pure()
             .params(r#"{"email": string, "provider"?: "microsoft", "service"?: "microsoft365"|"outlook.com"|"google"|"yahoo"|"icloud"|"fastmail"|"aol"|"zoho", "mx"?: [string] (the domain's mail exchangers, when the host looked them up)} — answers the servers and sign-in an address usually takes; changes nothing"#),
-        CommandSpec::new("signature.set", "Signatures", "File › Options", signature_set)
-            .params(r#"{"name": string, "text": string, "default"?: bool (use it for new messages), "account"?: number}"#),
-        CommandSpec::new("signature.remove", "Delete Signature", "File › Options", signature_remove).params(r#"{"name": string}"#),
         CommandSpec::new("sync.request", "Send/Receive All Folders", "Send / Receive", request)
             .pure()
             .key("F9")
@@ -279,42 +276,10 @@ fn list(s: &mut Session, _: &Value) -> CmdResult {
         .accounts
         .iter()
         .map(|a| {
-            json!({"id": a.id, "name": a.name, "email": a.email, "displayName": a.display_name, "kind": a.kind, "username": a.username, "incoming": a.incoming, "outgoing": a.outgoing, "signature": a.signature, "auth": if a.oauth.is_some() { "oauth2" } else { "password" }, "oauth": a.oauth})
+            json!({"id": a.id, "name": a.name, "email": a.email, "displayName": a.display_name, "kind": a.kind, "username": a.username, "incoming": a.incoming, "outgoing": a.outgoing, "signature": a.signature, "replySignature": a.reply_signature(), "auth": if a.oauth.is_some() { "oauth2" } else { "password" }, "oauth": a.oauth})
         })
         .collect();
     Ok(json!({"accounts": accounts, "signatures": s.mailbox.signatures}))
-}
-
-fn signature_set(s: &mut Session, v: &Value) -> CmdResult {
-    let name = clean_name(p::req_str(v, "name")?).ok_or_else(|| bad("`name` is empty"))?;
-    let text: String = p::req_str(v, "text")?.chars().take(10_000).collect();
-    match s.mailbox.signatures.iter().position(|x| x.name.eq_ignore_ascii_case(&name)) {
-        Some(i) => {
-            if let Some(sig) = s.mailbox.signatures.get_mut(i) {
-                sig.text = text;
-            }
-        }
-        None if s.mailbox.signatures.len() >= 100 => return Err(fail("there are too many signatures")),
-        None => s.mailbox.signatures.push(Signature { name: name.clone(), text }),
-    }
-    if p::bool(v, "default") == Some(true) {
-        let account = p::id(v, "account").or(s.mailbox.default_account().map(|a| a.id)).ok_or_else(|| fail("add an account first"))?;
-        s.mailbox.account_mut(account)?.signature = name;
-    }
-    done()
-}
-
-fn signature_remove(s: &mut Session, v: &Value) -> CmdResult {
-    let name = p::req_str(v, "name")?.trim().to_string();
-    let before = s.mailbox.signatures.len();
-    s.mailbox.signatures.retain(|x| !x.name.eq_ignore_ascii_case(&name));
-    if s.mailbox.signatures.len() == before {
-        return Err(fail(format!("no signature named \"{name}\"")));
-    }
-    for a in s.mailbox.accounts.iter_mut().filter(|a| a.signature.eq_ignore_ascii_case(&name)) {
-        a.signature.clear();
-    }
-    done()
 }
 
 /// Most changes one synchronisation is asked to push; a longer backlog goes up over several runs.

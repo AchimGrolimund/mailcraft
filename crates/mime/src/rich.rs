@@ -1,22 +1,47 @@
 //! Rich text (`mailcraft_model::rich`) to HTML and back.
 //!
 //! [`to_html`] writes the owner's text as the HTML part of a message: `<div>` paragraphs, `<ul>`
-//! and `<ol>` lists, `<b>`, `<i>`, `<u>`, `<span style="font-size:…pt">` and `<a href>`, and
-//! nothing else. Every character of text and of an address is escaped, and a link is written
-//! only when its address is one the model accepts (`http`, `https`, `mailto`, `tel`).
+//! and `<ol>` lists, `<b>`, `<i>`, `<u>`, `<span style="…">` with a font size, a colour and a
+//! font from the model's list, `<a href>`, and pictures as `<img src="cid:…">` when the text's
+//! holder says which ([`to_html_with`]), and nothing else. Every character of text and of an
+//! address is escaped, and a link is written only when its address is one the model accepts
+//! (`http`, `https`, `mailto`, `tel`). [`signature_html`] lays a signature out, its first picture
+//! beside or above the text when it asks for that, in a two-cell table, as Outlook writes it.
 //!
 //! [`from_html`] is the way back, and the way in for anything pasted: the HTML is read by
 //! `mailcraft_html` (which never runs or fetches anything) and what it gives is reduced to the
-//! set. Tables give their cells' paragraphs in reading order; pictures, rules, colours, fonts,
-//! alignment and everything else are dropped.
+//! set. Tables give their cells' paragraphs in reading order; colours are kept; pictures, rules,
+//! fonts, alignment and everything else are dropped.
 
 use mailcraft_html::{Block, BlockKind, Marker, Span};
-use mailcraft_model::rich::{ListKind, MAX_LEVEL, MAX_SIZE, MIN_SIZE, Paragraph, RichText, Run, Style, safe_link};
+use mailcraft_model::rich::{ListKind, MAX_LEVEL, MAX_SIZE, MIN_SIZE, Paragraph, RichText, Run, Style, safe_color, safe_link};
+use mailcraft_model::signature::{Layout, MAX_WIDTH, Picture, Signature};
+
+/// How a picture of the text is written: its `cid:` address (without the scheme), the width it
+/// is shown at and its description.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Img {
+    pub content_id: String,
+    pub width: Option<u16>,
+    pub alt: String,
+}
+
+impl Img {
+    /// A signature's picture, sent as the inline part `content_id`.
+    pub fn of(picture: &Picture, content_id: impl Into<String>) -> Img {
+        Img { content_id: content_id.into(), width: picture.width, alt: picture.alt.clone() }
+    }
+}
 
 /// The text as an HTML fragment (what goes inside `<body>`). A list item a level deeper than the
 /// one before it is in a list of its own inside that item (`<ul><li>a<ul><li>b</li></ul></li></ul>`),
 /// as Outlook, Word and the web's editors write nested lists.
 pub fn to_html(text: &RichText) -> String {
+    to_html_with(text, &|_| None)
+}
+
+/// [`to_html`], with each picture written as `pictures` says (left out when it says nothing).
+pub fn to_html_with(text: &RichText, pictures: &dyn Fn(u32) -> Option<Img>) -> String {
     let mut out = String::new();
     // The lists open, outermost first: each with its kind and whether an item of it is open.
     let mut open: Vec<(ListKind, bool)> = Vec::new();
@@ -25,7 +50,7 @@ pub fn to_html(text: &RichText) -> String {
         if p.list == ListKind::None {
             close_to(&mut out, &mut open, 0);
             out.push_str("<div>");
-            paragraph(&mut out, p);
+            paragraph(&mut out, p, pictures);
             out.push_str("</div>\r\n");
             continue;
         }
@@ -55,7 +80,7 @@ pub fn to_html(text: &RichText) -> String {
         if let Some((_, item)) = open.last_mut() {
             *item = true;
         }
-        paragraph(&mut out, p);
+        paragraph(&mut out, p, pictures);
         // The item stays open for a deeper list that follows it.
         let deeper = paragraphs.get(i + 1).is_some_and(|next| next.list != ListKind::None && next.level > p.level);
         if !deeper {
@@ -82,12 +107,60 @@ fn close_to(out: &mut String, open: &mut Vec<(ListKind, bool)>, depth: usize) {
 }
 
 /// A paragraph's runs, or a line break for an empty one.
-fn paragraph(out: &mut String, p: &Paragraph) {
+fn paragraph(out: &mut String, p: &Paragraph, pictures: &dyn Fn(u32) -> Option<Img>) {
     if p.is_empty() {
         out.push_str("<br>");
     } else {
-        runs(out, p);
+        runs(out, p, pictures);
     }
+}
+
+/// A picture as `<img>`: its `cid:` address, width and description, all escaped.
+fn img(out: &mut String, img: &Img) {
+    let cid: String = img.content_id.chars().filter(|c| c.is_ascii_graphic() && !matches!(c, '<' | '>' | '"')).collect();
+    out.push_str("<img src=\"cid:");
+    out.push_str(&mailcraft_html::escape(&cid));
+    out.push('"');
+    if let Some(w) = img.width {
+        out.push_str(&format!(" width=\"{}\"", w.clamp(1, MAX_WIDTH)));
+    }
+    out.push_str(" alt=\"");
+    out.push_str(&mailcraft_html::escape(&img.alt.chars().filter(|c| !c.is_control()).collect::<String>()));
+    out.push_str("\" style=\"border:0\">");
+}
+
+/// A signature as HTML, its pictures written as `content_id` names them. Laid out with its first
+/// picture on the left of the text or above it when it asks for that: a two-cell table, or the
+/// picture in a paragraph of its own.
+pub fn signature_html(sig: &Signature, content_id: &dyn Fn(&Picture) -> String) -> String {
+    let pictures = |id: u32| sig.picture(id).map(|p| Img::of(p, content_id(p)));
+    let first = sig.body().pictures().first().copied().filter(|_| sig.layout != Layout::Inline);
+    let Some((first, lead)) = first.and_then(|id| pictures(id).map(|i| (id, i))) else {
+        return to_html_with(sig.body(), &pictures);
+    };
+    // The text without that picture.
+    let rest = RichText::from_paragraphs(
+        sig.body()
+            .paragraphs()
+            .iter()
+            .map(|p| Paragraph::new(p.runs.iter().filter(|r| r.picture != Some(first)).cloned().collect(), p.list).at_level(p.level))
+            .collect(),
+    );
+    let text = to_html_with(&rest, &pictures);
+    let mut out = String::new();
+    if sig.layout == Layout::PictureLeft {
+        out.push_str("<table cellpadding=\"0\" cellspacing=\"0\" border=\"0\"><tr><td style=\"vertical-align:top;padding-right:12px\">");
+        img(&mut out, &lead);
+        out.push_str("</td><td style=\"vertical-align:top\">\r\n");
+        out.push_str(&text);
+        out.push_str("</td></tr></table>\r\n");
+    } else {
+        out.push_str("<div>");
+        img(&mut out, &lead);
+        out.push_str("</div>\r\n");
+        out.push_str(&text);
+    }
+    out
 }
 
 /// A whole HTML document holding the text, and under it `below` as it is (a quoted original).
@@ -104,12 +177,20 @@ pub fn to_html_document(text: &RichText, below: Option<&str>) -> String {
 
 /// The runs of a paragraph. White space is kept as typed: a space at the start or the end of the
 /// paragraph, or after another, is a no-break space, and a tab is four.
-fn runs(out: &mut String, p: &Paragraph) {
+fn runs(out: &mut String, p: &Paragraph, pictures: &dyn Fn(u32) -> Option<Img>) {
     let total: usize = p.runs.iter().map(|r| r.text.chars().count()).sum();
     let mut index = 0usize;
     let mut after_space = true;
     for run in &p.runs {
         let style = run.style.clone().clean();
+        if let Some(id) = run.picture {
+            index += 1;
+            after_space = false;
+            if let Some(found) = pictures(id) {
+                img(out, &found);
+            }
+            continue;
+        }
         let mut close: Vec<&str> = Vec::new();
         if let Some(url) = &style.link {
             out.push_str("<a href=\"");
@@ -125,6 +206,14 @@ fn runs(out: &mut String, p: &Paragraph) {
         }
         if let Some(size) = style.size {
             out.push_str(&format!("<span style=\"font-size:{}pt\">", size.clamp(MIN_SIZE, MAX_SIZE)));
+            close.push("</span>");
+        }
+        if let Some(color) = style.color.as_deref().and_then(safe_color) {
+            out.push_str(&format!("<span style=\"color:{color}\">"));
+            close.push("</span>");
+        }
+        if let Some(font) = style.font {
+            out.push_str(&format!("<span style=\"font-family:{}\">", font.css()));
             close.push("</span>");
         }
         for c in run.text.chars() {
@@ -240,6 +329,8 @@ impl Reader {
                 underline: span.underline,
                 size: span.size.map(px_to_points),
                 link: span.link.as_deref().and_then(safe_link),
+                color: span.color.map(|c| format!("#{:02x}{:02x}{:02x}", c.0, c.1, c.2)),
+                font: None,
             };
             let text = span.text.replace('\u{a0}', " ");
             for (i, line) in text.split('\n').enumerate() {

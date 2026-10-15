@@ -22,7 +22,10 @@ fn check(t: &RichText) {
             assert_eq!(r.style.clone().clean(), r.style);
         }
         for w in p.runs.windows(2) {
-            assert_ne!(w[0].style, w[1].style, "{t:?}");
+            assert!(w[0].style != w[1].style || w[0].picture.is_some() || w[1].picture.is_some(), "{t:?}");
+        }
+        for r in &p.runs {
+            assert!(r.picture.is_none_or(|_| r.text == OBJECT.to_string()) && (r.picture.is_some() || !r.text.contains(OBJECT)), "{t:?}");
         }
     }
     assert!(t.len() <= MAX_CHARS && t.paragraphs().len() <= MAX_PARAGRAPHS);
