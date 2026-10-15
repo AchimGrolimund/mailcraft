@@ -14,10 +14,10 @@ privacy and agent control. This page is the summary; the assessment is
 
 | Number | Value | Kind |
 |---|---|---|
-| Ribbon/menu catalog coverage | **167 / 310 (53.9%)** | measured (`cargo xtask parity` → [`docs/parity-checklist.md`](docs/parity-checklist.md)) |
+| Ribbon/menu catalog coverage | **179 / 310 (57.7%)** | measured (`cargo xtask parity` → [`docs/parity-checklist.md`](docs/parity-checklist.md)) |
 | Ready for real work with a real account | **~25%** | estimated ([how](docs/target-app-parity.md#methodology)); in daily use on one Microsoft 365 mailbox, the author's; no other server and no tester yet. To be replaced by the beta checklist ([spec](docs/specs/roadmap-reset.md)) |
 | Ready as a local viewer and organiser of exported mail | **~55%** | estimated |
-| Commands / crates | 185 commands · 12 crates, 3 apps, `xtask` | measured (source) |
+| Commands / crates | 200 commands · 12 crates, 3 apps, `xtask` | measured (source) |
 | Tests | 1,587 `#[test]`s (`cargo xtask stats`); property tests on every reader | measured |
 | Builds verified | Windows, macOS and Linux (CI on each), FreeBSD and Windows ARM64 (scheduled), the browser build (wasm) | measured |
 | Releases | four published, v0.1.0 to v0.2.1 ([Releases](https://github.com/billsecond/mailcraft/releases)); unsigned | measured |
