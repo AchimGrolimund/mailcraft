@@ -3361,3 +3361,25 @@ fn the_selection_commands_take_anything_and_never_panic() {
 // ---- meetings that arrive as mail ----
 
 mod invitation;
+
+/// The original under a reply to HTML mail is laid out as the reading pane lays it out (its
+/// heading, its list), not as text; and a remote picture in it stays a stand-in until the owner
+/// asks for the original's pictures.
+#[test]
+fn the_original_under_a_reply_is_shown_as_the_reading_pane_shows_it() {
+    let mut app = MailApp::new(Session::at(mailcraft_engine::sample::mailbox(1_791_993_600, 0), 1_791_993_600, 0), Services::default());
+    app.autosave = false;
+    let id = app.session.mailbox.messages.values().find(|m| m.subject.starts_with("Five new arrivals")).map(|m| m.id).unwrap();
+    app.execute("mail.select", json!({"id": id})).unwrap();
+    app.execute("mail.reply", json!({"id": id})).unwrap();
+    let mut harness = window(app, (1280.0, 900.0));
+    harness.run_steps(4);
+    let (done, heading, bullets) = super::view::kept_at(&harness.ctx, Place::Quote, id, |laid, _| {
+        let heading = laid.items.iter().any(|i| text_of(i) == "New on our shelves this month");
+        (laid.done, heading, laid.items.iter().filter(|i| text_of(i).contains("coastal birds")).count())
+    })
+    .expect("the quote is laid out");
+    assert!(done && heading && bullets == 1);
+    // Nothing of it can be selected or edited: the keys stay with the owner's text.
+    assert!(harness.state().text_selection.at(Place::Quote).is_none());
+}

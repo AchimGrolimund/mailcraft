@@ -142,6 +142,9 @@ pub fn global_shortcuts(app: &mut MailApp, ctx: &egui::Context) {
         return;
     }
     let typing = ctx.egui_wants_keyboard_input();
+    // The body of a message being written has keys of its own (Ctrl+B, U, Z…), which mean
+    // something else everywhere else.
+    let in_body = typing && crate::compose::editor::has_focus(ctx);
     let events = ctx.input(|i| i.events.clone());
     for e in events {
         let egui::Event::Key { key, pressed: true, modifiers, .. } = e else { continue };
@@ -167,6 +170,9 @@ pub fn global_shortcuts(app: &mut MailApp, ctx: &egui::Context) {
                     | Key::End
             );
             let chord = modifiers.command || modifiers.alt;
+            if in_body && modifiers.command && crate::compose::editor::owns_chord(key) {
+                continue;
+            }
             if !(function || chord && !editing) && !(key == Key::Escape && app.session.compose.is_some()) {
                 continue;
             }

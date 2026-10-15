@@ -455,7 +455,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "ui.dialog",
         "Open Dialog",
         "Window",
-        r#"{"name": "commands"|"event"|"meeting"|"editEvent"|"contact"|"editContact"|"task"|"editTask"|"folder"|"goToDate"|"account"|"categories"|"rules"|"about"|"proposeTime"|"forwardMeeting"|"proposals", …} (account: "email"?: string to start with, or "id": number for that account's settings, and with "page": "approval" the page that says what to do when its organisation has to approve MailCraft first (as `ui.approvalHelp` opens it); proposeTime: "id"?: number (an item of the calendar) | "message": number (an invitation in the mail); forwardMeeting: "id"?: number; proposals: "id"?: number | "message": number — the first two write to other people only from their own Propose and Send buttons)"#,
+        r#"{"name": "commands"|"event"|"meeting"|"editEvent"|"contact"|"editContact"|"task"|"editTask"|"folder"|"goToDate"|"link"|"account"|"categories"|"rules"|"about"|"proposeTime"|"forwardMeeting"|"proposals", …} (account: "email"?: string to start with, or "id": number for that account's settings, and with "page": "approval" the page that says what to do when its organisation has to approve MailCraft first (as `ui.approvalHelp` opens it); proposeTime: "id"?: number (an item of the calendar) | "message": number (an invitation in the mail); forwardMeeting: "id"?: number; proposals: "id"?: number | "message": number — the first two write to other people only from their own Propose and Send buttons)"#,
     ),
     ("ui.closeDialog", "Close Dialog", "Window", "{}"),
     ("ui.theme", "Interface Theme", "File › Options", r#"{"value": "light"|"dark"|"system"}"#),
@@ -631,6 +631,9 @@ pub struct MailApp {
     pub(crate) search_focus: bool,
     /// The Bcc line of the message being written is shown.
     pub(crate) compose_bcc: bool,
+    /// The body of the message being written takes the keyboard back at its next frame (after a
+    /// ribbon button or a dialog changed its text).
+    pub(crate) body_focus_wanted: bool,
     /// The message list should scroll to the selected row (after a keyboard move).
     pub(crate) reveal_selection: bool,
     /// Passwords typed this session, per account. Never saved.
@@ -750,6 +753,7 @@ impl MailApp {
             search_text: String::new(),
             search_focus: false,
             compose_bcc: false,
+            body_focus_wanted: false,
             reveal_selection: false,
             passwords: Default::default(),
             secrets_trouble: None,
@@ -901,6 +905,13 @@ impl MailApp {
         }
         if matches!(id, "mail.next" | "mail.previous") {
             self.reveal_selection = true;
+        }
+        // What was done to the text being written leaves the keyboard in it.
+        if r.is_ok()
+            && (id.starts_with("format.")
+                || matches!(id, "compose.link" | "compose.undo" | "compose.redo" | "edit.paste" | "compose.formatHtml" | "compose.formatPlain"))
+        {
+            self.body_focus_wanted = true;
         }
         r
     }

@@ -34,6 +34,13 @@ pub enum Dialog {
         text: String,
         error: String,
     },
+    /// Where the selected text of the message being written leads (Ctrl+K).
+    Link {
+        url: String,
+        error: String,
+        /// The selection is a link already, which can be removed.
+        linked: bool,
+    },
     /// The password for a Send/Receive. Kept in memory only.
     Password {
         account: Id,
@@ -105,6 +112,7 @@ impl Dialog {
             Dialog::Commands { .. } => "commands",
             Dialog::Folder { .. } => "folder",
             Dialog::GoToDate { .. } => "goToDate",
+            Dialog::Link { .. } => "link",
             Dialog::Password { .. } => "password",
             Dialog::DiscardDraft { .. } => "discardDraft",
             Dialog::Confirm { .. } => "confirm",
@@ -136,6 +144,13 @@ impl Dialog {
                 }
             }
             "goToDate" => Dialog::GoToDate { text: app.session.view.date.iso(), error: String::new() },
+            "link" => {
+                let c = app.session.compose.as_ref().filter(|c| c.format == mailcraft_engine::BodyFormat::Html)?;
+                let sel = c.body.selection();
+                // The link the caret is in, or the selection starts in.
+                let url = c.body.text().link_span(sel.start()).map(|(from, _)| c.body.text().style_at(from + 1)).and_then(|s| s.link);
+                Dialog::Link { linked: url.is_some(), url: url.unwrap_or_default(), error: String::new() }
+            }
             "password" => Dialog::Password { account: id("account")?, password: String::new() },
             "discardDraft" => Dialog::DiscardDraft { then: params.get("then").and_then(Value::as_str).unwrap_or("").to_string() },
             "about" => Dialog::About,
@@ -558,10 +573,28 @@ pub fn input_dialog(id: &str, params: &Value) -> Option<&'static str> {
         "tasks.new" if !has("title") => Some("task"),
         "tasks.edit" if empty => Some("editTask"),
         "view.goToDate" if !has("date") => Some("goToDate"),
+        // (Without an address, a script's `compose.link` removes the link; a person is asked.)
+        "compose.link" if !has("url") => Some("link"),
         "account.add" if !has("email") => Some("account"),
         "rules.list" => Some("rules"),
         "category.list" => Some("categories"),
         _ => None,
+    }
+}
+
+/// An address as typed into the link dialog, as a link: `someone@example.org` is a `mailto:`
+/// address and `www.example.org` a web one; anything else as it was (the engine says whether it
+/// may be a link).
+pub(crate) fn link_address(typed: &str) -> String {
+    let typed = typed.trim();
+    if typed.contains(':') {
+        typed.to_string()
+    } else if typed.contains('@') && !typed.contains('/') {
+        format!("mailto:{typed}")
+    } else if typed.contains('.') && !typed.contains(char::is_whitespace) {
+        format!("https://{typed}")
+    } else {
+        typed.to_string()
     }
 }
 
@@ -808,6 +841,44 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
                     Err(e) => *error = e,
                 }
             }
+        }
+        Dialog::Link { url, error, linked } => {
+            let (mut submit, mut remove) = (false, false);
+            let open = window(ctx, tl!("Insert Link"), 420.0, |ui| {
+                ui.label(tl!("Address"));
+                let resp = ui.add(egui::TextEdit::singleline(url).hint_text("https://www.example.org").desired_width(f32::INFINITY));
+                if !resp.has_focus() && error.is_empty() {
+                    resp.request_focus();
+                }
+                ui.label(
+                    egui::RichText::new(tl!(
+                        "A web address, an email address or a phone number (tel:). With nothing selected, the address is put in as it is."
+                    ))
+                    .color(t.text_dim)
+                    .size(11.0),
+                );
+                if !error.is_empty() {
+                    ui.label(egui::RichText::new(error.as_str()).color(t.red));
+                }
+                if *linked {
+                    remove = ui.button(tl!("Remove Link")).clicked();
+                }
+                let (ok, cancel) = buttons(ui, tl!("OK"), !url.trim().is_empty());
+                submit = ok || (enter && !url.trim().is_empty());
+                close |= cancel;
+            });
+            close |= !open;
+            if remove {
+                let _ = app.execute("compose.link", json!({}));
+                close = true;
+            } else if submit {
+                match app.execute("compose.link", json!({"url": link_address(url)})) {
+                    Ok(_) => close = true,
+                    Err(e) => *error = e,
+                }
+            }
+            // The keyboard goes back to the text.
+            app.body_focus_wanted |= close;
         }
         Dialog::Password { account, password } => {
             let who = app.session.mailbox.account(*account).map(|a| a.email.clone()).unwrap_or_default();
