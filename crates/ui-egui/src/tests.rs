@@ -1569,3 +1569,15 @@ fn copy_diagnostics_takes_the_hosts_report_or_says_what_it_can() {
     a.services.diagnostics = Some(Box::new(|| "the host's report".into()));
     assert_eq!(a.execute("ui.copyDiagnostics", json!({})).unwrap()["text"], "the host's report");
 }
+
+#[test]
+fn opening_a_damaged_mailbox_file_says_what_was_left_out() {
+    let said = |v: Value| crate::feedback("file.open", &v);
+    // Part of the file itself left out is said first, whichever of the two counts says it.
+    let damaged = crate::damaged_mailbox_notice();
+    assert_eq!(said(json!({"lostSaves": 1, "unfinished": 300, "unavailable": 2})), Some(damaged.clone()));
+    assert_eq!(said(json!({"lostSaves": 0, "unfinished": 300})), Some(damaged));
+    // Otherwise what the content folder lost, and nothing when nothing was.
+    assert!(said(json!({"lostSaves": 0, "unfinished": 0, "unavailable": 2})).unwrap().starts_with("2 parts of messages"));
+    assert_eq!(said(json!({"lostSaves": 0, "unfinished": 0, "unavailable": 0})), None);
+}

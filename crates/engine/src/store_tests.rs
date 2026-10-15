@@ -1057,6 +1057,20 @@ fn replacing_a_mailbox_a_host_keeps_saved_writes_its_last_changes_first() {
     assert!(s.mailbox == kept && s.path.as_deref() == Some(home.as_path()));
 }
 
+#[test]
+fn every_content_name_in_a_damaged_file_is_found_wherever_it_falls() {
+    let names: Vec<Digest> = (0..4u8).map(|i| Digest::of(&[i])).collect();
+    let mut bytes = noise(3, (1 << 20) - 30);
+    for (i, d) in names.iter().enumerate() {
+        bytes.extend_from_slice(format!("x\"{}\"{}", d.hex(), if i == 2 { "\u{0}\u{1}" } else { "" }).as_bytes());
+    }
+    // Not names: too short, upper case, not closed.
+    bytes.extend_from_slice(format!("\"{}\" \"{}\" \"{}", &names[0].hex()[1..], names[1].hex().to_uppercase(), names[2].hex()).as_bytes());
+    let mut found = HashSet::new();
+    names_in(&bytes[..], &mut found).unwrap();
+    assert_eq!(found, names.iter().copied().collect::<HashSet<_>>());
+}
+
 /// The mailbox file of format 2 and its content files, as the program before format 3 wrote them:
 /// the mailbox as JSON, each message's content outside named under `blobs`.
 fn save_v2(path: &Path, mb: &Mailbox) {

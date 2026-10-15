@@ -55,8 +55,9 @@ USAGE:
 /// keeps it, with its messages' content in the folder `<file>.blobs` beside it.
 fn open(path: &str) -> Result<Session, String> {
     let opened = mailcraft_engine::store::open(std::path::Path::new(path))?;
-    if opened.unavailable > 0 {
-        eprintln!("warning: {path}: {} bodies or attachments are missing from its content folder, or damaged", opened.unavailable);
+    // Whatever of it couldn't be read: damaged saves left out, missing content.
+    if let Some(notice) = opened.notice() {
+        eprintln!("warning: {path}: {notice}");
     }
     let mut s = Session::new(opened.mailbox);
     s.graph_mail = graph_mail_switch();

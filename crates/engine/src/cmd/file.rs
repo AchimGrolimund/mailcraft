@@ -57,9 +57,20 @@ fn new(s: &mut Session, v: &Value) -> CmdResult {
     Ok(json!({"sample": p::bool(v, "sample") == Some(true)}))
 }
 
-/// The mailbox `file.open` is pointed at, and how many of its bodies and attachments couldn't be
-/// read back.
-fn read(v: &Value) -> Result<(Mailbox, usize), crate::CmdError> {
+/// What opening a mailbox file left out, for `file.open` to say.
+#[derive(Default)]
+struct Left {
+    /// Bodies and attachments that couldn't be read back.
+    unavailable: usize,
+    /// Saves left out because a record of theirs is damaged, and the bytes of the file not read.
+    lost_saves: u32,
+    unfinished: u64,
+    /// All of it in a sentence for the owner (`store::Opened::notice`).
+    notice: Option<String>,
+}
+
+/// The mailbox `file.open` is pointed at, and what of it couldn't be read back.
+fn read(v: &Value) -> Result<(Mailbox, Left), crate::CmdError> {
     // A file on disk is opened where it is: it may keep its content in a folder beside it.
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -70,7 +81,9 @@ fn read(v: &Value) -> Result<(Mailbox, usize), crate::CmdError> {
                 return Err(fail(format!("{path} isn't a mailbox; bring it in with File › Import")));
             }
             let opened = crate::store::open(std::path::Path::new(path)).map_err(fail)?;
-            return Ok((opened.mailbox, opened.unavailable));
+            let left =
+                Left { unavailable: opened.unavailable, lost_saves: opened.lost_saves, unfinished: opened.unfinished, notice: opened.notice() };
+            return Ok((opened.mailbox, left));
         }
     }
     let (name, bytes) = source(v)?;
@@ -79,13 +92,13 @@ fn read(v: &Value) -> Result<(Mailbox, usize), crate::CmdError> {
         Some(_) => return Err(fail(format!("{name} isn't a mailbox; bring it in with File › Import"))),
         None => return Err(fail(format!("{name} isn't a MailCraft mailbox"))),
     }
-    Ok((crate::io::read_mailbox(&bytes).map_err(fail)?, 0))
+    Ok((crate::io::read_mailbox(&bytes).map_err(fail)?, Left::default()))
 }
 
 fn open(s: &mut Session, v: &Value) -> CmdResult {
     // First, so that opening the file the mailbox is kept in reads what was just written.
     settle(s)?;
-    let (mailbox, unavailable) = read(v)?;
+    let (mailbox, left) = read(v)?;
     s.replace_mailbox(mailbox);
     // Only a real file is a place to save back to.
     s.path = if v.get("data").is_some() { None } else { p::str(v, "path").map(Into::into) };
@@ -102,7 +115,11 @@ fn open(s: &mut Session, v: &Value) -> CmdResult {
         "contacts": s.mailbox.contacts.len(),
         "events": s.mailbox.events.len(),
         "tasks": s.mailbox.tasks.len(),
-        "unavailable": unavailable,
+        "unavailable": left.unavailable,
+        // What of the file was damaged and left out, and what to tell the owner about it.
+        "lostSaves": left.lost_saves,
+        "unfinished": left.unfinished,
+        "notice": left.notice,
     }))
 }
 

@@ -24,9 +24,11 @@
 //! everything after it is a change. When the changes outgrow what they change, the whole file is
 //! written again with just the mailbox as it is ("compacted"), to a temporary file renamed over.
 //!
-//! Everything read is hostile: lengths are checked against the file and capped, a record whose
-//! checksum doesn't match ends the reading, and what follows the last commit (a crash's half
-//! save, or damage) is reported, never taken.
+//! Everything read is hostile: lengths are checked against the file and capped, and what follows
+//! the last commit (a crash's half save, or damage) is reported, never taken. A record whose
+//! checksum doesn't match costs the save it is part of, not the saves after it: when its length
+//! still leads to the next record, the reading goes on from there, that one save is left out
+//! (and reported), and every later save is read. Damage that loses the way ends the reading.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -226,6 +228,10 @@ pub struct Replayed {
     /// Where the last commit ends.
     pub good_len: u64,
     pub tail: Tail,
+    /// Saves left out because a record of theirs is damaged, and their bytes (counted in `tail`,
+    /// which is then [`Tail::Bytes`]: the file is kept aside before it is written again).
+    pub lost_saves: u32,
+    pub lost_bytes: u64,
 }
 
 enum Op {
@@ -244,8 +250,9 @@ enum Rec {
 enum Stop {
     /// The file ended inside it.
     Short,
-    /// It isn't a record. `zero`: every byte of it read so far was 0.
-    Bad { zero: bool },
+    /// It isn't a record. `zero`: every byte of it read so far was 0. `framed`: its length was
+    /// believable and all of it was read (this many bytes): the next record may follow.
+    Bad { zero: bool, framed: Option<u64> },
 }
 
 /// Read into `buf` until it is full or the input ends. Returns the bytes read.
@@ -295,7 +302,7 @@ fn next(r: &mut impl Read, left: u64) -> std::io::Result<Result<(Rec, u64), Stop
     let len = u32::from_le_bytes([a, b, c, d]);
     let zero = head == [0; 5];
     if len > MAX_RECORD || !matches!(kind, REST | PUT | DELETE | COMMIT) {
-        return Ok(Err(Stop::Bad { zero }));
+        return Ok(Err(Stop::Bad { zero, framed: None }));
     }
     let size = FRAME + u64::from(len);
     if size > left {
@@ -313,8 +320,9 @@ fn next(r: &mut impl Read, left: u64) -> std::io::Result<Result<(Rec, u64), Stop
         return Ok(Err(Stop::Short));
     }
     let zero = zero && payload.iter().all(|b| *b == 0) && sum == [0; 16];
+    let framed = Some(size);
     if sum != checksum([a, b, c, d], kind, &[&payload]) {
-        return Ok(Err(Stop::Bad { zero }));
+        return Ok(Err(Stop::Bad { zero, framed }));
     }
     let op = match kind {
         REST => Op::Rest(payload, sum),
@@ -323,16 +331,16 @@ fn next(r: &mut impl Read, left: u64) -> std::io::Result<Result<(Rec, u64), Stop
             let json_end = json_len.and_then(|j| (j as usize).checked_add(PUT_HEAD as usize)).filter(|end| *end <= payload.len());
             match (key_of(&payload), json_end) {
                 (Some(key), Some(json_end)) => Op::Put(key, Item { payload, json_end, fp: sum }),
-                _ => return Ok(Err(Stop::Bad { zero })),
+                _ => return Ok(Err(Stop::Bad { zero, framed })),
             }
         }
         DELETE => match key_of(&payload).filter(|_| payload.len() == 9) {
             Some(key) => Op::Delete(key),
-            None => return Ok(Err(Stop::Bad { zero })),
+            None => return Ok(Err(Stop::Bad { zero, framed })),
         },
         _ => match payload.get(..4).and_then(|b| b.try_into().ok()).filter(|_| payload.len() == 4) {
             Some(count) => return Ok(Ok((Rec::Commit(u64::from(u32::from_le_bytes(count))), size))),
-            None => return Ok(Err(Stop::Bad { zero })),
+            None => return Ok(Err(Stop::Bad { zero, framed })),
         },
     };
     Ok(Ok((Rec::Op(op), size)))
@@ -353,14 +361,19 @@ pub fn replay(mut r: impl Read, file_len: u64) -> Result<Replayed, String> {
     if version != VERSION || head.get(20..24) != Some(&[0u8; 4][..]) {
         return Err("this mailbox file is damaged (its header)".into());
     }
-    let mut out = Replayed { rest: None, items: HashMap::new(), good_len: HEADER_LEN, tail: Tail::Clean };
+    let mut out = Replayed { rest: None, items: HashMap::new(), good_len: HEADER_LEN, tail: Tail::Clean, lost_saves: 0, lost_bytes: 0 };
     let mut at = HEADER_LEN;
     let mut pending: Vec<Op> = Vec::new();
+    // Where the save being read began, and whether a record of it is damaged.
+    let mut group_at = HEADER_LEN;
+    let mut damaged = false;
+    // Bytes of saves left out since the last one read (which a tail from there counts already).
+    let mut lost_since = 0u64;
     let mut r = r.take(file_len.saturating_sub(HEADER_LEN));
     loop {
         let left = file_len.saturating_sub(at);
         if left == 0 {
-            if !pending.is_empty() {
+            if !pending.is_empty() || damaged {
                 out.tail = Tail::Bytes(file_len.saturating_sub(out.good_len));
             }
             break;
@@ -368,6 +381,16 @@ pub fn replay(mut r: impl Read, file_len: u64) -> Result<Replayed, String> {
         match next(&mut r, left).map_err(|e| e.to_string())? {
             Ok((Rec::Commit(count), size)) => {
                 at = at.saturating_add(size);
+                if damaged {
+                    // A save with a damaged record is left out whole; the next one is read.
+                    pending.clear();
+                    damaged = false;
+                    out.lost_saves = out.lost_saves.saturating_add(1);
+                    out.lost_bytes = out.lost_bytes.saturating_add(at.saturating_sub(group_at));
+                    lost_since = lost_since.saturating_add(at.saturating_sub(group_at));
+                    group_at = at;
+                    continue;
+                }
                 if count != pending.len() as u64 {
                     // A commit that doesn't close what came before it isn't one.
                     out.tail = Tail::Bytes(file_len.saturating_sub(out.good_len));
@@ -385,15 +408,24 @@ pub fn replay(mut r: impl Read, file_len: u64) -> Result<Replayed, String> {
                     }
                 }
                 out.good_len = at;
+                group_at = at;
+                lost_since = 0;
             }
             Ok((Rec::Op(op), size)) => {
                 at = at.saturating_add(size);
                 pending.push(op);
             }
+            // Past the first save (the whole mailbox, which nothing can stand in for), a damaged
+            // record whose length leads on is passed over with the save it is part of.
+            Err(Stop::Bad { framed: Some(size), .. }) if out.good_len > HEADER_LEN => {
+                at = at.saturating_add(size);
+                pending.clear();
+                damaged = true;
+            }
             Err(stop) => {
                 let zero = match stop {
                     Stop::Short => false,
-                    Stop::Bad { zero } => zero,
+                    Stop::Bad { zero, .. } => zero,
                 };
                 // Records closed by no commit count for nothing either way; zeros from there to
                 // the end are no save at all.
@@ -408,6 +440,13 @@ pub fn replay(mut r: impl Read, file_len: u64) -> Result<Replayed, String> {
     }
     if out.good_len == HEADER_LEN {
         return Err("this mailbox file is damaged (no save in it was finished)".into());
+    }
+    // Saves left out are damage too: the file is kept aside before it is written again.
+    if out.lost_bytes > 0 {
+        out.tail = Tail::Bytes(match out.tail {
+            Tail::Bytes(n) => n.saturating_add(out.lost_bytes.saturating_sub(lost_since)),
+            Tail::Clean | Tail::Zeros => out.lost_bytes,
+        });
     }
     Ok(out)
 }

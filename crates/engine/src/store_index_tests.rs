@@ -198,14 +198,14 @@ fn a_save_cut_short_leaves_the_mailbox_as_the_last_finished_save_left_it() {
     assert_eq!(aside.len(), 1);
     assert_eq!(fs::read(&aside[0]).unwrap(), &full[..full.len() - 3]);
     assert!(open(&path).unwrap().mailbox == mb && tail_of(&path) == Tail::Clean);
-    // Nothing is swept while it is kept: it may name content the mailbox doesn't any more.
+    // Nothing it names is swept while it is kept: it may name content the mailbox doesn't any more.
     let mut fewer = mb.clone();
     fewer.messages.retain(|_, m| m.attachments.is_empty());
     save(&path, &fewer).unwrap();
     for (file, _) in files(&blob_dir(&path)) {
         age(&file, Duration::from_secs(86_400));
     }
-    assert_eq!(sweep(&path, GRACE).unwrap(), Swept::default());
+    assert_eq!(sweep(&path, GRACE).unwrap().removed, 0);
     fs::remove_file(&aside[0]).unwrap();
     assert!(sweep(&path, GRACE).unwrap().removed > 0);
     assert!(open(&path).unwrap().mailbox == fewer);
@@ -278,6 +278,63 @@ fn a_retired_favorites_choice_in_this_form_is_written_away_at_the_next_save() {
     let again = open(&path).unwrap();
     assert!(!again.mailbox.accounts[0].retired_favorites_choice && again.mailbox == mb);
     assert!(save(&path, &again.mailbox).unwrap().unchanged);
+}
+
+#[test]
+fn a_damaged_save_in_the_middle_costs_that_save_only_and_never_stops_the_sweep() {
+    let tmp = Temp::new("damaged-middle");
+    let path = tmp.file();
+    let mut mb = mailbox(20);
+    save(&path, &mb).unwrap();
+    let ids: Vec<Id> = mb.messages.keys().copied().collect();
+    let mut ends = Vec::new();
+    for id in &ids[..3] {
+        mb.message_mut(*id).unwrap().read = true;
+        assert!(!save(&path, &mb).unwrap().compacted);
+        ends.push(fs::metadata(&path).unwrap().len() as usize);
+    }
+    // A byte of the second of those saves changes on the disk.
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[ends[0] + 30] ^= 0x40;
+    fs::write(&path, &bytes).unwrap();
+    let opened = open(&path).unwrap();
+    // That save is left out, and said; the one after it is read.
+    let mut expect = mb.clone();
+    expect.message_mut(ids[1]).unwrap().read = false;
+    assert!(opened.mailbox == expect);
+    assert_eq!((opened.lost_saves, opened.unfinished), (1, (ends[1] - ends[0]) as u64));
+    let notice = opened.notice().unwrap();
+    assert!(notice.contains("damaged") && notice.contains("1 of the saves"), "{notice}");
+    assert!(matches!(tail_of(&path), Tail::Bytes(_)));
+    // `file.open` says so, for the window and the CLI to show.
+    let mut s = crate::Session::empty();
+    let said = s.run("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+    assert_eq!((said["lostSaves"].as_u64(), said["unfinished"].as_u64()), (Some(1), Some((ends[1] - ends[0]) as u64)));
+    assert_eq!(said["notice"].as_str(), Some(notice.as_str()));
+    // The next save writes the file whole and keeps the damaged one aside, as it was.
+    expect.message_mut(ids[5]).unwrap().read = true;
+    let mut edited = opened.mailbox.clone();
+    edited.message_mut(ids[5]).unwrap().read = true;
+    assert!(save(&path, &edited).unwrap().compacted);
+    assert_eq!(fs::read(&kept(&path, "damaged-")[0]).unwrap(), bytes);
+    assert!(open(&path).unwrap().notice().is_none());
+
+    // While it is kept, the sweep still takes what nothing names, and leaves what it names.
+    let gone = first_with(&expect, |m| m.attachments.iter().any(|a| a.data.len() > INLINE_MAX));
+    let gone_file = blob_file(&path, &expect.message(gone).unwrap().attachments[0].data);
+    let mut later = expect.clone();
+    later.remove_message(gone).unwrap();
+    let inbox = later.inbox().unwrap();
+    let mut fresh = Message { folder: inbox, subject: "Here and gone".into(), ..Default::default() };
+    fresh.attachments.push(Attachment::new("new.bin", "application/octet-stream", noise(99, 9_000)));
+    let fresh = later.add_message(fresh).unwrap();
+    save(&path, &later).unwrap();
+    let fresh_file = blob_file(&path, &later.message(fresh).unwrap().attachments[0].data);
+    later.remove_message(fresh).unwrap();
+    save(&path, &later).unwrap();
+    let swept = sweep(&path, Duration::ZERO).unwrap();
+    assert!(swept.removed >= 1 && !fresh_file.exists() && gone_file.exists(), "{swept:?}");
+    assert!(open(&path).unwrap().mailbox == later);
 }
 
 #[test]

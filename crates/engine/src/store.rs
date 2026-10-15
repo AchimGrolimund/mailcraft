@@ -33,15 +33,16 @@
 //!   taken only when it is a plain file of the length and SHA-256 the mailbox file names; names
 //!   are 64 hex digits or nothing; sizes are capped; a record counts only whole, with its
 //!   checksum, and closed by a commit. Bytes after the last commit (a save cut short, or damage)
-//!   are reported, and the file is kept aside as `mailbox.mailcraft.damaged-<time>` before it is
-//!   next written. Content that is missing or damaged never stops the mailbox from opening: the
+//!   are reported, and so is a save left out because a record of it is damaged (the saves after
+//!   it are read: [`Opened::notice`]); either way the file is kept aside as
+//!   `mailbox.mailcraft.damaged-<time>` before it is next written. Content that is missing or damaged never stops the mailbox from opening: the
 //!   message keeps everything else and says its text is unavailable, and what the mailbox file
 //!   said about it is written back unchanged, so content that turns up again (a folder copied
 //!   late) is found the next time.
 //! - **Sweeping** ([`sweep`]) removes content files the mailbox file no longer names, never one
 //!   written in the last few minutes: a save in flight has written its content before its mailbox
-//!   file names it. Nothing is swept while a damaged mailbox file is kept aside: it may name
-//!   content the mailbox no longer does.
+//!   file names it. Nothing a damaged mailbox file kept aside names is swept (every name found
+//!   anywhere in it): it may name content the mailbox no longer does.
 //!
 //! Not in the browser, which has no folder to keep content in: there the mailbox stays one file.
 
@@ -797,8 +798,40 @@ pub struct Opened {
     /// Bodies and attachments whose content file is missing or damaged.
     pub unavailable: usize,
     /// Bytes at the end of the file that aren't a finished save (a save a crash cut short, or
-    /// damage). They are not read; the file is kept aside before it is next written.
+    /// damage), or of saves left out because a record of theirs is damaged. They are not read;
+    /// the file is kept aside before it is next written.
     pub unfinished: u64,
+    /// Saves left out because a record of theirs is damaged (the saves after them are read).
+    pub lost_saves: u32,
+}
+
+impl Opened {
+    /// What the owner is to be told about the opening, when something of the file couldn't be
+    /// read: for the host to show (a status line, the CLI's output), not only to log.
+    pub fn notice(&self) -> Option<String> {
+        let mut said = Vec::new();
+        if self.lost_saves > 0 {
+            said.push(format!(
+                "{} of the saves in the mailbox file are damaged and were left out, so the changes they made are missing",
+                self.lost_saves
+            ));
+        } else if self.unfinished > 0 {
+            said.push(format!("the last {} bytes of the mailbox file aren't a finished save and were left out", self.unfinished));
+        }
+        if !said.is_empty() {
+            said.push("the file as it was is kept beside it the next time the mailbox is saved".into());
+        }
+        if self.unavailable > 0 {
+            said.push(format!("{} bodies or attachments are missing from the mailbox's content folder, or damaged", self.unavailable));
+        }
+        (!said.is_empty()).then(|| {
+            let mut text = said.join("; ");
+            if let Some(first) = text.get(..1) {
+                text = format!("{}{}.", first.to_uppercase(), text.get(1..).unwrap_or(""));
+            }
+            text
+        })
+    }
 }
 
 impl std::fmt::Debug for Opened {
@@ -806,11 +839,12 @@ impl std::fmt::Debug for Opened {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Opened {{ messages: {}, split: {}, unavailable: {}, unfinished: {} }}",
+            "Opened {{ messages: {}, split: {}, unavailable: {}, unfinished: {}, lost_saves: {} }}",
             self.mailbox.messages.len(),
             self.split,
             self.unavailable,
-            self.unfinished
+            self.unfinished,
+            self.lost_saves
         )
     }
 }
@@ -861,7 +895,7 @@ pub fn open(path: &Path) -> Result<Opened, String> {
     st.stamp = Stamp::of(&file, bytes.len() as u64);
     st.loaded = loaded_unless_retired(&mailbox);
     st.legacy = Some(version.max(1));
-    Ok(Opened { mailbox, split, unavailable, unfinished: 0 })
+    Ok(Opened { mailbox, split, unavailable, unfinished: 0, lost_saves: 0 })
 }
 
 /// One item of a mailbox file in this form, read.
@@ -970,6 +1004,9 @@ fn open_index(st: &mut State, file: &Path, len: u64) -> Result<Opened, String> {
     if unavailable > 0 {
         log::warn!("{show}: {unavailable} bodies or attachments are missing from {} or damaged", dir.display());
     }
+    if replayed.lost_saves > 0 {
+        log::warn!("{show}: {} saves in it are damaged and were left out; the saves after them were read", replayed.lost_saves);
+    }
     let unfinished = match replayed.tail {
         Tail::Bytes(n) => {
             log::warn!(
@@ -1016,7 +1053,7 @@ fn open_index(st: &mut State, file: &Path, len: u64) -> Result<Opened, String> {
     st.stamp = Stamp::of(file, len);
     st.disk = Some(disk);
     st.loaded = loaded_unless_retired(&mailbox);
-    Ok(Opened { mailbox, split: true, unavailable, unfinished })
+    Ok(Opened { mailbox, split: true, unavailable, unfinished, lost_saves: replayed.lost_saves })
 }
 
 /// What a mailbox file wants for one part of a message.
@@ -1790,12 +1827,64 @@ fn named_by(path: &Path) -> Result<Option<HashSet<Digest>>, String> {
     Ok(Some(head.blobs.values().flat_map(WireParts::hashes).collect()))
 }
 
-/// Whether a mailbox file is kept aside beside `file` because it was damaged.
-fn damaged_beside(file: &Path) -> bool {
-    let (Some(parent), Some(stem)) = (file.parent(), file.file_name().and_then(|n| n.to_str())) else { return false };
+/// Damaged mailbox files kept aside beside one, most looked into by a sweep; with more, nothing
+/// is swept.
+const MAX_DAMAGED: usize = 64;
+
+/// Every content name that appears anywhere in the bytes `r` gives (a `"`, 64 lowercase hex
+/// digits, a `"`), damaged or not, read in pieces: what a damaged file may name.
+fn names_in(mut r: impl std::io::Read, into: &mut HashSet<Digest>) -> std::io::Result<()> {
+    const NAME: usize = 66;
+    let mut buf: Vec<u8> = Vec::with_capacity((1 << 20) + NAME);
+    let mut piece = vec![0u8; 1 << 20];
+    loop {
+        let n = index::fill(&mut r, &mut piece)?;
+        buf.extend_from_slice(piece.get(..n).unwrap_or(&[]));
+        let mut i = 0;
+        while let Some(window) = buf.get(i..i + NAME) {
+            if window.first() == Some(&b'"')
+                && window.last() == Some(&b'"')
+                && let Some(hash) = window.get(1..NAME - 1).and_then(|h| std::str::from_utf8(h).ok()).and_then(Digest::parse)
+            {
+                into.insert(hash);
+            }
+            i += 1;
+        }
+        if n < piece.len() {
+            return Ok(());
+        }
+        // What may be the start of a name the next piece ends.
+        buf.drain(..buf.len().saturating_sub(NAME - 1));
+    }
+}
+
+/// What the damaged mailbox files kept aside beside `file` name, by the look of every byte of
+/// them: they may name content the mailbox no longer does, which someone may want back. `None`
+/// when one of them can't be read through (or there are too many): then nothing is swept.
+fn named_by_damaged(file: &Path) -> Option<HashSet<Digest>> {
+    let (Some(parent), Some(stem)) = (file.parent(), file.file_name().and_then(|n| n.to_str())) else { return Some(HashSet::new()) };
     let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
     let prefix = format!("{stem}.damaged-");
-    fs::read_dir(parent).into_iter().flatten().flatten().take(MAX_ENTRIES).any(|e| e.file_name().to_str().is_some_and(|n| n.starts_with(&prefix)))
+    let damaged: Vec<PathBuf> = fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .take(MAX_ENTRIES)
+        .filter(|e| e.file_name().to_str().is_some_and(|n| n.starts_with(&prefix)))
+        .map(|e| e.path())
+        .collect();
+    if damaged.len() > MAX_DAMAGED {
+        return None;
+    }
+    let mut named = HashSet::new();
+    for path in damaged {
+        let (f, len) = open_plain(&path)?;
+        if len > MAX_INDEX {
+            return None;
+        }
+        names_in(std::io::BufReader::new(f).take(len), &mut named).ok()?;
+    }
+    Some(named)
 }
 
 /// Remove the content files next to the mailbox file at `path` that it no longer names, and
@@ -1808,15 +1897,16 @@ pub fn sweep(path: &Path, grace: Duration) -> Result<Swept, String> {
     st.swept = Some(Instant::now());
     let file = resolve(path);
     let dir = blob_dir(&file);
-    // What a damaged file kept aside names may be wanted back.
-    if damaged_beside(&file) {
-        log::info!("{}: not sweeping its content folder while a damaged mailbox file is kept beside it", path.display());
+    // What a damaged file kept aside names may be wanted back: it stays.
+    let Some(kept_aside) = named_by_damaged(&file) else {
+        log::info!("{}: not sweeping its content folder: a damaged mailbox file kept beside it couldn't be read through", path.display());
         return Ok(Swept::default());
-    }
+    };
     // The file as this program last read or wrote it names what it knows; otherwise it is read.
     let known = st.disk.as_ref().is_some_and(Disk::appendable) && st.stamp.as_ref().is_some_and(|s| s.still(&file));
     let named = if known { Some(st.live.keys().copied().collect()) } else { named_by(&file).map_err(|e| format!("{}: {e}", path.display()))? };
-    let Some(named) = named else { return Ok(Swept::default()) };
+    let Some(mut named) = named else { return Ok(Swept::default()) };
+    named.extend(kept_aside);
     let now = SystemTime::now();
     // A time in the future is no age at all.
     let old = |meta: &fs::Metadata| meta.modified().ok().and_then(|t| now.duration_since(t).ok()).is_some_and(|age| age >= grace);
