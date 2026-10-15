@@ -15,6 +15,14 @@
 //! `--open DIR` only opens `DIR/mailbox.mailcraft` (one `--keep` left), in a process that has done
 //! nothing else, and says how long that took and how much memory the process holds after it
 //! (resident, and its peak; Linux): what a person opening that mailbox waits for and pays (R6.1).
+//!
+//! The run holds the whole invented mailbox in memory, and the single file twice more while it is
+//! written and read back: about three and a half times the content at its peak, two and a half
+//! with `--split-only` (200,000 messages and 2,000 files are 5 GB of content and needed 10 GB).
+//! Before building anything it works that out and refuses when the memory free for it can't hold
+//! it with a quarter to spare (Linux: `/proc/meminfo` and the limit of its control group, so that
+//! `systemd-run --user --scope -p MemoryMax=6G` is honoured too): the out-of-memory killer would
+//! otherwise end it, and with it whatever shares its terminal. `--force` runs anyway.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -391,6 +399,41 @@ fn memory() -> Option<(u64, u64)> {
     Some((field("VmRSS:")?, field("VmHWM:")?))
 }
 
+/// What the process holds at most so far, for the progress lines.
+fn peak() -> String {
+    memory().map_or_else(|| "not readable".into(), |(_, peak)| mb(peak))
+}
+
+/// About how many bytes of content `build` makes: the means of the sizes it draws (a body of
+/// 300 + 8,000·u² bytes of text, HTML of 4,000 + 76,000·u³ for six in ten, a file of 20 KB·250^u
+/// for eleven in twelve of the attachments).
+fn expected_content(messages: usize, attachments: usize) -> u64 {
+    let body = 300.0 + 8_000.0 / 3.0 + 0.6 * (4_000.0 + 76_000.0 / 4.0);
+    let file = 20_000.0 * 249.0 / 250f64.ln() * 11.0 / 12.0;
+    let attachments = attachments.min(messages);
+    (messages as f64 * body + attachments as f64 * file) as u64
+}
+
+/// How many bytes this process may still take before it is killed for them: what the machine has
+/// available, or less when its control group (a `systemd-run --scope`, a container) is held to a
+/// limit. `None` where that can't be read.
+fn memory_free() -> Option<u64> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let line = meminfo.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    let mut free = line.split_whitespace().nth(1)?.parse::<u64>().ok()?.checked_mul(1024)?;
+    // cgroup v2: "0::/user.slice/…"; every group up to the root may hold a limit.
+    let own = std::fs::read_to_string("/proc/self/cgroup").ok().and_then(|t| t.lines().find_map(|l| l.strip_prefix("0::").map(str::to_owned)));
+    let mut group = own.map(|g| Path::new("/sys/fs/cgroup").join(g.trim_start_matches('/')));
+    while let Some(dir) = group {
+        let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok().and_then(|v| v.trim().parse::<u64>().ok());
+        if let (Some(max), Some(used)) = (read("memory.max"), read("memory.current")) {
+            free = free.min(max.saturating_sub(used));
+        }
+        group = dir.parent().filter(|p| p.starts_with("/sys/fs/cgroup")).map(Path::to_path_buf);
+    }
+    Some(free)
+}
+
 /// Open the mailbox kept in `dir` and nothing else: how long it takes, and what it costs.
 fn open_only(dir: &Path) -> Result<(), String> {
     use mailcraft_engine::store;
@@ -428,17 +471,36 @@ fn run() -> Result<(), String> {
         args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(default)
     };
     let (messages, attachments) = (arg("--messages", 5000), arg("--attachments", 300));
+    let split_only = args.iter().any(|a| a == "--split-only");
+    let content = expected_content(messages, attachments);
+    let needed = content.saturating_mul(if split_only { 5 } else { 7 }) / 2;
+    match memory_free() {
+        // A quarter is left for everything else, which goes on growing while a long run runs.
+        Some(free) if needed > free / 4 * 3 && !args.iter().any(|a| a == "--force") => {
+            return Err(format!(
+                "{messages} messages and {attachments} attachments are about {} of content, and this run would need about {} of memory \
+                 at its peak; {} is free, and a quarter of that is left for everything else. Ask for fewer messages{}, or pass --force to run anyway.",
+                mb(content),
+                mb(needed),
+                mb(free),
+                if split_only { "" } else { ", add --split-only" }
+            ));
+        }
+        Some(free) => println!("about {} of content; the peak should be near {} of the {} free", mb(content), mb(needed), mb(free)),
+        None => {}
+    }
     let (made, built) = timed(|| build(messages, attachments));
     let (mailbox, size) = made?;
-    println!("{messages} messages, {attachments} attachments, {} of content (built in {})", mb(size), ms(built).trim());
+    println!("{messages} messages, {attachments} attachments, {} of content (built in {}; peak memory {})", mb(size), ms(built).trim(), peak());
     let (copy, clone) = timed(|| mailbox.clone());
     println!("a snapshot (clone of the mailbox) {}", ms(clone));
     drop(copy);
     let keep = args.iter().position(|a| a == "--keep").and_then(|i| args.get(i + 1)).map(std::path::PathBuf::from);
     let dir = keep.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("mailcraft-bench-{}", std::process::id())));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let single = if args.iter().any(|a| a == "--split-only") { Ok(()) } else { single_file(&mailbox, &dir, keep.is_some()) };
-    let result = single.and_then(|()| split(&mailbox, &dir));
+    let single =
+        if split_only { Ok(()) } else { single_file(&mailbox, &dir, keep.is_some()).map(|()| println!("  peak memory so far          {}", peak())) };
+    let result = single.and_then(|()| split(&mailbox, &dir)).map(|()| println!("  peak memory in all          {}", peak()));
     match keep {
         Some(dir) => println!("\nkept in {}", dir.display()),
         None => {
