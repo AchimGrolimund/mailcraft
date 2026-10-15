@@ -181,15 +181,23 @@ fn sync_graph(s: &mut Session, account: mailcraft_model::Id, path: &str) -> Resu
     let token = match std::env::var("MAILCRAFT_ACCESS_TOKEN") {
         Ok(token) => token,
         Err(_) => {
-            let mut oauth = s.mailbox.account(account).and_then(|a| a.oauth.clone()).unwrap_or_default();
+            // A shared mailbox is read with the sign-in of the account it is opened through (#70).
+            let signer = s.mailbox.owner_of(account).map_or(account, |owner| owner.id);
+            let hint = s.mailbox.account(signer).map(|a| a.email.clone()).unwrap_or_default();
+            let mut oauth = s.mailbox.account(signer).and_then(|a| a.oauth.clone()).unwrap_or_default();
             if oauth.client_id.is_empty() {
                 let built_in = option_env!("MAILCRAFT_MS_CLIENT_ID").unwrap_or_default().to_string();
                 oauth.client_id = std::env::var("MAILCRAFT_MS_CLIENT_ID").unwrap_or(built_in);
             }
             let open = |url: &str| eprintln!("sync: open this page in a browser to sign in:\n{url}");
             let cancel = std::sync::atomic::AtomicBool::new(false);
-            let resource = mailcraft_net::oauth::Resource::GraphMail;
-            mailcraft_net::oauth::sign_in_for(&oauth, &request.email, &open, &cancel, resource).map_err(|e| format!("sync: {e}"))?.access
+            if request.shared {
+                let signed = mailcraft_net::oauth::sign_in_for_shared(&oauth, &hint, &open, &cancel);
+                signed.map_err(|refusal| format!("sync: shared mailboxes weren't allowed ({refusal:?})"))?.access
+            } else {
+                let resource = mailcraft_net::oauth::Resource::GraphMail;
+                mailcraft_net::oauth::sign_in_for(&oauth, &hint, &open, &cancel, resource).map_err(|e| format!("sync: {e}"))?.access
+            }
         }
     };
     let result = mailcraft_net::graph::sync_folders(&token, &request);

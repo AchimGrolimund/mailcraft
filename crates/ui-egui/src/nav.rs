@@ -496,11 +496,12 @@ pub fn folder_pane(app: &mut MailApp, ui: &mut Ui) {
                 mailcraft_engine::cmd::folder::favorites(&app.session).into_iter().filter_map(|id| app.session.mailbox.folder(id).cloned()).collect();
             // And what there is to say of Outlook's, in one quiet line under the heading.
             let note = app.favorites_note();
+            // (A shared mailbox right after the account it is opened through, #70.)
             let lists: Vec<(Id, String, Vec<(Folder, usize, bool)>)> = app
                 .session
                 .mailbox
-                .accounts
-                .iter()
+                .accounts_in_order()
+                .into_iter()
                 .map(|a| {
                     let rows = if folded.contains(&a.id) { Vec::new() } else { visible(&app.session.mailbox, &folded, a.id) };
                     (a.id, a.name.clone(), rows)

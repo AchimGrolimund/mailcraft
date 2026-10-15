@@ -34,6 +34,13 @@ pub enum Dialog {
         text: String,
         error: String,
     },
+    /// The address of a shared mailbox to open under a Microsoft account (#70): it only collects
+    /// the address, then runs `account.addSharedMailbox`.
+    SharedMailbox {
+        account: Id,
+        address: String,
+        error: String,
+    },
     /// Where the selected text of the message being written leads (Ctrl+K).
     Link {
         url: String,
@@ -112,6 +119,7 @@ impl Dialog {
             Dialog::Commands { .. } => "commands",
             Dialog::Folder { .. } => "folder",
             Dialog::GoToDate { .. } => "goToDate",
+            Dialog::SharedMailbox { .. } => "sharedMailbox",
             Dialog::Link { .. } => "link",
             Dialog::Password { .. } => "password",
             Dialog::DiscardDraft { .. } => "discardDraft",
@@ -144,6 +152,16 @@ impl Dialog {
                 }
             }
             "goToDate" => Dialog::GoToDate { text: app.session.view.date.iso(), error: String::new() },
+            "sharedMailbox" => {
+                // Under the account named, else the first that can open one.
+                let can = |a: &&mailcraft_model::Account| a.kind == mailcraft_model::AccountKind::Microsoft && !a.is_shared();
+                let mailbox = &app.session.mailbox;
+                let account = match id("account") {
+                    Some(id) => mailbox.account(id).filter(can)?.id,
+                    None => mailbox.accounts.iter().find(can)?.id,
+                };
+                Dialog::SharedMailbox { account, address: String::new(), error: String::new() }
+            }
             "link" => {
                 let c = app.session.compose.as_ref().filter(|c| c.format == mailcraft_engine::BodyFormat::Html)?;
                 let sel = c.body.selection();
@@ -838,6 +856,46 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
             if submit {
                 match app.execute("view.goToDate", json!({"date": text.trim()})) {
                     Ok(_) => close = true,
+                    Err(e) => *error = e,
+                }
+            }
+        }
+        Dialog::SharedMailbox { account, address, error } => {
+            let mut submit = false;
+            let owner = app.session.mailbox.account(*account).map(|a| a.email.clone()).unwrap_or_default();
+            let open = window(ctx, tl!("Add Shared Mailbox"), 420.0, |ui| {
+                ui.label(tl!("The shared mailbox's e-mail address"));
+                let resp = ui.add(egui::TextEdit::singleline(address).hint_text("support@example.org").desired_width(f32::INFINITY));
+                if !resp.has_focus() && error.is_empty() {
+                    resp.request_focus();
+                }
+                ui.label(
+                    egui::RichText::new(crate::i18n::fmt(
+                        tl!("Opened with {owner}'s sign-in. It needs Full Access to the mailbox, which your organisation's administrator gives. Microsoft asks you once to let MailCraft read shared mailboxes. Its mail is read only for now, and mail you write goes from {owner}."),
+                        &[("owner", &owner)],
+                    ))
+                    .color(t.text_dim)
+                    .size(11.0),
+                );
+                if !error.is_empty() {
+                    ui.label(egui::RichText::new(error.as_str()).color(t.red));
+                }
+                let (ok, cancel) = buttons(ui, tl!("Add"), !address.trim().is_empty());
+                submit = ok || enter;
+                close |= cancel;
+            });
+            close |= !open;
+            if submit {
+                match app.execute("account.addSharedMailbox", json!({"account": *account, "address": address.trim()})) {
+                    Ok(added) => {
+                        close = true;
+                        // Read at once: that is when the owner is asked for the permission.
+                        if let Some(id) = added.get("id").and_then(Value::as_u64)
+                            && let Err(e) = app.run("ui.sync", json!({"account": id}))
+                        {
+                            app.status(e);
+                        }
+                    }
                     Err(e) => *error = e,
                 }
             }

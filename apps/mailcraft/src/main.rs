@@ -286,6 +286,12 @@ fn sign_in_with(request: SignInRequest, open_page: &dyn Fn(&str) -> bool) -> Res
         let asked = mailcraft_net::oauth::sign_in_for_favorites(&request.oauth, &request.email, &open, &request.cancel);
         return asked.map_err(|refusal| unopened(favorites_refusal(refusal)));
     }
+    // A shared mailbox is to be read (#70): the page comes up for what reading shared mailboxes
+    // takes, by itself, in the same words for a no as the Favorites'.
+    if request.graph && request.shared {
+        let asked = mailcraft_net::oauth::sign_in_for_shared(&request.oauth, &request.email, &open, &request.cancel);
+        return asked.map_err(|refusal| unopened(favorites_refusal(refusal)));
+    }
     // A sign-in on the page, at `endpoints`: how it ended, when it brought no tokens. (How, and
     // never in whose words, is what the log is told.)
     let on_the_page = |endpoints: &Endpoints| {
@@ -436,8 +442,12 @@ fn graph_in(request: GraphRequest, zone: &str) -> GraphResult {
     // the window wants that too (it stops wanting it for the day once it was told no).
     // (An account kept in step through Graph has its token asked for with its mail, R3.)
     let mail = request.mail.is_some();
+    // (A shared mailbox's, with what reading shared mailboxes takes: #70.)
+    let shared = request.mail.as_ref().is_some_and(|mail| mail.shared);
     graph_with(request, zone, &|settings, refresh, favorites| {
-        if mail {
+        if shared {
+            oauth::refresh_graph_shared(settings, refresh)
+        } else if mail {
             oauth::refresh_graph_mail(settings, refresh)
         } else if favorites {
             oauth::refresh_graph_with_favorites(settings, refresh)

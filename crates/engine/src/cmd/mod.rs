@@ -22,6 +22,7 @@ pub mod people;
 mod quote_tests;
 pub mod remote;
 pub mod rules;
+pub mod shared;
 pub mod signature;
 #[cfg(test)]
 mod signature_tests;
@@ -58,6 +59,7 @@ pub fn registry() -> Registry {
     v.extend(account::specs());
     v.extend(signature::specs());
     v.extend(graph_mail::specs());
+    v.extend(shared::specs());
     v.extend(remote::specs());
     Registry::new(v)
 }

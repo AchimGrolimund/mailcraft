@@ -30,7 +30,7 @@ use serde_json::Value;
 
 use super::super::pace::Kind;
 use super::super::{ASK_TIMEOUT, Graph, MAX_PAGE, nonsense, text};
-use super::{MAIL_FOLDERS, id_of};
+use super::{folders as folders_of, id_of};
 use crate::NetError;
 use crate::http::{self, Url};
 
@@ -170,7 +170,7 @@ fn page(
         Some(url) => url.clone(),
         None => {
             let query = http::form(&[("$select", FIELDS), ("$orderby", "receivedDateTime desc"), ("$expand", SIZE)]);
-            graph.url(&format!("{MAIL_FOLDERS}/{}/messages/delta?{query}", http::encode(&one.folder.id)))
+            graph.url(&format!("{}/{}/messages/delta?{query}", folders_of(graph), http::encode(&one.folder.id)))
         }
     };
     let reply = graph.call(Kind::Read, &url, "GET", &[("Prefer", PAGE_SIZE)], None, ASK_TIMEOUT, MAX_PAGE)?;

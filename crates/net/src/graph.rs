@@ -322,6 +322,20 @@ struct Graph<'a> {
     /// The ground rules of a mailbox's mail ([`pace`]): its gate, who is waiting, and how a
     /// request is asked again. `None`: one try, as it always was.
     pace: Option<Pace>,
+    /// Whose mailbox the mail is asked of: `/me`, the owner of the token; or `/users/{address}`,
+    /// a shared mailbox the owner may open (#70, [`Graph::of_shared`]).
+    mailbox: String,
+}
+
+/// What stands in an address of Graph's for a shared mailbox (#70): `/users/{address}`, the
+/// address checked to be a plain one first ([`mailcraft_model::mailbox_address`]), so that it
+/// names that mailbox and nothing else. Its `@` stays as it is (a path may have one), and
+/// anything of the local part that isn't a letter, a digit or `-._~` is written as `%XX`.
+pub(crate) fn shared_mailbox_path(address: &str) -> Result<String, NetError> {
+    let refused = || NetError::Proto(ProtoError::Protocol("that isn't an address a shared mailbox can be opened at".into()));
+    let address = mailcraft_model::mailbox_address(address).ok_or_else(refused)?;
+    let (local, domain) = address.split_once('@').ok_or_else(refused)?;
+    Ok(format!("/users/{}@{}", http::encode(local), http::encode(domain)))
 }
 
 /// What [`Graph::call`] goes by.
@@ -330,6 +344,12 @@ struct Pace {
     priority: pace::Priority,
     retry: pace::Retry,
 }
+
+/// What a shared mailbox that won't let the owner of the token in is said to have done (#70).
+pub(crate) const SHARED_DENIED: &str =
+    "Microsoft won't open this shared mailbox for you: you need Full Access to it, which an administrator of your organisation gives";
+/// And one that Graph has no mailbox for at that address.
+pub(crate) const SHARED_MISSING: &str = "Microsoft has no mailbox at this address that you can open";
 
 /// What `Prefer` asks for of the ids in every answer to the Graph code of mail.
 const IMMUTABLE_IDS: &str = "IdType=\"ImmutableId\"";
@@ -346,7 +366,7 @@ impl<'a> Graph<'a> {
         if token.is_empty() || token.len() > MAX_TOKEN || !token.bytes().all(|b| b.is_ascii_graphic()) {
             return Err(NetError::Proto(ProtoError::Auth("there is no sign-in to show Microsoft Graph".into())));
         }
-        Ok(Graph { base: Url::parse(base)?, token, immutable: false, pace: None })
+        Ok(Graph { base: Url::parse(base)?, token, immutable: false, pace: None, mailbox: "/me".into() })
     }
 
     /// Graph for a Microsoft account's mail (R3): every request asks for immutable ids, goes
@@ -405,6 +425,31 @@ impl<'a> Graph<'a> {
         }
     }
 
+    /// The same Graph, asking for the mail of the shared mailbox at `address` instead of the
+    /// owner's own, when there is one (#70): `/users/{address}/…` for `/me/…`.
+    fn of_shared(self, address: Option<&str>) -> Result<Graph<'a>, NetError> {
+        match address {
+            None => Ok(self),
+            Some(address) => Ok(Graph { mailbox: shared_mailbox_path(address)?, ..self }),
+        }
+    }
+
+    /// Whether the mail asked for is a shared mailbox's.
+    fn shared(&self) -> bool {
+        self.mailbox != "/me"
+    }
+
+    /// `rest` of the mailbox the mail is asked of, as a path of Graph v1.0: `/v1.0/me{rest}`, or
+    /// `/v1.0/users/{address}{rest}` for a shared mailbox.
+    fn mail_path(&self, rest: &str) -> String {
+        format!("/v1.0{}{rest}", self.mailbox)
+    }
+
+    /// The same, as a request of a `$batch` names it (without the version).
+    fn batch_path(&self, rest: &str) -> String {
+        format!("{}{rest}", self.mailbox)
+    }
+
     /// `path` (with its query) on Graph.
     fn url(&self, path: &str) -> Url {
         Url { path: path.to_string(), ..self.base.clone() }
@@ -438,6 +483,10 @@ impl<'a> Graph<'a> {
     /// The error for an answer that isn't the one hoped for. `sent` is what went to Graph besides
     /// the token: none of it may come back in the error.
     fn refusal(&self, doing: Doing, reply: &Reply, sent: &str) -> NetError {
+        // A shared mailbox that won't let the owner in says so in its own words (#70).
+        if self.shared() && reply.status == 403 && matches!(doing, Doing::Folders | Doing::Mail) {
+            return NetError::Forbidden(format!("{SHARED_DENIED}{}", code_of(&reply.body, &[self.token, sent])));
+        }
         refusal(doing, reply, &[self.token, sent], mailcraft_time::now())
     }
 

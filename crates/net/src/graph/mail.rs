@@ -40,7 +40,6 @@ use super::{ASK_TIMEOUT, BATCH, BATCH_SIZE, Doing, Graph, IMMUTABLE_IDS, MAX_BAT
 use crate::NetError;
 use crate::http::{self, Reply};
 
-const MAIL_FOLDERS: &str = "/v1.0/me/mailFolders";
 /// What is asked for of each folder: no more comes down than is used.
 const FOLDER_FIELDS: &str = "id,displayName,parentFolderId,childFolderCount,isHidden,totalItemCount,unreadItemCount";
 /// Folders asked for per page.
@@ -96,7 +95,7 @@ pub(crate) fn sync_mail_with(
     folders.partial = true;
     emit(folders);
     let priority = if request.background { Priority::Background } else { Priority::Owner };
-    let last = match Graph::for_mail(base, token, gate, priority, retry) {
+    let last = match Graph::for_mail(base, token, gate, priority, retry).and_then(|graph| graph.of_shared(shared_address(request))) {
         Ok(graph) => down::messages(&graph, request, &listed, cancel, emit),
         Err(e) => GraphMailResult {
             account: request.account,
@@ -128,7 +127,7 @@ pub(crate) fn whole_run(
 pub(crate) fn sync_folders_with(base: &str, token: &str, request: &GraphMailRequest, gate: Arc<Gate>, retry: Retry) -> GraphMailResult {
     let mut out = GraphMailResult { account: request.account, email: request.email.clone(), ..Default::default() };
     let priority = if request.background { Priority::Background } else { Priority::Owner };
-    let graph = match Graph::for_mail(base, token, gate.clone(), priority, retry) {
+    let graph = match Graph::for_mail(base, token, gate.clone(), priority, retry).and_then(|graph| graph.of_shared(shared_address(request))) {
         Ok(graph) => graph,
         Err(e) => {
             out.errors.push(format!("Couldn't reach Microsoft for the folders: {e}"));
@@ -138,6 +137,13 @@ pub(crate) fn sync_folders_with(base: &str, token: &str, request: &GraphMailRequ
     let stop = |out: &mut GraphMailResult, e: &NetError| {
         if let NetError::Busy { retry_after, .. } = e {
             out.busy_for = Some(retry_after.unwrap_or(0).max(gate.paused_for().map_or(0, |left| u32::try_from(left.as_secs()).unwrap_or(u32::MAX))));
+        }
+        // A shared mailbox the owner may not open (#70): said as it is, and not asked again by
+        // itself.
+        if let (true, NetError::Forbidden(why)) = (request.shared, e) {
+            out.denied = true;
+            out.errors.push(format!("{why}."));
+            return;
         }
         out.errors.push(format!("Couldn't bring the folders in step with Microsoft: {e}"));
     };
@@ -189,6 +195,11 @@ pub(crate) fn sync_folders_with(base: &str, token: &str, request: &GraphMailRequ
     out
 }
 
+/// The shared mailbox a request is for, when it is for one (#70).
+fn shared_address(request: &GraphMailRequest) -> Option<&str> {
+    request.shared.then_some(request.email.as_str())
+}
+
 /// The server's ids of the top of the mailbox and of the special folders.
 #[derive(Debug, Default)]
 struct Known {
@@ -201,6 +212,11 @@ impl Known {
     fn parent_here(&self, parent: &str) -> String {
         if parent == self.root { String::new() } else { parent.to_string() }
     }
+}
+
+/// Where the folders of the mailbox are: `/v1.0/me/mailFolders`, or a shared mailbox's (#70).
+fn folders(graph: &Graph<'_>) -> String {
+    graph.mail_path("/mailFolders")
 }
 
 /// An id as the server writes one: visible ASCII, not too long.
@@ -217,7 +233,7 @@ fn well_known(graph: &Graph<'_>) -> Result<Known, NetError> {
     let requests: Vec<Value> = WELL_KNOWN
         .iter()
         .enumerate()
-        .map(|(n, (name, _))| json!({"id": n.to_string(), "method": "GET", "url": format!("/me/mailFolders/{name}?{select}"), "headers": {"Prefer": IMMUTABLE_IDS}}))
+        .map(|(n, (name, _))| json!({"id": n.to_string(), "method": "GET", "url": graph.batch_path(&format!("/mailFolders/{name}?{select}")), "headers": {"Prefer": IMMUTABLE_IDS}}))
         .collect();
     let body = json!({"requests": requests}).to_string();
     let reply = graph.call(Kind::Read, &graph.url(BATCH), "POST", &[("Content-Type", "application/json")], Some(&body), ASK_TIMEOUT, MAX_BATCH)?;
@@ -240,7 +256,7 @@ fn well_known(graph: &Graph<'_>) -> Result<Known, NetError> {
     }
     // What the batch didn't settle, one at a time.
     for ((name, _), slot) in WELL_KNOWN.iter().zip(answers.iter_mut()).filter(|(_, slot)| slot.is_none()) {
-        let url = graph.url(&format!("{MAIL_FOLDERS}/{name}?{select}"));
+        let url = graph.url(&format!("{}/{name}?{select}", folders(graph)));
         let reply = graph.call(Kind::Read, &url, "GET", &[], None, ASK_TIMEOUT, MAX_PAGE)?;
         *slot = match reply.status {
             200 => {
@@ -262,6 +278,10 @@ fn well_known(graph: &Graph<'_>) -> Result<Known, NetError> {
         }
     }
     if known.root.is_empty() {
+        // For a shared mailbox, that is Graph having no mailbox there for the owner (#70).
+        if graph.shared() {
+            return Err(NetError::Forbidden(super::SHARED_MISSING.into()));
+        }
         return Err(nonsense("Microsoft Graph didn't say where the top of the mailbox is"));
     }
     Ok(known)
@@ -302,9 +322,9 @@ fn listing(graph: &Graph<'_>, known: &Known) -> Result<FolderListing, (FolderLis
     let mut queue: VecDeque<(String, usize)> = VecDeque::from([(String::new(), 0)]);
     while let Some((parent, depth)) = queue.pop_front() {
         let path = if parent.is_empty() {
-            format!("{MAIL_FOLDERS}?{query}")
+            format!("{}?{query}", folders(graph))
         } else {
-            format!("{MAIL_FOLDERS}/{}/childFolders?{query}", http::encode(&parent))
+            format!("{}/{}/childFolders?{query}", folders(graph), http::encode(&parent))
         };
         let mut found: Vec<Entry> = Vec::new();
         let mut unreadable = 0usize;
@@ -368,7 +388,7 @@ fn make_change(graph: &Graph<'_>, known: &Known, made: &HashMap<u64, String>, ch
                 },
                 (true, None) => String::new(),
             };
-            let path = if parent.is_empty() { MAIL_FOLDERS.to_string() } else { format!("{MAIL_FOLDERS}/{}/childFolders", http::encode(&parent)) };
+            let path = if parent.is_empty() { folders(graph) } else { format!("{}/{}/childFolders", folders(graph), http::encode(&parent)) };
             let body = json!({"displayName": name}).to_string();
             let reply =
                 graph.call(Kind::Once, &graph.url(&path), "POST", &[("Content-Type", "application/json")], Some(&body), WRITE_TIMEOUT, MAX_PAGE)?;
@@ -388,7 +408,7 @@ fn make_change(graph: &Graph<'_>, known: &Known, made: &HashMap<u64, String>, ch
             let Some(name) = name_of(name) else { return Ok(Some(refused("a folder needs a name"))) };
             let id = checked(id)?;
             let body = json!({"displayName": name}).to_string();
-            let url = graph.url(&format!("{MAIL_FOLDERS}/{}", http::encode(&id)));
+            let url = graph.url(&format!("{}/{}", folders(graph), http::encode(&id)));
             let reply = graph.call(Kind::Same, &url, "PATCH", &[("Content-Type", "application/json")], Some(&body), WRITE_TIMEOUT, MAX_PAGE)?;
             match reply.status {
                 200 | 201 => Ok(Some(done_in_place(known, &reply)?)),
@@ -401,7 +421,7 @@ fn make_change(graph: &Graph<'_>, known: &Known, made: &HashMap<u64, String>, ch
             let id = checked(id)?;
             let to = if parent.is_empty() { known.root.clone() } else { checked(parent)? };
             let body = json!({"destinationId": to}).to_string();
-            let url = graph.url(&format!("{MAIL_FOLDERS}/{}/move", http::encode(&id)));
+            let url = graph.url(&format!("{}/{}/move", folders(graph), http::encode(&id)));
             let reply = graph.call(Kind::Once, &url, "POST", &[("Content-Type", "application/json")], Some(&body), WRITE_TIMEOUT, MAX_PAGE)?;
             match reply.status {
                 200 | 201 => Ok(Some(done(known, &reply, &to)?)),
@@ -412,7 +432,7 @@ fn make_change(graph: &Graph<'_>, known: &Known, made: &HashMap<u64, String>, ch
         }
         FolderChange::Delete { id } => {
             let id = checked(id)?;
-            let url = graph.url(&format!("{MAIL_FOLDERS}/{}", http::encode(&id)));
+            let url = graph.url(&format!("{}/{}", folders(graph), http::encode(&id)));
             let reply = graph.call(Kind::Same, &url, "DELETE", &[], None, WRITE_TIMEOUT, MAX_PAGE)?;
             match reply.status {
                 200..=299 => Ok(Some(ChangeOutcome::Done { folder: GraphFolder { id, ..Default::default() } })),
@@ -455,8 +475,11 @@ fn outcome_of(graph: &Graph<'_>, reply: &Reply, sent: &str) -> Result<Option<Cha
 /// The folder called `name` (in any case) in `parent` (a server id; empty: the top).
 fn child_named(graph: &Graph<'_>, known: &Known, parent: &str, name: &str) -> Result<Option<GraphFolder>, NetError> {
     let query = http::form(&[("$top", FOLDER_PAGE), ("$select", FOLDER_FIELDS)]);
-    let path =
-        if parent.is_empty() { format!("{MAIL_FOLDERS}?{query}") } else { format!("{MAIL_FOLDERS}/{}/childFolders?{query}", http::encode(parent)) };
+    let path = if parent.is_empty() {
+        format!("{}?{query}", folders(graph))
+    } else {
+        format!("{}/{}/childFolders?{query}", folders(graph), http::encode(parent))
+    };
     let mut found = None;
     let wanted = name.to_lowercase();
     graph.list(Doing::Folders, graph.url(&path), &[], MAX_LISTED_FOLDERS, &mut |value| {
@@ -475,5 +498,7 @@ pub use fetch::fetch_messages;
 
 #[cfg(test)]
 mod down_tests;
+#[cfg(test)]
+mod shared_tests;
 #[cfg(test)]
 mod tests;

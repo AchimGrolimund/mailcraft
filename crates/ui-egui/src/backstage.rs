@@ -103,9 +103,12 @@ fn tile(ui: &mut Ui, icon: &str, title: &str, detail: &str, t: &Tokens) -> bool 
 fn info(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     heading(ui, tl!("Info"), t);
     section(ui, tl!("Accounts"), t);
-    let accounts = app.session.mailbox.accounts.clone();
+    // (Each shared mailbox right under the account it is opened through, a little in: #70.)
+    let accounts: Vec<mailcraft_model::Account> = app.session.mailbox.accounts_in_order().into_iter().cloned().collect();
     for a in &accounts {
-        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width().min(560.0), 58.0), Sense::hover());
+        let owner = app.session.mailbox.owner_of(a.id).map(|o| o.email.clone());
+        let (row, _) = ui.allocate_exact_size(vec2(ui.available_width().min(560.0), 58.0), Sense::hover());
+        let r = if a.is_shared() { Rect::from_min_max(pos2(row.min.x + 24.0, row.min.y), row.max) } else { row };
         ui.painter().rect(r, 6.0, t.panel, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
         crate::widgets::avatar(ui, pos2(r.min.x + 30.0, r.center().y), 17.0, &a.address());
         let title = if a.email.is_empty() { tl!("Local mailbox").to_string() } else { a.address().full() };
@@ -114,6 +117,13 @@ fn info(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
             s.as_ref().map(|s| format!("{}{}", s.host, if s.security == Security::None { tl!(" (not encrypted)") } else { "" }))
         };
         let detail = match a.kind {
+            AccountKind::Microsoft if a.is_shared() => match &owner {
+                Some(owner) => crate::i18n::fmt(
+                    tl!("Shared mailbox · opened with {owner}'s sign-in · read through Microsoft Graph (testing)"),
+                    &[("owner", owner)],
+                ),
+                None => tl!("Shared mailbox · the account it was opened through is gone: remove it").to_string(),
+            },
             AccountKind::Local => tl!("On this device only: no mail server").to_string(),
             AccountKind::Microsoft => tl!("Signs in with Microsoft · folders kept in step through Microsoft Graph (testing)").to_string(),
             AccountKind::Imap => {
@@ -139,13 +149,22 @@ fn info(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
                 let _ = app.run("ui.connectMicrosoft", json!({"account": a.id}));
             }
         }
-        if !a.email.is_empty() {
+        if !a.email.is_empty() && !a.is_shared() {
             let br = Rect::from_min_size(pos2(r.max.x - 168.0, r.center().y - 13.0), vec2(74.0, 26.0));
             if ui.put(br, egui::Button::new(tl!("Settings"))).on_hover_text(tl!("Change this account's name, servers and sign-in")).clicked() {
                 let _ = app.run("ui.dialog", json!({"name": "account", "id": a.id}));
             }
         }
-        if accounts.len() > 1 {
+        if a.is_shared() {
+            let br = Rect::from_min_size(pos2(r.max.x - 86.0, r.center().y - 13.0), vec2(74.0, 26.0));
+            if ui
+                .put(br, egui::Button::new(tl!("Remove")))
+                .on_hover_text(tl!("Close this shared mailbox and remove the mail kept for it here. Nothing on the server changes."))
+                .clicked()
+            {
+                let _ = app.run("account.removeSharedMailbox", json!({"id": a.id}));
+            }
+        } else if accounts.len() > 1 {
             let br = Rect::from_min_size(pos2(r.max.x - 86.0, r.center().y - 13.0), vec2(74.0, 26.0));
             if ui.put(br, egui::Button::new(tl!("Remove"))).on_hover_text(tl!("Remove this account and the mail kept for it here")).clicked() {
                 let _ = app.run("account.remove", json!({"id": a.id}));
@@ -154,6 +173,19 @@ fn info(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
         // Which messages are kept whole on this computer (R3.2).
         if a.kind == AccountKind::Microsoft {
             download_in_full(app, ui, a);
+        }
+        // A mailbox of the organisation that the owner was given Full Access to (#70).
+        if a.kind == AccountKind::Microsoft && !a.is_shared() {
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                let link = ui.link(tl!("Add Shared Mailbox…")).on_hover_text(tl!(
+                    "Open a mailbox of your organisation that you were given Full Access to, such as a team's, under this account"
+                ));
+                if link.clicked() {
+                    let _ = app.run("ui.dialog", json!({"name": "sharedMailbox", "account": a.id}));
+                }
+            });
+            ui.add_space(4.0);
         }
     }
     if tile(

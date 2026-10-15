@@ -191,7 +191,13 @@ fn messages_come_with_their_size_and_are_fetched_whole_by_their_immutable_id() {
     assert!(sizes[0] > 100 && sizes[0] < 1_000 && sizes[1] == 30 << 20, "{sizes:?}");
 
     server.state().mailbox.delete(&ids[2]);
-    let request = mailcraft_model::sync::GraphFetchRequest { account: 3, email: "owner@example.org".into(), ids: ids.clone(), background: true };
+    let request = mailcraft_model::sync::GraphFetchRequest {
+        account: 3,
+        email: "owner@example.org".into(),
+        ids: ids.clone(),
+        background: true,
+        ..Default::default()
+    };
     let got = super::fetch::fetch_messages_with(&server.url(), TOKEN, &request, Arc::new(Gate::new()), QUICK, &AtomicBool::new(false));
     assert_eq!(got.fetched.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), [ids[0].as_str(), ids[1].as_str()]);
     assert!(String::from_utf8_lossy(&got.fetched[0].mime).contains("Subject: Message 0\r\n"));

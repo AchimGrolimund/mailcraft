@@ -63,13 +63,29 @@ pub fn graph_mail_request(s: &Session, account: Id) -> Result<GraphMailRequest, 
     if a.kind != AccountKind::Microsoft {
         return Err(fail(format!("{} isn't kept in step through Microsoft Graph", a.name)));
     }
+    let shared = shared_mailbox(&s.mailbox, account)?;
     Ok(GraphMailRequest {
         account,
         email: a.email.clone(),
+        shared,
         changes: folder_changes(&s.mailbox, account, MAX_FOLDER_CHANGES).0,
         links: links(&s.mailbox, account),
         background: false,
     })
+}
+
+/// Whether `account` is a shared mailbox (#70), read with its owner's sign-in at
+/// `/users/{address}/…`; refused when it is one that can't be read (its owner is gone, or its
+/// address isn't one a request may name).
+fn shared_mailbox(mb: &Mailbox, account: Id) -> Result<bool, CmdError> {
+    let Some(a) = mb.account(account).filter(|a| a.is_shared()) else { return Ok(false) };
+    if mb.owner_of(account).is_none() {
+        return Err(fail(format!("{} is a shared mailbox whose account is gone: remove it and add it again", a.name)));
+    }
+    if mailcraft_model::mailbox_address(&a.email).is_none() {
+        return Err(fail(format!("{} isn't an address a shared mailbox can be opened at", a.name)));
+    }
+    Ok(true)
 }
 
 /// Where each folder of `account` that the server has goes on from (R3 spec S10).
@@ -166,7 +182,8 @@ pub fn graph_fetch_request(s: &Session, account: Id, message: Option<Id>, most: 
         }
         None => graph_down::fetch_queue(&s.mailbox, account, most.clamp(1, 100)),
     };
-    Ok(GraphFetchRequest { account, email: a.email.clone(), ids, background: message.is_none() })
+    let shared = shared_mailbox(&s.mailbox, account)?;
+    Ok(GraphFetchRequest { account, email: a.email.clone(), shared, ids, background: message.is_none() })
 }
 
 /// Take in messages fetched whole. Not an undo step.

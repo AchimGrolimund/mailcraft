@@ -218,6 +218,10 @@ fn is_zero_u64(n: &u64) -> bool {
 pub struct GraphFetchRequest {
     pub account: Id,
     pub email: String,
+    /// `email` is a shared mailbox that the owner of the token may open: its requests go to
+    /// `/users/{email}/…` rather than `/me/…` ([`crate::Account::shared_of`]).
+    #[serde(skip_serializing_if = "is_false")]
+    pub shared: bool,
     pub ids: Vec<String>,
     /// Nobody is waiting: it gets the share of requests background work has.
     #[serde(skip_serializing_if = "is_false")]
@@ -600,6 +604,11 @@ pub struct GraphMailRequest {
     /// The account's address: the mailbox whose requests are counted together (Microsoft allows
     /// a few at once per mailbox), and what the answer is checked against.
     pub email: String,
+    /// `email` is a shared mailbox that the owner of the token may open (Full Access): every
+    /// request goes to `/users/{email}/…` rather than `/me/…`, with the owner's token, which
+    /// covers `Mail.ReadWrite.Shared` ([`crate::Account::shared_of`]).
+    #[serde(skip_serializing_if = "is_false")]
+    pub shared: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub changes: Vec<FolderChange>,
     /// Nobody is waiting for this run: it gets the share of requests background work has.
@@ -764,6 +773,11 @@ pub struct GraphMailResult {
     /// The owner stopped the run (Cancel) after the page in hand: the next one goes on from there.
     #[serde(skip_serializing_if = "is_false")]
     pub stopped: bool,
+    /// For a shared mailbox: the server won't let the owner of the token open it (no Full
+    /// Access, or no such mailbox). Said plainly in `errors`; a host doesn't ask again by itself
+    /// until the owner does.
+    #[serde(skip_serializing_if = "is_false")]
+    pub denied: bool,
 }
 
 impl GraphMailResult {
@@ -778,6 +792,7 @@ impl GraphMailResult {
         self.busy_for = piece.busy_for.or(self.busy_for);
         self.pages.extend(piece.pages);
         (self.partial, self.whole, self.stopped) = (piece.partial, piece.whole, piece.stopped);
+        self.denied |= piece.denied;
         if piece.progress.is_some() {
             self.progress = piece.progress;
         }
