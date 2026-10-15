@@ -51,7 +51,7 @@
                 "status": "active",
                 "name": "Independent security review",
                 "description": "An external review of the parts that face the network and hostile mail: the HTML reader, the MIME and calendar parsers, sign-in and token handling, and picture downloads.",
-                "amount": 12000,
+                "amount": 12500,
                 "currency": "GBP",
                 "frequency": "one-time",
                 "channels": ["bank-transfer"]
@@ -61,7 +61,7 @@
                 "status": "active",
                 "name": "Engineering to beta",
                 "description": "A year of part-time engineering towards beta: mail through Microsoft Graph for Microsoft 365 and Outlook.com, large mailboxes, rich signatures, notifications, and support for testers on Windows, macOS and Linux.",
-                "amount": 30000,
+                "amount": 35000,
                 "currency": "GBP",
                 "frequency": "yearly",
                 "channels": ["bank-transfer"]
