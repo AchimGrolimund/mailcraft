@@ -13,6 +13,7 @@ mod mailbox;
 mod message;
 pub mod provider;
 pub mod remote;
+pub mod rich;
 mod rule;
 pub mod search;
 pub mod sync;
@@ -34,6 +35,7 @@ pub use mailbox::{
 pub use mailcraft_time as time;
 pub use message::{Attachment, Body, FlagStatus, Importance, Message, normalize_subject};
 pub use remote::Origin;
+pub use rich::{RichBody, RichText};
 pub use rule::{Action, Condition, Rule};
 pub use task::Task;
 

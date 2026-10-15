@@ -289,6 +289,8 @@ enum Kind {
         /// The number of the next item of an ordered list.
         next: Option<u32>,
         numbering: Numbering,
+        /// A paragraph gap follows the list (it has a bottom margin).
+        margin: bool,
     },
     /// With the depth of its list.
     Item(u8),
@@ -915,10 +917,10 @@ impl Builder {
                     self.want_space(1);
                 }
             }
-            Kind::List { .. } => {
+            Kind::List { margin, .. } => {
                 self.flush();
                 self.lists = self.lists.saturating_sub(1);
-                if self.lists == 0 {
+                if self.lists == 0 && margin {
                     self.want_space(1);
                 }
             }
@@ -1522,7 +1524,7 @@ impl Builder {
         let list = self.find(|n| matches!(n.kind, Kind::List { .. }), barrier);
         let mut marker = Marker::Bullet;
         if let Some(index) = list
-            && let Some(Node { kind: Kind::List { next: Some(next), numbering }, .. }) = self.nodes.get_mut(index)
+            && let Some(Node { kind: Kind::List { next: Some(next), numbering, .. }, .. }) = self.nodes.get_mut(index)
         {
             let number = value.unwrap_or(*next);
             *next = number.saturating_add(1);
@@ -1595,9 +1597,12 @@ impl Builder {
             "ul" | "ol" | "menu" | "dir" => {
                 self.close_paragraph();
                 self.flush();
-                if self.lists == 0 {
+                // A list has a margin above and below unless it says it has none.
+                let css = css_of(tag);
+                if self.lists == 0 && css.margin_top_zero != Some(true) {
                     self.want_space(1);
                 }
+                let margin = css.margin_bottom_zero != Some(true);
                 let start = || tag.attr("start").and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(1);
                 let next = (tag.name == "ol").then(start);
                 let numbering = match tag.attr("type").as_deref().map(str::trim) {
@@ -1607,7 +1612,7 @@ impl Builder {
                     Some("I") => Numbering::UpperRoman,
                     _ => Numbering::Decimal,
                 };
-                if self.open_structure("ul", Kind::List { next, numbering }, tag) {
+                if self.open_structure("ul", Kind::List { next, numbering, margin }, tag) {
                     self.lists += 1;
                 }
             }

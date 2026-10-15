@@ -233,7 +233,7 @@ fn inspect(s: &mut Session, _: &Value) -> CmdResult {
     Ok(json!({
         "view": s.view,
         "selection": s.sel,
-        "composing": s.compose.as_ref().map(|c| json!({"mode": c.mode, "to": c.to, "cc": c.cc, "bcc": c.bcc, "subject": c.subject, "body": c.body, "attachments": c.attachments.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), "importance": c.importance, "dirty": c.dirty, "draft": c.draft})),
+        "composing": s.compose.as_ref().map(|c| json!({"mode": c.mode, "to": c.to, "cc": c.cc, "bcc": c.bcc, "subject": c.subject, "body": c.body.plain(), "rich": c.body.text(), "format": c.format, "quoted": c.quote.is_some(), "selection": c.body.selection(), "attachments": c.attachments.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), "importance": c.importance, "dirty": c.dirty, "draft": c.draft})),
         "folder": s.mailbox.folder(s.view.folder).map(|f| json!({"id": f.id, "path": s.mailbox.folder_path(f.id), "kind": enum_code(&f.kind)})),
         "calendarRange": range_json(s),
         "today": s.today().iso(),

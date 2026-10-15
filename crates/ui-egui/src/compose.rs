@@ -297,10 +297,11 @@ pub fn show(app: &mut MailApp, ui: &mut Ui) {
     }
 
     // The body takes what is left.
-    let mut body = c.body.clone();
+    let mut body = c.body.plain();
     egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("compose_body").show(ui, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 10, bottom: 16 }).show(ui, |ui| {
-            let rows = ((ui.available_height() / 19.0) as usize).max(8);
+            let quote = c.quote.as_ref().map(|q| q.html.as_str());
+            let rows = if quote.is_some() { 8 } else { ((ui.available_height() / 19.0) as usize).max(8) };
             let edit = egui::TextEdit::multiline(&mut body)
                 .id(ui.id().with("compose_body_edit"))
                 .frame(egui::Frame::NONE)
@@ -319,6 +320,16 @@ pub fn show(app: &mut MailApp, ui: &mut Ui) {
             }
             if resp.changed() {
                 let _ = app.execute("compose.set", json!({"body": body}));
+            }
+            // The original of an HTML reply goes out below as it came; here it is read through
+            // `mailcraft_html` (nothing in it runs or is fetched) and can't be edited.
+            if let Some(html) = quote {
+                let key = ui.id().with(("compose_quote", html.len(), egui::Id::new(html)));
+                let text: std::sync::Arc<str> = ui.ctx().memory_mut(|m| {
+                    m.data.get_temp_mut_or_insert_with(key, || -> std::sync::Arc<str> { std::sync::Arc::from(mailcraft_html::to_text(html)) }).clone()
+                });
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(text.as_ref()).font(regular(13.0)).color(t.text_dim));
             }
         });
     });

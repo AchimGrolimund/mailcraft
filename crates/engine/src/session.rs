@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use mailcraft_model::{Attachment, Id, Importance, Mailbox, Message};
+use mailcraft_model::{Attachment, Id, Importance, Mailbox, Message, RichBody};
 use mailcraft_time::{Date, DateTime, Timestamp, Weekday, Zone};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -275,6 +275,33 @@ pub enum ComposeMode {
     Draft,
 }
 
+/// How the message being written is sent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BodyFormat {
+    /// HTML, with the same text as a plain-text part beside it.
+    #[default]
+    Html,
+    /// Plain text only: the formatting stays in the message being written but is not sent.
+    Plain,
+}
+
+/// The original under a reply or forward that has HTML, carried as it came: it goes out below
+/// the owner's text and is never edited or reduced here.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Quote {
+    /// The original's header lines and text, for the plain-text part.
+    pub text: String,
+    /// The original's header lines and its HTML as it came (the inside of its `<body>`, and the
+    /// style sheets of its head), for the HTML part.
+    pub html: String,
+    /// The original's pictures its HTML shows (`cid:`), sent with a reply so the quote keeps
+    /// them. A forward carries every attachment anyway.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pictures: Vec<Attachment>,
+}
+
 /// The message being written. Recipient lines are text, as typed (`Ada <ada@example.org>; bob@…`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -290,7 +317,15 @@ pub struct Compose {
     pub cc: String,
     pub bcc: String,
     pub subject: String,
-    pub body: String,
+    /// What the owner writes, in rich text, with its selection and its own undo. Stored as plain
+    /// text before rich text; that still reads.
+    pub body: RichBody,
+    /// HTML with a plain-text part, or plain text only.
+    pub format: BodyFormat,
+    /// The original of a reply or forward in HTML, below the owner's text. A plain-text original
+    /// is quoted in the body instead, as text the owner can edit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote: Option<Quote>,
     pub attachments: Vec<Attachment>,
     pub importance: Importance,
     pub in_reply_to: String,

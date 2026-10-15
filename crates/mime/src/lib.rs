@@ -18,6 +18,7 @@ mod mailto;
 mod mbox;
 mod media;
 mod parse;
+pub mod rich;
 mod transfer;
 mod words;
 mod write;
