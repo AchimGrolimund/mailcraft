@@ -1534,3 +1534,12 @@ fn a_mailto_link_handed_to_the_program_starts_a_message() {
     b.open_path("mailto.eml");
     assert!(b.session.compose.is_none());
 }
+
+#[test]
+fn copy_diagnostics_takes_the_hosts_report_or_says_what_it_can() {
+    let mut a = app();
+    let alone = a.execute("ui.copyDiagnostics", json!({})).unwrap();
+    assert!(alone["text"].as_str().unwrap().contains(env!("CARGO_PKG_VERSION")));
+    a.services.diagnostics = Some(Box::new(|| "the host's report".into()));
+    assert_eq!(a.execute("ui.copyDiagnostics", json!({})).unwrap()["text"], "the host's report");
+}

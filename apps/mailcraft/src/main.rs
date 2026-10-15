@@ -23,6 +23,7 @@ mod approval_flow;
 mod calendar_flow;
 mod clipboard;
 mod control_server;
+mod diagnostics;
 #[cfg(test)]
 mod favorites_flow;
 #[cfg(test)]
@@ -819,6 +820,8 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
         })),
         secrets: secrets::store(),
         clipboard: clipboard::board(),
+        // Help › Copy Diagnostics: the version, the platform and the redacted end of the logs.
+        diagnostics: Some(Box::new(|| diagnostics::report(env!("CARGO_PKG_VERSION"), build_sha(), log_dir().filter(|_| prefs_enabled()).as_deref()))),
         microsoft_client_id: microsoft_client_id(),
         ..Default::default()
     }
