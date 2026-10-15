@@ -557,6 +557,9 @@ pub struct Session {
     /// Messages content was brought into, the longest unused first, with the bytes each took.
     resident: std::collections::VecDeque<(Id, u64)>,
     resident_bytes: u64,
+    /// Messages whose showing couldn't bring in what it needs (a picture's or a calendar part's
+    /// file missing or damaged): not asked for again every frame, until the mailbox is opened anew.
+    display_failed: std::collections::HashSet<Id>,
 }
 
 impl Session {
@@ -593,6 +596,7 @@ impl Session {
             loaded_budget: LOADED_MAX,
             resident: std::collections::VecDeque::new(),
             resident_bytes: 0,
+            display_failed: std::collections::HashSet::new(),
         };
         s.view.date = s.today();
         s.normalize();
@@ -921,8 +925,17 @@ impl Session {
 
     /// Bring in what showing message `id` needs: its body, the pictures its HTML shows in place
     /// (`cid:`), and any calendar part (an invitation's bar reads it). Other attachments wait
-    /// until they are opened or saved.
+    /// until they are opened or saved. What fails is said once: the message isn't asked for again
+    /// ([`Session::needs_load_for_display`]) until the mailbox is opened anew.
     pub fn load_for_display(&mut self, id: Id) -> Result<bool, CmdError> {
+        let loaded = self.load_for_display_once(id);
+        if loaded.is_err() {
+            self.display_failed.insert(id);
+        }
+        loaded
+    }
+
+    fn load_for_display_once(&mut self, id: Id) -> Result<bool, CmdError> {
         // The body first: which pictures are shown is in its HTML.
         let body = self.load_where(id, |_| false)?;
         let Some(m) = self.mailbox.message(id) else { return Ok(body) };
@@ -933,7 +946,7 @@ impl Session {
 
     /// Whether showing message `id` would bring anything into memory ([`Session::load_for_display`]).
     pub fn needs_load_for_display(&self, id: Id) -> bool {
-        let Some(m) = self.mailbox.message(id) else { return false };
+        let Some(m) = self.mailbox.message(id).filter(|_| !self.display_failed.contains(&id)) else { return false };
         if m.body_is_kept() {
             return true;
         }
@@ -1061,6 +1074,7 @@ impl Session {
         self.mailbox = mailbox;
         self.resident.clear();
         self.resident_bytes = 0;
+        self.display_failed.clear();
         self.history.clear();
         self.redo.clear();
         self.sel = Selection::default();

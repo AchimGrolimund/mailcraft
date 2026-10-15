@@ -1428,6 +1428,38 @@ fn what_a_command_reads_of_a_message_is_fetched_from_disk() {
 }
 
 #[test]
+fn a_picture_that_can_t_be_read_is_asked_for_once_not_every_frame() {
+    let tmp = Temp::new("picture");
+    let path = tmp.file();
+    let mut mb = Mailbox::with_local_account("Avery Quinn", "avery@example.org");
+    let inbox = mb.inbox().unwrap();
+    let picture = Attachment { content_id: "logo@x.example".into(), inline: true, ..Attachment::new("logo.png", "image/png", noise(5, 9_000)) };
+    let id = mb
+        .add_message(Message {
+            folder: inbox,
+            subject: "With a picture".into(),
+            body: mailcraft_model::Body { text: "See the logo.".into(), html: Some("<p><img src=\"cid:logo@x.example\"></p>".into()) },
+            attachments: vec![picture.clone()],
+            ..Default::default()
+        })
+        .unwrap();
+    save(&path, &mb).unwrap();
+    clear_cache();
+    let mut s = Session::new(open(&path).unwrap().mailbox);
+    s.path = Some(path.clone());
+    fs::remove_file(blob_file(&path, &picture.data)).unwrap();
+    // Shown, the picture is wanted; it isn't there, which is said once.
+    assert!(s.needs_load_for_display(id));
+    assert!(s.load_for_display(id).unwrap_err().to_string().contains("missing"));
+    assert!(!s.needs_load_for_display(id));
+    // Opened anew (the file back where it belongs), it is asked for again and comes.
+    fs::write(blob_file(&path, &picture.data), picture.data.as_slice()).unwrap();
+    s.replace_mailbox(open(&path).unwrap().mailbox);
+    assert!(s.needs_load_for_display(id) && s.load_for_display(id) == Ok(true));
+    assert_eq!(s.mailbox.message(id).unwrap().attachments[0].data, picture.data);
+}
+
+#[test]
 fn a_mailbox_isn_t_saved_where_its_content_isn_t() {
     let tmp = Temp::new("elsewhere");
     let path = tmp.file();
