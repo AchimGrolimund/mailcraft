@@ -78,6 +78,7 @@ pub(crate) fn intercept(app: &mut MailApp, id: &str, params: &Value) -> Option<R
             "file.open" => Some("mailbox"),
             "file.import" => Some("import"),
             "compose.attach" if app.session.compose.is_some() => Some("attach"),
+            "signature.picture.add" if app.session.signature_edit.is_some() => Some("picture"),
             _ => None,
         };
         if let Some(purpose) = purpose {
@@ -180,6 +181,7 @@ fn opened_path(app: &mut MailApp, purpose: &str, path: &str) -> Result<Value, St
     let r = match purpose {
         "mailbox" => app.run("file.open", json!({"path": path})),
         "attach" => app.run("compose.attach", json!({"path": path})),
+        "picture" => return app.run("signature.picture.add", json!({"path": path})),
         _ => app.run("file.import", json!({"path": path})),
     };
     if r.is_ok() {

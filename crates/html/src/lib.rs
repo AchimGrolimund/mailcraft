@@ -124,6 +124,10 @@ pub struct Span {
     /// Font size in CSS pixels, [`MIN_FONT_PX`] to [`MAX_FONT_PX`]; `None` for the reader's own size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u8>,
+    /// The first font family asked for, lower case (`calibri`), for pasting into the composer,
+    /// which keeps the few it knows. The reading pane draws in its own font.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
 }
 
 impl Span {

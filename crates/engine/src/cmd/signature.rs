@@ -1,14 +1,19 @@
 //! Signatures (R4.5): making them, their pictures, and which one each account starts its
 //! messages with. The model and its caps are `mailcraft_model::signature`; what goes into a
 //! message is `compose.signature`.
+//!
+//! A signature is edited as a message is: `signature.open` makes it the text the editing commands
+//! (`compose.type`, `format.*`, `edit.*`, `compose.undo`) work on, and `signature.save` puts it
+//! back. While it is open, the picture and layout commands for it change the open one.
 
-use mailcraft_model::rich::RichText;
+use mailcraft_model::RichBody;
+use mailcraft_model::rich::{Paragraph, RichText, Run, Style};
 use mailcraft_model::signature::{Layout, Signature};
 use mailcraft_model::{Id, clean_name};
 use serde_json::{Value, json};
 
 use super::{bad, done, fail};
-use crate::{CmdError, CmdResult, CommandSpec, Session, p};
+use crate::{CmdError, CmdResult, CommandSpec, Session, SignatureEdit, p};
 
 /// Most signatures one mailbox keeps.
 const MAX_SIGNATURES: usize = 100;
@@ -32,13 +37,88 @@ pub fn specs() -> Vec<CommandSpec> {
             .params(r#"{"name": string, "id": number}"#),
         CommandSpec::new("signature.layout", "Picture Layout", "File › Options › Signatures", layout)
             .params(r#"{"name": string, "value": "inline"|"pictureLeft"|"pictureAbove"}"#),
+        CommandSpec::new("signature.open", "Edit Signature", "File › Options › Signatures", open)
+            .pure()
+            .params(r#"{"name": string} — the editing commands work on it until signature.close"#),
+        CommandSpec::new("signature.save", "Save Signature", "File › Options › Signatures", save).when(needs_edit),
+        CommandSpec::new("signature.close", "Close Signature", "File › Options › Signatures", close)
+            .pure()
+            .params(r#"{"discard"?: bool} — refused while it has changes, unless discard"#)
+            .when(needs_edit),
     ]
 }
 
-/// The signature `name` names (any letter case), to change.
+fn needs_edit(s: &Session) -> Option<&'static str> {
+    if s.signature_edit.is_none() { Some("no signature is open") } else { None }
+}
+
+/// Whether the params name the open signature (or name none while one is open).
+fn names_open(s: &Session, v: &Value) -> bool {
+    s.signature_edit.as_ref().is_some_and(|e| p::str(v, "name").is_none_or(|n| n.trim().eq_ignore_ascii_case(&e.signature.name)))
+}
+
+/// The signature `name` names (any letter case), to change: the open one when it is that.
 fn named<'a>(s: &'a mut Session, v: &Value) -> Result<&'a mut Signature, CmdError> {
+    if names_open(s, v)
+        && let Some(e) = s.signature_edit.as_mut()
+    {
+        e.dirty = true;
+        return Ok(&mut e.signature);
+    }
     let name = p::req_str(v, "name")?.trim().to_string();
     s.mailbox.signatures.iter_mut().find(|x| x.name.eq_ignore_ascii_case(&name)).ok_or_else(|| fail(format!("no signature named \"{name}\"")))
+}
+
+/// The open signature's text is what `set` gave the signature of that name.
+fn reopen(s: &mut Session, name: &str) {
+    if let Some(e) = s.signature_edit.as_mut().filter(|e| e.signature.name.eq_ignore_ascii_case(name))
+        && let Some(sig) = s.mailbox.signature(name)
+    {
+        *e = SignatureEdit { signature: sig.clone(), body: RichBody::new(sig.body().clone()), dirty: false };
+    }
+}
+
+fn open(s: &mut Session, v: &Value) -> CmdResult {
+    let name = p::req_str(v, "name")?.trim().to_string();
+    if s.signature_edit.as_ref().is_some_and(|e| e.dirty && !e.signature.name.eq_ignore_ascii_case(&name)) {
+        return Err(fail("save or close the signature being edited first"));
+    }
+    let sig = s.mailbox.signature(&name).cloned().ok_or_else(|| fail(format!("no signature named \"{name}\"")))?;
+    if s.signature_edit.as_ref().is_some_and(|e| e.signature.name == sig.name) {
+        return done();
+    }
+    s.signature_edit = Some(SignatureEdit { body: RichBody::new(sig.body().clone()), signature: sig, dirty: false });
+    done()
+}
+
+/// The open signature with the text it has now (pictures it no longer holds let go).
+fn edited(e: &SignatureEdit) -> Result<Signature, CmdError> {
+    let mut sig = e.signature.clone();
+    sig.set_body(e.body.text().clone()).map_err(|err| fail(err.to_string()))?;
+    Ok(sig)
+}
+
+fn save(s: &mut Session, _: &Value) -> CmdResult {
+    let e = s.signature_edit.as_ref().ok_or_else(|| fail("no signature is open"))?;
+    let sig = edited(e)?;
+    let name = sig.name.clone();
+    // (Removing or renaming the open signature closes or follows it, so it is there.)
+    let kept =
+        s.mailbox.signatures.iter_mut().find(|x| x.name.eq_ignore_ascii_case(&name)).ok_or_else(|| fail("the signature is no longer there"))?;
+    *kept = sig.clone();
+    if let Some(e) = s.signature_edit.as_mut() {
+        e.signature = sig;
+        e.dirty = false;
+    }
+    Ok(json!({"name": name}))
+}
+
+fn close(s: &mut Session, v: &Value) -> CmdResult {
+    if s.signature_edit.as_ref().is_some_and(|e| e.dirty) && p::bool(v, "discard") != Some(true) {
+        return Err(fail("the signature has changes: save it, or close it with discard"));
+    }
+    s.signature_edit = None;
+    done()
 }
 
 fn set(s: &mut Session, v: &Value) -> CmdResult {
@@ -67,6 +147,7 @@ fn set(s: &mut Session, v: &Value) -> CmdResult {
             s.mailbox.signatures.push(sig);
         }
     }
+    reopen(s, &name);
     if p::bool(v, "default") == Some(true) {
         let account = account_of(s, v)?;
         let a = s.mailbox.account_mut(account)?;
@@ -92,6 +173,9 @@ fn remove(s: &mut Session, v: &Value) -> CmdResult {
     if s.mailbox.signatures.len() == before {
         return Err(fail(format!("no signature named \"{name}\"")));
     }
+    if s.signature_edit.as_ref().is_some_and(|e| e.signature.name.eq_ignore_ascii_case(&name)) {
+        s.signature_edit = None;
+    }
     for a in &mut s.mailbox.accounts {
         // An account that had it for one kind of message has none there now; the other stays.
         let reply = a.reply_signature().to_string();
@@ -105,11 +189,17 @@ fn remove(s: &mut Session, v: &Value) -> CmdResult {
 
 fn rename(s: &mut Session, v: &Value) -> CmdResult {
     let to = clean_name(p::req_str(v, "to")?).ok_or_else(|| bad("`to` is empty"))?;
-    let from = named(s, v)?.name.clone();
+    let name = p::req_str(v, "name")?.trim().to_string();
+    let from = s.mailbox.signature(&name).map(|x| x.name.clone()).ok_or_else(|| fail(format!("no signature named \"{name}\"")))?;
     if !to.eq_ignore_ascii_case(&from) && s.mailbox.signature(&to).is_some() {
         return Err(fail(format!("there is already a signature named \"{to}\"")));
     }
-    named(s, v)?.name = to.clone();
+    let found =
+        s.mailbox.signatures.iter_mut().find(|x| x.name.eq_ignore_ascii_case(&from)).ok_or_else(|| fail(format!("no signature named \"{from}\"")))?;
+    found.name = to.clone();
+    if let Some(e) = s.signature_edit.as_mut().filter(|e| e.signature.name.eq_ignore_ascii_case(&from)) {
+        e.signature.name = to.clone();
+    }
     for a in &mut s.mailbox.accounts {
         let reply = a.reply_signature().to_string();
         if a.signature.eq_ignore_ascii_case(&from) {
@@ -150,8 +240,26 @@ fn picture_add(s: &mut Session, v: &Value) -> CmdResult {
     }
     let (_, bytes) = super::source(&json!({"data": v.get("data"), "path": v.get("path")}))?;
     let file = p::str(v, "file").or_else(|| (!path.is_empty()).then(|| path.rsplit(['/', '\\']).next().unwrap_or(path))).unwrap_or("picture");
-    let at = p::u64(v, "at").and_then(|n| usize::try_from(n).ok()).unwrap_or(0);
+    let at = p::u64(v, "at").and_then(|n| usize::try_from(n).ok());
     let alt = p::str(v, "alt");
+    if names_open(s, v)
+        && let Some(e) = s.signature_edit.as_mut()
+    {
+        // ponytail: the open one's pictures are first made what its text holds now, so a picture
+        // deleted and then brought back by undo is gone; add it again.
+        let mut sig = edited(e)?;
+        let id = sig.add_picture(file, bytes, alt, None).map_err(|err| fail(err.to_string()))?;
+        if let Some(at) = at {
+            e.body.select(at, at).map_err(|err| fail(err.to_string()))?;
+        }
+        let run = RichText::from_paragraphs(vec![Paragraph::new(vec![Run::picture(id, Style::default())], Default::default())]);
+        e.body.paste(&run).map_err(|err| fail(err.to_string()))?;
+        let bytes = sig.picture_bytes();
+        e.signature = sig;
+        e.dirty = true;
+        return Ok(json!({"id": id, "bytes": bytes, "heavy": bytes > mailcraft_model::signature::HEAVY_BYTES}));
+    }
+    let at = at.unwrap_or(0);
     let sig = named(s, v)?;
     let id = sig.add_picture(file, bytes, alt, Some(at)).map_err(|e| fail(e.to_string()))?;
     Ok(json!({"id": id, "bytes": sig.picture_bytes(), "heavy": sig.picture_bytes() > mailcraft_model::signature::HEAVY_BYTES}))
@@ -173,8 +281,38 @@ fn picture_set(s: &mut Session, v: &Value) -> CmdResult {
 
 fn picture_remove(s: &mut Session, v: &Value) -> CmdResult {
     let id = p::u64(v, "id").and_then(|n| u32::try_from(n).ok()).ok_or_else(|| bad("`id` is a picture's id"))?;
+    if names_open(s, v)
+        && let Some(e) = s.signature_edit.as_mut()
+    {
+        let places = picture_places(e.body.text(), id);
+        if places.is_empty() {
+            return Err(fail(format!("no picture {id} in this signature")));
+        }
+        for at in places.into_iter().rev() {
+            e.body.delete(at, at + 1).map_err(|err| fail(err.to_string()))?;
+        }
+        e.dirty = true;
+        return done();
+    }
     named(s, v)?.remove_picture(id).map_err(|e| fail(e.to_string()))?;
     done()
+}
+
+/// Where a picture stands in a text (each place it does).
+pub(crate) fn picture_places(text: &RichText, id: u32) -> Vec<usize> {
+    let mut at = 0;
+    let mut places = Vec::new();
+    for p in text.paragraphs() {
+        for run in &p.runs {
+            let n = run.text.chars().count();
+            if run.picture == Some(id) {
+                places.push(at);
+            }
+            at += n;
+        }
+        at += 1;
+    }
+    places
 }
 
 fn layout(s: &mut Session, v: &Value) -> CmdResult {

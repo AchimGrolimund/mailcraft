@@ -213,3 +213,85 @@ fn choosing_a_signature_replaces_the_one_in_the_message() {
     run(&mut s, "compose.signature", json!({"name": "Short"}));
     assert_eq!(s.compose.as_ref().unwrap().body.plain(), "Hi\nAvery");
 }
+
+#[test]
+fn a_signature_is_edited_as_a_message_is_and_saved() {
+    let mut s = session();
+    run(&mut s, "mail.new", json!({}));
+    let message = s.compose.as_ref().unwrap().body.text().clone();
+    run(&mut s, "signature.open", json!({"name": "standard"}));
+    // The editing commands now work on the signature, not on the message.
+    let end = s.signature_edit.as_ref().unwrap().body.text().len();
+    run(&mut s, "compose.select", json!({"from": end}));
+    run(&mut s, "compose.type", json!({"text": "\nDirector"}));
+    run(&mut s, "format.bold", json!({"from": end + 1, "to": end + 9}));
+    run(&mut s, "format.color", json!({"value": "#1f4e79"}));
+    run(&mut s, "format.font", json!({"value": "Georgia"}));
+    assert_eq!(s.compose.as_ref().unwrap().body.text(), &message);
+    assert_eq!(s.mailbox.signature("Standard").unwrap().plain(), "Avery Quinn\nLumen Studio");
+    // Unsaved, it can't be closed or another opened without saying so.
+    run(&mut s, "signature.set", json!({"name": "Short", "text": "Avery"}));
+    assert!(s.run("signature.open", &json!({"name": "Short"})).is_err());
+    assert!(s.run("signature.close", &json!({})).is_err());
+    run(&mut s, "compose.undo", json!({}));
+    run(&mut s, "compose.redo", json!({}));
+    run(&mut s, "signature.save", json!({}));
+    let sig = s.mailbox.signature("Standard").unwrap();
+    assert_eq!(sig.plain(), "Avery Quinn\nLumen Studio\nDirector");
+    let last = sig.body().paragraphs().last().unwrap().runs.first().unwrap().style.clone();
+    assert!(last.bold && last.color.as_deref() == Some("#1f4e79") && last.font.is_some(), "{last:?}");
+    // Saving is a change of the mailbox, and undone as one.
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.mailbox.signature("Standard").unwrap().plain(), "Avery Quinn\nLumen Studio");
+    run(&mut s, "signature.close", json!({"discard": true}));
+    assert!(s.signature_edit.is_none());
+    // With it closed, typing goes to the message again.
+    run(&mut s, "compose.type", json!({"text": "Hi"}));
+    assert!(s.compose.as_ref().unwrap().body.plain().starts_with("Hi"));
+}
+
+#[test]
+fn pictures_go_in_at_the_caret_of_the_open_signature_and_out_with_it() {
+    let mut s = session();
+    run(&mut s, "signature.open", json!({"name": "Standard"}));
+    run(&mut s, "compose.select", json!({"from": 0}));
+    let r = run(&mut s, "signature.picture.add", json!({"data": png(), "file": "lumen-logo.png"}));
+    let id = r["id"].as_u64().unwrap() as u32;
+    let e = s.signature_edit.as_ref().unwrap();
+    assert_eq!(e.body.text().pictures(), [id]);
+    assert_eq!(super::signature::picture_places(e.body.text(), id), [0]);
+    run(&mut s, "signature.picture.set", json!({"id": id, "width": 120}));
+    run(&mut s, "signature.layout", json!({"value": "pictureLeft"}));
+    run(&mut s, "signature.save", json!({}));
+    let sig = s.mailbox.signature("Standard").unwrap();
+    assert_eq!((sig.pictures().len(), sig.picture(id).unwrap().width, sig.layout), (1, Some(120), mailcraft_model::signature::Layout::PictureLeft));
+    // Taken out of the text, it is let go when saved.
+    run(&mut s, "signature.picture.remove", json!({"id": id}));
+    assert!(s.signature_edit.as_ref().unwrap().body.text().pictures().is_empty());
+    run(&mut s, "signature.save", json!({}));
+    assert!(s.mailbox.signature("Standard").unwrap().pictures().is_empty());
+    // Renaming it follows into the open one; deleting it closes it.
+    run(&mut s, "signature.rename", json!({"name": "Standard", "to": "Full"}));
+    assert_eq!(s.signature_edit.as_ref().unwrap().signature.name, "Full");
+    run(&mut s, "signature.remove", json!({"name": "Full"}));
+    assert!(s.signature_edit.is_none());
+}
+
+#[test]
+fn a_signature_pasted_from_outlook_on_the_web_keeps_its_formatting() {
+    let mut s = session();
+    run(&mut s, "signature.set", json!({"name": "Pasted", "text": ""}));
+    run(&mut s, "signature.open", json!({"name": "Pasted"}));
+    let html = r#"<div style="font-family: Calibri, Arial, Helvetica, sans-serif; font-size: 12pt; color: rgb(0, 0, 0);"><b>Avery Quinn</b><br><span style="color:#1F4E79">Lumen Studio</span><br><a href="https://lumen.example/">lumen.example</a><br><img src="https://lumen.example/logo.png" alt="logo"></div>"#;
+    let r = run(&mut s, "edit.paste", json!({"html": html}));
+    assert!(r["note"].as_str().is_some_and(|n| n.contains("Insert Picture")), "{r}");
+    let text = s.signature_edit.as_ref().unwrap().body.text().clone();
+    assert_eq!(text.to_plain(), "Avery Quinn\nLumen Studio\nlumen.example <https://lumen.example/>");
+    let runs: Vec<_> = text.paragraphs().iter().flat_map(|p| p.runs.clone()).collect();
+    let name = runs.iter().find(|r| r.text == "Avery Quinn").unwrap();
+    assert!(name.style.bold && name.style.font == Some(mailcraft_model::rich::Font::Calibri) && name.style.size == Some(12), "{name:?}");
+    let org = runs.iter().find(|r| r.text == "Lumen Studio").unwrap();
+    assert_eq!(org.style.color.as_deref(), Some("#1f4e79"));
+    assert!(runs.iter().any(|r| r.style.link.as_deref() == Some("https://lumen.example/")));
+    assert!(text.pictures().is_empty());
+}

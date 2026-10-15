@@ -83,7 +83,7 @@ fn typing_and_the_formatting_keys() {
     type_in(&mut h, "Hello");
     key_with(&mut h, Modifiers::COMMAND, Key::B);
     // The ribbon says what the next character will be.
-    assert!(crate::ribbon::look(h.state().session.compose.as_ref().unwrap()).bold);
+    assert!(crate::ribbon::look_now(h.state()).bold);
     type_in(&mut h, " world");
     key_with(&mut h, Modifiers::COMMAND, Key::B);
     key_with(&mut h, Modifiers::COMMAND, Key::I);
@@ -293,7 +293,7 @@ fn a_plain_text_message_has_no_formatting_and_ctrl_k_asks_for_a_link() {
     assert_eq!(crate::dialogs::link_address(" www.example.org "), "https://www.example.org");
     assert_eq!(crate::dialogs::link_address("tel:+15550100"), "tel:+15550100");
     h.state_mut().run("compose.link", json!({"url": "https://www.example.org"})).unwrap();
-    assert!(crate::ribbon::look(h.state().session.compose.as_ref().unwrap()).link);
+    assert!(crate::ribbon::look_now(h.state()).link);
     h.state_mut().run("compose.formatPlain", json!({})).unwrap();
     h.run_steps(2);
     assert!(!h.state().enabled("format.bold") && !h.state().enabled("compose.link"));
@@ -436,4 +436,53 @@ fn tab_takes_a_list_item_a_level_deeper_and_shift_tab_out() {
     assert_eq!(levels(&h), [0, 1, 0, 0]);
     key(&mut h, Key::Enter);
     assert_eq!(kinds(&h)[2], ListKind::None);
+}
+
+/// File › Signatures with "Standard" open and a message being written behind it.
+fn signature_page() -> Window {
+    let mut a = app();
+    a.execute("mail.new", json!({})).unwrap();
+    a.execute("ui.backstage", json!({"value": true, "page": "signatures"})).unwrap();
+    let mut h = window(a);
+    h.run_steps(2);
+    h
+}
+
+fn signature_text(h: &Window) -> String {
+    h.state().session.signature_edit.as_ref().unwrap().body.plain()
+}
+
+#[test]
+fn a_signature_is_edited_with_the_keyboard_and_the_pointer_as_a_message_is() {
+    let mut h = signature_page();
+    let message = plain(&h);
+    assert_eq!(signature_text(&h), "Avery Quinn\nLumen Studio");
+    // A click at the start of the text puts the caret there and gives it the keyboard.
+    let r = h.state().hit.rect("signatureBody", 0).unwrap();
+    let at = r.min + egui::vec2(1.0, 8.0);
+    h.event(Event::PointerMoved(at));
+    h.step();
+    for pressed in [true, false] {
+        h.event(Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        h.step();
+    }
+    h.run_steps(1);
+    assert!(editor::has_focus(&h.ctx));
+    type_in(&mut h, "Dr ");
+    key_with(&mut h, Modifiers::SHIFT, Key::ArrowLeft);
+    key_with(&mut h, Modifiers::COMMAND, Key::B);
+    assert_eq!(signature_text(&h), "Dr Avery Quinn\nLumen Studio");
+    let e = h.state().session.signature_edit.as_ref().unwrap();
+    assert_eq!(e.body.selection(), Selection { anchor: 3, head: 2 });
+    assert!(e.body.text().style_at(3).bold && e.dirty);
+    key_with(&mut h, Modifiers::COMMAND, Key::Z);
+    key_with(&mut h, Modifiers::COMMAND, Key::Z);
+    assert_eq!(signature_text(&h), "Avery Quinn\nLumen Studio");
+    type_in(&mut h, "Ms ");
+    // The message behind it was not touched; leaving the page keeps the change and closes it.
+    assert_eq!(plain(&h), message);
+    h.state_mut().execute("ui.backstage", json!({"value": false})).unwrap();
+    h.run_steps(2);
+    assert!(h.state().session.signature_edit.is_none());
+    assert_eq!(h.state().session.mailbox.signature("Standard").unwrap().plain(), "Ms Avery Quinn\nLumen Studio");
 }

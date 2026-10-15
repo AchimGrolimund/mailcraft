@@ -55,6 +55,25 @@ impl RichClipboard for Board {
         let html = fragment(&html);
         (!html.trim().is_empty() && html.len() <= MAX_HTML).then(|| html.to_string())
     }
+
+    fn image(&self) -> Option<Vec<u8>> {
+        let image = self.with(|b| b.get_image()).ok()?;
+        png(image.width, image.height, &image.bytes)
+    }
+}
+
+/// The largest side of a picture taken from the clipboard, in pixels.
+const MAX_SIDE: usize = 4096;
+
+/// RGBA pixels as PNG; nothing when they are not a picture of a size that is taken.
+fn png(width: usize, height: usize, rgba: &[u8]) -> Option<Vec<u8>> {
+    if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE || rgba.len() != width.checked_mul(height)?.checked_mul(4)? {
+        return None;
+    }
+    let mut out = Vec::new();
+    let encoder = image::codecs::png::PngEncoder::new(&mut out);
+    image::ImageEncoder::write_image(encoder, rgba, u32::try_from(width).ok()?, u32::try_from(height).ok()?, image::ExtendedColorType::Rgba8).ok()?;
+    Some(out)
 }
 
 /// The HTML itself out of what a clipboard hands over. Windows' "HTML Format" can come with its
@@ -77,6 +96,15 @@ fn fragment(html: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_picture_on_the_clipboard_is_kept_as_png() {
+        let png = png(2, 1, &[255, 0, 0, 255, 0, 0, 255, 255]).unwrap();
+        assert!(png.starts_with(b"\x89PNG"));
+        assert_eq!(super::png(2, 2, &[0; 8]), None);
+        assert_eq!(super::png(0, 0, &[]), None);
+        assert_eq!(super::png(MAX_SIDE + 1, 1, &[0; 4 * (MAX_SIDE + 1)]), None);
+    }
 
     #[test]
     fn the_html_is_taken_out_of_what_windows_hands_over() {

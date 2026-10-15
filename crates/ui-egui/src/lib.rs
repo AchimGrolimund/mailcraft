@@ -37,6 +37,7 @@ pub mod reading;
 mod reminders;
 pub mod ribbon;
 pub mod scheduling;
+mod signatures;
 pub mod tasks_view;
 pub mod theme;
 pub mod widgets;
@@ -165,6 +166,10 @@ pub trait RichClipboard {
     fn put(&self, html: &str, text: &str) -> Result<(), String>;
     /// The HTML on the clipboard, when what is on it has HTML.
     fn html(&self) -> Option<String>;
+    /// The picture on the clipboard as PNG, when what is on it is a picture.
+    fn image(&self) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// Files delivered asynchronously.
@@ -666,6 +671,9 @@ pub struct MailApp {
     /// The body of the message being written takes the keyboard back at its next frame (after a
     /// ribbon button or a dialog changed its text).
     pub(crate) body_focus_wanted: bool,
+    /// File › Signatures was on screen in the last frame: leaving it saves and closes the open
+    /// signature.
+    signatures_shown: bool,
     /// The message list should scroll to the selected row (after a keyboard move).
     pub(crate) reveal_selection: bool,
     /// Passwords typed this session, per account. Never saved.
@@ -786,6 +794,7 @@ impl MailApp {
             search_focus: false,
             compose_bcc: false,
             body_focus_wanted: false,
+            signatures_shown: false,
             reveal_selection: false,
             passwords: Default::default(),
             secrets_trouble: None,
@@ -2002,11 +2011,31 @@ impl MailApp {
             // something waits to go out.
             ctx.request_repaint_after(std::time::Duration::from_millis(1_500));
         }
+        let signatures = self.ui.backstage && self.ui.backstage_page == "signatures";
+        if std::mem::replace(&mut self.signatures_shown, signatures) && !signatures {
+            self.leave_signature();
+        }
         #[cfg(not(target_arch = "wasm32"))]
         for f in ctx.input(|i| i.raw.dropped_files.clone()) {
-            self.open_path(&f.path().to_string_lossy());
+            let path = f.path().to_string_lossy().to_string();
+            // A picture dropped on File › Signatures goes into the signature open there.
+            if signatures && self.session.signature_edit.is_some() {
+                let _ = self.run("signature.picture.add", json!({"path": path}));
+            } else {
+                self.open_path(&path);
+            }
         }
         self.report_dirty();
+    }
+
+    /// Keep what was changed in the signature open in File › Signatures, and close it.
+    fn leave_signature(&mut self) {
+        if self.session.signature_edit.as_ref().is_some_and(|e| e.dirty)
+            && let Err(e) = self.execute("signature.save", json!({}))
+        {
+            self.status(e);
+        }
+        let _ = self.execute("signature.close", json!({"discard": true}));
     }
 
     /// Tell the host whether there are unsaved changes ([`Services::on_dirty`]).

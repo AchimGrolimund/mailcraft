@@ -350,6 +350,26 @@ pub struct InsertedSignature {
     pub text: mailcraft_model::RichText,
 }
 
+/// A signature open in File › Options › Signatures (R4.5.3): edited as a message's body is, by the
+/// same commands, until `signature.save` puts it back in the mailbox.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SignatureEdit {
+    /// The signature as it was opened (its name, layout and pictures, as they are changed);
+    /// its text is `body`'s.
+    pub signature: mailcraft_model::signature::Signature,
+    pub body: RichBody,
+    /// Changed since it was opened or last saved.
+    pub dirty: bool,
+}
+
+/// The text the editing commands work on ([`Session::doc_mut`]).
+pub struct Doc<'a> {
+    pub body: &'a mut RichBody,
+    pub dirty: &'a mut bool,
+    /// A plain-text message: no formatting.
+    pub plain: bool,
+}
+
 /// Preferences the engine acts on (File › Options); the front end saves them between runs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -473,6 +493,9 @@ pub struct Session {
     pub sel: Selection,
     /// The message being written, if one is open.
     pub compose: Option<Compose>,
+    /// A signature open in File › Options › Signatures. While there is one, the editing commands
+    /// work on it instead of the message being written ([`Session::doc`]).
+    pub signature_edit: Option<SignatureEdit>,
     pub prefs: Prefs,
     pub registry: Arc<Registry>,
     /// The mailbox file, once opened from or saved to one.
@@ -506,6 +529,7 @@ impl Session {
             view: ViewState::default(),
             sel: Selection::default(),
             compose: None,
+            signature_edit: None,
             prefs: Prefs::default(),
             registry: Arc::new(crate::cmd::registry()),
             path: None,
@@ -631,6 +655,24 @@ impl Session {
     }
 
     /// The message the reading pane shows.
+    /// The text being edited and whether it is plain: a signature open in the options, else the
+    /// message being written.
+    pub fn doc(&self) -> Option<(&RichBody, bool)> {
+        match (&self.signature_edit, &self.compose) {
+            (Some(e), _) => Some((&e.body, false)),
+            (None, Some(c)) => Some((&c.body, c.format == BodyFormat::Plain)),
+            (None, None) => None,
+        }
+    }
+
+    pub fn doc_mut(&mut self) -> Option<Doc<'_>> {
+        match (&mut self.signature_edit, &mut self.compose) {
+            (Some(e), _) => Some(Doc { body: &mut e.body, dirty: &mut e.dirty, plain: false }),
+            (None, Some(c)) => Some(Doc { plain: c.format == BodyFormat::Plain, body: &mut c.body, dirty: &mut c.dirty }),
+            (None, None) => None,
+        }
+    }
+
     pub fn focused_message(&self) -> Option<&Message> {
         self.sel.focus().and_then(|id| self.mailbox.message(id))
     }
@@ -781,6 +823,7 @@ impl Session {
         self.settle_zone();
         let before = self.snapshot(spec.label);
         let compose = self.compose.clone();
+        let signature_edit = self.signature_edit.clone();
         let view = self.view.clone();
         let run = spec.run;
         // Last-resort guard (never-crash): a panic in a command becomes an error and the state is restored.
@@ -814,6 +857,7 @@ impl Session {
                 self.mailbox = before.mailbox;
                 self.sel = before.sel;
                 self.compose = compose;
+                self.signature_edit = signature_edit;
                 self.view = view;
             }
         }

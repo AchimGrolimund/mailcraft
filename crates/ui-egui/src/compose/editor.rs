@@ -1,5 +1,7 @@
 //! The owner's text in a message being written, drawn as it will be sent: bold, italic,
-//! underline, a font size, links, bulleted and numbered lists (`mailcraft_model::rich`).
+//! underline, a font size, links, bulleted and numbered lists, and a signature's pictures
+//! (`mailcraft_model::rich`). The same editor edits a signature in File › Options › Signatures
+//! ([`Which`]); while one is open there, the message's body is only drawn.
 //!
 //! The widget only draws and listens. Every change, the caret and the selection included, is a
 //! command (`compose.select`, `compose.type`, `compose.delete`, `format.*`, `compose.link`,
@@ -19,9 +21,9 @@ use std::sync::{Arc, Mutex};
 use egui::epaint::text::CharIndex;
 use egui::text::{CCursor, LayoutJob, TextFormat};
 use egui::{Align2, Event, Galley, Key, Modifiers, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
-use mailcraft_engine::BodyFormat;
-use mailcraft_model::RichText;
-use mailcraft_model::rich::{ListKind, Paragraph, Selection, Style, numbers};
+use mailcraft_model::rich::{ListKind, OBJECT, Paragraph, Selection, Style, numbers};
+use mailcraft_model::signature::Picture;
+use mailcraft_model::{RichBody, RichText};
 use serde_json::{Value, json};
 
 use crate::MailApp;
@@ -41,14 +43,32 @@ fn indent_of(p: &Paragraph) -> f32 {
 /// Longest text an input method is shown composing.
 const MAX_PREEDIT: usize = 256;
 
+/// Which text the editor shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Which {
+    /// The message being written.
+    Message,
+    /// The signature open in File › Options › Signatures.
+    Signature,
+}
+
+impl Which {
+    fn id(self) -> egui::Id {
+        match self {
+            Which::Message => id(),
+            Which::Signature => egui::Id::new("mailcraft-signature-body"),
+        }
+    }
+}
+
 /// The body's id: what has the keyboard when it does.
 pub fn id() -> egui::Id {
     egui::Id::new("mailcraft-compose-body")
 }
 
-/// Whether the body has the keyboard.
+/// Whether the body (or a signature being edited) has the keyboard.
 pub fn has_focus(ctx: &egui::Context) -> bool {
-    ctx.memory(|m| m.has_focus(id()))
+    ctx.memory(|m| m.has_focus(id()) || m.has_focus(Which::Signature.id()))
 }
 
 /// The key a command has in the body (shown in tooltips and menus). They are not the registry's
@@ -82,7 +102,9 @@ fn text_format(style: &Style, plain: bool, t: &Tokens) -> TextFormat {
     }
     let size = on_screen(style.size);
     let font = if style.bold { semibold(size) } else { regular(size) };
-    let color = if style.link.is_some() { t.accent_text } else { t.text };
+    // ponytail: a font is drawn in the window's own; the preview shows it (R4.5.4).
+    let own = style.color.as_deref().and_then(|c| egui::Color32::from_hex(c).ok()).map(|c| crate::reading::colors::readable(c, t.surface));
+    let color = if style.link.is_some() { t.accent_text } else { own.unwrap_or(t.text) };
     let underline = if style.underline || style.link.is_some() { Stroke::new(1.0, color) } else { Stroke::NONE };
     TextFormat { font_id: font, color, italics: style.italic, underline, ..Default::default() }
 }
@@ -94,6 +116,17 @@ struct LayoutKey {
     dark: bool,
     scale: u32,
     plain: bool,
+    /// The pictures' ids and widths.
+    pictures: u64,
+}
+
+/// A picture in a paragraph, laid out: where it stands in the paragraph's text and where it is
+/// drawn, in the paragraph.
+#[derive(Clone)]
+struct PictureBox {
+    local: usize,
+    id: u32,
+    rect: Rect,
 }
 
 /// One paragraph, laid out.
@@ -107,6 +140,7 @@ struct Para {
     /// Its first character's position in the text, and its top in the body.
     start: usize,
     top: f32,
+    pictures: Vec<PictureBox>,
 }
 
 impl Para {
@@ -120,6 +154,11 @@ impl Para {
 
     fn end(&self) -> usize {
         self.start + self.chars
+    }
+
+    /// The picture at a place in the paragraph.
+    fn picture_at(&self, local: usize) -> Option<&PictureBox> {
+        self.pictures.iter().find(|b| b.local == local)
     }
 
     /// The style of the character at `local` (the one after that offset).
@@ -153,7 +192,7 @@ pub(crate) struct Layout {
 impl Layout {
     /// Bring the layout up to `doc`: the paragraphs that changed (and only those) are laid out
     /// again. Whether anything did.
-    fn sync(&mut self, ctx: &egui::Context, doc: &RichText, key: LayoutKey, t: &Tokens, width: f32) -> bool {
+    fn sync(&mut self, ctx: &egui::Context, doc: &RichText, pictures: &[Picture], key: LayoutKey, t: &Tokens, width: f32) -> bool {
         let atlas = ctx.fonts(|f| f.font_atlas_fill_ratio());
         if self.key != Some(key) || atlas < self.atlas {
             self.paras.clear();
@@ -171,7 +210,7 @@ impl Layout {
         }
         let suffix = (0..shorter - prefix).take_while(|&k| same(n_new - 1 - k, n_old - 1 - k)).count();
         let fresh: Vec<Para> = (prefix..n_new - suffix)
-            .filter_map(|i| Some(self.lay(ctx, paragraphs.get(i)?, numbers.get(i).copied().unwrap_or(0), key.plain, t, width)))
+            .filter_map(|i| Some(self.lay(ctx, paragraphs.get(i)?, numbers.get(i).copied().unwrap_or(0), key.plain, pictures, t, width)))
             .collect();
         self.paras.splice(prefix..n_old - suffix, fresh);
         let (mut start, mut top) = (0, 0.0);
@@ -185,19 +224,41 @@ impl Layout {
         true
     }
 
-    fn lay(&mut self, ctx: &egui::Context, p: &Paragraph, number: u32, plain: bool, t: &Tokens, width: f32) -> Para {
+    fn lay(&mut self, ctx: &egui::Context, p: &Paragraph, number: u32, plain: bool, pictures: &[Picture], t: &Tokens, width: f32) -> Para {
         let indent = indent_of(p);
+        let room = (width - indent).max(24.0);
         let mut job = LayoutJob::default();
-        job.wrap.max_width = (width - indent).max(24.0);
+        job.wrap.max_width = room;
+        // A picture is a gap in the line as wide as the picture before an unseen character, in a
+        // line as tall as the picture; it is painted into the gap.
+        let mut sized = Vec::new();
+        let mut local = 0;
         for run in &p.runs {
-            job.append(&run.text, 0.0, text_format(&run.style, plain, t));
+            match run.picture.and_then(|id| Some((id, size_of(ctx, pictures.iter().find(|x| x.id == id)?, room)))) {
+                Some((id, size)) if !plain => {
+                    let format =
+                        TextFormat { font_id: regular(1.0), color: egui::Color32::TRANSPARENT, line_height: Some(size.y), ..Default::default() };
+                    job.append(&OBJECT.to_string(), size.x, format);
+                    sized.push((local, id, size));
+                }
+                _ => job.append(&run.text, 0.0, text_format(&run.style, plain, t)),
+            }
+            local += run.text.chars().count();
         }
         if job.sections.is_empty() {
             job.append("", 0.0, text_format(&Style::default(), plain, t));
         }
         self.laid += 1;
         let galley = ctx.fonts_mut(|f| f.layout_job(job));
-        Para { chars: p.chars(), source: p.clone(), number, galley, start: 0, top: 0.0 }
+        let pictures = sized
+            .into_iter()
+            .filter_map(|(local, id, size)| {
+                let glyph = galley.pos_from_cursor(CCursor::new(local));
+                let rect = Rect::from_min_max(pos2(glyph.min.x - size.x, glyph.max.y - size.y), pos2(glyph.min.x, glyph.max.y));
+                rect.is_finite().then_some(PictureBox { local, id, rect })
+            })
+            .collect();
+        Para { chars: p.chars(), source: p.clone(), number, galley, start: 0, top: 0.0, pictures }
     }
 
     /// Characters in the text.
@@ -221,7 +282,28 @@ impl Layout {
     fn hit(&self, at: Vec2) -> usize {
         let Some(p) = self.para_at_y(at.y) else { return 0 };
         let local = vec2(at.x - p.indent(), at.y - p.top);
+        if let Some(b) = p.pictures.iter().find(|b| b.rect.contains(local.to_pos2())) {
+            return p.start + b.local + usize::from(local.x > b.rect.center().x);
+        }
         p.start + p.galley.cursor_from_pos(local).index.0.min(p.chars)
+    }
+
+    /// The picture under a point of the body: its place in the text, its id and where it is.
+    fn picture_hit(&self, at: Vec2) -> Option<(usize, u32, Rect)> {
+        let p = self.para_at_y(at.y)?;
+        let local = vec2(at.x - p.indent(), at.y - p.top);
+        let b = p.pictures.iter().find(|b| b.rect.contains(local.to_pos2()))?;
+        Some((p.start + b.local, b.id, b.rect.translate(vec2(p.indent(), p.top))))
+    }
+
+    /// The picture that is the selection, alone: its id and where it is in the body.
+    fn selected_picture(&self, sel: Selection) -> Option<(u32, Rect)> {
+        if sel.end() != sel.start() + 1 {
+            return None;
+        }
+        let p = self.para_at(sel.start())?;
+        let b = p.picture_at(sel.start().checked_sub(p.start)?)?;
+        Some((b.id, b.rect.translate(vec2(p.indent(), p.top))))
     }
 
     /// Where the link under a point of the body leads.
@@ -246,6 +328,10 @@ impl Layout {
     fn caret(&self, pos: usize) -> Rect {
         let Some(p) = self.para_at(pos) else { return Rect::from_min_size(pos2(0.0, 0.0), vec2(0.0, BASE_SIZE * 1.3)) };
         let local = pos.saturating_sub(p.start).min(p.chars);
+        if let Some(b) = p.picture_at(local) {
+            // Before a picture is at its left, not after its gap.
+            return Rect::from_min_max(pos2(b.rect.min.x, b.rect.min.y), pos2(b.rect.min.x, b.rect.max.y)).translate(vec2(p.indent(), p.top));
+        }
         let r = p.galley.pos_from_cursor(CCursor::new(local)).translate(vec2(p.indent(), p.top));
         if r.height() < 1.0 { Rect::from_min_size(pos2(p.indent(), p.top), vec2(0.0, p.height())) } else { r }
     }
@@ -329,15 +415,35 @@ fn class(c: char) -> u8 {
     }
 }
 
+/// The size a picture is shown at, in points (a CSS pixel each), within `room`: the width the
+/// owner gave it or its own, its height in proportion.
+fn size_of(ctx: &egui::Context, p: &Picture, room: f32) -> Vec2 {
+    let frame = crate::reading::images::frame(ctx);
+    let own = crate::reading::images::Pictures::of(ctx).lock().ok().and_then(|mut c| c.size(&p.data, frame));
+    let [w, h] = own.map_or([120.0, 40.0], |[w, h]| [w.max(1) as f32, h.max(1) as f32]);
+    let width = p.width.map_or(w, f32::from).min(room).max(8.0);
+    vec2(width, (width * h / w).clamp(4.0, 2000.0))
+}
+
+/// A short fingerprint of the pictures' ids and widths, so that the layout follows them.
+fn pictures_key(pictures: &[Picture]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for p in pictures {
+        (p.id, p.width, std::sync::Arc::as_ptr(&p.data)).hash(&mut h);
+    }
+    h.finish()
+}
+
 /// The layout of the body, kept from frame to frame.
-fn store(ctx: &egui::Context) -> Arc<Mutex<Layout>> {
-    ctx.data_mut(|d| d.get_temp_mut_or_default::<Arc<Mutex<Layout>>>(id().with("layout")).clone())
+fn store(ctx: &egui::Context, which: Which) -> Arc<Mutex<Layout>> {
+    ctx.data_mut(|d| d.get_temp_mut_or_default::<Arc<Mutex<Layout>>>(which.id().with("layout")).clone())
 }
 
 /// How many paragraphs of the body were laid out since the window opened, for tests.
 #[cfg(test)]
 pub(crate) fn laid(ctx: &egui::Context) -> usize {
-    store(ctx).lock().map_or(0, |l| l.laid)
+    store(ctx, Which::Message).lock().map_or(0, |l| l.laid)
 }
 
 /// What the body remembers between frames besides its layout.
@@ -349,6 +455,8 @@ struct State {
     anchor: Option<usize>,
     /// What an input method is composing, not yet typed.
     preedit: String,
+    /// A picture's corner being dragged: its id and the width it has so far.
+    resizing: Option<(u32, f32)>,
 }
 
 /// What the keyboard and the pointer do to the text, as the command that does it.
@@ -365,48 +473,102 @@ fn select(anchor: usize, head: usize) -> Option<Ask> {
     ask("compose.select", json!({"from": anchor, "to": head}))
 }
 
-/// The selection, the caret and the format of the message being written.
-fn now(app: &MailApp) -> Option<(Selection, bool)> {
-    app.session.compose.as_ref().map(|c| (c.body.selection(), c.format == BodyFormat::Plain))
+/// The text `which` names, and whether it is plain.
+fn body(app: &MailApp, which: Which) -> Option<(&RichBody, bool)> {
+    match which {
+        Which::Message => app.session.compose.as_ref().map(|c| (&c.body, c.format == mailcraft_engine::BodyFormat::Plain)),
+        Which::Signature => app.session.signature_edit.as_ref().map(|e| (&e.body, false)),
+    }
+}
+
+/// The pictures the text `which` names may show.
+fn pictures(app: &MailApp, which: Which) -> Vec<Picture> {
+    match which {
+        Which::Message => app.session.compose.as_ref().and_then(|c| c.signature.as_ref()).map(|s| s.pictures.clone()).unwrap_or_default(),
+        Which::Signature => app.session.signature_edit.as_ref().map(|e| e.signature.pictures().to_vec()).unwrap_or_default(),
+    }
+}
+
+/// The selection, the caret and whether the text is plain.
+fn now(app: &MailApp, which: Which) -> Option<(Selection, bool)> {
+    body(app, which).map(|(b, plain)| (b.selection(), plain))
 }
 
 /// The body in the room `ui` has, at least `min_height` tall. `take_focus`: it gets the keyboard
 /// now (a reply that just opened).
 pub(crate) fn show(app: &mut MailApp, ui: &mut Ui, min_height: f32, take_focus: bool) {
+    show_doc(app, ui, Which::Message, min_height, take_focus);
+}
+
+/// The text `which` names, edited. The message's body is only drawn while a signature is open:
+/// the editing commands are the signature's then.
+pub(crate) fn show_doc(app: &mut MailApp, ui: &mut Ui, which: Which, min_height: f32, take_focus: bool) {
     let ctx = ui.ctx().clone();
     let t = Tokens::get(&ctx);
-    let id = id();
+    let id = which.id();
     let width = ui.available_width().max(40.0);
-    let Some((_, plain)) = now(app) else { return };
-    let key = LayoutKey { width: width as u32, dark: t.dark, scale: ctx.pixels_per_point().to_bits(), plain };
-    let store = store(&ctx);
+    let Some((_, plain)) = now(app, which) else { return };
+    let editable = which == Which::Signature || app.session.signature_edit.is_none();
+    let shown = pictures(app, which);
+    let key = LayoutKey { width: width as u32, dark: t.dark, scale: ctx.pixels_per_point().to_bits(), plain, pictures: pictures_key(&shown) };
+    let store = store(&ctx, which);
     let mut layout = store.lock().unwrap_or_else(|e| e.into_inner());
     let resync = |layout: &mut Layout, app: &MailApp| {
-        if let Some(c) = app.session.compose.as_ref() {
-            layout.sync(&ctx, c.body.text(), key, &t, width);
+        if let Some((b, _)) = body(app, which) {
+            layout.sync(&ctx, b.text(), &shown, key, &t, width);
         }
     };
     resync(&mut layout, app);
 
     let (rect, _) = ui.allocate_exact_size(vec2(width, layout.height.max(min_height)), Sense::hover());
-    let resp = ui.interact(rect, id, Sense::click_and_drag());
-    app.hit.add("composeBody", 0, rect);
+    let resp = ui.interact(rect, id, if editable { Sense::click_and_drag() } else { Sense::hover() });
+    app.hit.add(if which == Which::Message { "composeBody" } else { "signatureBody" }, 0, rect);
     let origin = rect.min;
     let state_id = id.with("state");
     let mut st: State = ctx.data(|d| d.get_temp(state_id)).unwrap_or_default();
-    if take_focus || std::mem::take(&mut app.body_focus_wanted) {
+    if editable && (take_focus || (which == Which::Message && std::mem::take(&mut app.body_focus_wanted))) {
         resp.request_focus();
     }
     let mut reveal = false;
 
-    // The pointer: a click puts the caret, a drag selects, a double click a word, a triple click
-    // the paragraph; Shift and a click selects from where the selection started.
-    if let Some(pointer) = resp.interact_pointer_pos()
-        && let Some((sel, _)) = now(app)
+    // A selected picture of a signature is made wider or narrower by its corner.
+    if which == Which::Signature
+        && let Some((sel, _)) = now(app, which)
+        && let Some((pid, r)) = layout.selected_picture(sel)
+    {
+        let r = r.translate(origin.to_vec2());
+        let corner = Rect::from_center_size(r.right_bottom(), vec2(10.0, 10.0));
+        let handle = ui.interact(corner, id.with("corner"), Sense::drag());
+        if handle.hovered() || handle.dragged() {
+            ctx.set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+        }
+        if handle.dragged() {
+            let w = st.resizing.filter(|(i, _)| *i == pid).map_or(r.width(), |(_, w)| w) + handle.drag_delta().x;
+            st.resizing = Some((pid, w.clamp(8.0, f32::from(mailcraft_model::signature::MAX_WIDTH))));
+        }
+        if handle.drag_stopped()
+            && let Some((i, w)) = st.resizing.take()
+        {
+            let _ = app.run("signature.picture.set", json!({"id": i, "width": w.round() as u16}));
+        }
+    }
+
+    // The pointer: a click puts the caret, or selects a picture; a drag selects, a double click a
+    // word, a triple click the paragraph; Shift and a click selects from where the selection
+    // started.
+    if editable
+        && st.resizing.is_none()
+        && let Some(pointer) = resp.interact_pointer_pos()
+        && let Some((sel, _)) = now(app, which)
     {
         let at = layout.hit(pointer - origin);
         let (pressed, shift) = ui.input(|i| (i.pointer.primary_pressed(), i.modifiers.shift));
-        let asked = if resp.triple_clicked() {
+        let picture = layout.picture_hit(pointer - origin).filter(|_| pressed && !shift);
+        let asked = if let Some((place, _, _)) = picture {
+            st.anchor = None;
+            resp.request_focus();
+            select(place, place + 1)
+        } else if resp.triple_clicked() {
             st.anchor = None;
             let (a, b) = layout.paragraph_ends(at);
             select(a, b)
@@ -430,7 +592,7 @@ pub(crate) fn show(app: &mut MailApp, ui: &mut Ui, min_height: f32, take_focus: 
             st.column = None;
         }
     }
-    if resp.hovered() {
+    if resp.hovered() && editable {
         ctx.set_cursor_icon(egui::CursorIcon::Text);
         if let Some(url) = ui.input(|i| i.pointer.hover_pos()).and_then(|p| layout.link_at(p - origin)) {
             resp.clone().on_hover_text(url);
@@ -438,7 +600,7 @@ pub(crate) fn show(app: &mut MailApp, ui: &mut Ui, min_height: f32, take_focus: 
     }
 
     // The keyboard.
-    let focused = resp.has_focus() || ctx.memory(|m| m.has_focus(id));
+    let focused = editable && (resp.has_focus() || ctx.memory(|m| m.has_focus(id)));
     if focused {
         ctx.memory_mut(|m| {
             m.set_focus_lock_filter(id, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: false })
@@ -446,7 +608,7 @@ pub(crate) fn show(app: &mut MailApp, ui: &mut Ui, min_height: f32, take_focus: 
         let page = ui.clip_rect().height().max(40.0) - 20.0;
         for event in ui.input(|i| i.events.clone()) {
             resync(&mut layout, app);
-            let Some((sel, plain)) = now(app) else { break };
+            let Some((sel, plain)) = now(app, which) else { break };
             let asked = match event {
                 Event::Text(text) if !text.is_empty() => ask("compose.type", json!({"text": text})),
                 Event::Ime(egui::ImeEvent::Commit(text)) => {
@@ -476,11 +638,19 @@ pub(crate) fn show(app: &mut MailApp, ui: &mut Ui, min_height: f32, take_focus: 
                     None
                 }
                 // What is pasted comes as HTML when the clipboard has some (reduced to the set
-                // by `edit.paste`), else as the text egui read from it.
-                Event::Paste(text) => match app.services.clipboard.as_ref().and_then(|board| board.html()).filter(|h| !h.trim().is_empty()) {
-                    Some(html) => ask("edit.paste", json!({"html": html})),
-                    None => ask("edit.paste", json!({"text": text})),
-                },
+                // by `edit.paste`), else as the text egui read from it; into a signature, a
+                // picture on the clipboard comes as a picture.
+                Event::Paste(text) => {
+                    let image =
+                        (which == Which::Signature && text.is_empty()).then(|| app.services.clipboard.as_ref().and_then(|b| b.image())).flatten();
+                    match (image, app.services.clipboard.as_ref().and_then(|board| board.html()).filter(|h| !h.trim().is_empty())) {
+                        (Some(png), _) => {
+                            ask("signature.picture.add", json!({"data": crate::files::base64_lite::encode(&png), "file": "picture.png"}))
+                        }
+                        (None, Some(html)) => ask("edit.paste", json!({"html": html})),
+                        (None, None) => ask("edit.paste", json!({"text": text})),
+                    }
+                }
                 Event::Key { key, pressed: true, modifiers, .. } => {
                     let (asked, vertical) = key_press(&layout, &mut st, sel, plain, key, modifiers, page);
                     if !vertical {
@@ -507,7 +677,7 @@ pub(crate) fn show(app: &mut MailApp, ui: &mut Ui, min_height: f32, take_focus: 
     }
 
     // Paint what is in view.
-    let Some((sel, _)) = now(app) else { return };
+    let Some((sel, _)) = now(app, which) else { return };
     let painter = ui.painter();
     let clip = ui.clip_rect();
     let fill = ui.visuals().selection.bg_fill;
@@ -522,6 +692,26 @@ pub(crate) fn show(app: &mut MailApp, ui: &mut Ui, min_height: f32, take_focus: 
             paint_selection(painter, p, at, sel, fill);
         }
         painter.galley(at, p.galley.clone(), t.text);
+        for b in &p.pictures {
+            let r = b.rect.translate(at.to_vec2());
+            let picture = shown.iter().find(|x| x.id == b.id);
+            let cache = crate::reading::images::Pictures::of(&ctx);
+            let texture = picture.and_then(|x| cache.lock().ok().map(|mut c| c.texture(&ctx, &x.data)));
+            match texture {
+                Some(crate::reading::images::Picture::Ready(tex)) => {
+                    painter.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
+                }
+                Some(crate::reading::images::Picture::Pending) => {
+                    painter.rect_filled(r, 2.0, t.panel);
+                    ctx.request_repaint();
+                }
+                _ => {
+                    painter.rect_stroke(r, 2.0, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+                    let alt = picture.map(|x| x.alt.clone()).unwrap_or_default();
+                    painter.with_clip_rect(r).text(r.left_top() + vec2(4.0, 4.0), Align2::LEFT_TOP, alt, regular(11.0), t.text_dim);
+                }
+            }
+        }
         let row = p.galley.rows.first().map_or(Rect::from_min_size(at, vec2(0.0, p.height())), |r| r.rect().translate(at.to_vec2()));
         let ink = if plain { t.text } else { p.source.runs.first().map_or(t.text, |r| if r.style.link.is_some() { t.accent_text } else { t.text }) };
         let size = if plain { BASE_SIZE } else { on_screen(p.source.runs.first().and_then(|r| r.style.size)) };
@@ -551,7 +741,19 @@ pub(crate) fn show(app: &mut MailApp, ui: &mut Ui, min_height: f32, take_focus: 
         }
     }
     if layout.len() == 0 && !focused {
-        painter.text(origin, Align2::LEFT_TOP, tl!("Write your message"), regular(BASE_SIZE), t.text_disabled);
+        let hint = if which == Which::Message { tl!("Write your message") } else { tl!("Write your signature") };
+        painter.text(origin, Align2::LEFT_TOP, hint, regular(BASE_SIZE), t.text_disabled);
+    }
+    // The selected picture: a frame, and the corner that sizes it.
+    if let Some((pid, r)) = layout.selected_picture(sel) {
+        let mut r = r.translate(origin.to_vec2());
+        if let Some((_, w)) = st.resizing.filter(|(i, _)| *i == pid) {
+            r = Rect::from_min_size(r.min, vec2(w, w * r.height() / r.width().max(1.0)));
+        }
+        painter.rect_stroke(r, 0.0, Stroke::new(1.5, t.accent), egui::StrokeKind::Outside);
+        if which == Which::Signature {
+            painter.rect_filled(Rect::from_center_size(r.right_bottom(), vec2(8.0, 8.0)), 1.0, t.accent);
+        }
     }
     let caret = layout.caret(sel.head).translate(origin.to_vec2());
     if focused {

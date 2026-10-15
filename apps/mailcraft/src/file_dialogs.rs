@@ -78,6 +78,7 @@ fn open_filters(d: rfd::AsyncFileDialog, purpose: &str) -> rfd::AsyncFileDialog 
             .add_filter("Calendars", &["ics", "ical"])
             .add_filter("Contacts", &["vcf", "vcard"])
             .add_filter("All files", &["*"]),
+        "picture" => d.add_filter("Pictures (PNG, JPEG, GIF)", &["png", "jpg", "jpeg", "gif"]),
         _ => d,
     }
 }

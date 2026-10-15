@@ -14,7 +14,7 @@
 //! fonts, alignment and everything else are dropped.
 
 use mailcraft_html::{Block, BlockKind, Marker, Span};
-use mailcraft_model::rich::{ListKind, MAX_LEVEL, MAX_SIZE, MIN_SIZE, Paragraph, RichText, Run, Style, safe_color, safe_link};
+use mailcraft_model::rich::{Font, ListKind, MAX_LEVEL, MAX_SIZE, MIN_SIZE, Paragraph, RichText, Run, Style, safe_color, safe_link};
 use mailcraft_model::signature::{Layout, MAX_WIDTH, Picture, Signature};
 
 /// How a picture of the text is written: its `cid:` address (without the scheme), the width it
@@ -336,7 +336,7 @@ impl Reader {
                 size: span.size.map(px_to_points),
                 link: span.link.as_deref().and_then(safe_link),
                 color: span.color.map(|c| format!("#{:02x}{:02x}{:02x}", c.0, c.1, c.2)),
-                font: None,
+                font: span.font.as_deref().and_then(Font::from_css),
             };
             let text = span.text.replace('\u{a0}', " ");
             for (i, line) in text.split('\n').enumerate() {

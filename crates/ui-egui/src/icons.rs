@@ -607,6 +607,14 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
             pen.text(7.5, 10.5, 15.0, "A", c, false);
             pen.text(15.5, 12.5, 9.0, "A", c, false);
         }
+        "font" => {
+            pen.text(7.0, 10.5, 14.0, "A", c, false);
+            pen.text(14.5, 12.0, 10.0, "a", a, false);
+        }
+        "fontColor" => {
+            pen.text(10.0, 8.5, 13.0, "A", c, false);
+            pen.frect(3.5, 15.0, 16.5, 18.0, a);
+        }
         "bullets" => {
             for y in [5.0, 10.0, 15.0] {
                 pen.fcircle(4.5, y, 1.4, a);
@@ -831,6 +839,8 @@ pub const NAMES: &[&str] = &[
     "italic",
     "underline",
     "fontSize",
+    "font",
+    "fontColor",
     "bullets",
     "numbering",
     "insertLink",

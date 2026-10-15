@@ -9,8 +9,13 @@ use crate::theme::{Tokens, regular, semibold};
 use crate::{MailApp, icons};
 
 /// The pages: code, label, icon.
-pub const PAGES: &[(&str, &str, &str)] =
-    &[("info", "Info", "info"), ("open", "Open & Export", "import"), ("options", "Options", "options"), ("about", "About", "help")];
+pub const PAGES: &[(&str, &str, &str)] = &[
+    ("info", "Info", "info"),
+    ("open", "Open & Export", "import"),
+    ("options", "Options", "options"),
+    ("signatures", "Signatures", "signature"),
+    ("about", "About", "help"),
+];
 
 pub fn show(app: &mut MailApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
@@ -67,6 +72,7 @@ pub fn show(app: &mut MailApp, ui: &mut Ui) {
                 match app.ui.backstage_page.as_str() {
                     "open" => open(app, ui, &t),
                     "options" => options(app, ui, &t),
+                    "signatures" => crate::signatures::page(app, ui, &t),
                     "about" => about(app, ui, &t),
                     _ => info(app, ui, &t),
                 }
@@ -422,7 +428,9 @@ fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     crate::reading::invitation_options(app, ui);
     time_zones(app, ui, &prefs);
     section(ui, tl!("Signatures"), t);
-    signatures(app, ui, t);
+    if ui.button(tl!("Signatures…")).clicked() {
+        let _ = app.run("ui.backstage", json!({"value": true, "page": "signatures"}));
+    }
 }
 
 /// The time zone the calendar is shown in, and a second one for its time bar, each with a label
@@ -471,44 +479,6 @@ fn time_zones(app: &mut MailApp, ui: &mut Ui, prefs: &mailcraft_engine::Prefs) {
         }
         keep(ui, "opt_second_zone_query", query);
     });
-}
-
-fn signatures(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
-    let list = app.session.mailbox.signatures.clone();
-    let default = app.session.mailbox.default_account().map(|a| a.signature.clone()).unwrap_or_default();
-    for s in &list {
-        let is_default = s.name.eq_ignore_ascii_case(&default);
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(s.name.as_str()).font(semibold(12.5)));
-            if is_default {
-                ui.label(egui::RichText::new(tl!("(used for new messages)")).color(t.text_dim));
-            } else if ui.small_button(tl!("Use for new messages")).clicked() {
-                let _ = app.run("signature.set", json!({"name": s.name, "body": s.body(), "default": true}));
-            }
-            if ui.small_button(tl!("Delete")).clicked() {
-                let _ = app.run("signature.remove", json!({"name": s.name}));
-            }
-        });
-        // ponytail: a plain text box until the signature page (R4.5.3); a signature with
-        // formatting or pictures is shown, not edited here, so nothing of it is lost.
-        if s.body().has_formatting() {
-            ui.label(egui::RichText::new(s.plain()).color(t.text_dim));
-        } else {
-            let mut text = s.plain();
-            if ui.add(egui::TextEdit::multiline(&mut text).desired_rows(3).desired_width(420.0)).changed() {
-                let _ = app.execute("signature.set", json!({"name": s.name, "text": text}));
-            }
-        }
-    }
-    if ui.button(tl!("New Signature")).clicked() {
-        // "Signature", "Signature 2"… whichever is free.
-        let name = (1..100)
-            .map(|n| if n == 1 { "Signature".to_string() } else { format!("Signature {n}") })
-            .find(|n| app.session.mailbox.signature(n).is_none())
-            .unwrap_or_else(|| "Signature".to_string());
-        let me = app.session.mailbox.default_account().map(|a| a.display_name.clone()).unwrap_or_default();
-        let _ = app.run("signature.set", json!({"name": name, "text": me, "default": list.is_empty()}));
-    }
 }
 
 /// Everyone who has worked on MailCraft, on GitHub.

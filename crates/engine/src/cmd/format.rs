@@ -2,37 +2,39 @@
 //! undo inside the message (`mailcraft_model::rich`).
 //!
 //! These are pure commands: they change the message being written, never the mailbox, so they
-//! are not on the mailbox's undo history. The message has its own (`compose.undo`).
+//! are not on the mailbox's undo history. The message has its own (`compose.undo`). While a
+//! signature is open in File › Options › Signatures they work on it instead ([`Session::doc`]).
 //! Positions count characters of the body's text, a paragraph break being one.
 
 use mailcraft_model::rich::{Font, Format, ListKind, MAX_SIZE, MIN_SIZE, safe_color};
-use mailcraft_model::{ModelError, RichText};
+use mailcraft_model::{ModelError, RichBody, RichText};
 use serde_json::{Value, json};
 
 use super::{bad, fail, needs_compose};
+use crate::Doc;
 use crate::{BodyFormat, CmdError, CmdResult, CommandSpec, Compose, Session, p};
 
 const RANGE: &str = r#"{"from"?: number, "to"?: number} (default: the selection)"#;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        CommandSpec::new("compose.select", "Select Text", "Message", select).pure().params(r#"{"from": number, "to"?: number} (to: the caret, default from)"#).when(needs_compose),
+        CommandSpec::new("compose.select", "Select Text", "Message", select).pure().params(r#"{"from": number, "to"?: number} (to: the caret, default from)"#).when(needs_doc),
         CommandSpec::new("compose.type", "Type", "Message", type_text)
             .pure()
             .params(r#"{"text": string} — over the selection, in the formatting at the caret; a line break starts a paragraph (of the same kind; a line break alone in an empty list item ends the list there)"#)
-            .when(needs_compose),
+            .when(needs_doc),
         CommandSpec::new("compose.delete", "Delete Text", "Message", delete)
             .pure()
             .params(r#"{"from"?: number, "to"?: number, "forward"?: bool} (default: the selection, else the character before the caret, or after it with forward)"#)
-            .when(needs_compose),
-        CommandSpec::new("compose.undo", "Undo Typing", "Message", undo).pure().when(|s| match &s.compose {
+            .when(needs_doc),
+        CommandSpec::new("compose.undo", "Undo Typing", "Message", undo).pure().when(|s| match s.doc() {
             None => Some("no message is being written"),
-            Some(c) if !c.body.can_undo() => Some("nothing to undo in the message"),
+            Some((b, _)) if !b.can_undo() => Some("nothing to undo in the message"),
             Some(_) => None,
         }),
-        CommandSpec::new("compose.redo", "Redo Typing", "Message", redo).pure().when(|s| match &s.compose {
+        CommandSpec::new("compose.redo", "Redo Typing", "Message", redo).pure().when(|s| match s.doc() {
             None => Some("no message is being written"),
-            Some(c) if !c.body.can_redo() => Some("nothing to redo in the message"),
+            Some((b, _)) if !b.can_redo() => Some("nothing to redo in the message"),
             Some(_) => None,
         }),
         CommandSpec::new("format.bold", "Bold", "Message › Basic Text", bold).pure().params(RANGE).when(needs_html),
@@ -68,31 +70,40 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("edit.copy", "Copy", "Message › Clipboard", copy)
             .pure()
             .params(r#"{"from"?: number, "to"?: number} — answers the selection as {"html", "text"} for the clipboard (HTML only in an HTML message); changes nothing"#)
-            .when(needs_compose),
+            .when(needs_doc),
         CommandSpec::new("edit.cut", "Cut", "Message › Clipboard", cut)
             .pure()
             .params(r#"{"from"?: number, "to"?: number} — answers the selection as edit.copy does, and takes it out of the text"#)
-            .when(needs_compose),
+            .when(needs_doc),
         CommandSpec::new("edit.paste", "Paste", "Message › Clipboard", paste)
             .pure()
             .params(r#"{"html"?: string, "text"?: string} — over the selection; HTML is reduced to bold, italic, underline, a size, links and lists (to plain text in a plain-text message)"#)
-            .when(needs_compose),
+            .when(needs_doc),
         CommandSpec::new("compose.formatHtml", "HTML", "Format Text › Format", format_html).pure().when(needs_compose),
         CommandSpec::new("compose.formatPlain", "Plain Text", "Format Text › Format", format_plain).pure().when(needs_compose),
     ]
 }
 
-/// Enabled only while a message in HTML is being written.
+/// Enabled while a message is being written or a signature is open.
+fn needs_doc(s: &Session) -> Option<&'static str> {
+    if s.doc().is_none() { Some("no message is being written") } else { None }
+}
+
+/// Enabled only while a message in HTML is being written (or a signature is open).
 fn needs_html(s: &Session) -> Option<&'static str> {
-    match &s.compose {
+    match s.doc() {
         None => Some("no message is being written"),
-        Some(c) if c.format == BodyFormat::Plain => Some("the message is plain text; switch it to HTML first"),
+        Some((_, true)) => Some("the message is plain text; switch it to HTML first"),
         Some(_) => None,
     }
 }
 
 fn compose_mut(s: &mut Session) -> Result<&mut Compose, CmdError> {
     s.compose.as_mut().ok_or_else(|| fail("no message is being written"))
+}
+
+fn doc_mut(s: &mut Session) -> Result<Doc<'_>, CmdError> {
+    s.doc_mut().ok_or_else(|| fail("no message is being written"))
 }
 
 fn model(e: ModelError) -> CmdError {
@@ -108,35 +119,35 @@ fn position(v: &Value, key: &str) -> Result<Option<usize>, CmdError> {
 }
 
 /// Select what `from` and `to` name, when the params name something.
-fn select_range(c: &mut Compose, v: &Value) -> Result<(), CmdError> {
+fn select_range(body: &mut RichBody, v: &Value) -> Result<(), CmdError> {
     let (from, to) = (position(v, "from")?, position(v, "to")?);
     if from.is_none() && to.is_none() {
         return Ok(());
     }
-    let sel = c.body.selection();
+    let sel = body.selection();
     let from = from.unwrap_or(sel.start());
     let to = to.unwrap_or(from);
-    c.body.select(from, to).map_err(model)
+    body.select(from, to).map_err(model)
 }
 
-/// Run an edit of the body; the message is changed when its text is.
-fn edit<T>(s: &mut Session, v: &Value, f: impl FnOnce(&mut Compose) -> Result<T, ModelError>) -> Result<T, CmdError> {
-    let c = compose_mut(s)?;
-    select_range(c, v)?;
-    let before = c.body.text().clone();
-    let out = f(c).map_err(model)?;
-    if *c.body.text() != before {
-        c.dirty = true;
+/// Run an edit of the text; the message (or signature) is changed when its text is.
+fn edit<T>(s: &mut Session, v: &Value, f: impl FnOnce(&mut RichBody) -> Result<T, ModelError>) -> Result<T, CmdError> {
+    let d = doc_mut(s)?;
+    select_range(d.body, v)?;
+    let before = d.body.text().clone();
+    let out = f(d.body).map_err(model)?;
+    if *d.body.text() != before {
+        *d.dirty = true;
     }
     Ok(out)
 }
 
 /// What the answer of an edit says: the selection now.
 fn state(s: &Session) -> Value {
-    match &s.compose {
-        Some(c) => {
-            let sel = c.body.selection();
-            json!({"from": sel.anchor, "to": sel.head, "length": c.body.text().len()})
+    match s.doc() {
+        Some((body, _)) => {
+            let sel = body.selection();
+            json!({"from": sel.anchor, "to": sel.head, "length": body.text().len()})
         }
         None => json!({}),
     }
@@ -145,62 +156,62 @@ fn state(s: &Session) -> Value {
 fn select(s: &mut Session, v: &Value) -> CmdResult {
     let from = position(v, "from")?.ok_or_else(|| bad("`from` (number) is required"))?;
     let to = position(v, "to")?.unwrap_or(from);
-    compose_mut(s)?.body.select(from, to).map_err(model)?;
+    doc_mut(s)?.body.select(from, to).map_err(model)?;
     Ok(state(s))
 }
 
 fn type_text(s: &mut Session, v: &Value) -> CmdResult {
     let text = p::req_str(v, "text")?.to_string();
-    edit(s, &json!({}), |c| c.body.type_text(&text))?;
+    edit(s, &json!({}), |b| b.type_text(&text))?;
     Ok(state(s))
 }
 
 fn delete(s: &mut Session, v: &Value) -> CmdResult {
     let forward = p::bool(v, "forward").unwrap_or(false);
     let named = position(v, "from")?.is_some() || position(v, "to")?.is_some();
-    edit(s, v, |c| {
-        let sel = c.body.selection();
+    edit(s, v, |b| {
+        let sel = b.selection();
         if named || !sel.is_empty() {
-            c.body.delete(sel.start(), sel.end())
+            b.delete(sel.start(), sel.end())
         } else if forward {
-            c.body.delete_forward()
+            b.delete_forward()
         } else {
-            c.body.backspace()
+            b.backspace()
         }
     })?;
     Ok(state(s))
 }
 
 fn undo(s: &mut Session, _: &Value) -> CmdResult {
-    let c = compose_mut(s)?;
-    if !c.body.undo() {
+    let d = doc_mut(s)?;
+    if !d.body.undo() {
         return Err(fail("nothing to undo in the message"));
     }
-    c.dirty = true;
+    *d.dirty = true;
     Ok(state(s))
 }
 
 fn redo(s: &mut Session, _: &Value) -> CmdResult {
-    let c = compose_mut(s)?;
-    if !c.body.redo() {
+    let d = doc_mut(s)?;
+    if !d.body.redo() {
         return Err(fail("nothing to redo in the message"));
     }
-    c.dirty = true;
+    *d.dirty = true;
     Ok(state(s))
 }
 
 fn bold(s: &mut Session, v: &Value) -> CmdResult {
-    let on = edit(s, v, |c| c.body.toggle_bold())?;
+    let on = edit(s, v, |b| b.toggle_bold())?;
     Ok(json!({"bold": on}))
 }
 
 fn italic(s: &mut Session, v: &Value) -> CmdResult {
-    let on = edit(s, v, |c| c.body.toggle_italic())?;
+    let on = edit(s, v, |b| b.toggle_italic())?;
     Ok(json!({"italic": on}))
 }
 
 fn underline(s: &mut Session, v: &Value) -> CmdResult {
-    let on = edit(s, v, |c| c.body.toggle_underline())?;
+    let on = edit(s, v, |b| b.toggle_underline())?;
     Ok(json!({"underline": on}))
 }
 
@@ -210,7 +221,7 @@ fn color(s: &mut Session, v: &Value) -> CmdResult {
         Some(_) => Some(p::str(v, "value").and_then(safe_color).ok_or_else(|| bad("`value` is a colour written #rrggbb, or null"))?),
         None => return Err(bad("`value` (#rrggbb, or null) is required")),
     };
-    edit(s, v, |c| c.body.format(Format::Color(value.clone())))?;
+    edit(s, v, |b| b.format(Format::Color(value.clone())))?;
     Ok(json!({"value": value}))
 }
 
@@ -222,7 +233,7 @@ fn font(s: &mut Session, v: &Value) -> CmdResult {
         }
         None => return Err(bad("`value` (a font, or null) is required")),
     };
-    edit(s, v, |c| c.body.format(Format::Font(value)))?;
+    edit(s, v, |b| b.format(Format::Font(value)))?;
     Ok(json!({"value": value.map(Font::label)}))
 }
 
@@ -238,12 +249,12 @@ fn size(s: &mut Session, v: &Value) -> CmdResult {
         }
         None => return Err(bad("`size` (points, or null) is required")),
     };
-    edit(s, v, |c| c.body.format(Format::Size(size)))?;
+    edit(s, v, |b| b.format(Format::Size(size)))?;
     Ok(json!({"size": size}))
 }
 
 fn list(s: &mut Session, v: &Value, kind: ListKind) -> CmdResult {
-    let now = edit(s, v, |c| c.body.toggle_list(kind))?;
+    let now = edit(s, v, |b| b.toggle_list(kind))?;
     Ok(json!({"list": now}))
 }
 
@@ -256,7 +267,7 @@ fn numbering(s: &mut Session, v: &Value) -> CmdResult {
 }
 
 fn clear(s: &mut Session, v: &Value) -> CmdResult {
-    edit(s, v, |c| c.body.clear_formatting())?;
+    edit(s, v, |b| b.clear_formatting())?;
     Ok(state(s))
 }
 
@@ -266,35 +277,35 @@ fn link(s: &mut Session, v: &Value) -> CmdResult {
         Some(Value::String(u)) => Some(u.clone()),
         Some(_) => return Err(bad("`url` is a string")),
     };
-    edit(s, v, |c| c.body.set_link(url.as_deref()))?;
+    edit(s, v, |b| b.set_link(url.as_deref()))?;
     Ok(state(s))
 }
 
 fn indent(s: &mut Session, v: &Value) -> CmdResult {
-    edit(s, v, |c| c.body.indent(1))?;
-    Ok(json!({"level": s.compose.as_ref().map_or(0, |c| c.body.text().level_at(c.body.selection().start()))}))
+    edit(s, v, |b| b.indent(1))?;
+    Ok(json!({"level": s.doc().map_or(0, |(b, _)| b.text().level_at(b.selection().start()))}))
 }
 
 fn outdent(s: &mut Session, v: &Value) -> CmdResult {
-    edit(s, v, |c| c.body.indent(-1))?;
-    let c = s.compose.as_ref();
+    edit(s, v, |b| b.indent(-1))?;
+    let d = s.doc();
     Ok(json!({
-        "level": c.map_or(0, |c| c.body.text().level_at(c.body.selection().start())),
-        "list": c.map(|c| c.body.text().list_at(c.body.selection().start())),
+        "level": d.map_or(0, |(b, _)| b.text().level_at(b.selection().start())),
+        "list": d.map(|(b, _)| b.text().list_at(b.selection().start())),
     }))
 }
 
 /// The selection (after the params' range, when they name one) as the clipboard takes it: HTML
 /// of the set, written as the message's own HTML part is, and its plain text.
 fn clipboard(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
-    let c = compose_mut(s)?;
-    select_range(c, v)?;
-    let sel = c.body.selection();
+    let d = doc_mut(s)?;
+    select_range(d.body, v)?;
+    let sel = d.body.selection();
     if sel.is_empty() {
         return Err(fail("nothing is selected in the message"));
     }
-    let part = c.body.text().slice(sel.start(), sel.end()).map_err(model)?;
-    let html = (c.format == BodyFormat::Html).then(|| mailcraft_mime::rich::to_html(&part));
+    let part = d.body.text().slice(sel.start(), sel.end()).map_err(model)?;
+    let html = (!d.plain).then(|| mailcraft_mime::rich::to_html(&part));
     Ok(json!({"text": part.to_plain(), "html": html}))
 }
 
@@ -304,9 +315,9 @@ fn copy(s: &mut Session, v: &Value) -> CmdResult {
 
 fn cut(s: &mut Session, v: &Value) -> CmdResult {
     let out = clipboard(s, v)?;
-    edit(s, &json!({}), |c| {
-        let sel = c.body.selection();
-        c.body.delete(sel.start(), sel.end())
+    edit(s, &json!({}), |b| {
+        let sel = b.selection();
+        b.delete(sel.start(), sel.end())
     })?;
     Ok(out)
 }
@@ -315,7 +326,7 @@ fn cut(s: &mut Session, v: &Value) -> CmdResult {
 pub(crate) const MAX_PASTE: usize = 4 << 20;
 
 fn paste(s: &mut Session, v: &Value) -> CmdResult {
-    let plain = s.compose.as_ref().is_some_and(|c| c.format == BodyFormat::Plain);
+    let plain = s.doc().is_some_and(|(_, plain)| plain);
     let fragment = match (p::str(v, "html"), p::str(v, "text")) {
         (Some(html), _) if html.len() <= MAX_PASTE => {
             let rich = mailcraft_mime::rich::from_html(html);
@@ -325,8 +336,18 @@ fn paste(s: &mut Session, v: &Value) -> CmdResult {
         (None, None) => return Err(bad("`html` or `text` (string) is required")),
         _ => return Err(fail("that is too much to paste into one message")),
     };
-    edit(s, &json!({}), |c| c.body.paste(&fragment))?;
-    Ok(state(s))
+    edit(s, &json!({}), |b| b.paste(&fragment))?;
+    let mut out = state(s);
+    // A signature's pictures come from files only (nothing is fetched); say so when the paste
+    // had some.
+    let pictures = p::str(v, "html").is_some_and(|h| h.to_ascii_lowercase().contains("<img"));
+    if pictures
+        && s.signature_edit.is_some()
+        && let Some(o) = out.as_object_mut()
+    {
+        o.insert("note".into(), json!("pictures in what was pasted were left out: save each one and add it with Insert Picture"));
+    }
+    Ok(out)
 }
 
 fn set_format(s: &mut Session, format: BodyFormat) -> CmdResult {
