@@ -1565,9 +1565,12 @@ fn prepare(id: Id, m: &Arc<Message>, hashes: &mut HashMap<usize, (Weak<Vec<u8>>,
     // file. A text written anew is new content, and the HTML that went with the old one goes.
     let kept = m.kept.as_deref();
     let placeholder = m.body.text.is_empty() || m.body.text == UNAVAILABLE;
-    let same_text = kept.is_some_and(|k| k.same_text(&m.body.text));
+    // The text is the one kept outside when it is a placeholder for it: then the HTML goes with
+    // it still, whatever the placeholder says (a read that failed puts the notice there).
+    let text_kept = kept.and_then(|k| k.text.as_ref()).filter(|_| placeholder);
+    let same_text = text_kept.is_some() || kept.is_some_and(|k| k.same_text(&m.body.text));
     let mut parts = Parts {
-        text: kept.filter(|_| placeholder).and_then(|k| k.text.as_ref()).map(on_disk).or_else(|| outside(m.body.text.as_bytes())),
+        text: text_kept.map(on_disk).or_else(|| outside(m.body.text.as_bytes())),
         html: match &m.body.html {
             None => kept.filter(|_| same_text).and_then(|k| k.html.as_ref()).map(on_disk),
             Some(html) => outside(html.as_bytes()),

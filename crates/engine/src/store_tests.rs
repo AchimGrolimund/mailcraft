@@ -1464,6 +1464,58 @@ fn every_content_name_in_a_damaged_file_is_found_wherever_it_falls() {
     assert_eq!(found, names.iter().copied().collect::<HashSet<_>>());
 }
 
+/// A session on the mailbox at `path` with none of its bodies in memory.
+fn session_without_bodies(path: &Path) -> Session {
+    let opened = with_budget(1, || open(path).unwrap());
+    let mut s = Session::new(opened.mailbox);
+    s.path = Some(path.to_path_buf());
+    s
+}
+
+/// A source of content that can't be read just now (a file another program holds locked, memory
+/// that isn't there for a moment).
+struct Unreadable;
+
+impl crate::io::ContentSource for Unreadable {
+    fn fetch(&self, _: &Path, _: &ContentRef) -> Result<Arc<Vec<u8>>, String> {
+        Err("the file is in use by another program".into())
+    }
+}
+
+#[test]
+fn a_body_that_couldn_t_be_read_for_a_moment_is_still_there_after_a_save_and_a_sweep() {
+    let tmp = Temp::new("transient");
+    let path = tmp.file();
+    let mb = mailbox(24);
+    save(&path, &mb).unwrap();
+    clear_cache();
+    let mut s = session_without_bodies(&path);
+    let long = first_with(&mb, |m| m.body.text.len() > INLINE_MAX && m.body.html.is_some());
+    let short = first_with(&mb, |m| m.body.text.len() <= INLINE_MAX && m.body.html.is_some());
+    s.content_source = Some(Arc::new(Unreadable));
+    for id in [long, short] {
+        assert!(s.needs_load_for_display(id));
+        assert!(s.load_for_display(id).is_err());
+        let m = s.mailbox.message(id).unwrap();
+        // The view says so, once; a short text kept in the mailbox file is left as it was.
+        let text = if id == long { UNAVAILABLE } else { mb.message(id).unwrap().body.text.as_str() };
+        assert!(m.body.text == text && !s.needs_load_for_display(id), "message {id}");
+    }
+    // Saved and swept: the files are still named, and still there.
+    s.mailbox.message_mut(long).unwrap().read = true;
+    save(&path, &s.mailbox).unwrap();
+    assert_eq!(sweep(&path, Duration::ZERO).unwrap().removed, 0);
+    for id in [long, short] {
+        assert!(blob_file(&path, mb.message(id).unwrap().body.html.as_ref().unwrap().as_bytes()).exists(), "message {id}");
+    }
+    assert!(blob_file(&path, mb.message(long).unwrap().body.text.as_bytes()).exists());
+    // Opened again with the file readable, every body comes back whole.
+    clear_cache();
+    let mut expect = mb.clone();
+    expect.message_mut(long).unwrap().read = true;
+    assert!(whole(&path) == expect);
+}
+
 /// `MAILCRAFT_BENCH_MESSAGES=50000 cargo test -p mailcraft-engine --release -- --ignored
 /// fifty_thousand_messages` (2 GB under the system's temporary folder while it runs).
 #[test]

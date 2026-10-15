@@ -806,8 +806,11 @@ impl Session {
     /// Bring the body of message `id` and the attachments `pick` chooses into memory, in the
     /// mailbox itself, so that everything that reads the message finds them. Not a change to the
     /// mailbox (nothing to undo or save), though caches that read bodies see it. Returns whether
-    /// anything was brought in. A body whose file is missing or damaged says so in its text from
-    /// then on, and the error says why.
+    /// anything was brought in. A body whose file couldn't be read says so in its text from then
+    /// on (until the mailbox is opened again), and the error says why. What the message names
+    /// for its body stays as it was: a read that failed (a file locked for a moment, memory that
+    /// wasn't there) is never written back as the body, and the file stays named, to be read
+    /// the next time.
     pub fn load_where(&mut self, id: Id, pick: impl Fn(&Attachment) -> bool) -> Result<bool, CmdError> {
         let Some(m) = self.mailbox.messages.get(&id) else { return Err(CmdError::Failed(format!("no message with id {id}"))) };
         if !m.body_is_kept() && m.attachments.iter().all(|a| a.is_loaded() || !pick(a)) {
@@ -819,11 +822,16 @@ impl Session {
             && copy.body_is_kept()
             && let Some(kept) = copy.kept.as_deref_mut()
         {
-            // Said once, in the message, instead of being asked for again every frame.
+            // Said once, in the message, instead of being asked for again every frame. Only the
+            // text that is kept outside gives way to the notice (which a save takes for the
+            // kept text, `store::prepare`); a short text kept in the mailbox file stays, and the
+            // HTML stays named, going with the text as it now reads.
             log::warn!("message {id}: its text couldn't be read ({e})");
             kept.failed = true;
-            copy.body.text = crate::store_placeholder().to_string();
-            copy.body.html = None;
+            if kept.text.is_some() && copy.body.text.is_empty() {
+                copy.body.text = crate::store_placeholder().to_string();
+            }
+            kept.text_hash = mailcraft_model::text_hash(&copy.body.text);
         }
         self.mailbox.messages.insert(id, Arc::new(copy));
         self.loads += 1;
