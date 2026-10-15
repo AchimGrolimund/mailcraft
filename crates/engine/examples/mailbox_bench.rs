@@ -1,6 +1,7 @@
 //! How long keeping a real-sized mailbox on disk takes.
 //!
-//! `cargo run --release -p mailcraft-engine --example mailbox_bench [-- --messages 5000 --attachments 300 --keep DIR]`
+//! `cargo run --release -p mailcraft-engine --example mailbox_bench [-- --messages 5000 --attachments 300 --keep DIR --split-only]`
+//! `cargo run --release -p mailcraft-engine --example mailbox_bench -- --open DIR`
 //!
 //! Builds an invented mailbox the size of a few years of somebody's mail (5,000 messages with plain
 //! and HTML bodies, 300 attachments from 20 KB to 5 MB, about 300 MB in all), then times saving and
@@ -8,7 +9,12 @@
 //! still does), and as the desktop app keeps it, with the content in a folder beside the mailbox
 //! file (`mailcraft_engine::store`). Everything is written under the system's temporary folder and
 //! removed afterwards; `--keep DIR` writes into `DIR` instead and leaves both mailboxes there, to try
-//! the app on (`mailcraft --mailbox DIR/single.mailcraft`).
+//! the app on (`mailcraft --mailbox DIR/single.mailcraft`). `--split-only` leaves the single file
+//! out (for a mailbox too large to serialise whole in memory).
+//!
+//! `--open DIR` only opens `DIR/mailbox.mailcraft` (one `--keep` left), in a process that has done
+//! nothing else, and says how long that took and how much memory the process holds after it
+//! (resident, and its peak; Linux): what a person opening that mailbox waits for and pays (R6.1).
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -348,10 +354,20 @@ fn split(mailbox: &Mailbox, dir: &Path) -> Result<(), String> {
 
     let (opened, took) = timed(|| store::open(&path));
     let opened = opened?;
-    println!("  open                       {}   ({} unavailable)", ms(took), opened.unavailable);
-    if opened.mailbox != s.mailbox {
+    println!(
+        "  open                       {}   ({} parts in memory, {} left on disk, {} unavailable)",
+        ms(took),
+        opened.loaded,
+        opened.deferred,
+        opened.unavailable
+    );
+    // What was left on disk comes back as it was saved.
+    let mut whole = opened.mailbox.clone();
+    store::load_all(&path, &mut whole)?;
+    if whole != s.mailbox {
         return Err("the mailbox didn't come back as it was saved".into());
     }
+    drop(whole);
     // The first save after opening works every message out once more (their text is hashed again).
     let mut s = Session::new(opened.mailbox);
     flip(&mut s, 40)?;
@@ -365,8 +381,49 @@ fn split(mailbox: &Mailbox, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// What the process holds in memory now and at most so far, in bytes (Linux: `/proc/self/status`).
+fn memory() -> Option<(u64, u64)> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let field = |name: &str| -> Option<u64> {
+        let line = status.lines().find(|l| l.starts_with(name))?;
+        line.split_whitespace().nth(1)?.parse::<u64>().ok()?.checked_mul(1024)
+    };
+    Some((field("VmRSS:")?, field("VmHWM:")?))
+}
+
+/// Open the mailbox kept in `dir` and nothing else: how long it takes, and what it costs.
+fn open_only(dir: &Path) -> Result<(), String> {
+    use mailcraft_engine::store;
+    let path = dir.join("mailbox.mailcraft");
+    let before = memory();
+    let (opened, took) = timed(|| store::open(&path));
+    let opened = opened?;
+    let after = memory();
+    let bodies: u64 = opened.mailbox.messages.values().map(|m| (m.body.text.len() + m.body.html.as_ref().map_or(0, String::len)) as u64).sum();
+    println!("{}: {} messages", path.display(), opened.mailbox.messages.len());
+    println!("  open                       {}", ms(took));
+    println!(
+        "  {} parts in memory ({} of bodies), {} left on disk, {} unavailable (body budget {})",
+        opened.loaded,
+        mb(bodies),
+        opened.deferred,
+        opened.unavailable,
+        mb(store::body_budget())
+    );
+    match (before, after) {
+        (Some((rss0, _)), Some((rss, peak))) => {
+            println!("  memory: {} resident after opening (from {} before), peak {}", mb(rss), mb(rss0), mb(peak));
+        }
+        _ => println!("  memory: not readable on this system"),
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(dir) = args.iter().position(|a| a == "--open").and_then(|i| args.get(i + 1)) {
+        return open_only(Path::new(dir));
+    }
     let arg = |name: &str, default: usize| {
         args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(default)
     };
@@ -380,7 +437,8 @@ fn run() -> Result<(), String> {
     let keep = args.iter().position(|a| a == "--keep").and_then(|i| args.get(i + 1)).map(std::path::PathBuf::from);
     let dir = keep.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("mailcraft-bench-{}", std::process::id())));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let result = single_file(&mailbox, &dir, keep.is_some()).and_then(|()| split(&mailbox, &dir));
+    let single = if args.iter().any(|a| a == "--split-only") { Ok(()) } else { single_file(&mailbox, &dir, keep.is_some()) };
+    let result = single.and_then(|()| split(&mailbox, &dir));
     match keep {
         Some(dir) => println!("\nkept in {}", dir.display()),
         None => {
