@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use mailcraft_model::zoned::instant_of;
 use mailcraft_model::{Address, Event, Importance, OnlineMeeting, OnlineProvider, Response, ShowAs, Task};
-use mailcraft_time::{DateTime, Timestamp, Zone};
+use mailcraft_time::{Date, DateTime, Timestamp, Zone};
 
 use crate::WriteOptions;
 use crate::lines::{fold, param_value};
@@ -113,6 +113,18 @@ fn zoned_time(name: &str, instant: Timestamp, zone: Zone) -> String {
     }
 }
 
+/// The last second of `day` by the clock of `zone`: where a series that ends that day ends.
+/// Not "23:59:59 that day", which the clocks may skip (America/Nuuk springs from 23:00 to
+/// midnight) and would then be an instant of the next day, nor the first of two 23:59:59s
+/// where they show the last hour twice.
+fn last_instant_of(zone: Zone, day: Date) -> Timestamp {
+    let next = DateTime::at_midnight(day.add_days(1));
+    let last = zone.instant(next).saturating_sub(1);
+    // A midnight the clocks skip is taken after the change: step back to before it.
+    let past = zone.wall(last).civil_seconds().saturating_sub(next.civil_seconds());
+    if past >= 0 { last.saturating_sub(past.saturating_add(1)) } else { last }
+}
+
 /// `NAME:escaped text`.
 fn text(out: &mut String, name: &str, value: &str) {
     fold(out, &format!("{name}:{}", escape_text(value)));
@@ -182,7 +194,7 @@ fn write_event(out: &mut String, e: &Event, stamp: &str, zone: Option<Zone>) {
         match &zoned {
             // The rule counts days in the series' zone; where it ends is an instant.
             Some((_, times)) => {
-                let until = recurrence.until.map(|day| times.start_zone.instant(DateTime { date: day, hour: 23, minute: 59, second: 59 }));
+                let until = recurrence.until.map(|day| last_instant_of(times.start_zone, day));
                 fold(out, &format!("RRULE:{}", rrule::format_zoned(recurrence, times.first, until)));
             }
             None => fold(out, &format!("RRULE:{}", rrule::format_for(recurrence, start, e.all_day))),
