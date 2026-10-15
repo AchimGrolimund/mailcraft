@@ -1,6 +1,6 @@
 # Roadmap reset: implementation plan
 
-> **Status:** accepted 2026-10-14, with [the spec](../specs/roadmap-reset.md); tracked in [#2](https://github.com/billsecond/mailcraft/issues/2) · **Written:** 2026-10-14 · **Change:** minor (R8.5: working days)
+> **Status:** accepted 2026-10-14, with [the spec](../specs/roadmap-reset.md); tracked in [#2](https://github.com/UCS-Care-Group/mailcraft/issues/2) · **Written:** 2026-10-14 · **Change:** minor (R8.5: working days)
 
 The order of the work to beta. Each step is one pull request or a short series, small enough to
 take or refuse on its own. Task ids are `R<step>.<n>` and go in commit messages

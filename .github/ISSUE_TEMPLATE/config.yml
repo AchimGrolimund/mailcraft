@@ -1,5 +1,5 @@
 blank_issues_enabled: true
 contact_links:
   - name: How to contribute
-    url: https://github.com/billsecond/mailcraft/blob/main/CONTRIBUTING.md
+    url: https://github.com/UCS-Care-Group/mailcraft/blob/main/CONTRIBUTING.md
     about: Claim an issue before you build; one issue, one pull request.
