@@ -1,3 +1,10 @@
+**What's new in 0.3.0** (the first alpha for testers; sign up in [#11](https://github.com/GITHUB_REPOSITORY/issues/11)):
+- Replies, forwards and new messages in rich text: bold, italic, underline, sizes, links and lists eight levels deep, from the ribbon or the keyboard; formatted copy and paste; replies keep the original's layout below.
+- Sign-ins remembered on Linux and FreeBSD (GNOME Keyring, KWallet).
+- Exchange Web Services removed: Outlook's Favorites are read through Microsoft Graph alone.
+- A folder's changes made offline survive the server renumbering it; a series ending on a day whose last hour the clocks skip ends that day; new mail no longer keeps the taskbar button lit.
+- Known: over IMAP, Exchange hides folders whose names contain `/`; downloads of large mailboxes are slow. Both are fixed by the move to Microsoft Graph, in progress.
+
 **Early alpha.** The foundations are in place and tested, but much of what a daily mail program needs is not there yet, and most of the Microsoft 365 behaviour has only been tested against stand-ins. What works is in the [README](https://github.com/GITHUB_REPOSITORY#what-works-today).
 
 MailCraft for Windows, macOS, Linux, FreeBSD and the web. Every file is listed with its SHA-256 in `SHA256SUMS.txt`.
