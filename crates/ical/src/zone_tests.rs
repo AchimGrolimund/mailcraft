@@ -389,3 +389,30 @@ BEGIN:VEVENT\nDTSTART;TZID={tzid}:20261012T090000\nDTEND;TZID={junk}:20261012T10
         }
     }
 }
+
+/// Found by `events_in_zones_round_trip`: a daily series in America/Nuuk that ends on
+/// 27 March 2027, the day the clocks there spring from 23:00 to midnight. Its `UNTIL` was
+/// "23:59:59 on the 27th", a time the clocks skip, which is an instant of the 28th: read back,
+/// the series ended a day later. It is the day's last second, wherever the calendar is shown.
+#[test]
+fn a_series_that_ends_on_the_day_the_clocks_skip_its_last_hour_ends_that_day() {
+    let nuuk = zone("America/Nuuk");
+    for here in Zone::choices().iter().copied() {
+        let offset_at = |instant: Timestamp| here.offset_at(instant);
+        let start = here.wall(here.instant(at(2000, 1, 1, 0, 0)));
+        let rule = Recurrence { until: Some(d(2027, 3, 27)), ..Recurrence::every(Freq::Daily) };
+        let mut event = Event { uid: "u@example.org".into(), start, end: start, recurrence: Some(rule), ..Default::default() };
+        let instants = (here.instant(start), here.instant(start));
+        (event.start_zone, event.end_zone) = mailcraft_model::zoned::own_zones(Some(nuuk), None, instants, true, &offset_at);
+        assert_eq!(event.start_zone, "America/Nuuk");
+        let text = write_in(&[&event], &[], &options(), Some(here));
+        // 23:00 on the 27th at -02:00 is when the 28th begins: a second before that.
+        assert!(text.contains("UNTIL=20270328T005959Z"), "{}\n{text}", here.id());
+        let back = read_in(&text, here);
+        assert!(back.notes.is_empty(), "{:?}", back.notes);
+        assert_eq!(back.events, vec![event.clone()], "{}\n{text}", here.id());
+        // The 27th's occurrence is still the last.
+        let last = |e: &Event| e.series_days(d(2027, 3, 20), d(2027, 4, 5), &offset_at).last().copied();
+        assert_eq!(last(&back.events[0]), last(&event), "{}", here.id());
+    }
+}
