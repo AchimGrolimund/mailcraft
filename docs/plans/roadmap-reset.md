@@ -1,6 +1,6 @@
 # Roadmap reset: implementation plan
 
-> **Status:** accepted 2026-10-14, with [the spec](../specs/roadmap-reset.md); tracked in [#2](https://github.com/billsecond/mailcraft/issues/2) · **Written:** 2026-10-14 · **Change:** minor (R3 detailed; R3.6 changed)
+> **Status:** accepted 2026-10-14, with [the spec](../specs/roadmap-reset.md); tracked in [#2](https://github.com/billsecond/mailcraft/issues/2) · **Written:** 2026-10-14 · **Change:** minor (R8.5: working days)
 
 The order of the work to beta. Each step is one pull request or a short series, small enough to
 take or refuse on its own. Task ids are `R<step>.<n>` and go in commit messages
@@ -90,7 +90,7 @@ Runs beside R3.
 | R8.2 | A tester issue template (with Copy diagnostics) and labels `data-loss`, `crash`, `out-of-step` | In the repository |
 | R8.3 | Fold `docs/roadmap.md` and `docs/target-app-parity.md` into `ROADMAP.md` and `docs/gaps.md`; the beta checklist in `ROADMAP.md` | Two roadmap documents |
 | R8.4 | Recruit at least 5 testers across the three platforms (start during R3) | B1, B3 |
-| R8.5 | 14 days; every `data-loss` or `crash` issue fixed with a regression test, and the 14 days restart for that tester | B2, B4–B9 pass |
+| R8.5 | 14 working days; every `data-loss` or `crash` issue fixed with a regression test, and the 14 working days restart for that tester | B2, B4–B9 pass |
 
 ## Order and overlap
 
@@ -108,3 +108,4 @@ Total before the beta run: about 130–220 hours of focused work.
 |---|---|---|
 | 2026-10-14 | major | First version |
 | 2026-10-15 | minor | R3 detailed in its own spec and plan; R3.6: imported mail can't be uploaded through Graph |
+| 2026-10-15 | minor | R8.5: 14 working days (spec B2) |

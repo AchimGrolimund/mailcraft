@@ -27,7 +27,7 @@ A glossary of the words the project uses with one meaning. Not a spec: how thing
 ## Progress
 
 - **Milestone**: a named stage with a pass/fail checklist. A milestone is reached when every item on its checklist passes, and not before.
-- **Beta**: the milestone at which at least 5 testers, each on a Microsoft account and at least 2 devices, use MailCraft daily for 14 days with no data-loss incident and no crash that loses work, reading, filing, searching, replying in rich text, forwarding and answering meetings, with everything in step with Outlook on the web, on Windows, macOS and Linux, for accounts of up to 200,000 messages.
+- **Beta**: the milestone at which at least 5 testers, each on a Microsoft account and at least 2 devices, use MailCraft on 14 working days with no data-loss incident and no crash that loses work, reading, filing, searching, replying in rich text, forwarding and answering meetings, with everything in step with Outlook on the web, on Windows, macOS and Linux, for accounts of up to 200,000 messages.
 - **Data-loss incident**: anything a tester had (a message, a flag, a folder, an appointment, a reply being written) that is gone or changed without their asking, here or on the server.
 - **Crash that loses work**: the program ending without the owner's asking and taking with it something they had done or written.
 - **Diagnostics**: what an owner copies to report a problem: the program's version and a record of what it did, with no message content, address, password or token in it. Nothing is ever sent by itself.

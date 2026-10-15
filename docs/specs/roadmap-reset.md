@@ -1,6 +1,6 @@
 # Roadmap reset: from here to beta
 
-> **Status:** accepted 2026-10-14 ([#1](https://github.com/billsecond/mailcraft/pull/1)); tracked in [#2](https://github.com/billsecond/mailcraft/issues/2) · **Written:** 2026-10-14 · **Author:** Martin Ball, with Claude · **Change:** major (first version) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Status:** accepted 2026-10-14 ([#1](https://github.com/billsecond/mailcraft/pull/1)); tracked in [#2](https://github.com/billsecond/mailcraft/issues/2) · **Written:** 2026-10-14 · **Author:** Martin Ball, with Claude · **Change:** minor (B2: working days) · **Target:** Microsoft Outlook (Microsoft 365)
 
 The words in this document have the meanings in [`CONTEXT.md`](../../CONTEXT.md). The order of
 the work is in [`docs/plans/roadmap-reset.md`](../plans/roadmap-reset.md); the two decisions that
@@ -40,9 +40,9 @@ Every item must pass. Each is checked by testers' reports and GitHub issues, not
 | # | Item |
 |---|---|
 | B1 | At least 5 testers, none of them authors, each on a Microsoft account (personal, or work or school) |
-| B2 | Each uses MailCraft daily for 14 days, on at least 2 devices |
+| B2 | Each uses MailCraft on 14 working days (Monday to Friday; about three weeks), on at least 2 devices |
 | B3 | Across Windows x64, macOS (Apple silicon and Intel) and Linux x86_64, each with at least one tester |
-| B4 | No data-loss incident, and no crash that loses work, in the 14 days |
+| B4 | No data-loss incident, and no crash that loses work, in those 14 working days |
 | B5 | Reading, filing, searching, forwarding and replying in rich text, with the quoted original kept |
 | B6 | Accepting and declining a meeting; reminders fire as system notifications while MailCraft runs |
 | B7 | Every account in step with Outlook on the web, checked by each tester at the end |
@@ -138,3 +138,4 @@ These need billsecond's accounts or money, and are B10:
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-14 | major | First version, from a review of the repository and a decision session with Martin Ball |
+| 2026-10-15 | minor | B2, B4: 14 working days rather than 14 calendar days, as a work mailbox is used (from the first tester sign-up, #33) |
