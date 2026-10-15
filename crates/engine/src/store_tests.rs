@@ -1516,6 +1516,58 @@ fn a_body_that_couldn_t_be_read_for_a_moment_is_still_there_after_a_save_and_a_s
     assert!(whole(&path) == expect);
 }
 
+#[test]
+fn undo_after_a_sweep_brings_back_a_message_whose_content_is_still_there() {
+    let tmp = Temp::new("undo-sweep");
+    let path = tmp.file();
+    let mb = mailbox(24);
+    save(&path, &mb).unwrap();
+    clear_cache();
+    let mut s = session_without_bodies(&path);
+    // A message with a long text, HTML and a file, none of it in memory, deleted for good.
+    let victim =
+        first_with(&mb, |m| m.body.text.len() > INLINE_MAX && m.body.html.is_some() && m.attachments.iter().any(|a| a.data.len() > INLINE_MAX));
+    assert!(!s.mailbox.message(victim).unwrap().is_loaded());
+    s.run("mail.deletePermanently", &json!({"ids": [victim]})).unwrap();
+    save(&path, &s.mailbox).unwrap();
+    // The sweep leaves what the Undo step still names.
+    sweep(&path, Duration::ZERO).unwrap();
+    let was = mb.message(victim).unwrap();
+    let files_of = |m: &Message| {
+        let mut out = vec![blob_file(&path, m.body.text.as_bytes()), blob_file(&path, m.body.html.as_ref().unwrap().as_bytes())];
+        out.extend(m.attachments.iter().filter(|a| a.data.len() > INLINE_MAX).map(|a| blob_file(&path, &a.data)));
+        out
+    };
+    assert!(files_of(was).iter().all(|f| f.exists()));
+    // Undone and saved, the mailbox is whole again.
+    s.run("edit.undo", &json!({})).unwrap();
+    save(&path, &s.mailbox).unwrap();
+    clear_cache();
+    assert!(whole(&path) == mb);
+
+    // Once nothing in memory names it, the content of a message that is gone is swept.
+    s.run("mail.deletePermanently", &json!({"ids": [victim]})).unwrap();
+    save(&path, &s.mailbox).unwrap();
+    s.forget_history();
+    sweep(&path, Duration::ZERO).unwrap();
+    assert!(files_of(was).iter().all(|f| !f.exists()));
+
+    // And a message brought back whose content went anyway (taken by hand, say) never stops the
+    // mailbox from being saved: it is saved naming it, and says it is unavailable.
+    let mut s = session_without_bodies(&path);
+    let other = first_with(&s.mailbox, |m| m.body_is_kept() && m.body.text.is_empty());
+    let text = blob_file(&path, mb.message(other).unwrap().body.text.as_bytes());
+    s.run("mail.deletePermanently", &json!({"ids": [other]})).unwrap();
+    save(&path, &s.mailbox).unwrap();
+    fs::remove_file(&text).unwrap();
+    s.run("edit.undo", &json!({})).unwrap();
+    save(&path, &s.mailbox).unwrap();
+    s.run("mail.markAllRead", &json!({})).ok();
+    save(&path, &s.mailbox).unwrap();
+    let back = with_budget(1 << 30, || open(&path).unwrap());
+    assert_eq!(back.mailbox.message(other).unwrap().body.text, UNAVAILABLE);
+}
+
 /// `MAILCRAFT_BENCH_MESSAGES=50000 cargo test -p mailcraft-engine --release -- --ignored
 /// fifty_thousand_messages` (2 GB under the system's temporary folder while it runs).
 #[test]

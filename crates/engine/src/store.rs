@@ -52,7 +52,9 @@
 //! - **Sweeping** ([`sweep`]) removes content files the mailbox file no longer names, never one
 //!   written in the last few minutes: a save in flight has written its content before its mailbox
 //!   file names it. Nothing a damaged mailbox file kept aside names is swept (every name found
-//!   anywhere in it): it may name content the mailbox no longer does.
+//!   anywhere in it): it may name content the mailbox no longer does. Nor is the content a
+//!   message still in memory keeps on disk (an Undo step after it was deleted), though the file
+//!   no longer names it.
 //!
 //! Not in the browser, which has no folder to keep content in: there the mailbox stays one file.
 
@@ -442,13 +444,15 @@ fn hold(live: &mut HashMap<Digest, u32>, parts: &Parts) {
     }
 }
 
-/// No longer count `parts` among the content the file names.
-fn release(live: &mut HashMap<Digest, u32>, parts: &Parts) {
+/// No longer count `parts` among the content the file names; what it no longer names at all goes
+/// into `gone`.
+fn release(live: &mut HashMap<Digest, u32>, parts: &Parts, gone: &mut HashSet<Digest>) {
     for p in parts.all() {
         if let Some(n) = live.get_mut(&p.r.hash) {
             *n = n.saturating_sub(1);
             if *n == 0 {
                 live.remove(&p.r.hash);
+                gone.insert(p.r.hash);
             }
         }
     }
@@ -509,6 +513,51 @@ struct State {
     /// The newest state written (see [`next_seq`]): an older one arriving late is dropped.
     newest: u64,
     swept: Option<Instant>,
+    /// What this program still holds in memory that the file let go of: messages whose record
+    /// was replaced or removed, while something keeps them (an Undo step). A sweep leaves the
+    /// content they keep on disk alone, so that going back to one of them and saving it finds
+    /// its content there ([`Pins`]).
+    pins: Pins,
+    /// Content the mailbox file named at some time while this program ran. A message that names
+    /// it again is this mailbox's, not one carried over from another ([`on_disk_here`]).
+    named_before: HashSet<Digest>,
+}
+
+/// Messages the mailbox file no longer says as they are in memory, held by nothing but a weak
+/// handle: once nothing else holds one, it goes.
+#[derive(Default)]
+struct Pins {
+    held: Vec<Weak<Message>>,
+    /// How many there were after the last tidy-up, to tidy up again when that has doubled.
+    after_tidy: usize,
+}
+
+impl Pins {
+    /// Keep an eye on the message a record that is replaced or removed was written from.
+    fn add(&mut self, of: &Weak<Message>) {
+        if of.strong_count() == 0 {
+            return;
+        }
+        self.held.push(of.clone());
+        if self.held.len() > self.after_tidy.saturating_mul(2).max(256) {
+            self.held.retain(|w| w.strong_count() > 0);
+            self.after_tidy = self.held.len();
+        }
+    }
+
+    /// The content that messages still in memory keep on disk (named on them, not in memory).
+    fn kept(&mut self) -> HashSet<Digest> {
+        self.held.retain(|w| w.strong_count() > 0);
+        self.after_tidy = self.held.len();
+        let mut out = HashSet::new();
+        for m in self.held.iter().filter_map(Weak::upgrade) {
+            if let Some(k) = m.kept.as_deref() {
+                out.extend(k.text.iter().chain(&k.html).map(|r| Digest(r.sha256)));
+            }
+            out.extend(m.attachments.iter().filter_map(|a| a.kept).map(|r| Digest(r.sha256)));
+        }
+        out
+    }
 }
 
 #[derive(Default)]
@@ -930,7 +979,9 @@ pub fn open(path: &Path) -> Result<Opened, String> {
     let file = resolve(path);
     let len = fs::metadata(&file).map_err(|e| format!("{show}: {e}"))?.len();
     // Whatever was known about this file was about another state of it.
-    *st = State { newest: st.newest, swept: st.swept, ..State::default() };
+    // (Except what is still in memory from before, which an Undo step may bring back.)
+    let (pins, named_before) = (std::mem::take(&mut st.pins), std::mem::take(&mut st.named_before));
+    *st = State { newest: st.newest, swept: st.swept, pins, named_before, ..State::default() };
     if is_index(&file).map_err(|e| format!("{show}: {e}"))? {
         return open_index(&mut st, &file, len).map_err(|e| format!("{show}: {e}"));
     }
@@ -1550,7 +1601,8 @@ pub fn save_single(path: &Path, mailbox: &Mailbox) -> Result<u64, String> {
     write_atomic(&resolve(path), &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     // The file is another one now: nothing known about the old one holds, and a state of it
     // still waiting to be written has had its turn.
-    *st = State { newest: next_seq(), swept: st.swept, ..State::default() };
+    let (pins, named_before) = (std::mem::take(&mut st.pins), std::mem::take(&mut st.named_before));
+    *st = State { newest: next_seq(), swept: st.swept, pins, named_before, ..State::default() };
     Ok(bytes.len() as u64)
 }
 
@@ -1618,10 +1670,19 @@ fn prepare(id: Id, m: &Arc<Message>, hashes: &mut HashMap<usize, (Weak<Vec<u8>>,
 /// A mailbox file never names content that isn't beside it: a part whose bytes aren't in memory
 /// (it stayed on disk when the mailbox was opened) must be in this file's folder, which it is
 /// when the file already names it (`live`), else when its file is there. A message carried over
-/// from a mailbox kept elsewhere, with its content still there, is refused with why.
-fn on_disk_here(id: Id, parts: &Parts, live: &HashMap<Digest, u32>, dir: &Path, folders: &Folders) -> Result<(), String> {
-    for p in parts.all().filter(|p| !p.held && !live.contains_key(&p.r.hash)) {
-        if !present(dir, &p.r, folders) {
+/// from a mailbox kept elsewhere, with its content still there, is refused with why. Content
+/// this file named before (`named_before`) is this mailbox's: should its file be gone (taken by
+/// a sweep before an Undo brought back a message that names it), the message is saved naming
+/// it all the same, and says its content is unavailable when the mailbox is next opened, rather
+/// than every later save failing.
+fn on_disk_here(id: Id, parts: &Parts, st: &State, dir: &Path, folders: &Folders) -> Result<(), String> {
+    for p in parts.all().filter(|p| !p.held && !st.live.contains_key(&p.r.hash)) {
+        if present(dir, &p.r, folders) {
+            continue;
+        }
+        if st.named_before.contains(&p.r.hash) {
+            log::warn!("message {id}: some of its content is missing from the mailbox's content folder; it is kept named");
+        } else {
             return Err(format!(
                 "message {id}: its content isn't in this mailbox's folder (it was opened from another mailbox); save the mailbox where it was opened, or save it as one file first"
             ));
@@ -1824,7 +1885,7 @@ fn delta<'m>(st: &mut State, path: &Path, mailbox: &'m Mailbox, d: &Disk) -> Res
                 wanted.entry(r).or_insert(bytes);
             }
         }
-        on_disk_here(*id, &p.parts, &st.live, &dir, &folders)?;
+        on_disk_here(*id, &p.parts, st, &dir, &folders)?;
         let (size, _) = index::put(&mut group, (Coll::Message, *id), &p.json, &p.refs).map_err(io_error)?;
         records = records.saturating_add(1);
         messages.push((*id, Msg { entry: Entry { of: p.of, fp: p.fp, size }, parts: p.parts }));
@@ -1883,7 +1944,8 @@ fn changes<T: Serialize>(
 }
 
 /// Make `d` say what the file says once `delta`'s records are written.
-fn apply(d: &mut Disk, live: &mut HashMap<Digest, u32>, delta: Delta<'_>) {
+fn apply(d: &mut Disk, st: &mut State, delta: Delta<'_>) {
+    let State { live, pins, named_before, .. } = st;
     for (id, of) in delta.relink {
         if let Some(m) = d.messages.get_mut(&id) {
             m.entry.of = of;
@@ -1893,13 +1955,15 @@ fn apply(d: &mut Disk, live: &mut HashMap<Digest, u32>, delta: Delta<'_>) {
         hold(live, &m.parts);
         d.live = d.live.saturating_add(m.entry.size);
         if let Some(old) = d.messages.insert(id, m) {
-            release(live, &old.parts);
+            pins.add(&old.entry.of);
+            release(live, &old.parts, named_before);
             d.live = d.live.saturating_sub(old.entry.size);
         }
     }
     for id in delta.gone {
         if let Some(old) = d.messages.remove(&id) {
-            release(live, &old.parts);
+            pins.add(&old.entry.of);
+            release(live, &old.parts, named_before);
             d.live = d.live.saturating_sub(old.entry.size);
         }
     }
@@ -2013,7 +2077,8 @@ fn write_index_once(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Sa
     let ours = st.stamp.as_ref().is_some_and(|s| s.still(path));
     let changed = st.stamp.is_some() && !ours && path.exists();
     if !ours {
-        st.live.clear();
+        let State { live, named_before, .. } = &mut *st;
+        named_before.extend(live.drain().map(|(hash, _)| hash));
         st.stamp = None;
         st.disk = None;
         st.legacy = None;
@@ -2021,7 +2086,7 @@ fn write_index_once(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Sa
     if ours && st.loaded.as_ref().is_some_and(|loaded| loaded.is(mailbox)) {
         return Ok(Saved { unchanged: true, ..Saved::default() });
     }
-    st.loaded = None;
+    let opened = st.loaded.take();
     let prior = st.disk.take();
     let keep = if changed {
         Some(Keep::Changed)
@@ -2030,7 +2095,13 @@ fn write_index_once(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Sa
     } else {
         st.legacy.map(Keep::Legacy)
     };
-    let Some(mut d) = prior.filter(Disk::appendable) else { return compact(st, path, mailbox, keep) };
+    let mut d = match prior {
+        Some(d) if d.appendable() => d,
+        prior => {
+            pin_replaced(st, prior.as_ref(), opened.as_ref(), mailbox);
+            return compact(st, path, mailbox, keep);
+        }
+    };
     let mut delta = match delta(st, path, mailbox, &d) {
         Ok(delta) => delta,
         Err(e) => {
@@ -2046,7 +2117,7 @@ fn write_index_once(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Sa
     }
     let group = std::mem::take(&mut delta.group);
     let records = delta.records;
-    apply(&mut d, &mut st.live, delta);
+    apply(&mut d, st, delta);
     if records == 0 {
         st.disk = Some(d);
         saved.unchanged = saved.blobs == 0;
@@ -2096,6 +2167,23 @@ impl Keep {
     }
 }
 
+/// Before the file is written whole: keep an eye on the messages of what it said (`prior`, or the
+/// mailbox as it was opened from an earlier form) that `mailbox` no longer has as they were
+/// ([`Pins`]).
+fn pin_replaced(st: &mut State, prior: Option<&Disk>, opened: Option<&Loaded>, mailbox: &Mailbox) {
+    let same = |id: &Id, of: &Weak<Message>| mailbox.messages.get(id).is_some_and(|m| std::ptr::eq(of.as_ptr(), Arc::as_ptr(m)));
+    for (id, m) in prior.map(|d| &d.messages).into_iter().flatten() {
+        if !same(id, &m.entry.of) {
+            st.pins.add(&m.entry.of);
+        }
+    }
+    for (id, of) in opened.map(|l| &l.messages).into_iter().flatten() {
+        if !same(id, of) {
+            st.pins.add(of);
+        }
+    }
+}
+
 /// How the names of files kept aside go on from the mailbox file's own (`<file>.<this>…`).
 const DAMAGED: &str = "damaged-";
 const CHANGED: &str = "changed-";
@@ -2130,7 +2218,7 @@ fn compact(st: &mut State, path: &Path, mailbox: &Mailbox, keep: Option<Keep>) -
                 wanted.entry(r).or_insert(bytes);
             }
         }
-        on_disk_here(*id, &p.parts, &st.live, &dir, &folders)?;
+        on_disk_here(*id, &p.parts, st, &dir, &folders)?;
         let (size, _) = index::put(&mut out, (Coll::Message, *id), &p.json, &p.refs).map_err(io_error)?;
         hold(&mut live, &p.parts);
         d.live = d.live.saturating_add(size);
@@ -2164,6 +2252,8 @@ fn compact(st: &mut State, path: &Path, mailbox: &Mailbox, keep: Option<Keep>) -
         }
     }
     out.commit().map_err(io_error)?;
+    let gone: Vec<Digest> = st.live.keys().filter(|hash| !live.contains_key(*hash)).copied().collect();
+    st.named_before.extend(gone);
     st.live = live;
     st.stamp = Stamp::of(path, d.len);
     st.legacy = None;
@@ -2354,6 +2444,8 @@ pub fn sweep(path: &Path, grace: Duration) -> Result<Swept, String> {
     let named = if known { Some(st.live.keys().copied().collect()) } else { named_by(&file).map_err(|e| format!("{}: {e}", path.display()))? };
     let Some(mut named) = named else { return Ok(Swept::default()) };
     named.extend(kept_aside);
+    // What a message still in memory keeps on disk stays, though the file no longer names it.
+    named.extend(st.pins.kept());
     let now = SystemTime::now();
     // A time in the future is no age at all.
     let old = |meta: &fs::Metadata| meta.modified().ok().and_then(|t| now.duration_since(t).ok()).is_some_and(|age| age >= grace);
