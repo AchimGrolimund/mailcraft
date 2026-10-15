@@ -661,6 +661,39 @@ fn a_sync_result_lands_in_the_right_folders() {
     let mut got: Vec<(u32, bool, FlagStatus)> = s.mailbox.messages_in(inbox).map(|m| (m.uid, m.read, m.flag)).collect();
     got.sort_by_key(|x| x.0);
     assert_eq!(got, [(12, true, FlagStatus::Flagged), (13, false, FlagStatus::None)]);
+    // Deleted on a phone: gone from the Inbox, and its copy turns up in Deleted Items. Nothing
+    // came to the owner, so nothing is new.
+    let trash = |uid_seen: u32, new: Vec<Message>| FolderDelta {
+        id: None,
+        remote: "Deleted Items".into(),
+        kind: FolderKind::Deleted,
+        uid_validity: 5,
+        uid_seen,
+        new,
+        ..Default::default()
+    };
+    // Its first download counts, as any folder's does.
+    let first_listing = SyncResult { account: a, folders: vec![trash(1, vec![mail(1, "Old")])], ..Default::default() };
+    assert_eq!(run(&mut s, "sync.apply", json!({"result": first_listing}))["new"], 1);
+    let deleted = SyncResult {
+        account: a,
+        folders: vec![
+            FolderDelta {
+                id: Some(inbox),
+                remote: "INBOX".into(),
+                kind: FolderKind::Inbox,
+                uid_validity: 7,
+                uid_seen: 13,
+                removed: vec![13],
+                ..Default::default()
+            },
+            trash(2, vec![mail(2, "Three")]),
+        ],
+        ..Default::default()
+    };
+    let r = run(&mut s, "sync.apply", json!({"result": deleted}));
+    assert_eq!((r["new"].as_u64(), r["removed"].as_u64()), (Some(0), Some(1)));
+    assert!(s.sync_status.starts_with("Up to date"), "{}", s.sync_status);
     // A new UIDVALIDITY: everything from the server is replaced.
     let reset = SyncResult {
         account: a,
@@ -1019,8 +1052,9 @@ mod two_way {
             ..Default::default()
         };
         let r = apply(&mut s, done);
-        // The copy is the message that was moved: it gets its UID, and nothing shows twice.
-        assert_eq!((r["new"].as_u64(), r["matched"].as_u64(), r["summary"].as_str()), (Some(1), Some(1), Some("1 new message")));
+        // The copy is the message that was moved: it gets its UID, and nothing shows twice. What
+        // was filed in Archive elsewhere is taken in, and is not new mail.
+        assert_eq!((r["new"].as_u64(), r["matched"].as_u64(), r["summary"].as_str()), (Some(0), Some(1), Some("Up to date")));
         assert_eq!((state(&s, two), s.mailbox.count(archive)), ((archive, 2, false, FlagStatus::None), 4));
         assert!(s.mailbox.pending.is_empty() && unpushed(&s, a) == 0);
         // The other is known to be there, and waits for its copy: no UID yet, nothing to push.
@@ -1338,7 +1372,7 @@ mod two_way {
             ..Default::default()
         };
         let r = apply(&mut s, later);
-        assert_eq!((r["new"].as_u64(), r["matched"].as_u64(), s.mailbox.count(sent_items)), (Some(1), Some(1), 4));
+        assert_eq!((r["new"].as_u64(), r["matched"].as_u64(), s.mailbox.count(sent_items)), (Some(0), Some(1), 4));
         let m = s.mailbox.message(second).unwrap();
         assert_eq!((m.uid, m.message_id.as_str(), m.synced.map(|f| f.read)), (2, "PH0PR01MB0001@prod.outlook.example", Some(true)));
         assert_eq!((state(&s, third).1, unpushed(&s, a)), (0, 0));
