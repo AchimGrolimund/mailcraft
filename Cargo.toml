@@ -50,8 +50,7 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 
 # An XML reader, for the one document Microsoft Graph hands over as XML (the cached
 # configuration of Outlook on the web, of which the list of Favorites is read:
-# `mailcraft-net`'s `graph::favorites`) and for what Exchange Web Services answers (`ews`). MIT, Rust throughout, and nothing but `memchr` under
-# it. It reads no DTD and expands no entity: a reference in the text is handed over as such.
+# `mailcraft-net`'s `graph::favorites`). MIT, Rust throughout, and nothing but `memchr` under it. It reads no DTD and expands no entity: a reference in the text is handed over as such.
 # Already in the tree (a build tool of the Linux windowing crates uses it); desktop and CLI only.
 quick-xml = { version = "0.41", default-features = false }
 

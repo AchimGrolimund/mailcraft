@@ -22,14 +22,8 @@
 //! come from [`refresh_graph_with_favorites`], which falls back to what a sign-in covered
 //! before.
 //!
-//! The owner of an organisation's account may have the Favorites read through Exchange Web
-//! Services instead ([`crate::ews`]), which is one scope of its own
-//! (`https://outlook.office365.com/EWS.AccessAsUser.All`) and never on the page of a sign-in
-//! either: [`refresh_ews`] gets its token from the refresh token without asking anybody, and
-//! says when the sign-in doesn't cover it; [`sign_in_for_ews`] asks on the provider's page, for
-//! that alone, when the owner chooses to. When a no is the organisation's rather than the
-//! owner's, it is told apart by Microsoft's own numbers for it: an administrator has to
-//! approve first ([`FavoritesRefusal::Approval`]: [`admin_consent_url`] is the address to hand
+//! When a no to them is the organisation's rather than the owner's, it is told apart by
+//! Microsoft's own numbers for it: an administrator has to approve first ([`FavoritesRefusal::Approval`]: [`admin_consent_url`] is the address to hand
 //! them), or the door is shut for another reason ([`FavoritesRefusal::Organisation`]).
 //! [`Tokens::tenant`] is the directory a sign-in names (the identity token's `tid`), which
 //! tells an organisation's account from a personal one.
@@ -126,12 +120,6 @@ const MICROSOFT_GRAPH_FAVORITES: &str = "https://graph.microsoft.com/MailboxConf
 /// owner chooses to. With this on, a page that is refused is asked once more without them
 /// ([`Endpoints::lesser`]); what cannot be undone is a page the owner never comes back from.
 const FAVORITES_AT_SIGN_IN: bool = false;
-/// Exchange Web Services as the signed-in owner, for reading the Favorites of Outlook where the
-/// owner chose that way: the scope Microsoft documents for it ("Authenticate an EWS application
-/// by using OAuth": `EWS.AccessAsUser.All` of Office 365 Exchange Online, at the host the
-/// service is at). Only work and school accounts have it, an organisation may keep it for its
-/// administrators to give, and Microsoft switches the service off on 1 April 2027.
-const MICROSOFT_EWS: &str = "https://outlook.office365.com/EWS.AccessAsUser.All";
 /// Where an administrator approves an application for a whole organisation, in the form the
 /// Microsoft identity platform documents ("Admin consent on the Microsoft identity platform":
 /// `/{tenant}/v2.0/adminconsent` with `client_id`, `scope` and `redirect_uri`).
@@ -168,7 +156,7 @@ const DECLINED_CODES: [u64; 1] = [65_004];
 /// doesn't have the service that was asked for (650052).
 const BLOCKED_CODES: [u64; 4] = [50_105, 53_003, 650_052, 7_000_112];
 /// And for a no that is about the kind of account: one that can't be used with what was asked
-/// for (500207), as a personal Microsoft account can't with Exchange Web Services.
+/// for (500207).
 const ACCOUNT_CODES: [u64; 1] = [500_207];
 /// Most numbers looked at in one answer.
 const MAX_CODES: usize = 16;
@@ -182,9 +170,6 @@ pub enum Resource {
     /// Microsoft Graph ([`crate::graph`]): sending mail where SMTP is switched off, the calendar
     /// and the contacts.
     Graph,
-    /// Exchange Web Services ([`crate::ews`]): the Favorites of Outlook, read, for an account
-    /// whose owner chose that way. Never asked for with a sign-in: by itself, on that choice.
-    Ews,
 }
 
 /// Where a provider signs people in, and what it is asked for.
@@ -234,14 +219,11 @@ impl Endpoints {
                 let (scope, consent) = match resource {
                     Resource::Mail => (MICROSOFT_SCOPE.to_string(), format!("{MICROSOFT_GRAPH} {MICROSOFT_GRAPH_EXTRAS}")),
                     Resource::Graph => (format!("{MICROSOFT_GRAPH} {SIGN_IN_SCOPE}"), MICROSOFT_GRAPH_EXTRAS.to_string()),
-                    // (Asked for alone: nothing else is put to the owner on that page.)
-                    Resource::Ews => (format!("{MICROSOFT_EWS} {SIGN_IN_SCOPE}"), String::new()),
                 };
                 // (With the Favorites' permissions on the same page, were that wanted: what was
                 // asked for before them is then what a refused page falls back to.)
-                let favorites_too = FAVORITES_AT_SIGN_IN && resource != Resource::Ews;
                 let (consent, lesser) =
-                    if favorites_too { (format!("{consent} {MICROSOFT_GRAPH_FAVORITES}"), consent) } else { (consent, String::new()) };
+                    if FAVORITES_AT_SIGN_IN { (format!("{consent} {MICROSOFT_GRAPH_FAVORITES}"), consent) } else { (consent, String::new()) };
                 Endpoints {
                     authorize: format!("{MICROSOFT_LOGIN}/{tenant}/oauth2/v2.0/authorize"),
                     token: format!("{MICROSOFT_LOGIN}/{tenant}/oauth2/v2.0/token"),
@@ -378,8 +360,7 @@ fn sign_in_refused(
     }
 }
 
-/// Why the owner's yes to reading the Favorites of Outlook wasn't had ([`sign_in_for_favorites`],
-/// [`sign_in_for_ews`]).
+/// Why the owner's yes to reading the Favorites of Outlook wasn't had ([`sign_in_for_favorites`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FavoritesRefusal {
     /// The organisation the account belongs to doesn't let its people give this permission
@@ -401,16 +382,14 @@ pub enum FavoritesRefusal {
 /// everything this program asks an owner for, so that one approval covers what is asked later
 /// too. That is what a sign-in's page asks for (IMAP, SMTP, a refresh token and who signs in;
 /// Microsoft Graph's sending, calendar, contacts and mailbox settings) and what reading the
-/// Favorites of Outlook through Graph takes. Exchange Web Services is in it only where `source`
-/// says the owner chose that way: it stays the owner's separate choice.
+/// Favorites of Outlook through Graph takes.
 ///
 /// A sign-in asks for no more than is here: a page that asked for one permission an
 /// administrator had not approved would send the owner to find one again.
-fn admin_scope(source: mailcraft_model::FavoritesSource) -> String {
+fn admin_scope() -> String {
     let who: Vec<&str> = SIGN_IN_SCOPE.split(' ').collect();
     let mail = MICROSOFT_SCOPE.split(' ').filter(|scope| !who.contains(scope));
-    let ews = (source == mailcraft_model::FavoritesSource::Ews).then_some(MICROSOFT_EWS);
-    let all = mail.chain([MICROSOFT_GRAPH, MICROSOFT_GRAPH_EXTRAS, MICROSOFT_GRAPH_FAVORITES]).chain(ews).chain([SIGN_IN_SCOPE]);
+    let all = mail.chain([MICROSOFT_GRAPH, MICROSOFT_GRAPH_EXTRAS, MICROSOFT_GRAPH_FAVORITES, SIGN_IN_SCOPE]);
     all.collect::<Vec<_>>().join(" ")
 }
 
@@ -451,19 +430,17 @@ fn admin_consent_page(oauth: &OAuth, tenant: &str) -> Result<String, NetError> {
 }
 
 /// The address of Microsoft's page where an administrator of an organisation approves this
-/// application, once for everybody in it, for everything the program asks an owner for (and
-/// for Exchange Web Services with it where `source` says the owner chose that way of reading
-/// the Favorites of Outlook). For the owner to pass on to an administrator: nothing here opens
-/// it. [`admin_consent`] is for an owner who is one.
+/// application, once for everybody in it, for everything the program asks an owner for. For
+/// the owner to pass on to an administrator: nothing here opens it. [`admin_consent`] is for an owner who is one.
 ///
 /// `tenant` is the organisation's directory when it is known, else empty (as for
 /// [`admin_consent`]). The address names the application, the directory, the permissions and
 /// where the page goes afterwards (the address the application is registered with, on the
 /// administrator's own machine, where nothing is waiting: the approval is given before the
 /// browser goes there). Nothing of the owner and no secret is in it.
-pub fn admin_consent_url(oauth: &OAuth, tenant: &str, source: mailcraft_model::FavoritesSource) -> Result<String, NetError> {
+pub fn admin_consent_url(oauth: &OAuth, tenant: &str) -> Result<String, NetError> {
     let client_id = client_id(oauth)?;
-    let scope = admin_scope(source);
+    let scope = admin_scope();
     let fields = [("client_id", client_id), ("scope", scope.as_str()), ("redirect_uri", REGISTERED_REDIRECT)];
     Ok(format!("{}?{}", admin_consent_page(oauth, tenant)?, http::form(&fields)))
 }
@@ -509,33 +486,19 @@ impl From<Refused> for AdminRefusal {
 /// to a loopback port of this machine with a yes or a no and nothing else, and `Ok` is the yes.
 /// Blocks for as long as that takes, five minutes at most; setting `cancel` ends the wait.
 ///
-/// What is asked for is what [`admin_consent_url`] asks for, and `tenant` and `source` are as
-/// there. No tokens come of it: the account is signed in afterwards, as any other
+/// What is asked for is what [`admin_consent_url`] asks for, and `tenant` is as there. No tokens come of it: the account is signed in afterwards, as any other
 /// ([`sign_in`]). Should Microsoft not take the permissions of several services on one page, it
 /// is asked again service by service (`open` is then given an address for each).
 ///
 /// Nothing of what comes back is believed about who anybody is: the directory the page names
 /// is not read at all.
-pub fn admin_consent(
-    oauth: &OAuth,
-    tenant: &str,
-    source: mailcraft_model::FavoritesSource,
-    open: &dyn Fn(&str),
-    cancel: &AtomicBool,
-) -> Result<(), AdminRefusal> {
-    admin_consent_within(oauth, tenant, source, open, cancel, SIGN_IN_TIMEOUT)
+pub fn admin_consent(oauth: &OAuth, tenant: &str, open: &dyn Fn(&str), cancel: &AtomicBool) -> Result<(), AdminRefusal> {
+    admin_consent_within(oauth, tenant, open, cancel, SIGN_IN_TIMEOUT)
 }
 
 /// [`admin_consent`], waiting no longer than `patience` for each page.
-fn admin_consent_within(
-    oauth: &OAuth,
-    tenant: &str,
-    source: mailcraft_model::FavoritesSource,
-    open: &dyn Fn(&str),
-    cancel: &AtomicBool,
-    patience: Duration,
-) -> Result<(), AdminRefusal> {
-    let all = admin_scope(source);
+fn admin_consent_within(oauth: &OAuth, tenant: &str, open: &dyn Fn(&str), cancel: &AtomicBool, patience: Duration) -> Result<(), AdminRefusal> {
+    let all = admin_scope();
     match ask_administrator(oauth, tenant, &all, open, cancel, patience) {
         // The page won't have what it was asked for together: once more, a page for each service.
         Err(refused) if refused.about == About::Scope && apart(&all).len() > 1 => {
@@ -566,57 +529,6 @@ fn ask_administrator(oauth: &OAuth, tenant: &str, scope: &str, open: &dyn Fn(&st
     let fields = [("client_id", client_id), ("scope", scope), ("redirect_uri", redirect_uri.as_str()), ("state", state.as_str())];
     open(&format!("{page}?{}", http::form(&fields)));
     redirect.wait_for(&state, cancel, patience, judge_consent)
-}
-
-/// Ask the owner, on the provider's page, to let this program use Exchange Web Services as
-/// them, and nothing else: for an account whose owner chose to have the Favorites of Outlook
-/// read that way, when [`refresh_ews`] says the sign-in doesn't cover it. The access token that
-/// comes back is for Exchange Web Services only; the refresh token is as good as any other of
-/// the same owner.
-///
-/// Nothing is tried a second time: a no is the answer, and it says whose it is
-/// ([`FavoritesRefusal`]).
-pub fn sign_in_for_ews(oauth: &OAuth, login_hint: &str, open: &dyn Fn(&str), cancel: &AtomicBool) -> Result<Tokens, FavoritesRefusal> {
-    let endpoints = Endpoints::for_resource(oauth, Resource::Ews);
-    sign_in_for_favorites_within(&endpoints, oauth, login_hint, open, cancel, SIGN_IN_TIMEOUT)
-}
-
-/// [`sign_in_for_ews`] at endpoints other than the provider's usual ones.
-pub fn sign_in_for_ews_at(
-    endpoints: &Endpoints,
-    oauth: &OAuth,
-    login_hint: &str,
-    open: &dyn Fn(&str),
-    cancel: &AtomicBool,
-) -> Result<Tokens, FavoritesRefusal> {
-    sign_in_for_favorites_within(endpoints, oauth, login_hint, open, cancel, SIGN_IN_TIMEOUT)
-}
-
-/// Trade a refresh token for an access token for Exchange Web Services, without asking the
-/// owner anything. Three kinds of failure are told apart, as for Microsoft Graph
-/// ([`refresh_graph`]):
-/// - [`NetError::ConsentNeeded`]: the sign-in is good and doesn't cover Exchange Web Services
-///   (nobody agreed to it, or this kind of account has none). [`sign_in_for_ews`] asks, when
-///   the owner chooses to; mail is not affected.
-/// - `ProtoError::Auth`: the provider no longer takes the refresh token for anything.
-/// - anything else: the provider couldn't be asked, or couldn't say.
-///
-/// (A bare "no longer good" is told from "doesn't cover that" by asking for mail with the same
-/// refresh token.)
-pub fn refresh_ews(oauth: &OAuth, refresh_token: &str) -> Result<Tokens, NetError> {
-    refresh_ews_at(&Endpoints::for_resource(oauth, Resource::Ews), &Endpoints::of(oauth), oauth, refresh_token)
-}
-
-/// [`refresh_ews`] at endpoints other than the provider's usual ones: `ews` asks for Exchange
-/// Web Services, `mail` for the mail servers.
-pub fn refresh_ews_at(ews: &Endpoints, mail: &Endpoints, oauth: &OAuth, refresh_token: &str) -> Result<Tokens, NetError> {
-    match refresh_for_at(ews, oauth, refresh_token, Resource::Ews) {
-        Err(error) if error.is_refused_sign_in() => match refresh_for_at(mail, oauth, refresh_token, Resource::Mail) {
-            Ok(_) => Err(NetError::ConsentNeeded("the sign-in doesn't cover Exchange Web Services".into())),
-            Err(_) => Err(error),
-        },
-        outcome => outcome,
-    }
 }
 
 /// Ask the owner, on the provider's page, to let this program read the Favorites of Outlook
@@ -738,10 +650,9 @@ pub fn refresh_for_at(endpoints: &Endpoints, oauth: &OAuth, refresh_token: &str,
         // The sign-in is good and Graph is what it doesn't cover: because nobody agreed to it,
         // or because the provider won't hand it to this application. Asking the owner on the
         // provider's page is how either is put right, or shown for what it is.
-        (Resource::Graph | Resource::Ews, About::Consent | About::Scope, NetError::Proto(ProtoError::Auth(why))) => {
+        (Resource::Graph, About::Consent | About::Scope, NetError::Proto(ProtoError::Auth(why))) => {
             // Said in a code alone, this reads like a sign-in that is over, which it isn't.
-            let what = if resource == Resource::Ews { "Exchange Web Services" } else { "Microsoft Graph" };
-            NetError::ConsentNeeded(if why == STALE { format!("the sign-in doesn't cover {what}") } else { why })
+            NetError::ConsentNeeded(if why == STALE { "the sign-in doesn't cover Microsoft Graph".to_string() } else { why })
         }
         (_, _, error) => error,
     })

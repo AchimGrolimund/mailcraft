@@ -165,61 +165,23 @@ pub struct Account {
     /// password. No token is ever stored here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oauth: Option<OAuth>,
-    /// Where the Favorites of the folder pane come from, for an account that signs in with
-    /// Microsoft, once its owner has said ([`FavoritesSource`]). Nothing is written of it until
-    /// then, and a file that says something else in its place reads as not said.
-    #[serde(skip_serializing_if = "FavoritesSource::is_unset", deserialize_with = "crate::sync::lenient_or_default")]
-    pub favorites_source: FavoritesSource,
+    /// A mailbox written while the owner of an account could choose how its Favorites in
+    /// Outlook were read (`favoritesSource`, 0.2.0 to 0.2.1) and had chosen anything but
+    /// Microsoft Graph: Exchange Web Services, which is gone, or not now. That choice is no
+    /// more: they are read through Graph, as for every account that signs in with Microsoft,
+    /// and the owner is told so once ([`Mailbox::take_retired_favorites_choices`]). Read from a
+    /// file, never written to one: the next save drops it.
+    #[serde(rename = "favoritesSource", skip_serializing, deserialize_with = "retired_favorites_choice")]
+    pub retired_favorites_choice: bool,
 }
 
-/// How the folders an account's owner keeps under Favorites in Outlook are read from its server,
-/// when they are: the owner's choice, for an account of an organisation that signs in with
-/// Microsoft. Whichever it is, the list is only ever read.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum FavoritesSource {
-    /// The owner hasn't said. It is then as it was before there was a choice: Microsoft Graph,
-    /// once the owner has agreed to that.
-    #[default]
-    Unset,
-    /// Not from the server: the Favorites marked here are the account's.
-    None,
-    /// Through Microsoft Graph: lasting; in an organisation an administrator may have to approve
-    /// it once.
-    Graph,
-    /// Through Exchange Web Services: needs no administrator where the organisation still allows
-    /// it, and Microsoft switches it off for everybody on 1 April 2027 ([`FavoritesSource::EWS_ENDS`]).
-    Ews,
-}
-
-impl FavoritesSource {
-    /// The first day on which Exchange Web Services is no longer there (Microsoft's own date for
-    /// switching it off in Exchange Online): from then on it is not offered, and an account set
-    /// to it is told so.
-    pub const EWS_ENDS: (i32, u8, u8) = (2027, 4, 1);
-
-    pub fn is_unset(&self) -> bool {
-        *self == FavoritesSource::Unset
-    }
-
-    pub fn parse(s: &str) -> Option<FavoritesSource> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "none" | "notnow" | "own" => Some(FavoritesSource::None),
-            "graph" => Some(FavoritesSource::Graph),
-            "ews" => Some(FavoritesSource::Ews),
-            _ => None,
-        }
-    }
-
-    /// What a command calls it; `None` for a choice that was never made.
-    pub fn code(self) -> Option<&'static str> {
-        match self {
-            FavoritesSource::Unset => None,
-            FavoritesSource::None => Some("none"),
-            FavoritesSource::Graph => Some("graph"),
-            FavoritesSource::Ews => Some("ews"),
-        }
-    }
+/// Whether what a mailbox file says where `favoritesSource` was is a choice that no longer
+/// stands ([`Account::retired_favorites_choice`]): Exchange Web Services, or not now, in the
+/// words those versions wrote and read. Whatever else is there, the file opens, and nothing is
+/// said of it.
+fn retired_favorites_choice<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    let said: Option<String> = crate::sync::lenient(deserializer)?;
+    Ok(said.is_some_and(|way| matches!(way.trim().to_ascii_lowercase().as_str(), "ews" | "none" | "notnow" | "own")))
 }
 
 /// Which kind of Microsoft account signs in: one of an organisation (work or school), or a
@@ -329,8 +291,8 @@ pub struct OAuth {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub tenant: String,
     /// Microsoft: whether the account that signs in is an organisation's or a personal one, when
-    /// that is known ([`Directory`]). Written when the account is set up or its owner chooses
-    /// where its Favorites come from, and not otherwise; never the directory's id.
+    /// that is known ([`Directory`]). Written when the account is set up, and not otherwise;
+    /// never the directory's id.
     #[serde(skip_serializing_if = "Directory::is_unknown", deserialize_with = "crate::sync::lenient_or_default")]
     pub directory: Directory,
 }
@@ -1188,6 +1150,17 @@ impl Mailbox {
     }
 
     // ---- loading ----
+
+    /// How many accounts the file said had their Favorites in Outlook read another way than
+    /// through Microsoft Graph ([`Account::retired_favorites_choice`]), which is forgotten here:
+    /// the owner is told once, and the next save writes nothing of it.
+    pub fn take_retired_favorites_choices(&mut self) -> usize {
+        let mut told = 0usize;
+        for account in &mut self.accounts {
+            told = told.saturating_add(usize::from(std::mem::take(&mut account.retired_favorites_choice)));
+        }
+        told
+    }
 
     /// Make a mailbox read from a file consistent, whatever the file held: ids are unique and
     /// below `next_id`, every account has its standard folders, folder parents exist and don't

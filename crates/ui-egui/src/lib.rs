@@ -136,19 +136,12 @@ pub struct Services {
     /// read back, changed, read back again and deleted, and every step comes back with what the
     /// server answered. Nothing else of the calendar is touched. Absent in the browser.
     pub check_calendar: Option<Box<dyn Fn(CalendarCheckRequest) -> Receiver<CalendarCheckResult>>>,
-    /// Desktop: read the Favorites of Outlook through Exchange Web Services on a background
-    /// thread, for an account whose owner chose that way ([`favorites_sync`]). It only reads.
-    /// The list, or why there is none, arrives through the channel and the host wakes the UI.
-    /// Absent in the browser.
-    pub ews: Option<Box<dyn Fn(EwsRequest) -> Receiver<EwsResult>>>,
     /// Desktop: the address an organisation's administrator opens to approve this program, once
     /// for everybody, for everything it asks an owner for (Microsoft's admin-consent page): for
     /// the sign-in settings (with the application id filled in), the directory when it is known
-    /// (else empty), and with Exchange Web Services in it for `Ews` (an account whose owner
-    /// chose to have Outlook's Favorites read that way) and without for anything else. It names
-    /// the application, the directory and the permissions and nothing else; `None` when there
-    /// is no such address. Nothing is fetched.
-    pub admin_consent_link: Option<Box<dyn Fn(&mailcraft_model::OAuth, &str, mailcraft_model::FavoritesSource) -> Option<String>>>,
+    /// (else empty). It names the application, the directory and the permissions and nothing
+    /// else; `None` when there is no such address. Nothing is fetched.
+    pub admin_consent_link: Option<Box<dyn Fn(&mailcraft_model::OAuth, &str) -> Option<String>>>,
     /// Desktop: have an administrator approve this program for an organisation, on a background
     /// thread: open that same page of Microsoft's in the system's browser, with a way back to
     /// this machine, and wait for its yes or no ([`approval`]). Only ever on the owner's say-so
@@ -240,47 +233,6 @@ pub struct SignInRequest {
     /// [`favorites_sync::NEEDS_APPROVAL`], [`favorites_sync::REFUSED_BY_ORGANISATION`] or
     /// [`favorites_sync::REFUSED_FOR_ACCOUNT`].
     pub favorites: bool,
-    /// Ask for Exchange Web Services and nothing else, on the provider's page: the owner chose
-    /// to have the Favorites of Outlook read that way, and the sign-in doesn't cover it yet.
-    /// The access token that comes back is for Exchange Web Services only. A no that is not the
-    /// owner's to change is answered as for `favorites`.
-    pub ews: bool,
-}
-
-/// What the host needs to read an account's Favorites of Outlook through Exchange Web Services
-/// ([`Services::ews`]).
-pub struct EwsRequest {
-    pub account: mailcraft_model::Account,
-    /// The account's sign-in settings, with the application id filled in.
-    pub oauth: mailcraft_model::OAuth,
-    /// The account's refresh token, to get a token for Exchange Web Services with when `access`
-    /// is empty. Nobody is asked anything for it: a sign-in that doesn't cover it says so
-    /// ([`EwsResult::consent_needed`]).
-    pub refresh: String,
-    /// An access token for Exchange Web Services from earlier in this session that is still
-    /// good; else empty.
-    pub access: String,
-}
-
-/// What an [`EwsRequest`] came to. Never an error as a whole: nothing else waits on it.
-#[derive(Default)]
-pub struct EwsResult {
-    pub account: Id,
-    /// A token for Exchange Web Services that was obtained for this (kept for the session, in
-    /// memory only; its refresh token is the account's newest).
-    pub tokens: Option<Tokens>,
-    /// The sign-in doesn't cover Exchange Web Services: the owner has to agree to it on the
-    /// provider's page, which is asked for only when the owner chooses to.
-    pub consent_needed: bool,
-    /// The token that was handed in is no longer taken.
-    pub token_refused: bool,
-    /// The organisation doesn't allow Exchange Web Services (for anybody, or for this program):
-    /// the server said so in so many words. Asking again changes nothing.
-    pub blocked: bool,
-    /// The Favorites as Outlook has them: the list, or how the read went instead.
-    pub favorites: Option<mailcraft_model::remote::FavoritesDownload>,
-    /// Why reading them failed, in a few plain words for the folder pane; no name and no id.
-    pub favorites_error: String,
 }
 
 /// What the host needs to check an account's calendar connection ([`Services::check_calendar`]).
@@ -409,8 +361,6 @@ struct SigningIn {
     graph: bool,
     /// And for the Favorites of Outlook with it ([`favorites_sync`]).
     favorites: bool,
-    /// For Exchange Web Services alone: the Favorites of Outlook read that way.
-    ews: bool,
     /// Nobody asked for it (a Send/Receive that started by itself).
     quiet: bool,
     account: Id,
@@ -505,7 +455,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "ui.dialog",
         "Open Dialog",
         "Window",
-        r#"{"name": "commands"|"event"|"meeting"|"editEvent"|"contact"|"editContact"|"task"|"editTask"|"folder"|"goToDate"|"account"|"categories"|"rules"|"about"|"proposeTime"|"forwardMeeting"|"proposals"|"favoritesSource", …} (account: "email"?: string to start with, or "id": number for that account's settings, with "page": "favorites" the last step of adding it, where an account of an organisation chooses how Outlook's Favorites are read, and with "page": "approval" the page that says what to do when its organisation has to approve MailCraft first (as `ui.approvalHelp` opens it); favoritesSource: "account"?: number, that choice for an account that exists (it can't open for one that has no choice); proposeTime: "id"?: number (an item of the calendar) | "message": number (an invitation in the mail); forwardMeeting: "id"?: number; proposals: "id"?: number | "message": number — the first two write to other people only from their own Propose and Send buttons)"#,
+        r#"{"name": "commands"|"event"|"meeting"|"editEvent"|"contact"|"editContact"|"task"|"editTask"|"folder"|"goToDate"|"account"|"categories"|"rules"|"about"|"proposeTime"|"forwardMeeting"|"proposals", …} (account: "email"?: string to start with, or "id": number for that account's settings, and with "page": "approval" the page that says what to do when its organisation has to approve MailCraft first (as `ui.approvalHelp` opens it); proposeTime: "id"?: number (an item of the calendar) | "message": number (an invitation in the mail); forwardMeeting: "id"?: number; proposals: "id"?: number | "message": number — the first two write to other people only from their own Propose and Send buttons)"#,
     ),
     ("ui.closeDialog", "Close Dialog", "Window", "{}"),
     ("ui.theme", "Interface Theme", "File › Options", r#"{"value": "light"|"dark"|"system"}"#),
@@ -546,19 +496,13 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "ui.favorites",
         "Outlook's Favorites",
         "Folder › Favorites",
-        r#"{"account"?: number, "refresh"?: bool, "answer"?: {"outcome": "read"|"missing"|"notPermitted"|"refused"|"approval"|"blocked"|"failed", "folders"?: [{"path": [string], "kind": string, "root"?: string}], "why"?: string}} — what the folder pane has of the Favorites of an account that signs in with Microsoft. "refresh": true reads them from its server again at the next chance ("Try again"); with "answer" nothing is asked of anybody, and it is taken in as what the host brought (for scripts, and for looking at the pane in each of its states: "approval" is a sign-in that an administrator has to approve first, "blocked" an organisation that doesn't allow Exchange Web Services). Answers {"account", "from": "server"|"mailbox", "own": bool, "source": "graph"|"ews"|"none"|null (the owner's choice; null: never made), "directory": "organisation"|"personal"|null, "choice": bool (the owner has one: an account of an organisation), "offered": [string], "line": "offer"|"approval"|"blocked"|"ended"|"refused"|"failed"|null (what the pane says under the Favorites heading), "text": string, "steps": ["copyMessage"|"help"|"useEws"|"useGraph"] (the links under that line: `ui.copyAdminMessage`, `ui.approvalHelp`, `ui.favoritesSource`), "favorites": [number]}"#,
-    ),
-    (
-        "ui.favoritesSource",
-        "Choose How Outlook's Favorites Are Read",
-        "File › Options",
-        r#"{"account"?: number, "source"?: "graph"|"ews"|"none"} — the owner's choice for an account that signs in with Microsoft, kept with `account.favoritesSource`, and what follows from it at once. "graph" (Microsoft Graph: lasting; in an organisation an administrator may have to approve it once): Microsoft's page for the two permissions that reading them takes, unless the list is read that way already. "ews" (Exchange Web Services: needs no administrator where the organisation still allows it; Microsoft switches it off on 1 April 2027, from when it is refused; refused for a personal account): they are read through it at the next look, and Microsoft's page comes up for that permission alone only if the sign-in doesn't cover it. "none": not now, MailCraft keeps its own Favorites. Nothing is ever written to the server. Without "source" nothing changes. Answers what `ui.favorites` answers, and "pending": "signIn"|"read"|null"#,
+        r#"{"account"?: number, "refresh"?: bool, "answer"?: {"outcome": "read"|"missing"|"notPermitted"|"refused"|"approval"|"failed", "folders"?: [{"path": [string], "kind": string, "root"?: string}], "why"?: string}} — what the folder pane has of the Favorites of an account that signs in with Microsoft. "refresh": true reads them from its server again at the next chance ("Try again"); with "answer" nothing is asked of anybody, and it is taken in as what the host brought (for scripts, and for looking at the pane in each of its states: "approval" is a sign-in that an administrator has to approve first). They are read through Microsoft Graph. Answers {"account", "from": "server"|"mailbox", "own": bool, "directory": "organisation"|"personal"|null, "line": "offer"|"approval"|"refused"|"failed"|null (what the pane says under the Favorites heading), "text": string, "steps": ["copyMessage"|"help"] (the links under that line: `ui.copyAdminMessage`, `ui.approvalHelp`), "favorites": [number]}"#,
     ),
     (
         "ui.copyAdminConsentLink",
         "Copy a Link for Your Administrator",
         "File › Options",
-        r#"{"account"?: number} — puts on the clipboard the address of Microsoft's page where an administrator of the account's organisation approves this application, once for everybody, for everything it asks an owner for (mail, calendar, contacts, and reading Outlook's Favorites through Microsoft Graph; Exchange Web Services with it only for an account set to that). The address names the application, the organisation's directory when it is known and those permissions, and nothing else; nothing is opened and nothing is sent. Answers {"account", "source", "url"}. (The window's own links copy a whole message with it: `ui.copyAdminMessage`.)"#,
+        r#"{"account"?: number} — puts on the clipboard the address of Microsoft's page where an administrator of the account's organisation approves this application, once for everybody, for everything it asks an owner for (mail, calendar, contacts, and reading Outlook's Favorites through Microsoft Graph). The address names the application, the organisation's directory when it is known and those permissions, and nothing else; nothing is opened and nothing is sent. Answers {"account", "url"}. (The window's own links copy a whole message with it: `ui.copyAdminMessage`.)"#,
     ),
     (
         "ui.approvalHelp",
@@ -570,19 +514,19 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "ui.copyAdminMessage",
         "Copy a Message for My Administrator",
         "File › Info",
-        r#"{"account"?: number} — puts on the clipboard a short, plain message for an administrator of the organisation: what MailCraft is, that it needs their approval once for the organisation, the address of Microsoft's page for that (the one `ui.copyAdminConsentLink` copies), and that their browser may show a page that can't be reached afterwards. Nothing of the owner is in it, nothing is opened and nothing is sent; the status bar says it was copied. For the account named; else the one Add Account is signing in; else the first that signs in with Microsoft. Answers {"account", "source", "url", "text"}"#,
+        r#"{"account"?: number} — puts on the clipboard a short, plain message for an administrator of the organisation: what MailCraft is, that it needs their approval once for the organisation, the address of Microsoft's page for that (the one `ui.copyAdminConsentLink` copies), and that their browser may show a page that can't be reached afterwards. Nothing of the owner is in it, nothing is opened and nothing is sent; the status bar says it was copied. For the account named; else the one Add Account is signing in; else the first that signs in with Microsoft. Answers {"account", "url", "text"}"#,
     ),
     (
         "ui.adminConsent",
         "I'm an Administrator: Approve MailCraft for My Organisation",
         "File › Info",
-        r#"{"account"?: number} — opens Microsoft's admin-consent page in the system's browser, for this application and everything it asks an owner for (not Exchange Web Services, unless the account's Favorites are set to it), for the organisation's directory when it is known, and waits for the page to come back to this computer with a yes or a no. Approved: Add Account says so and goes on to the sign-in by itself; an account that exists signs in again (`ui.signInAgain`). Refused: what Microsoft answered is said. A sign-in that Add Account was waiting for gives way to it. Answers {"pending": "adminConsent", "account": number (0: the one being set up)}; `ui.cancelSignIn` gives it up"#,
+        r#"{"account"?: number} — opens Microsoft's admin-consent page in the system's browser, for this application and everything it asks an owner for, for the organisation's directory when it is known, and waits for the page to come back to this computer with a yes or a no. Approved: Add Account says so and goes on to the sign-in by itself; an account that exists signs in again (`ui.signInAgain`). Refused: what Microsoft answered is said. A sign-in that Add Account was waiting for gives way to it. Answers {"pending": "adminConsent", "account": number (0: the one being set up)}; `ui.cancelSignIn` gives it up"#,
     ),
     (
         "ui.signInAgain",
         "Try Signing In Again",
         "File › Info",
-        r#"{"account"?: number} — "Try again", once an administrator has approved: Add Account starts its sign-in with Microsoft afresh (answers {"pending": "signIn", "account": 0}); an account that exists asks once more for what was refused for want of an approval, which is what its Favorites in Outlook were to be read with when the folder pane says they wait on an administrator (as `ui.favoritesSource`), and otherwise its sign-in, by Send/Receive (as `ui.sync`)"#,
+        r#"{"account"?: number} — "Try again", once an administrator has approved: Add Account starts its sign-in with Microsoft afresh (answers {"pending": "signIn", "account": 0}); an account that exists asks once more for what was refused for want of an approval: reading its Favorites in Outlook when the folder pane says they wait on an administrator (as `ui.connectFavorites`), and otherwise its sign-in, by Send/Receive (as `ui.sync`)"#,
     ),
     ("ui.dismissReminder", "Dismiss Reminder", "Reminders", r#"{"event": number, "occurrence": "YYYY-MM-DDTHH:MM"} | {"all": true}"#),
     (
@@ -711,8 +655,6 @@ pub struct MailApp {
     favorites: favorites_sync::FavoritesSync,
     /// The next sign-in for Microsoft Graph also asks for the Favorites' permissions.
     favorites_next: bool,
-    /// The next sign-in asks for Exchange Web Services and nothing else.
-    ews_next: bool,
     /// The next sign-in asks for mail alone (account setup's "mail only").
     mail_only_next: bool,
     /// A sign-in the host is waiting on (the owner is in the browser).
@@ -819,7 +761,6 @@ impl MailApp {
             calendar: Default::default(),
             favorites: Default::default(),
             favorites_next: false,
-            ews_next: false,
             mail_only_next: false,
             signing_in: None,
             setup_sign_in: None,
@@ -1256,7 +1197,6 @@ impl MailApp {
     ) -> Result<(), String> {
         let mail_only = std::mem::take(&mut self.mail_only_next);
         let favorites = std::mem::take(&mut self.favorites_next) && graph;
-        let ews = std::mem::take(&mut self.ews_next) && !graph;
         if self.signing_in.is_some() || self.approving() {
             return Err(tl!("Finish signing in first (your browser is waiting)").to_string());
         }
@@ -1275,10 +1215,9 @@ impl MailApp {
             graph,
             mail_only,
             favorites,
-            ews,
         };
         let rx = sign_in(request);
-        self.signing_in = Some(SigningIn { graph, favorites, ews, quiet, account, rx, cancel });
+        self.signing_in = Some(SigningIn { graph, favorites, quiet, account, rx, cancel });
         self.session.sync_status = waiting.to_string();
         Ok(())
     }
@@ -1585,7 +1524,7 @@ impl MailApp {
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(tl!("Signing in stopped unexpectedly").to_string()),
         };
-        let (account, for_graph, for_favorites, for_ews) = (waiting.account, waiting.graph, waiting.favorites, waiting.ews);
+        let (account, for_graph, for_favorites) = (waiting.account, waiting.graph, waiting.favorites);
         let asked_for = !waiting.quiet;
         self.signing_in = None;
         // A day at most, whatever the provider said; a sign-in is asked for again after.
@@ -1609,27 +1548,6 @@ impl MailApp {
             && (tokens.email.is_empty() || tokens.email.trim().eq_ignore_ascii_case(address.trim()))
         {
             self.note_directory(account, &tokens.tenant);
-        }
-        if for_ews {
-            // The owner chose Exchange Web Services for Outlook's Favorites: the token is for
-            // that alone, and nothing else waits on it.
-            self.session.sync_status.clear();
-            match answer {
-                Ok(tokens) if !tokens.email.is_empty() && !tokens.email.trim().eq_ignore_ascii_case(address.trim()) => {
-                    self.status(format!("{} {} {} {address}", tl!("You signed in as"), tokens.email, tl!("but this account is")));
-                }
-                Ok(tokens) => {
-                    if !tokens.refresh.is_empty() {
-                        self.remember("refresh", &address, &tokens.refresh);
-                        if let Some(mail) = self.tokens.get_mut(&account) {
-                            mail.refresh = tokens.refresh.clone();
-                        }
-                    }
-                    self.favorites_ews_connected(account, tokens);
-                }
-                Err(e) => self.favorites_refused_for(account, &e, mailcraft_model::FavoritesSource::Ews),
-            }
-            return;
         }
         if for_graph {
             // "Connect calendar and contacts": the token is Graph's; the next run uses it.
@@ -1914,7 +1832,6 @@ impl MailApp {
         self.sweep_admin_consent();
         self.poll_graph();
         self.poll_calendar();
-        self.poll_favorites();
         self.poll_calendar_check();
         self.poll_free_busy();
         self.poll_sync();
@@ -1922,8 +1839,6 @@ impl MailApp {
         self.auto_sync();
         // The calendar by itself, between Send/Receive runs ([`calendar_sync`]).
         self.calendar_tick(ctx);
-        // Outlook's Favorites through Exchange Web Services, for an account set to that ([`favorites_sync`]).
-        self.favorites_tick(ctx);
         reminders::tick(self, ctx);
         if std::mem::take(&mut self.offer_setup) && self.dialog.is_none() && self.needs_setup() {
             self.dialog = dialogs::Dialog::open("account", self, &json!({}));
@@ -2219,9 +2134,21 @@ fn feedback(id: &str, v: &Value) -> Option<String> {
     match id {
         "compose.send" if v.get("queued").and_then(Value::as_bool) == Some(true) => Some(tl!("In the Outbox: it is on its way").to_string()),
         // A mailbox whose content folder lost something still opens; say how much is missing.
-        "file.open" => n("unavailable").filter(|c| *c > 0).map(|c| {
-            format!("{} {}", plural(c, tl!("part of a message"), tl!("parts of messages")), tl!("couldn't be read from the mailbox's content folder"))
-        }),
+        "file.open" => {
+            let lost = n("unavailable").filter(|c| *c > 0).map(|c| {
+                format!(
+                    "{} {}",
+                    plural(c, tl!("part of a message"), tl!("parts of messages")),
+                    tl!("couldn't be read from the mailbox's content folder")
+                )
+            });
+            // A mailbox whose Favorites were read another way than Microsoft Graph: said once.
+            let graph = n("favoritesNowGraph").filter(|c| *c > 0).map(|_| tl!(favorites_sync::FAVORITES_NOW_GRAPH).to_string());
+            match (lost, graph) {
+                (Some(lost), Some(graph)) => Some(format!("{lost}. {graph}")),
+                (lost, graph) => lost.or(graph),
+            }
+        }
         "compose.send" => Some(tl!("Sent").to_string()),
         "compose.saveDraft" => Some(tl!("Draft saved").to_string()),
         "mail.markAllRead" | "rules.run" => n("changed").or(n("matched")).map(|c| plural(c, tl!("message changed"), tl!("messages changed"))),

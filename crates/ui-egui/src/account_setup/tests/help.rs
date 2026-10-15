@@ -19,8 +19,8 @@ const ADMINISTRATOR: &str = "I'm an administrator: approve it for my organisatio
 const COPY: &str = "Copy a message for my administrator";
 
 /// What an approval was asked with: the account (0: the one being set up), the directory, the
-/// application, whether Exchange Web Services was asked for too, and the flag that stops it.
-type Approvals = Log<(Id, String, String, FavoritesSource, Arc<AtomicBool>)>;
+/// application, and the flag that stops it.
+type Approvals = Log<(Id, String, String, Arc<AtomicBool>)>;
 
 /// A host that has administrators approve: it answers `answer`, or leaves Microsoft's page open.
 fn approvals(app: &mut MailApp, answer: Option<AdminConsentAnswer>) -> Approvals {
@@ -28,7 +28,7 @@ fn approvals(app: &mut MailApp, answer: Option<AdminConsentAnswer>) -> Approvals
     let log = asked.clone();
     let silent: Log<Sender<AdminConsentAnswer>> = Default::default();
     app.services.admin_consent = Some(Box::new(move |req: AdminConsentRequest| {
-        log.lock().unwrap().push((req.account, req.tenant.clone(), req.oauth.client_id.clone(), req.source, req.cancel.clone()));
+        log.lock().unwrap().push((req.account, req.tenant.clone(), req.oauth.client_id.clone(), req.cancel.clone()));
         let (tx, rx) = mpsc::channel();
         match &answer {
             Some(answer) => tx.send(answer.clone()).unwrap(),
@@ -40,12 +40,12 @@ fn approvals(app: &mut MailApp, answer: Option<AdminConsentAnswer>) -> Approvals
 }
 
 /// A host that makes the address an administrator approves at: a stand-in's, which names what
-/// it was given. The log is the directory and the way, each time one was made.
-fn links(app: &mut MailApp) -> Log<(String, FavoritesSource)> {
-    let asked: Log<(String, FavoritesSource)> = Default::default();
+/// it was given. The log is the directory, each time one was made.
+fn links(app: &mut MailApp) -> Log<String> {
+    let asked: Log<String> = Default::default();
     let log = asked.clone();
-    app.services.admin_consent_link = Some(Box::new(move |oauth, tenant, source| {
-        log.lock().unwrap().push((tenant.to_string(), source));
+    app.services.admin_consent_link = Some(Box::new(move |oauth, tenant| {
+        log.lock().unwrap().push(tenant.to_string());
         let directory = if tenant.is_empty() { "organizations" } else { tenant };
         Some(format!("https://login.example.org/{directory}/v2.0/adminconsent?client_id={}", oauth.client_id))
     }));
@@ -75,7 +75,7 @@ fn answer(held: &Held, with: Result<SignedIn, String>) {
     held.lock().unwrap().last().expect("a sign-in was asked for").send(with).unwrap();
 }
 
-/// A host that could read Outlook's Favorites: an account of an organisation then has its last step.
+/// A host that could read Outlook's Favorites through Microsoft Graph.
 fn reads_favorites(app: &mut MailApp) {
     app.services.graph = Some(Box::new(|request| {
         let (tx, rx) = mpsc::channel();
@@ -172,8 +172,8 @@ fn the_waiting_page_says_what_to_do_about_an_approval_without_waiting() {
     assert_eq!((page(&h), wizard(&h).map(|w| w.waiting), h.state().signing_in()), (Some(Page::SignIn), Some(true), true));
     // What is happening, and for whom.
     assert!(says(&h, "Microsoft's sign-in page is open in your browser") && says(&h, "Sign in there as noor@example.org"));
-    // (4) The order of things, in a line: the Favorites are chosen after the sign-in, not before.
-    assert!(says(&h, "First you sign in at Microsoft. Then, once your mail works, you choose how Outlook's Favorites are shown."));
+    // Nothing is said of a step about Outlook's Favorites: there is none.
+    assert!(!says(&h, "First you sign in at Microsoft") && !says(&h, "Favorites"));
     // And what to do if that page says no: why, in plain words, and the things to do, in view.
     for said in [
         "If that page says you need admin approval",
@@ -200,7 +200,7 @@ fn the_waiting_page_says_what_to_do_about_an_approval_without_waiting() {
     h.run_steps(3);
     assert!(message.contains("https://login.example.org/example.org/v2.0/adminconsent?client_id=11111111-2222-3333-4444-555555555555"), "{message}");
     assert!(status(&h).contains("clipboard") && h.state().signing_in() && page(&h) == Some(Page::SignIn));
-    assert_eq!(*made.lock().unwrap(), [("example.org".to_string(), FavoritesSource::Unset)]);
+    assert_eq!(*made.lock().unwrap(), ["example.org".to_string()]);
 
     // The page about an approval, from its link: the sign-in still waits behind it, for the
     // owner may yet sign in on Microsoft's page (with an administrator's account, say).
@@ -213,8 +213,8 @@ fn the_waiting_page_says_what_to_do_about_an_approval_without_waiting() {
     assert_eq!((asked.lock().unwrap().len(), addresses(&h)), (1, vec![String::new()]));
     answer(&held, Ok(signed_in_at_work()));
     h.run_steps(6);
-    // Signed in after all: the account is added, and its last step is the Favorites' choice.
-    assert_eq!((page(&h), addresses(&h)), (Some(Page::Favorites), vec!["noor@example.org".to_string()]));
+    // Signed in after all: the account is added, and that is all.
+    assert_eq!((page(&h), addresses(&h)), (Some(Page::Done), vec!["noor@example.org".to_string()]));
 
     // "Open the page again", for a page that was closed: the sign-in afresh, the old one stopped.
     let mut held = None;
@@ -228,7 +228,7 @@ fn the_waiting_page_says_what_to_do_about_an_approval_without_waiting() {
     click(&mut h, "Cancel");
     assert_eq!((page(&h), h.state().signing_in(), addresses(&h)), (Some(Page::Address), false, vec![String::new()]));
 
-    // An account that has no such last step is not told of one.
+    // An Outlook.com account is told the same of an approval.
     let mut a = app(false);
     a.services.microsoft_client_id = APP_ID.into();
     reads_favorites(&mut a);
@@ -236,20 +236,12 @@ fn the_waiting_page_says_what_to_do_about_an_approval_without_waiting() {
     let mut h = open(a, json!({"email": "noor@example.org"}));
     connect_manually(&mut h);
     click(&mut h, Kind::OutlookCom.title());
-    assert!(page(&h) == Some(Page::SignIn) && says(&h, "If that page says you need admin approval") && !says(&h, "First you sign in at Microsoft"));
-    // Nor is one whose Favorites this build couldn't read.
-    let mut a = app(false);
-    a.services.microsoft_client_id = APP_ID.into();
-    lookups(&mut a, Some(Ok(vec![MICROSOFT_MX])));
-    sign_ins(&mut a, None);
-    let mut h = open(a, json!({}));
-    connect(&mut h, "noor@example.org");
-    assert!(page(&h) == Some(Page::SignIn) && !says(&h, "First you sign in at Microsoft"));
+    assert!(page(&h) == Some(Page::SignIn) && says(&h, "If that page says you need admin approval"));
 }
 
 /// (2) A sign-in that comes back as needing an administrator shows the page of its own; an
-/// owner who is one approves from there, and the wizard goes on by itself to the sign-in, the
-/// account and the Favorites' choice.
+/// owner who is one approves from there, and the wizard goes on by itself to the sign-in and the
+/// account.
 #[test]
 fn a_sign_in_refused_for_approval_shows_the_page_and_an_administrator_approves_from_it() {
     let mut asked = None;
@@ -278,7 +270,6 @@ fn a_sign_in_refused_for_approval_shows_the_page_and_an_administrator_approves_f
         "MailCraft sends nothing itself",
         "If you have an administrator account of your own, the first choice lets you sign in with it on Microsoft's page.",
         "Once an administrator has approved, try again",
-        "First you sign in at Microsoft",
     ] {
         assert!(says(&h, said), "{said}");
     }
@@ -291,14 +282,13 @@ fn a_sign_in_refused_for_approval_shows_the_page_and_an_administrator_approves_f
     assert_eq!((page(&h), asked.lock().unwrap().len(), h.state().signing_in()), (Some(Page::Approval), 0, false));
 
     // "I'm an administrator": Microsoft's approval page, for this application and the
-    // organisation of the address, without Exchange Web Services; the page waits for it.
+    // organisation of the address; the page waits for it.
     press_step(&mut h, ADMINISTRATOR);
     {
         let asked = asked.lock().unwrap();
         assert_eq!(asked.len(), 1);
-        let (account, directory, application, source, _) = &asked[0];
+        let (account, directory, application, _) = &asked[0];
         assert_eq!((*account, directory.as_str(), application.as_str()), (0, "example.org", APP_ID));
-        assert_ne!(*source, FavoritesSource::Ews);
     }
     assert!(h.state().approving() && !h.state().signing_in() && wizard(&h).is_some_and(|w| w.approval.approving && w.busy()));
     assert!(says(&h, "Microsoft's approval page is open in your browser") && says(&h, "Sign in there with an administrator account and accept"));
@@ -306,7 +296,7 @@ fn a_sign_in_refused_for_approval_shows_the_page_and_an_administrator_approves_f
     // Cancel there: back to what there is to do, and the host is told to stop.
     click(&mut h, "Cancel");
     assert_eq!((page(&h), h.state().approving(), wizard(&h).map(|w| w.approval.approving)), (Some(Page::Approval), false, Some(false)));
-    assert!(stopped(&[asked.lock().unwrap()[0].4.clone()]) && says(&h, "What to do next"));
+    assert!(stopped(&[asked.lock().unwrap()[0].3.clone()]) && says(&h, "What to do next"));
 
     // Whoever signed in on Microsoft's page was no administrator: what Microsoft answered is
     // said, with what to do instead, and the page is where it was.
@@ -342,12 +332,11 @@ fn a_sign_in_refused_for_approval_shows_the_page_and_an_administrator_approves_f
     assert!(says(&h, "Microsoft's sign-in page is open in your browser") && !h.state().approving());
     let asked_for: Vec<String> = signed.lock().unwrap().iter().map(|(address, ..)| address.clone()).collect();
     assert_eq!(asked_for, ["noor@example.org"]);
-    // …which now goes through: the account is added, its mail is under way, and the choice of
-    // how Outlook's Favorites are read is the last step, as it was.
+    // …which now goes through: the account is added and its mail is under way.
     answer(&held, Ok(signed_in_at_work()));
     h.run_steps(6);
-    assert_eq!((page(&h), addresses(&h), synced.lock().unwrap().len()), (Some(Page::Favorites), vec!["noor@example.org".to_string()], 1));
-    assert!(says(&h, "Show Outlook's Favorites?") && !h.state().signing_in());
+    assert_eq!((page(&h), addresses(&h), synced.lock().unwrap().len()), (Some(Page::Done), vec!["noor@example.org".to_string()], 1));
+    assert!(says(&h, "noor@example.org is set up") && !h.state().signing_in());
 
     // Approved, and the sign-in is refused for an approval all the same (another permission,
     // another directory): the page is back, saying so.
@@ -400,7 +389,7 @@ fn the_copied_message_has_the_link_and_no_address_of_the_owner() {
         assert!(!message.contains(never), "{never}: {message}");
     }
     // (The directory in the address is the organisation's own domain, which the address names.)
-    assert_eq!(*made.lock().unwrap(), [("example.org".to_string(), FavoritesSource::Unset)]);
+    assert_eq!(*made.lock().unwrap(), ["example.org".to_string()]);
     // The page is where it was, nothing was asked of anybody, and the status bar says what happened.
     assert_eq!((page(&h), h.state().signing_in(), h.state().approving(), addresses(&h)), (Some(Page::Approval), false, false, vec![String::new()]));
     assert_eq!(status(&h), "The message is on the clipboard: paste it into mail or chat for your organisation's administrator");
@@ -420,7 +409,7 @@ fn the_copied_message_has_the_link_and_no_address_of_the_owner() {
     click(&mut h, Kind::OutlookCom.title());
     let said = h.state_mut().execute("ui.copyAdminMessage", json!({})).unwrap();
     assert!(said["url"].as_str().unwrap().starts_with("https://login.example.org/organizations/v2.0/adminconsent"));
-    assert_eq!(*made.lock().unwrap(), [(String::new(), FavoritesSource::Unset)]);
+    assert_eq!(*made.lock().unwrap(), [String::new()]);
     // A build that can make no such address says so on the page.
     h.state_mut().services.admin_consent_link = None;
     assert!(h.state_mut().execute("ui.copyAdminMessage", json!({})).unwrap_err().contains("can't make a link"));
@@ -445,7 +434,7 @@ fn try_again_signs_in_afresh_and_not_now_leaves_nothing_behind() {
     sign_ins(h.state_mut(), Some(Ok(signed_in_at_work())));
     click(&mut h, "Try again");
     h.run_steps(4);
-    assert_eq!((page(&h), addresses(&h)), (Some(Page::Favorites), vec!["noor@example.org".to_string()]));
+    assert_eq!((page(&h), addresses(&h)), (Some(Page::Done), vec!["noor@example.org".to_string()]));
 
     // Not now, from the page Microsoft's answer brought up.
     let mut h = work_account(|a| {
@@ -499,7 +488,7 @@ fn try_again_signs_in_afresh_and_not_now_leaves_nothing_behind() {
     assert!(h.state().approving());
     h.state_mut().execute("ui.closeDialog", json!({})).unwrap();
     h.run_steps(3);
-    assert!(!h.state().approving() && stopped(&[asked.unwrap().lock().unwrap()[0].4.clone()]) && addresses(&h) == [""]);
+    assert!(!h.state().approving() && stopped(&[asked.unwrap().lock().unwrap()[0].3.clone()]) && addresses(&h) == [""]);
 }
 
 /// (3) The other ways a sign-in ends without tokens: the wizard says which, in a sentence of
@@ -549,7 +538,7 @@ fn a_closed_tab_a_timeout_a_no_and_a_missing_browser_each_say_so() {
         sign_ins(h.state_mut(), Some(Ok(signed_in_at_work())));
         click(&mut h, "Try again");
         h.run_steps(4);
-        assert_eq!((page(&h), addresses(&h)), (Some(Page::Favorites), vec!["noor@example.org".to_string()]), "{how}");
+        assert_eq!((page(&h), addresses(&h)), (Some(Page::Done), vec!["noor@example.org".to_string()]), "{how}");
     }
 
     // Anything else is said in Microsoft's words, as it was, with the same two ways on.
@@ -614,7 +603,7 @@ fn the_approval_help_is_reached_by_commands_without_clicking() {
     // Cancel Sign-In gives the approval up, and the page says what there is to do again.
     assert!(h.state().enabled("ui.cancelSignIn"));
     assert_eq!(run(&mut h, "ui.cancelSignIn").unwrap(), json!({"cancelled": 0}));
-    assert!(!h.state().approving() && !h.state().enabled("ui.cancelSignIn") && stopped(&[asked.lock().unwrap()[0].4.clone()]));
+    assert!(!h.state().approving() && !h.state().enabled("ui.cancelSignIn") && stopped(&[asked.lock().unwrap()[0].3.clone()]));
     assert_eq!((page(&h), wizard(&h).map(|w| w.approval.approving)), (Some(Page::Approval), Some(false)));
     // Try again: the sign-in afresh.
     assert_eq!(run(&mut h, "ui.signInAgain").unwrap(), json!({"pending": "signIn", "account": 0}));
@@ -666,12 +655,12 @@ fn an_account_that_exists_gets_the_same_page_when_its_sign_in_is_refused_for_app
         assert!(says(&h, said), "{said}");
     }
     // (It is set up already: nothing is said of steps to come.)
-    assert!(!says(&h, "First you sign in at Microsoft") && at(&h, "approvalAdministrator", work).is_some());
+    assert!(at(&h, "approvalAdministrator", work).is_some());
 
     // The message: its directory is not known (no sign-in of this run named one), so the
     // administrator's own sign-in says which organisation it is.
     press_step(&mut h, COPY);
-    assert_eq!((made.lock().unwrap().clone(), status(&h).contains("clipboard")), (vec![(String::new(), FavoritesSource::Graph)], true));
+    assert_eq!((made.lock().unwrap().clone(), status(&h).contains("clipboard")), (vec![String::new()], true));
     // Not now: the dialog goes, and the account stays as it was.
     click(&mut h, "Not now");
     assert_eq!((page(&h), h.state().session.mailbox.accounts.len()), (None, accounts));
@@ -735,7 +724,7 @@ fn an_account_that_exists_gets_the_same_page_when_its_sign_in_is_refused_for_app
     h.state_mut().execute("ui.favorites", json!({"account": work, "answer": {"outcome": "approval"}})).unwrap();
     h.run_steps(3);
     let state = h.state_mut().execute("ui.favorites", json!({"account": work})).unwrap();
-    assert_eq!((state["line"].clone(), state["steps"].clone()), (json!("approval"), json!(["copyMessage", "help", "useEws"])));
+    assert_eq!((state["line"].clone(), state["steps"].clone()), (json!("approval"), json!(["copyMessage", "help"])));
     let (copy, help) =
         (at(&h, "favoritesCopyMessage", work).expect("the message to copy"), at(&h, "favoritesHelp", work).expect("the way to the page"));
     assert!(help.min.y >= copy.max.y - 0.5);

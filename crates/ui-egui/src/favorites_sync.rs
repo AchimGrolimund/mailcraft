@@ -1,87 +1,63 @@
 //! Keeping the Favorites of the folder pane the ones Outlook shows, for an account that signs
-//! in with Microsoft: read from its server, never written there.
+//! in with Microsoft: read from its server through Microsoft Graph, never written there.
 //!
-//! There are two ways of reading them, and for an account of an organisation (work or school)
-//! its owner chooses which (`ui.favoritesSource`, which sets `account.favoritesSource`): when
-//! the account is added, from the line under the Favorites heading, or in File › Options.
+//! The read rides along with the jobs the host does for Graph anyway (the calendar's own job,
+//! [`crate::calendar_sync`], and the Graph part of a Send/Receive). It takes two permissions
+//! that a sign-in doesn't have until the owner agrees to them on the provider's page, by itself
+//! and when the owner chooses to; in an organisation an administrator may have to approve them
+//! once.
 //!
-//! - **Microsoft Graph** (also what an account does that never chose, as before there was a
-//!   choice, and the only way for a personal Microsoft account). The read rides along with the
-//!   jobs the host does for Graph anyway (the calendar's own job, [`crate::calendar_sync`], and
-//!   the Graph part of a Send/Receive). It takes two permissions that a sign-in doesn't have
-//!   until the owner agrees to them on the provider's page, by itself and when the owner
-//!   chooses to; in an organisation an administrator may have to approve them once.
-//! - **Exchange Web Services**, a job of its own ([`crate::Services::ews`]). It needs no
-//!   administrator where the organisation still allows it, and Microsoft switches it off on
-//!   1 April 2027: from that day on by the session's clock it is not offered, and an account
-//!   set to it says so and offers Graph.
-//! - **Not now**: nothing is read, and the favourites marked in MailCraft are the account's.
-//!
-//! Whichever it is, the list is read when the app starts, when the owner asks for a
-//! Send/Receive, right after the owner connected it, and otherwise not more often than every
-//! quarter of an hour. What comes back is taken in by the engine (`sync.applyFavorites`), and
-//! the pane lists what the engine says (`mailcraft_engine::cmd::folder::favorites`). Until
-//! there is a list, and whenever the server's can't be had, the favourites kept in the mailbox
-//! are shown, untouched. Nothing here ever puts a dialog in front of the owner unasked; what
-//! there is to say is a quiet line under the Favorites heading:
+//! The list is read when the app starts, when the owner asks for a Send/Receive, right after
+//! the owner connected it, and otherwise not more often than every quarter of an hour. What
+//! comes back is taken in by the engine (`sync.applyFavorites`), and the pane lists what the
+//! engine says (`mailcraft_engine::cmd::folder::favorites`). Until there is a list, and whenever
+//! the server's can't be had, the favourites kept in the mailbox are shown, untouched. Nothing
+//! here ever puts a dialog in front of the owner unasked; what there is to say is a quiet line
+//! under the Favorites heading:
 //!
 //! - the sign-in doesn't cover reading them: the offer, and the server isn't asked again that day;
 //! - the owner asked and an administrator has to approve it first: that, with a message to
-//!   copy for the administrator, the way to the page that says what to do next
-//!   ([`crate::approval`]) and the offer to read them the other way;
-//! - the organisation doesn't allow Exchange Web Services: that, and the offer to use Graph;
+//!   copy for the administrator and the way to the page that says what to do next
+//!   ([`crate::approval`]);
 //! - the owner asked and it wasn't to be had (this kind of account has no such permission, the
 //!   organisation has shut the door): one plain line saying so;
 //! - a read came to nothing: one line with why in a few words, and "Try again".
 //!
 //! None of these is asked about again that day unless the owner asks.
 
-pub mod choice;
-
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc::Receiver;
 
 use mailcraft_engine::cmd::remote;
 use mailcraft_model::remote::{FavoritesDownload, FavoritesOutcome, RemoteFavorite};
-use mailcraft_model::sync::Tokens;
-use mailcraft_model::{Directory, FavoritesSource, Id};
+use mailcraft_model::{Directory, Id};
 use serde_json::{Value, json};
 
-use crate::{EwsRequest, EwsResult, GraphResult, MailApp, now_ms};
+use crate::{GraphResult, MailApp, now_ms};
 
 /// How often an account's Favorites are read at most (milliseconds), and for how long the
 /// server is left alone after it said the sign-in doesn't cover them.
 const EVERY_MS: f64 = 900_000.0;
 const DAY_MS: f64 = 86_400_000.0;
-/// How often at most the system's credential store is asked for a sign-in that a read through
-/// Exchange Web Services waits for (milliseconds).
-const LOOK_MS: f64 = 5_000.0;
-
 /// What a sign-in for the Favorites says when it is not the owner's to turn into a yes: an
 /// administrator of the organisation has to approve it first; the organisation doesn't have it
 /// at all; this kind of account has no such permission. The host answers a
-/// [`crate::SignInRequest`] that has `favorites` or `ews` with exactly one of these as its
+/// [`crate::SignInRequest`] that has `favorites` with exactly one of these as its
 /// error, and the pane shows it (in the interface language).
 pub const NEEDS_APPROVAL: &str = "Your organisation's administrator has to approve this once";
 pub const REFUSED_BY_ORGANISATION: &str = "Not allowed by your organisation";
 pub const REFUSED_FOR_ACCOUNT: &str = "Not available for this account";
-/// What the pane says of Exchange Web Services when the organisation doesn't allow it, and
-/// when Microsoft has switched it off.
-pub const EWS_NOT_ALLOWED: &str = "Your organisation doesn't allow Exchange Web Services";
-pub const EWS_SWITCHED_OFF: &str = "Microsoft has switched Exchange Web Services off";
+/// What the owner is told, once, of a mailbox whose file had them read another way
+/// (`Mailbox::take_retired_favorites_choices`): Exchange Web Services, or not at all.
+pub const FAVORITES_NOW_GRAPH: &str =
+    "Outlook's Favorites are now read through Microsoft Graph. To show MailCraft's own instead, turn them off in File › Options.";
 
 /// What the pane says under the Favorites heading, when there is something to say.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Note {
     /// Outlook's Favorites are not shown, and could be: the offer to show them.
     Offer,
-    /// The owner asked, and an administrator of the organisation has to approve it first, for
-    /// the way that was asked for.
-    Approval(FavoritesSource),
-    /// The organisation doesn't allow Exchange Web Services.
-    Blocked,
-    /// Microsoft has switched Exchange Web Services off.
-    Ended,
+    /// The owner asked, and an administrator of the organisation has to approve it first.
+    Approval,
     /// The owner asked, and they are not to be had: why, in a line.
     Refused(String),
     /// The last read came to nothing: why, in a few plain words.
@@ -97,8 +73,6 @@ pub(crate) enum Step {
     /// Open the page that says what the owner and an administrator can do
     /// ([`crate::approval`]).
     Help,
-    /// Read the Favorites the other way instead.
-    Use(FavoritesSource),
 }
 
 impl Step {
@@ -106,8 +80,6 @@ impl Step {
         match self {
             Step::CopyMessage => "copyMessage",
             Step::Help => "help",
-            Step::Use(FavoritesSource::Ews) => "useEws",
-            Step::Use(_) => "useGraph",
         }
     }
 
@@ -116,8 +88,6 @@ impl Step {
         match self {
             Step::CopyMessage => "Copy a message for my administrator",
             Step::Help => "What to do next",
-            Step::Use(FavoritesSource::Ews) => "Use Exchange Web Services instead",
-            Step::Use(_) => "Use Microsoft Graph instead",
         }
     }
 
@@ -130,12 +100,6 @@ impl Step {
             Step::Help => {
                 "Says what you and your organisation's administrator can do, and lets an administrator approve MailCraft on Microsoft's page from here."
             }
-            Step::Use(FavoritesSource::Ews) => {
-                "Reads Outlook's Favorites through Exchange Web Services, an older way that Microsoft switches off on 1 April 2027. It works where your organisation lets you approve it yourself; elsewhere it needs an administrator too."
-            }
-            Step::Use(_) => {
-                "Reads Outlook's Favorites through Microsoft Graph. It lasts; in an organisation an administrator has to approve it once."
-            }
         }
     }
 }
@@ -145,9 +109,7 @@ impl Note {
     pub(crate) fn code(&self) -> &'static str {
         match self {
             Note::Offer => "offer",
-            Note::Approval(_) => "approval",
-            Note::Blocked => "blocked",
-            Note::Ended => "ended",
+            Note::Approval => "approval",
             Note::Refused(_) => "refused",
             Note::Failed(_) => "failed",
         }
@@ -157,9 +119,7 @@ impl Note {
     pub(crate) fn text(&self) -> &str {
         match self {
             Note::Offer => "Show Outlook's Favorites",
-            Note::Approval(_) => NEEDS_APPROVAL,
-            Note::Blocked => EWS_NOT_ALLOWED,
-            Note::Ended => EWS_SWITCHED_OFF,
+            Note::Approval => NEEDS_APPROVAL,
             Note::Refused(why) | Note::Failed(why) => why,
         }
     }
@@ -185,16 +145,6 @@ pub(crate) struct FavoritesSync {
     /// organisation's the directory it named (for the link an administrator is sent).
     directories: HashMap<Id, Directory>,
     tenants: HashMap<Id, String>,
-    /// Tokens for Exchange Web Services obtained this run, per account. Never saved.
-    ews_tokens: HashMap<Id, Tokens>,
-    /// A read through Exchange Web Services that the host is busy with.
-    ews_rx: Option<(Id, Receiver<EwsResult>)>,
-    /// The accounts whose owner chose Exchange Web Services just now: should the sign-in not
-    /// cover it, the provider's page is put in front of them, once.
-    chose: HashSet<Id>,
-    /// When the system's credential store was last asked for an account's sign-in on behalf
-    /// of such a read (milliseconds): not at every frame while nobody is signed in.
-    looked: HashMap<Id, f64>,
 }
 
 impl MailApp {
@@ -204,25 +154,10 @@ impl MailApp {
         self.session.mailbox.account(account).is_some_and(microsoft)
     }
 
-    /// What the owner chose for the Favorites of `account` ([`FavoritesSource::Unset`]: never).
-    pub(crate) fn favorites_source(&self, account: Id) -> FavoritesSource {
-        self.session.mailbox.account(account).map(|a| a.favorites_source).unwrap_or_default()
-    }
-
-    /// Which way the Favorites of `account` are read today, when they are: Microsoft Graph for
-    /// an account that chose it or never chose, Exchange Web Services for one that chose it
-    /// while it exists. `None` for one that keeps its own, and while the owner would rather see
-    /// the mailbox's own everywhere.
-    fn reads_by(&self, account: Id) -> Option<FavoritesSource> {
-        if !self.is_microsoft(account) || self.session.prefs.own_favorites {
-            return None;
-        }
-        match self.favorites_source(account) {
-            FavoritesSource::None => None,
-            FavoritesSource::Ews if mailcraft_engine::cmd::account::ews_ended(&self.session) => None,
-            FavoritesSource::Ews => Some(FavoritesSource::Ews),
-            FavoritesSource::Unset | FavoritesSource::Graph => Some(FavoritesSource::Graph),
-        }
+    /// Whether the Favorites of `account` are read from its server: it signs in with Microsoft,
+    /// and the owner hasn't asked to see the mailbox's own everywhere.
+    fn reads_from_server(&self, account: Id) -> bool {
+        self.is_microsoft(account) && !self.session.prefs.own_favorites
     }
 
     /// Which kind of Microsoft account `account` is: what was written down with it; else what a
@@ -247,7 +182,7 @@ impl MailApp {
     }
 
     /// A sign-in of `account` named the directory `tenant` (an identity token's): that says
-    /// which kind of account it is. Kept for the run; it goes into the mailbox only with a choice.
+    /// which kind of account it is. Kept for the run, and not written into the mailbox.
     pub(crate) fn note_directory(&mut self, account: Id, tenant: &str) {
         let tenant = tenant.trim();
         let kind = Directory::of_tenant(tenant);
@@ -260,18 +195,6 @@ impl MailApp {
         } else {
             self.favorites.tenants.remove(&account);
         }
-    }
-
-    /// Whether the owner of `account` has a choice of how its Favorites in Outlook are read: an
-    /// account of an organisation that signs in with Microsoft. (A personal one has Microsoft
-    /// Graph and nothing else, and one that nobody knows the kind of is treated as that.)
-    pub(crate) fn favorites_choice(&self, account: Id) -> bool {
-        self.is_microsoft(account) && self.directory(account) == Directory::Organisation
-    }
-
-    /// What the owner of `account` may choose today, by what a command calls each.
-    fn favorites_offered(&self, account: Id) -> Vec<&'static str> {
-        mailcraft_engine::cmd::account::favorites_sources_offered(&self.session, self.directory(account))
     }
 
     /// Whether the Favorites of `account` are due at `now`: the owner asked (`asked_for`, or
@@ -300,18 +223,7 @@ impl MailApp {
     /// doesn't read them asks for nothing it didn't always ask for). `asked_for` when the owner
     /// asked for the job (a Send/Receive). Notes that they were asked for when they are.
     pub(crate) fn favorites_ask(&mut self, account: Id, now: f64, asked_for: bool) -> bool {
-        match self.reads_by(account) {
-            Some(FavoritesSource::Graph) => self.favorites_wanted(account, now, asked_for),
-            // Read by a job of its own ([`favorites_tick_at`](Self::favorites_tick_at)), which
-            // the owner's Send/Receive makes due.
-            Some(_) => {
-                if asked_for {
-                    self.favorites.due.insert(account);
-                }
-                false
-            }
-            None => false,
-        }
+        self.reads_from_server(account) && self.favorites_wanted(account, now, asked_for)
     }
 
     /// The Graph token to hand a job for `account`: the one in memory when it is still good,
@@ -355,8 +267,8 @@ impl MailApp {
         }
         let Some(download) = result.favorites.take() else { return };
         let why = std::mem::take(&mut result.favorites_error);
-        // (Asked for before the owner chose another way: nobody's answer any more.)
-        if self.reads_by(account) != Some(FavoritesSource::Graph) {
+        // (Asked for before the owner turned them off: nobody's answer any more.)
+        if !self.reads_from_server(account) {
             return;
         }
         self.apply_favorites_download(account, &download, &why);
@@ -376,7 +288,7 @@ impl MailApp {
                 self.favorites.missing.insert(account, now);
                 self.favorites.uncovered.insert(account);
                 // (What the owner was told when he asked stays said.)
-                if !matches!(self.favorites_note_of(account), Some(Note::Refused(_) | Note::Approval(_) | Note::Blocked)) {
+                if !matches!(self.favorites_note_of(account), Some(Note::Refused(_) | Note::Approval)) {
                     self.favorites.notes.insert(account, Note::Offer);
                 }
             }
@@ -400,40 +312,12 @@ impl MailApp {
         }
     }
 
-    /// The server's list of `account` is not to be had: what was kept of one goes, and the
-    /// favourites marked here are what the pane shows. Says nothing under the heading.
-    fn drop_server_favorites(&mut self, account: Id) {
-        let Some(owner) = self.session.mailbox.account(account).cloned() else { return };
-        let gone = FavoritesDownload { outcome: FavoritesOutcome::NotPermitted, ..Default::default() }.for_account(&owner);
-        let _ = remote::apply_favorites(&mut self.session, &gone);
-    }
-
-    /// The way the Favorites of `account` are read, or would be: Exchange Web Services for an
-    /// account set to it, Microsoft Graph for any other.
-    fn favorites_way(&self, account: Id) -> FavoritesSource {
-        if self.favorites_source(account) == FavoritesSource::Ews { FavoritesSource::Ews } else { FavoritesSource::Graph }
-    }
-
     /// What there is to say of the Favorites of `account` under the heading, if anything.
     pub(crate) fn favorites_note_of(&self, account: Id) -> Option<Note> {
-        if !self.is_microsoft(account) || self.session.prefs.own_favorites {
+        if !self.reads_from_server(account) {
             return None;
         }
-        match self.favorites_source(account) {
-            // "Not now" is not "never": the offer stands, and nobody is asked for it.
-            FavoritesSource::None => Some(Note::Offer),
-            FavoritesSource::Ews if mailcraft_engine::cmd::account::ews_ended(&self.session) => Some(Note::Ended),
-            // (What was said of a way the account no longer takes is not said of the other.)
-            _ => {
-                let way = self.favorites_way(account);
-                let stands = |note: &&Note| match note {
-                    Note::Blocked | Note::Ended => way == FavoritesSource::Ews,
-                    Note::Approval(of) => *of == way,
-                    Note::Offer | Note::Refused(_) | Note::Failed(_) => true,
-                };
-                self.favorites.notes.get(&account).filter(stands).cloned()
-            }
-        }
+        self.favorites.notes.get(&account).cloned()
     }
 
     /// What the pane says under the Favorites heading: the first account that has something to
@@ -444,19 +328,9 @@ impl MailApp {
     }
 
     /// The links under the line that `note` is for `account`: what the owner can do about it.
-    pub(crate) fn favorites_steps(&self, account: Id, note: &Note) -> Vec<Step> {
-        let offered = self.favorites_offered(account);
-        let other = |source: FavoritesSource| source.code().filter(|code| offered.contains(code)).map(|_| Step::Use(source));
+    pub(crate) fn favorites_steps(&self, note: &Note) -> Vec<Step> {
         match note {
-            Note::Approval(FavoritesSource::Ews) => {
-                [Some(Step::CopyMessage), Some(Step::Help), other(FavoritesSource::Graph)].into_iter().flatten().collect()
-            }
-            // (The other way only where there is a choice: a personal account has none.)
-            Note::Approval(_) => {
-                let ews = other(FavoritesSource::Ews).filter(|_| self.favorites_choice(account));
-                [Some(Step::CopyMessage), Some(Step::Help), ews].into_iter().flatten().collect()
-            }
-            Note::Blocked | Note::Ended => vec![Step::Use(FavoritesSource::Graph)],
+            Note::Approval => vec![Step::CopyMessage, Step::Help],
             Note::Offer | Note::Refused(_) | Note::Failed(_) => Vec::new(),
         }
     }
@@ -465,7 +339,7 @@ impl MailApp {
     /// that has the offer standing (File › Options offers it too).
     pub(crate) fn favorites_offer(&self) -> Option<Id> {
         let accounts = self.session.mailbox.accounts.iter().map(|a| a.id);
-        accounts.filter(|id| !self.favorites_choice(*id)).find(|id| matches!(self.favorites_note_of(*id), Some(Note::Offer | Note::Refused(_))))
+        accounts.into_iter().find(|id| matches!(self.favorites_note_of(*id), Some(Note::Offer | Note::Refused(_))))
     }
 
     /// The Favorites of `account` are read at the next chance, whatever the clock says and
@@ -477,10 +351,8 @@ impl MailApp {
         }
         self.favorites.due.insert(account);
         self.favorites.missing.remove(&account);
-        if self.reads_by(account) != Some(FavoritesSource::Ews) {
-            self.calendar.checked.remove(&account);
-            self.calendar.failures.remove(&account);
-        }
+        self.calendar.checked.remove(&account);
+        self.calendar.failures.remove(&account);
     }
 
     /// What was remembered of an account that is gone.
@@ -493,12 +365,6 @@ impl MailApp {
         kept.due.remove(&account);
         kept.directories.remove(&account);
         kept.tenants.remove(&account);
-        kept.ews_tokens.remove(&account);
-        kept.chose.remove(&account);
-        kept.looked.remove(&account);
-        if kept.ews_rx.as_ref().is_some_and(|(whose, _)| *whose == account) {
-            kept.ews_rx = None;
-        }
     }
 
     /// The sign-in for the Favorites of `account` came back with tokens that are good for
@@ -509,38 +375,15 @@ impl MailApp {
         self.favorites_due(account);
     }
 
-    /// The owner agreed, on the provider's page, to Exchange Web Services for `account`: the
-    /// token is kept for the run, and the Favorites are read at once.
-    pub(crate) fn favorites_ews_connected(&mut self, account: Id, tokens: Tokens) {
-        self.favorites.ews_tokens.insert(account, tokens);
-        self.favorites.notes.remove(&account);
-        self.favorites.chose.remove(&account);
-        self.favorites_due(account);
-    }
-
     /// The sign-in for the Favorites of `account` came to nothing: `error` is why. When the no
     /// is not the owner's to change ([`NEEDS_APPROVAL`], [`REFUSED_BY_ORGANISATION`],
     /// [`REFUSED_FOR_ACCOUNT`]) the pane says so, and nothing is asked again that day; anything
     /// else (the owner said no, the page was closed) goes to the status bar, and the offer stands.
     pub(crate) fn favorites_refused(&mut self, account: Id, error: &str) {
-        self.favorites_refused_for(account, error, FavoritesSource::Graph);
-    }
-
-    /// [`favorites_refused`](Self::favorites_refused) for a sign-in that asked for the way
-    /// `source` of reading them (Microsoft Graph, or Exchange Web Services). A no to a way the
-    /// owner has turned from meanwhile is nobody's any more.
-    pub(crate) fn favorites_refused_for(&mut self, account: Id, error: &str, source: FavoritesSource) {
-        if source != self.favorites_way(account) {
-            return;
-        }
         let note = match error {
-            NEEDS_APPROVAL => Note::Approval(source),
+            NEEDS_APPROVAL => Note::Approval,
             REFUSED_BY_ORGANISATION | REFUSED_FOR_ACCOUNT => Note::Refused(error.to_string()),
             _ => {
-                // (Asked through Exchange Web Services, there is no list until it is agreed to.)
-                if source == FavoritesSource::Ews && !self.favorites.notes.contains_key(&account) {
-                    self.favorites.notes.insert(account, Note::Offer);
-                }
                 self.status(error.to_string());
                 return;
             }
@@ -552,169 +395,7 @@ impl MailApp {
         }
         self.favorites.notes.insert(account, note);
         self.favorites.missing.insert(account, now_ms());
-        if source == FavoritesSource::Ews {
-            self.drop_server_favorites(account);
-        }
         self.status(tl!(error));
-    }
-
-    // ---- Exchange Web Services: a job of its own ----
-
-    /// A token for Exchange Web Services that is still good, for `account`; else empty.
-    fn ews_access(&self, account: Id) -> String {
-        self.favorites.ews_tokens.get(&account).filter(|t| t.fresh(mailcraft_time::now())).map(|t| t.access.clone()).unwrap_or_default()
-    }
-
-    /// Whether a read through Exchange Web Services is in flight.
-    pub fn favorites_reading(&self) -> bool {
-        self.favorites.ews_rx.is_some()
-    }
-
-    /// Look whether an account that reads its Favorites through Exchange Web Services is due,
-    /// and start the read when it is. Called every frame.
-    pub(crate) fn favorites_tick(&mut self, ctx: &egui::Context) {
-        self.favorites_tick_at(now_ms());
-        if self.favorites.ews_rx.is_some() {
-            // An answer is on its way (the host wakes the window when it is there, too).
-            ctx.request_repaint_after(std::time::Duration::from_millis(250));
-        }
-    }
-
-    /// [`favorites_tick`](Self::favorites_tick) at `now` (milliseconds). Whether a read was
-    /// started. (Public for a host's tests, which have no window.)
-    pub fn favorites_tick_at(&mut self, now: f64) -> bool {
-        if !self.auto_sync || self.services.ews.is_none() || self.favorites.ews_rx.is_some() || self.signing_in.is_some() {
-            return false;
-        }
-        let accounts: Vec<Id> = self.session.mailbox.accounts.iter().map(|a| a.id).collect();
-        for account in accounts {
-            if self.favorites_source(account) != FavoritesSource::Ews || !self.is_microsoft(account) {
-                continue;
-            }
-            // Switched off by Microsoft: nothing is asked any more, and what was kept goes.
-            if mailcraft_engine::cmd::account::ews_ended(&self.session) {
-                if mailcraft_engine::cmd::folder::favorites_from_server(&self.session, account) {
-                    self.drop_server_favorites(account);
-                }
-                continue;
-            }
-            if self.reads_by(account) != Some(FavoritesSource::Ews) {
-                continue;
-            }
-            // (This is looked at every frame: nothing further is, until a read is due.)
-            if !self.favorites_are_due(account, now, false) {
-                continue;
-            }
-            let Some(owner) = self.session.mailbox.account(account).cloned() else { continue };
-            let Some(oauth) = owner.oauth.clone() else { continue };
-            let access = self.ews_access(account);
-            let kept = self.tokens.get(&account).map(|t| t.refresh.clone()).filter(|r| !r.is_empty());
-            let refresh = match kept {
-                Some(refresh) => refresh,
-                None if !access.is_empty() => String::new(),
-                // What the system remembers of the sign-in, asked for every few seconds at most.
-                None => {
-                    if self.favorites.looked.get(&account).is_some_and(|at| (0.0..LOOK_MS).contains(&(now - at))) {
-                        continue;
-                    }
-                    self.favorites.looked.insert(account, now);
-                    self.remembered("refresh", &owner.email).unwrap_or_default()
-                }
-            };
-            // Nobody is signed in yet: Send/Receive does that, and this waits for it.
-            if access.is_empty() && refresh.is_empty() {
-                continue;
-            }
-            self.favorites_wanted(account, now, false);
-            let ask = EwsRequest { account: owner, oauth: self.effective_oauth(oauth), refresh, access };
-            let Some(ews) = &self.services.ews else { return false };
-            self.favorites.ews_rx = Some((account, ews(ask)));
-            return true;
-        }
-        false
-    }
-
-    /// The read through Exchange Web Services answered: keep its token, and take in the list,
-    /// or say in a line why there is none. (Public for a host's tests.)
-    pub fn poll_favorites(&mut self) {
-        let Some((account, rx)) = &self.favorites.ews_rx else { return };
-        let account = *account;
-        let mut result = match rx.try_recv() {
-            Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => EwsResult {
-                account,
-                favorites: Some(FavoritesDownload { outcome: FavoritesOutcome::Failed, ..Default::default() }),
-                ..Default::default()
-            },
-        };
-        self.favorites.ews_rx = None;
-        if result.token_refused {
-            self.favorites.ews_tokens.remove(&account);
-        }
-        let address = self.session.mailbox.account(account).map(|a| a.email.clone()).unwrap_or_default();
-        if let Some(tokens) = result.tokens.take() {
-            self.note_directory(account, &tokens.tenant);
-            // The newest refresh token is the account's, whatever it was asked for.
-            if !tokens.refresh.is_empty() {
-                self.remember("refresh", &address, &tokens.refresh);
-                if let Some(mail) = self.tokens.get_mut(&account) {
-                    mail.refresh = tokens.refresh.clone();
-                }
-            }
-            let now = mailcraft_time::now();
-            self.favorites.ews_tokens.insert(account, Tokens { expires_at: tokens.expires_at.clamp(now, now.saturating_add(86_400)), ..tokens });
-        }
-        // (Asked for before the owner chose another way: nobody's answer any more.)
-        if self.reads_by(account) != Some(FavoritesSource::Ews) {
-            self.favorites.chose.remove(&account);
-            return;
-        }
-        let now = self.favorites.asked.get(&account).copied().unwrap_or_else(now_ms);
-        if result.blocked {
-            log::info!("favorites, account {account}: the organisation doesn't allow Exchange Web Services");
-            self.favorites.chose.remove(&account);
-            self.favorites.notes.insert(account, Note::Blocked);
-            self.favorites.missing.insert(account, now);
-            self.drop_server_favorites(account);
-            return;
-        }
-        if result.consent_needed {
-            self.favorites.missing.insert(account, now);
-            self.drop_server_favorites(account);
-            // The owner chose this just now: the provider's page, once. Nobody else is ever
-            // sent there for it.
-            if self.favorites.chose.remove(&account) {
-                match self.connect_ews(account) {
-                    Ok(()) => return,
-                    Err(e) => self.status(e),
-                }
-            }
-            if !matches!(self.favorites.notes.get(&account), Some(Note::Refused(_) | Note::Approval(_))) {
-                self.favorites.notes.insert(account, Note::Offer);
-            }
-            return;
-        }
-        // (The token was no longer taken: the next look gets another, and says what there is.)
-        if result.token_refused && result.favorites.is_none() {
-            self.favorites.asked.remove(&account);
-            return;
-        }
-        self.favorites.chose.remove(&account);
-        let Some(download) = result.favorites.take() else { return };
-        let why = std::mem::take(&mut result.favorites_error);
-        self.apply_favorites_download(account, &download, &why);
-    }
-
-    /// Have the owner agree, on Microsoft's page, to Exchange Web Services for `account`, and
-    /// to nothing else.
-    fn connect_ews(&mut self, account: Id) -> Result<(), String> {
-        let Some(owner) = self.session.mailbox.account(account).cloned() else { return Err(tl!("No account signs in with Microsoft").to_string()) };
-        let Some(oauth) = owner.oauth.clone() else { return Err(tl!("This account doesn't sign in with Microsoft").to_string()) };
-        self.ews_next = true;
-        let begun = self.begin_sign_in(account, oauth, &owner.email, String::new(), false, false);
-        self.ews_next = false;
-        begun
     }
 
     // ---- commands ----
@@ -734,16 +415,12 @@ impl MailApp {
     fn favorites_state(&self, account: Id) -> Value {
         let from_server = mailcraft_engine::cmd::folder::favorites_from_server(&self.session, account);
         let note = self.favorites_note_of(account);
-        let steps: Vec<&str> =
-            note.as_ref().map(|note| self.favorites_steps(account, note)).unwrap_or_default().into_iter().map(Step::code).collect();
+        let steps: Vec<&str> = note.as_ref().map(|note| self.favorites_steps(note)).unwrap_or_default().into_iter().map(Step::code).collect();
         json!({
             "account": account,
             "from": if from_server { "server" } else { "mailbox" },
             "own": self.session.prefs.own_favorites,
-            "source": self.favorites_source(account).code(),
             "directory": self.directory(account).code(),
-            "choice": self.favorites_choice(account),
-            "offered": self.favorites_offered(account),
             "line": note.as_ref().map(Note::code),
             "text": note.as_ref().map(|note| tl!(note.text()).to_string()).unwrap_or_default(),
             "steps": steps,
@@ -764,101 +441,34 @@ impl MailApp {
         Ok(json!({"pending": "signIn", "account": account}))
     }
 
-    /// `ui.favoritesSource`: the owner's choice of how the Favorites of Outlook are read for an
-    /// account (`account.favoritesSource` keeps it), and what follows from it at once: Microsoft's
-    /// page for Graph's two permissions, a read through Exchange Web Services (with Microsoft's
-    /// page for it only should the sign-in not cover it), or nothing. Without `source`, how
-    /// things stand.
-    fn favorites_source_command(&mut self, p: &Value) -> Result<Value, String> {
-        let account = self.favorites_account(p)?;
-        let source = match p.get("source") {
-            None | Some(Value::Null) => return Ok(self.favorites_state(account)),
-            Some(source) => source.as_str().and_then(FavoritesSource::parse).ok_or_else(|| tl!("`source` is graph, ews or none").to_string())?,
-        };
-        let before = self.favorites_source(account);
-        let had_list = mailcraft_engine::cmd::folder::favorites_from_server(&self.session, account);
-        // Which kind of account it is goes into the mailbox with the choice.
-        let mut params = json!({"account": account, "source": source.code()});
-        if let Some(kind) = self.directory(account).code() {
-            params["directory"] = json!(kind);
-        }
-        self.session.run("account.favoritesSource", &params).map_err(|e| e.to_string())?;
-        // What was said of the way it was before is not said of this one.
-        self.favorites.notes.remove(&account);
-        self.favorites.missing.remove(&account);
-        self.favorites.chose.remove(&account);
-        let mut pending = Value::Null;
-        match source {
-            FavoritesSource::Graph => {
-                // It works already (the list is Graph's): nothing to agree to, only to read.
-                let works = had_list && matches!(before, FavoritesSource::Unset | FavoritesSource::Graph);
-                if works {
-                    self.favorites_due(account);
-                    pending = json!("read");
-                } else {
-                    match self.connect_favorites(&json!({"account": account})) {
-                        Ok(_) => pending = json!("signIn"),
-                        // (The choice stands; the offer under the heading asks again.)
-                        Err(e) => {
-                            self.favorites.notes.insert(account, Note::Offer);
-                            self.status(e);
-                        }
-                    }
-                }
-            }
-            FavoritesSource::Ews => {
-                if self.services.ews.is_some() {
-                    self.favorites.chose.insert(account);
-                    self.favorites_due(account);
-                    pending = json!("read");
-                } else {
-                    self.status(tl!("This build can't reach the account's server."));
-                }
-            }
-            FavoritesSource::None | FavoritesSource::Unset => {}
-        }
-        let mut state = self.favorites_state(account);
-        state["pending"] = pending;
-        Ok(state)
-    }
-
     /// What an administrator's approval is asked for, for `account`: its sign-in settings (as
-    /// the account has them), its organisation's directory when that is known (else empty), and
-    /// whether Exchange Web Services is asked for with the rest (`Ews`: its Favorites are, or
-    /// were to be, read that way).
-    pub(crate) fn approval_of(&self, account: Id) -> Result<(mailcraft_model::OAuth, String, FavoritesSource), String> {
+    /// the account has them) and its organisation's directory when that is known (else empty).
+    pub(crate) fn approval_of(&self, account: Id) -> Result<(mailcraft_model::OAuth, String), String> {
         let Some(owner) = self.session.mailbox.account(account) else { return Err(tl!("No account signs in with Microsoft").to_string()) };
         let Some(oauth) = owner.oauth.clone() else { return Err(tl!("This account doesn't sign in with Microsoft").to_string()) };
-        let source = match self.favorites.notes.get(&account) {
-            Some(Note::Approval(source)) => *source,
-            _ if self.favorites_source(account) == FavoritesSource::Ews => FavoritesSource::Ews,
-            _ => FavoritesSource::Graph,
-        };
         // The organisation's own directory, when a sign-in of this run named it or the account's
         // settings do; otherwise the administrator's sign-in says which it is.
         let named = oauth.tenant.trim();
         let settings = (Directory::of_tenant(named) == Directory::Organisation && !named.eq_ignore_ascii_case("organizations")).then_some(named);
         let tenant = self.favorites.tenants.get(&account).map(String::as_str).or(settings).unwrap_or("").to_string();
-        Ok((oauth, tenant, source))
+        Ok((oauth, tenant))
     }
 
     /// The address of Microsoft's page where an administrator approves this program, for the
-    /// sign-in settings `oauth` (with the application id filled in), the directory `tenant`
-    /// (empty: whichever the administrator is of) and with Exchange Web Services or without
-    /// (`source`). A directory the host won't make an address of is left out of it.
-    pub(crate) fn admin_link(&self, oauth: &mailcraft_model::OAuth, tenant: &str, source: FavoritesSource) -> Result<String, String> {
+    /// sign-in settings `oauth` (with the application id filled in) and the directory `tenant`
+    /// (empty: whichever the administrator is of). A directory the host won't make an address of
+    /// is left out of it.
+    pub(crate) fn admin_link(&self, oauth: &mailcraft_model::OAuth, tenant: &str) -> Result<String, String> {
         let unable = || tl!("This build can't make a link for an administrator.").to_string();
         let make = self.services.admin_consent_link.as_ref().ok_or_else(unable)?;
-        let link = make(oauth, tenant, source).or_else(|| if tenant.is_empty() { None } else { make(oauth, "", source) });
+        let link = make(oauth, tenant).or_else(|| if tenant.is_empty() { None } else { make(oauth, "") });
         link.ok_or_else(unable)
     }
 
-    /// The address an administrator of the organisation of `account` approves this program at,
-    /// with Exchange Web Services in it where its Favorites are (or were to be) read that way.
-    fn admin_consent_link(&self, account: Id) -> Result<(String, FavoritesSource), String> {
-        let (oauth, tenant, source) = self.approval_of(account)?;
-        let link = self.admin_link(&self.effective_oauth(oauth), &tenant, source)?;
-        Ok((link, source))
+    /// The address an administrator of the organisation of `account` approves this program at.
+    fn admin_consent_link(&self, account: Id) -> Result<String, String> {
+        let (oauth, tenant) = self.approval_of(account)?;
+        self.admin_link(&self.effective_oauth(oauth), &tenant)
     }
 
     /// `ui.copyAdminConsentLink`: put the address an administrator approves this program at on
@@ -866,12 +476,12 @@ impl MailApp {
     /// window's own links copy a whole message with it: `ui.copyAdminMessage`.)
     fn copy_admin_consent_link(&mut self, p: &Value) -> Result<Value, String> {
         let account = self.favorites_account(p)?;
-        let (link, source) = self.admin_consent_link(account)?;
+        let link = self.admin_consent_link(account)?;
         if let Some(ctx) = &self.ctx {
             ctx.copy_text(link.clone());
         }
         self.status(tl!("The link is on the clipboard: send it to your organisation's administrator"));
-        Ok(json!({"account": account, "source": source.code(), "url": link}))
+        Ok(json!({"account": account, "url": link}))
     }
 
     /// `ui.favorites`: what the folder pane has of an account's Favorites in Outlook. With
@@ -887,19 +497,12 @@ impl MailApp {
                 // (The owner asked on the provider's page and was told no.)
                 "refused" => {
                     let by = if why == REFUSED_FOR_ACCOUNT { REFUSED_FOR_ACCOUNT } else { REFUSED_BY_ORGANISATION };
-                    self.favorites_refused_for(account, by, self.favorites_way(account));
+                    self.favorites_refused(account, by);
                     return Ok(self.favorites_state(account));
                 }
                 // (…or that an administrator has to approve it first.)
                 "approval" => {
-                    self.favorites_refused_for(account, NEEDS_APPROVAL, self.favorites_way(account));
-                    return Ok(self.favorites_state(account));
-                }
-                // (The organisation doesn't allow Exchange Web Services.)
-                "blocked" => {
-                    self.favorites.notes.insert(account, Note::Blocked);
-                    self.favorites.missing.insert(account, now_ms());
-                    self.drop_server_favorites(account);
+                    self.favorites_refused(account, NEEDS_APPROVAL);
                     return Ok(self.favorites_state(account));
                 }
                 _ => {}
@@ -909,7 +512,7 @@ impl MailApp {
                 "missing" => FavoritesOutcome::Missing,
                 "notPermitted" => FavoritesOutcome::NotPermitted,
                 "failed" => FavoritesOutcome::Failed,
-                _ => return Err(tl!("`answer.outcome` is read, missing, notPermitted, refused, approval, blocked or failed").to_string()),
+                _ => return Err(tl!("`answer.outcome` is read, missing, notPermitted, refused, approval or failed").to_string()),
             };
             let folders: Vec<RemoteFavorite> = match answer.get("folders") {
                 None | Some(Value::Null) => Vec::new(),
@@ -930,12 +533,7 @@ impl MailApp {
         if self.session.prefs.own_favorites {
             return Err(tl!("Outlook's Favorites are switched off in File › Options").to_string());
         }
-        let reads = self.reads_by(account);
-        let reachable = match reads {
-            Some(FavoritesSource::Ews) => self.services.ews.is_some(),
-            _ => self.services.graph.is_some(),
-        };
-        if !reachable {
+        if self.services.graph.is_none() {
             return Err(tl!("This build can't reach the account's server.").to_string());
         }
         // What the last read said is not said any longer: the next one says what there is.
@@ -948,9 +546,8 @@ impl MailApp {
 }
 
 /// File › Options: whether the folder pane shows Outlook's Favorites for an account that has
-/// them; for an account of an organisation, how they are read; and for any other, the way to
-/// connect them when its sign-in doesn't cover reading them yet. Nothing is shown while no
-/// account signs in with Microsoft.
+/// them, and the way to connect them when its sign-in doesn't cover reading them yet. Nothing is
+/// shown while no account signs in with Microsoft.
 pub(crate) fn options(app: &mut MailApp, ui: &mut egui::Ui, t: &crate::theme::Tokens) {
     let ids: Vec<Id> = app.session.mailbox.accounts.iter().map(|a| a.id).collect();
     if !ids.iter().any(|id| app.is_microsoft(*id)) {
@@ -967,11 +564,6 @@ pub(crate) fn options(app: &mut MailApp, ui: &mut egui::Ui, t: &crate::theme::To
     }
     if !outlook {
         return;
-    }
-    // An account of an organisation: how its Favorites are read, account by account.
-    let choosing: Vec<Id> = ids.iter().copied().filter(|id| app.favorites_choice(*id)).collect();
-    for account in choosing {
-        choice::options_row(app, ui, t, account);
     }
     // The sign-in doesn't cover reading them yet: the same offer as under the Favorites heading.
     if let Some(account) = app.favorites_offer() {
@@ -997,12 +589,22 @@ pub(crate) fn options(app: &mut MailApp, ui: &mut egui::Ui, t: &crate::theme::To
     }
 }
 
+/// Do what a link under a quiet line says ([`Step`]).
+pub(crate) fn step_taken(app: &mut MailApp, account: Id, step: Step) {
+    let done = match step {
+        Step::CopyMessage => app.run("ui.copyAdminMessage", json!({"account": account})),
+        Step::Help => app.run("ui.approvalHelp", json!({"account": account})),
+    };
+    if let Err(e) = done {
+        app.status(e);
+    }
+}
+
 /// The `ui.*` commands of the Favorites; `None` for any other.
 pub(crate) fn ui_command(app: &mut MailApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     Some(match id {
         "ui.connectFavorites" => app.connect_favorites(p),
         "ui.favorites" => app.favorites_command(p),
-        "ui.favoritesSource" => app.favorites_source_command(p),
         "ui.copyAdminConsentLink" => app.copy_admin_consent_link(p),
         _ => return None,
     })

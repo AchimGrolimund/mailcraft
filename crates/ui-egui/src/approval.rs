@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-use mailcraft_model::{FavoritesSource, Id, OAuth};
+use mailcraft_model::{Id, OAuth};
 use serde_json::{Value, json};
 
 use crate::MailApp;
@@ -94,9 +94,6 @@ pub struct AdminConsentRequest {
     /// The organisation's directory when it is known (the id a sign-in named, or a domain of
     /// its own); empty for whichever the administrator who signs in is of.
     pub tenant: String,
-    /// `Ews`: Exchange Web Services is asked for with the rest, for an account whose owner chose
-    /// to have Outlook's Favorites read that way. Anything else: without it.
-    pub source: FavoritesSource,
     /// Set when the owner gives up waiting, for the host to stop too.
     pub cancel: Arc<AtomicBool>,
 }
@@ -181,8 +178,6 @@ pub(crate) struct Whose {
     pub oauth: OAuth,
     /// Its organisation's directory when that is known; else empty.
     pub tenant: String,
-    /// `Ews`: Exchange Web Services is asked for with the rest.
-    pub source: FavoritesSource,
 }
 
 /// An approval the host is busy with (Microsoft's page is open in the browser).
@@ -260,13 +255,13 @@ impl MailApp {
 
     /// Whose approval a command asks for, for an account that exists.
     fn whose(&self, account: Id) -> Result<Whose, String> {
-        let (oauth, tenant, source) = self.approval_of(account)?;
-        Ok(Whose { account, oauth, tenant, source })
+        let (oauth, tenant) = self.approval_of(account)?;
+        Ok(Whose { account, oauth, tenant })
     }
 
     /// The message for an administrator and the address in it, for `whose`.
     pub(crate) fn admin_message(&self, whose: &Whose) -> Result<(String, String), String> {
-        let link = self.admin_link(&self.effective_oauth(whose.oauth.clone()), &whose.tenant, whose.source)?;
+        let link = self.admin_link(&self.effective_oauth(whose.oauth.clone()), &whose.tenant)?;
         Ok((message(&link), link))
     }
 
@@ -278,7 +273,7 @@ impl MailApp {
             ctx.copy_text(text.clone());
         }
         self.status(tl!("The message is on the clipboard: paste it into mail or chat for your organisation's administrator"));
-        Ok(json!({"account": whose.account, "source": whose.source.code(), "url": link, "text": text}))
+        Ok(json!({"account": whose.account, "url": link, "text": text}))
     }
 
     /// Why this build can't open Microsoft's approval page at all, when it can't.
@@ -303,7 +298,6 @@ impl MailApp {
             account: whose.account,
             oauth: self.effective_oauth(whose.oauth.clone()),
             tenant: whose.tenant.clone(),
-            source: whose.source,
             cancel: cancel.clone(),
         };
         let rx = ask(request);
@@ -366,7 +360,7 @@ impl MailApp {
     /// the folder pane says they wait on an administrator; else its sign-in, by Send/Receive.
     pub(crate) fn sign_in_again_for(&mut self, account: Id) -> Result<Value, String> {
         match self.favorites_note_of(account) {
-            Some(Note::Approval(way)) => self.execute("ui.favoritesSource", json!({"account": account, "source": way.code()})),
+            Some(Note::Approval) => self.execute("ui.connectFavorites", json!({"account": account})),
             _ => self.execute("ui.sync", json!({"account": account})),
         }
     }

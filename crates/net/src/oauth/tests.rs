@@ -1586,100 +1586,8 @@ proptest! {
     }
 }
 
-const EWS_SCOPE: &str = "https://outlook.office365.com/EWS.AccessAsUser.All offline_access openid profile email";
-
-#[test]
-fn exchange_web_services_is_asked_for_alone_and_never_with_a_sign_in() {
-    // A sign-in for mail or for Graph asks nothing of Exchange Web Services, on its page or
-    // for its tokens: only an owner who chose that way of reading the Favorites is ever asked.
-    for resource in [Resource::Mail, Resource::Graph] {
-        let endpoints = Endpoints::for_resource(&oauth(), resource);
-        assert!(!format!("{} {} {}", endpoints.scope, endpoints.consent, endpoints.lesser).contains("EWS"), "{resource:?}");
-    }
-    // Asked for, it is that scope and who signs in, with nothing beside it on the page.
-    let ews = Endpoints::for_resource(&oauth(), Resource::Ews);
-    assert_eq!((ews.scope.as_str(), ews.consent.as_str(), ews.lesser.as_str()), (EWS_SCOPE, "", ""));
-    assert_eq!(ews.token, "https://login.microsoftonline.com/common/oauth2/v2.0/token");
-
-    let granted = r#"{"token_type":"Bearer","expires_in":3600,"access_token":"ews-access","refresh_token":"newer-refresh"}"#;
-    let server = FakeHttp::answering(ok(granted));
-    let endpoints = Endpoints { scope: EWS_SCOPE.into(), ..endpoints_of(&server) };
-    let ask = |open: &dyn Fn(&str)| sign_in_for_favorites_within(&endpoints, &oauth(), "ada@example.org", open, &AtomicBool::new(false), PATIENCE);
-    let (open, visits) = browser_answering(&["GET /?code=the-code&state={state}"]);
-    let tokens = ask(&open).unwrap();
-    assert_eq!((tokens.access.as_str(), tokens.refresh.as_str()), ("ews-access", "newer-refresh"));
-    // The page and the tokens are asked for the same, and for nothing of Graph or of mail.
-    assert_eq!((visit_asked(&visits, 0)["scope"].as_str(), form_of(&server, 0)["scope"].as_str()), (EWS_SCOPE, EWS_SCOPE));
-    assert!(!server.request(0).contains("graph.microsoft.com") && !server.request(0).contains("IMAP"));
-
-    // An administrator has to approve it (the default of a new organisation for this very
-    // permission): said as that, once. A personal account has no such thing.
-    let (open, visits) = browser_answering(&["GET /?error=access_denied&error_description=AADSTS90094%3A+Admin+consent+is+required.&state={state}"]);
-    assert_eq!((ask(&open), visited(&visits)), (Err(FavoritesRefusal::Approval), 1));
-    for refusal in [
-        "error=invalid_scope&error_description=AADSTS70011%3A+The+scope+is+not+valid.",
-        "error=invalid_request&error_description=AADSTS500207%3A+Not+for+this+account+type.",
-    ] {
-        let (open, _) = browser_answering(&[&format!("GET /?{refusal}&state={{state}}")]);
-        assert_eq!(ask(&open), Err(FavoritesRefusal::Account), "{refusal}");
-    }
-    let (open, _) = browser_answering(&["GET /?error=access_denied&error_description=AADSTS53003%3A+Blocked.&state={state}"]);
-    assert_eq!(ask(&open), Err(FavoritesRefusal::Organisation));
-    let cancelled = sign_in_for_ews(&oauth(), "", &|_| {}, &AtomicBool::new(true));
-    assert_eq!(cancelled, Err(FavoritesRefusal::Other(NetError::SignInCancelled)));
-    assert_eq!(server.asked(), 1);
-}
-
-#[test]
-fn a_refresh_for_exchange_web_services_tells_consent_that_is_needed_from_a_sign_in_that_is_over() {
-    let bad = |body: &str| response("400 Bad Request", body);
-    let granted = r#"{"token_type":"Bearer","expires_in":3600,"access_token":"ews-access","refresh_token":"newer-refresh"}"#;
-    let mail = r#"{"token_type":"Bearer","expires_in":3600,"access_token":"mail-access"}"#;
-    let ask = |server: &FakeHttp| {
-        let ews = Endpoints { scope: EWS_SCOPE.into(), ..endpoints_of(server) };
-        refresh_ews_at(&ews, &endpoints_of(server), &oauth(), "re-fresh")
-    };
-    // The sign-in covers it: the token is asked for that scope alone, in one question.
-    let server = FakeHttp::answering(ok(granted));
-    let tokens = ask(&server).unwrap();
-    assert_eq!((tokens.access.as_str(), tokens.refresh.as_str()), ("ews-access", "newer-refresh"));
-    assert_eq!((form_of(&server, 0)["scope"].as_str(), form_of(&server, 0)["grant_type"].as_str(), server.asked()), (EWS_SCOPE, "refresh_token", 1));
-
-    // Nobody agreed to it: the sign-in is good, and the owner is to be asked (when they choose to).
-    let unasked = r#"{"error":"invalid_grant","error_description":"AADSTS65001: The user or administrator has not consented to use the application.\r\nTrace ID: 12","error_codes":[65001],"suberror":"consent_required"}"#;
-    let server = FakeHttp::answering(bad(unasked));
-    assert!(consent_needed(ask(&server)).contains("AADSTS65001"));
-    assert_eq!(server.asked(), 1);
-    // A personal account, which has no such scope: the same, for the page to say what it is.
-    let personal = r#"{"error":"invalid_scope","error_description":"AADSTS70011: The provided value for the input parameter 'scope' is not valid.","error_codes":[70011]}"#;
-    assert!(consent_needed(ask(&FakeHttp::answering(bad(personal)))).contains("AADSTS70011"));
-
-    // "No longer good", and no more: mail is asked with the same refresh token. It still works:
-    // the sign-in is good, and Exchange Web Services is what it doesn't cover.
-    let bare = r#"{"error":"invalid_grant"}"#;
-    let server = FakeHttp::start(move |n, _| if n == 0 { bad(bare) } else { ok(mail) });
-    assert_eq!(consent_needed(ask(&server)), "the sign-in doesn't cover Exchange Web Services");
-    assert_eq!((server.asked(), form_of(&server, 1)["scope"].as_str()), (2, "mail.read mail.send offline_access"));
-    // It doesn't: the sign-in is over.
-    let server = FakeHttp::start(move |_, _| bad(bare));
-    let over = ask(&server).unwrap_err();
-    assert!(over.is_refused_sign_in() && !over.is_consent_needed(), "{over:?}");
-    // The provider can't say just now: nothing is concluded, and nothing more is asked.
-    let server = FakeHttp::answering(response("503 Service Unavailable", r#"{"error":"temporarily_unavailable"}"#));
-    let later = ask(&server).unwrap_err();
-    assert!(!later.is_refused_sign_in() && !later.is_consent_needed(), "{later:?}");
-    assert_eq!(server.asked(), 1);
-    // Whatever it comes to, the refresh token is in none of it.
-    for answer in [unasked, personal, bare, r#"{"error":"invalid_grant","error_description":"re-fresh is not good"}"#] {
-        let error = ask(&FakeHttp::start(move |_, _| bad(answer))).unwrap_err();
-        assert!(!format!("{error} {error:?}").contains("re-fresh"), "{error:?}");
-    }
-    assert_eq!(auth(refresh_ews(&oauth(), "")), "there is no earlier sign-in to renew");
-}
-
 #[test]
 fn the_link_for_an_administrator_names_the_application_and_the_permissions_and_nothing_else() {
-    use mailcraft_model::FavoritesSource;
     let settings = OAuth { client_id: "0f6c8d2a-1b3e-4c5d-9e7f-a1b2c3d4e5f6".into(), ..oauth() };
     let parts = |link: &str| -> (String, HashMap<String, String>) {
         let (address, query) = link.split_once('?').unwrap();
@@ -1687,38 +1595,31 @@ fn the_link_for_an_administrator_names_the_application_and_the_permissions_and_n
     };
     // Everything the program asks an owner for, so that one approval covers what is asked
     // later: the mail servers, Microsoft Graph with the Favorites' two, and who signs in.
-    let link = admin_consent_url(&settings, "", FavoritesSource::Graph).unwrap();
+    let link = admin_consent_url(&settings, "").unwrap();
     let (address, asked) = parts(&link);
     assert_eq!(address, "https://login.microsoftonline.com/organizations/v2.0/adminconsent");
     assert_eq!(asked.len(), 3, "{asked:?}");
     assert_eq!(asked["client_id"], "0f6c8d2a-1b3e-4c5d-9e7f-a1b2c3d4e5f6");
     assert_eq!(asked["scope"], ADMIN_SCOPES);
     assert_eq!(asked["redirect_uri"], "http://localhost");
-    // (Whatever was or wasn't chosen for the Favorites, short of Exchange Web Services.)
-    for source in [FavoritesSource::Unset, FavoritesSource::None] {
-        assert_eq!(admin_consent_url(&settings, "", source).unwrap(), link);
-    }
-    // Exchange Web Services is in it only for an owner who chose that way: beside the rest, so
-    // that approving the one takes nothing of the other back.
-    assert!(!ADMIN_SCOPES.contains("EWS"));
-    let (_, asked) = parts(&admin_consent_url(&settings, "", FavoritesSource::Ews).unwrap());
-    assert_eq!(asked["scope"], ADMIN_SCOPES.replace(" offline_access", " https://outlook.office365.com/EWS.AccessAsUser.All offline_access"));
+    // Nothing of outlook.office365.com is asked for: the mail servers are outlook.office.com.
+    assert!(!ADMIN_SCOPES.contains("office365"));
     // The organisation's own directory when it is known, by its id or by a domain of its own.
     for tenant in ["3a1c5e7b-9d2f-4a6c-8e0b-1d3f5a7c9e2b", "lumen.example", " Lumen.Example "] {
-        let (address, _) = parts(&admin_consent_url(&settings, tenant, FavoritesSource::Graph).unwrap());
+        let (address, _) = parts(&admin_consent_url(&settings, tenant).unwrap());
         assert_eq!(address, format!("https://login.microsoftonline.com/{}/v2.0/adminconsent", tenant.trim()));
     }
     // No administrator is to be found in "any directory" or among personal accounts: the
     // administrator's own sign-in says which organisation it is then.
     for tenant in ["common", "consumers", "organizations", mailcraft_model::Directory::PERSONAL_TENANT, ""] {
-        let (address, _) = parts(&admin_consent_url(&settings, tenant, FavoritesSource::Graph).unwrap());
+        let (address, _) = parts(&admin_consent_url(&settings, tenant).unwrap());
         assert_eq!(address, "https://login.microsoftonline.com/organizations/v2.0/adminconsent", "{tenant}");
     }
     // What can't be part of an address isn't put into one.
     for tenant in ["lumen.example/evil", "a b", "x?y=z", "../common", "lumen.example#frag"] {
-        assert!(matches!(admin_consent_url(&settings, tenant, FavoritesSource::Graph), Err(NetError::Config(_))), "{tenant}");
+        assert!(matches!(admin_consent_url(&settings, tenant), Err(NetError::Config(_))), "{tenant}");
     }
-    assert!(matches!(admin_consent_url(&OAuth { client_id: String::new(), ..oauth() }, "", FavoritesSource::Graph), Err(NetError::Config(_))));
+    assert!(matches!(admin_consent_url(&OAuth { client_id: String::new(), ..oauth() }, ""), Err(NetError::Config(_))));
     // Nothing of a sign-in is in it: no state, no hint of who asked, no token.
     for never in ["state", "login_hint", "code", "token", "@"] {
         assert!(!link.contains(never), "{never}: {link}");
@@ -1766,13 +1667,12 @@ const APPLICATION: &str = "0f6c8d2a-1b3e-4c5d-9e7f-a1b2c3d4e5f6";
 
 fn approval(tenant: &str, open: &dyn Fn(&str)) -> Result<(), AdminRefusal> {
     let settings = OAuth { client_id: APPLICATION.into(), ..oauth() };
-    admin_consent_within(&settings, tenant, mailcraft_model::FavoritesSource::Graph, open, &AtomicBool::new(false), PATIENCE)
+    admin_consent_within(&settings, tenant, open, &AtomicBool::new(false), PATIENCE)
 }
 
 #[test]
 fn one_approval_covers_everything_the_program_asks_an_owner_for() {
-    use mailcraft_model::FavoritesSource;
-    let approved: Vec<String> = admin_scope(FavoritesSource::Graph).split(' ').map(str::to_string).collect();
+    let approved: Vec<String> = admin_scope().split(' ').map(str::to_string).collect();
     assert_eq!(approved.join(" "), ADMIN_SCOPES);
     // What the page of a sign-in asks for, to mail and to Graph, and what the tokens are for: a
     // page that asked for one permission more would send the owner to find an administrator again.
@@ -1786,22 +1686,14 @@ fn one_approval_covers_everything_the_program_asks_an_owner_for() {
     for asked in format!("{GRAPH_SCOPES} {FAVORITES_SCOPES}").split(' ') {
         assert!(approved.iter().any(|scope| scope == asked), "{asked}");
     }
-    // Exchange Web Services stays the owner's separate choice: asked of an administrator only then.
-    assert!(!approved.iter().any(|scope| scope.contains("EWS")));
-    let with_ews = admin_scope(FavoritesSource::Ews);
-    assert!(with_ews.split(' ').any(|scope| scope == "https://outlook.office365.com/EWS.AccessAsUser.All"));
-    assert!(approved.iter().all(|scope| with_ews.split(' ').any(|other| other == scope)));
-    // No permission twice, whichever.
-    for scope in [admin_scope(FavoritesSource::Graph), with_ews] {
-        let mut seen: Vec<&str> = scope.split(' ').collect();
-        seen.sort_unstable();
-        seen.dedup();
-        assert_eq!(seen.len(), scope.split(' ').count());
-    }
+    // No permission twice.
+    let mut seen: Vec<&str> = approved.iter().map(String::as_str).collect();
+    seen.sort_unstable();
+    seen.dedup();
+    assert_eq!(seen.len(), approved.len());
 
     // Service by service, for a provider that won't have them on one page: each with who signs in.
     assert_eq!(apart(ADMIN_SCOPES), [ADMIN_SCOPES_MAIL, ADMIN_SCOPES_GRAPH]);
-    assert_eq!(apart(&admin_scope(FavoritesSource::Ews)).len(), 3);
     assert_eq!(apart("offline_access openid"), Vec::<String>::new());
     assert_eq!(apart(""), Vec::<String>::new());
     assert_eq!(apart("a/x  b/y a/z who"), ["a/x a/z who", "b/y who"]);
@@ -1920,15 +1812,14 @@ fn strangers_and_junk_neither_approve_nor_refuse() {
 #[test]
 fn an_approval_nobody_gives_times_out_or_is_called_off() {
     let settings = OAuth { client_id: APPLICATION.into(), ..oauth() };
-    let source = mailcraft_model::FavoritesSource::Graph;
     // Called off before it starts: nobody is sent anywhere.
     let opened = Mutex::new(Vec::<String>::new());
     let open = |url: &str| opened.lock().unwrap().push(url.to_string());
-    assert_eq!(admin_consent(&settings, "", source, &open, &AtomicBool::new(true)), Err(AdminRefusal::Cancelled));
+    assert_eq!(admin_consent(&settings, "", &open, &AtomicBool::new(true)), Err(AdminRefusal::Cancelled));
     assert!(opened.lock().unwrap().is_empty());
     // Nobody comes back: said as that, and the port is closed again.
     let started = Instant::now();
-    let late = admin_consent_within(&settings, "", source, &open, &AtomicBool::new(false), Duration::from_millis(300));
+    let late = admin_consent_within(&settings, "", &open, &AtomicBool::new(false), Duration::from_millis(300));
     assert_eq!(late, Err(AdminRefusal::TimedOut));
     assert!((Duration::from_millis(300)..Duration::from_secs(10)).contains(&started.elapsed()), "{:?}", started.elapsed());
     let port = port_of(&fields(opened.lock().unwrap()[0].split_once('?').unwrap().1)["redirect_uri"]);
@@ -1943,15 +1834,15 @@ fn an_approval_nobody_gives_times_out_or_is_called_off() {
             flag.store(true, Ordering::Relaxed);
         });
     };
-    assert_eq!(admin_consent_within(&settings, "", source, &open, &cancel, PATIENCE), Err(AdminRefusal::Cancelled));
+    assert_eq!(admin_consent_within(&settings, "", &open, &cancel, PATIENCE), Err(AdminRefusal::Cancelled));
     // Settings that can't work are refused before anybody is sent anywhere.
     let nobody = |url: &str| assert!(url.is_empty(), "nobody is to be sent anywhere");
     let free = AtomicBool::new(false);
     for tenant in ["lumen.example/evil", "a b", "x?y=z", "../common"] {
-        assert!(matches!(admin_consent(&settings, tenant, source, &nobody, &free), Err(AdminRefusal::Other(NetError::Config(_)))), "{tenant}");
+        assert!(matches!(admin_consent(&settings, tenant, &nobody, &free), Err(AdminRefusal::Other(NetError::Config(_)))), "{tenant}");
     }
     let no_id = OAuth { client_id: String::new(), ..oauth() };
-    assert!(matches!(admin_consent(&no_id, "", source, &nobody, &free), Err(AdminRefusal::Other(NetError::Config(_)))));
+    assert!(matches!(admin_consent(&no_id, "", &nobody, &free), Err(AdminRefusal::Other(NetError::Config(_)))));
 }
 
 #[test]
@@ -2054,11 +1945,9 @@ proptest! {
             "(common|consumers|organizations)",
             "\\PC{0,24}",
         ],
-        ews in any::<bool>(),
     ) {
-        use mailcraft_model::{Directory, FavoritesSource};
+        use mailcraft_model::Directory;
         let settings = OAuth { client_id: client.clone(), ..oauth() };
-        let source = if ews { FavoritesSource::Ews } else { FavoritesSource::Graph };
         let named = tenant.trim();
         let fits = named.is_empty()
             || (named.len() <= 253
@@ -2066,7 +1955,7 @@ proptest! {
                 && named.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric())
                 && named.bytes().next_back().is_some_and(|b| b.is_ascii_alphanumeric())
                 && !named.contains(".."));
-        match admin_consent_url(&settings, &tenant, source) {
+        match admin_consent_url(&settings, &tenant) {
             Ok(link) => {
                 prop_assert!(fits, "{:?}", tenant);
                 let (address, query) = link.split_once('?').unwrap();
@@ -2078,9 +1967,8 @@ proptest! {
                 let asked = fields(query);
                 prop_assert_eq!(asked.len(), 3);
                 prop_assert_eq!(&asked["client_id"], &client);
-                prop_assert_eq!(&asked["scope"], &admin_scope(source));
+                prop_assert_eq!(&asked["scope"], &admin_scope());
                 prop_assert_eq!(&asked["redirect_uri"], "http://localhost");
-                prop_assert_eq!(asked["scope"].contains("EWS"), ews);
             }
             Err(error) => {
                 prop_assert!(!fits && matches!(error, NetError::Config(_)), "{:?}: {:?}", tenant, error);
@@ -2124,20 +2012,18 @@ proptest! {
     /// The page an administrator is sent to from here: what [`admin_consent_url`] names, the
     /// way back to this machine, and a state nobody could guess.
     #[test]
-    fn the_page_an_administrator_is_sent_to_holds_nothing_of_the_owner(tenant in "([a-z0-9]{1,12}\\.example|)", ews in any::<bool>()) {
-        use mailcraft_model::FavoritesSource;
+    fn the_page_an_administrator_is_sent_to_holds_nothing_of_the_owner(tenant in "([a-z0-9]{1,12}\\.example|)") {
         let settings = OAuth { client_id: APPLICATION.into(), ..oauth() };
-        let source = if ews { FavoritesSource::Ews } else { FavoritesSource::Graph };
         let (opened, cancel) = (Mutex::new(String::new()), AtomicBool::new(false));
         // (Nobody comes back: the wait is called off as soon as the page is "open".)
         let open = |url: &str| {
             *opened.lock().unwrap() = url.to_string();
             cancel.store(true, Ordering::Relaxed);
         };
-        prop_assert_eq!(admin_consent_within(&settings, &tenant, source, &open, &cancel, PATIENCE), Err(AdminRefusal::Cancelled));
+        prop_assert_eq!(admin_consent_within(&settings, &tenant, &open, &cancel, PATIENCE), Err(AdminRefusal::Cancelled));
         let url = opened.lock().unwrap().clone();
         let (address, query) = url.split_once('?').unwrap();
-        let link = admin_consent_url(&settings, &tenant, source).unwrap();
+        let link = admin_consent_url(&settings, &tenant).unwrap();
         prop_assert_eq!(address, link.split_once('?').unwrap().0);
         let (asked, passed_on) = (fields(query), fields(link.split_once('?').unwrap().1));
         prop_assert_eq!(asked.len(), 4);

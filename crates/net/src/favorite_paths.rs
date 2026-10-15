@@ -1,7 +1,7 @@
 //! Where a folder that a server lists among the Favorites lies, said the way the mailbox finds
 //! its own folder for it: the names from the top of the mailbox down to it, and which of the
-//! special folders it is. Whoever read the list (Microsoft Graph, Exchange Web Services) knows
-//! folders by what the server calls them; nothing of that goes further than here.
+//! special folders it is. The server that read the list (Microsoft Graph) knows folders by what
+//! it calls them; nothing of that goes further than here.
 
 use std::collections::HashMap;
 
