@@ -64,14 +64,14 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
 use mailcraft_model::{Contact, ContentRef, Event, Id, KeptBody, Mailbox, Message, Task};
 use serde::{Deserialize, Serialize};
 
-use crate::io::{BackgroundSave, ContentSource, MAX_FILE, SaveReport};
+use crate::io::{BackgroundSave, ContentSource, MAX_FILE, SaveProgress, SaveReport, SaveStage};
 
 #[path = "store_index.rs"]
 mod index;
@@ -572,6 +572,9 @@ struct Shared {
     /// ([`keep_held`]): a sweep leaves the content they keep on disk alone, as it does for [`Pins`].
     /// Apart from `state`, so that holding one never waits for a save being written.
     held: Mutex<Pins>,
+    /// How far the save holding `state` has got: read without that lock, which a save holds
+    /// from start to end.
+    progress: Progress,
 }
 
 /// Whether message `m` names content it keeps on disk rather than in memory.
@@ -594,6 +597,44 @@ pub fn keep_held<'a>(path: &Path, messages: impl IntoIterator<Item = &'a Arc<Mes
     let mut held = lock(&shared.held);
     for m in wanted {
         held.add(&Arc::downgrade(m));
+    }
+}
+
+/// How far a save has got ([`SaveProgress`]): the stage it is at and how many of its steps are
+/// done, set by whoever saves the file and read by whoever wants to show it.
+#[derive(Default)]
+struct Progress {
+    stage: AtomicU8,
+    done: AtomicU64,
+    total: AtomicU64,
+    /// Tests: milliseconds each step takes on top, as on a slow disk.
+    #[cfg(test)]
+    pause_ms: AtomicU64,
+}
+
+impl Progress {
+    /// A stage of `total` steps begins.
+    fn begin(&self, stage: SaveStage, total: usize) {
+        self.done.store(0, Ordering::Relaxed);
+        self.total.store(total as u64, Ordering::Relaxed);
+        self.stage.store(stage as u8, Ordering::Relaxed);
+    }
+
+    /// One more step of the stage is done.
+    fn step(&self) {
+        self.done.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        std::thread::sleep(Duration::from_millis(self.pause_ms.load(Ordering::Relaxed)));
+    }
+
+    fn get(&self) -> (SaveStage, u64, u64) {
+        let stage = match self.stage.load(Ordering::Relaxed) {
+            s if s == SaveStage::Messages as u8 => SaveStage::Messages,
+            s if s == SaveStage::Content as u8 => SaveStage::Content,
+            _ => SaveStage::Waiting,
+        };
+        let total = self.total.load(Ordering::Relaxed);
+        (stage, self.done.load(Ordering::Relaxed).min(total), total)
     }
 }
 
@@ -1679,13 +1720,37 @@ pub fn save(path: &Path, mailbox: &Mailbox) -> Result<Saved, String> {
     save_as_of(path, mailbox, next_seq())
 }
 
+/// [`save`], unless the file is being saved by somebody else (the background saver writing a
+/// large mailbox for the first time) for longer than `wait`: then an error says so, and the file
+/// is as that save leaves it. For whoever must not wait for the disk (the window).
+pub fn save_within(path: &Path, mailbox: &Mailbox, wait: Duration) -> Result<Saved, String> {
+    let seq = next_seq();
+    let shared = shared(path);
+    let deadline = Instant::now() + wait;
+    let st = loop {
+        match shared.state.try_lock() {
+            Ok(st) => break st,
+            Err(std::sync::TryLockError::Poisoned(e)) => break e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+            Err(std::sync::TryLockError::WouldBlock) => return Err(BUSY.to_string()),
+        }
+    };
+    save_locked(st, &shared, path, mailbox, seq)
+}
+
+/// Why [`save_within`] didn't save.
+pub const BUSY: &str = "the mailbox is still being saved; try again when that is done (the status bar shows how far it has got)";
+
 fn save_as_of(path: &Path, mailbox: &Mailbox, seq: u64) -> Result<Saved, String> {
     let shared = shared(path);
-    let mut st = lock(&shared.state);
+    save_locked(lock(&shared.state), &shared, path, mailbox, seq)
+}
+
+fn save_locked(mut st: MutexGuard<'_, State>, shared: &Shared, path: &Path, mailbox: &Mailbox, seq: u64) -> Result<Saved, String> {
     if seq < st.newest {
         return Ok(Saved { unchanged: true, ..Saved::default() });
     }
-    let saved = write_index(&mut st, &resolve(path), mailbox).map_err(|e| format!("{}: {e}", path.display()))?;
+    let saved = write_index(&mut st, &resolve(path), mailbox, &shared.progress).map_err(|e| format!("{}: {e}", path.display()))?;
     st.newest = seq;
     Ok(saved)
 }
@@ -1964,12 +2029,14 @@ fn walk<'a, 'b, A, B>(
 
 /// Work out what `mailbox` changed since the file said `d`: an item that is the one the file
 /// says costs a step of a walk; any other is worked out and compared with what the file says.
-fn delta<'m>(st: &mut State, path: &Path, mailbox: &'m Mailbox, d: &Disk) -> Result<Delta<'m>, String> {
+fn delta<'m>(st: &mut State, path: &Path, mailbox: &'m Mailbox, d: &Disk, progress: &Progress) -> Result<Delta<'m>, String> {
     let (dir, folders) = (blob_dir(path), Folders::new());
+    progress.begin(SaveStage::Messages, mailbox.messages.len());
     let mut group = Vec::new();
     let mut records = 0u32;
     let (mut wanted, mut messages, mut relink) = (HashMap::new(), Vec::new(), Vec::new());
     let gone = walk(&mailbox.messages, &d.messages, |id, m, was| {
+        progress.step();
         if was.is_some_and(|w| w.entry.is(m)) {
             return Ok(());
         }
@@ -2094,10 +2161,11 @@ fn apply_changes<T>(entries: &mut BTreeMap<Id, Entry<T>>, live: &mut u64, change
 }
 
 /// Write the content files `wanted` that aren't there yet into the folder beside `path`.
-fn write_content(path: &Path, wanted: &HashMap<Ref, &[u8]>, saved: &mut Saved) -> Result<(), String> {
+fn write_content(path: &Path, wanted: &HashMap<Ref, &[u8]>, saved: &mut Saved, progress: &Progress) -> Result<(), String> {
     if wanted.is_empty() {
         return Ok(());
     }
+    progress.begin(SaveStage::Content, wanted.len());
     let wanted: Vec<(Ref, &[u8])> = wanted.iter().map(|(r, bytes)| (*r, *bytes)).collect();
     // The folder beside the mailbox file, and no more: a mailbox isn't saved to a place that
     // isn't there.
@@ -2107,7 +2175,11 @@ fn write_content(path: &Path, wanted: &HashMap<Ref, &[u8]>, saved: &mut Saved) -
     {
         return Err(format!("{}: {e}", dir.display()));
     }
-    let done = fan_out(wanted.len(), |i| wanted.get(i).map(|(r, bytes)| put(&dir, r, bytes)));
+    let done = fan_out(wanted.len(), |i| {
+        let done = wanted.get(i).map(|(r, bytes)| put(&dir, r, bytes));
+        progress.step();
+        done
+    });
     for (result, (r, _)) in done.into_iter().zip(&wanted) {
         match result.flatten() {
             Some(Ok(true)) => {
@@ -2162,14 +2234,14 @@ fn keep_aside(path: &Path, what: &str) -> std::io::Result<PathBuf> {
     Err(std::io::Error::other("too many files kept aside already"))
 }
 
-fn write_index(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Saved, String> {
-    let saved = write_index_once(st, path, mailbox);
+fn write_index(st: &mut State, path: &Path, mailbox: &Mailbox, progress: &Progress) -> Result<Saved, String> {
+    let saved = write_index_once(st, path, mailbox, progress);
     // What was worked out of attachments no longer in memory is no use to anybody.
     st.hashes.retain(|_, (of, _)| of.strong_count() > 0);
     saved
 }
 
-fn write_index_once(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Saved, String> {
+fn write_index_once(st: &mut State, path: &Path, mailbox: &Mailbox, progress: &Progress) -> Result<Saved, String> {
     // Somebody else wrote the file since: what it names now is theirs to say, and what it named
     // before may be swept any time. What they wrote is kept aside before it is written over.
     let ours = st.stamp.as_ref().is_some_and(|s| s.still(path));
@@ -2197,10 +2269,10 @@ fn write_index_once(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Sa
         Some(d) if d.appendable() => d,
         prior => {
             pin_replaced(st, prior.as_ref(), opened.as_ref(), mailbox);
-            return compact(st, path, mailbox, keep);
+            return compact(st, path, mailbox, keep, progress);
         }
     };
-    let mut delta = match delta(st, path, mailbox, &d) {
+    let mut delta = match delta(st, path, mailbox, &d, progress) {
         Ok(delta) => delta,
         Err(e) => {
             st.disk = Some(d);
@@ -2209,7 +2281,7 @@ fn write_index_once(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Sa
     };
     // The content first: a mailbox file never names what isn't on disk yet.
     let mut saved = Saved::default();
-    if let Err(e) = write_content(path, &delta.wanted, &mut saved) {
+    if let Err(e) = write_content(path, &delta.wanted, &mut saved, progress) {
         st.disk = Some(d);
         return Err(e);
     }
@@ -2224,7 +2296,7 @@ fn write_index_once(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Sa
     // When what was appended outgrows what the file says, it is written whole instead.
     d.len = d.len.saturating_add(group.len() as u64);
     if d.outgrown() {
-        return compact(st, path, mailbox, None).map(|whole| Saved {
+        return compact(st, path, mailbox, None, progress).map(|whole| Saved {
             blobs: saved.blobs + whole.blobs,
             blob_bytes: saved.blob_bytes + whole.blob_bytes,
             ..whole
@@ -2296,7 +2368,7 @@ const KEEP_ASIDE: usize = 5;
 /// ends in what isn't a finished save, or that somebody else wrote, is kept aside first, unread
 /// bytes and all, or nothing is written; so is a file of an earlier form, the first time this
 /// form takes its place ([`Keep`]).
-fn compact(st: &mut State, path: &Path, mailbox: &Mailbox, keep: Option<Keep>) -> Result<Saved, String> {
+fn compact(st: &mut State, path: &Path, mailbox: &Mailbox, keep: Option<Keep>, progress: &Progress) -> Result<Saved, String> {
     let keep = keep.map(|k| (k, k.name()));
     let rest = rest_json(mailbox)?;
     let mut out = AtomicFile::create(path).map_err(io_error)?;
@@ -2309,7 +2381,9 @@ fn compact(st: &mut State, path: &Path, mailbox: &Mailbox, keep: Option<Keep>) -
     let mut records: u32 = 1;
     let too_many = || "the mailbox holds too many items to be saved".to_string();
     let (dir, folders) = (blob_dir(path), Folders::new());
+    progress.begin(SaveStage::Messages, mailbox.messages.len());
     for (id, m) in &mailbox.messages {
+        progress.step();
         let p = prepare(*id, m, &mut st.hashes)?;
         for (r, bytes) in p.parts.content(m) {
             if !st.live.contains_key(&r.hash) {
@@ -2330,7 +2404,7 @@ fn compact(st: &mut State, path: &Path, mailbox: &Mailbox, keep: Option<Keep>) -
     d.len = index::HEADER_LEN.saturating_add(d.live).saturating_add(commit);
     // The content first: the file isn't the mailbox until it is renamed over.
     let mut saved = Saved::default();
-    write_content(path, &wanted, &mut saved)?;
+    write_content(path, &wanted, &mut saved, progress)?;
     drop(wanted);
     if let Some((kind, (what, needed))) = keep {
         match keep_aside(path, &what) {
@@ -2625,6 +2699,8 @@ struct Jobs {
     waiting: Vec<Job>,
     /// The file being written and the state going into it.
     writing: Option<(PathBuf, u64)>,
+    /// Since when (for [`BackgroundSave::progress`]).
+    since: Option<Instant>,
     sweeps: Vec<PathBuf>,
     reports: Vec<SaveReport>,
     closed: bool,
@@ -2668,23 +2744,43 @@ impl BackgroundSave for Saver {
         shared(path).followed.store(true, Ordering::Relaxed);
     }
 
-    fn submit(&self, path: &Path, mailbox: Mailbox, rev: u64) {
+    fn submit(&self, path: &Path, mailbox: &Mailbox, rev: u64) {
         self.follow(path);
         let mut jobs = lock(&self.queue.jobs);
-        // The same state again (the window asks until it hears back) is already on its way.
+        // The same state again (the window asks until it hears back) is already on its way, and
+        // isn't copied again: a copy of a large mailbox is a few milliseconds of the window's.
         if jobs.closed || jobs.writing.as_ref().is_some_and(|(p, r)| p == path && *r == rev) {
             return;
         }
-        match jobs.waiting.iter_mut().find(|j| j.path == path) {
+        let replaced = match jobs.waiting.iter_mut().find(|j| j.path == path) {
             Some(job) if job.rev == rev => return,
-            Some(job) => (job.mailbox, job.rev, job.seq) = (mailbox, rev, next_seq()),
-            None => jobs.waiting.push(Job { path: path.to_path_buf(), mailbox, rev, seq: next_seq() }),
-        }
+            Some(job) => {
+                (job.rev, job.seq) = (rev, next_seq());
+                Some(std::mem::replace(&mut job.mailbox, mailbox.clone()))
+            }
+            None => {
+                jobs.waiting.push(Job { path: path.to_path_buf(), mailbox: mailbox.clone(), rev, seq: next_seq() });
+                None
+            }
+        };
         self.queue.work.notify_one();
+        // The state that gave way goes after the lock, so the thread isn't kept waiting for it.
+        drop(jobs);
+        drop(replaced);
     }
 
     fn reports(&self) -> Vec<SaveReport> {
         std::mem::take(&mut lock(&self.queue.jobs).reports)
+    }
+
+    fn progress(&self) -> Option<SaveProgress> {
+        let jobs = lock(&self.queue.jobs);
+        let Some((path, _)) = &jobs.writing else {
+            return (!jobs.waiting.is_empty()).then(SaveProgress::default);
+        };
+        let (stage, done, total) = shared(path).progress.get();
+        let millis = jobs.since.map_or(0, |at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX));
+        Some(SaveProgress { stage, done, total, millis })
     }
 
     fn flush(&self) {
@@ -2717,7 +2813,10 @@ impl Queue {
                 loop {
                     if !jobs.waiting.is_empty() {
                         let job = jobs.waiting.remove(0);
+                        // What the last save of the file got to is no news of this one.
+                        shared(&job.path).progress.begin(SaveStage::Waiting, 0);
                         jobs.writing = Some((job.path.clone(), job.rev));
+                        jobs.since = Some(Instant::now());
                         break Work::Save(Box::new(job));
                     }
                     self.idle.notify_all();
@@ -2739,7 +2838,7 @@ impl Queue {
                     drop(mailbox);
                     let due = result.is_ok() && lock(&shared(&path).state).swept.is_none_or(|at| at.elapsed() >= SWEEP_EVERY);
                     let mut jobs = lock(&self.jobs);
-                    jobs.writing = None;
+                    (jobs.writing, jobs.since) = (None, None);
                     if due && !jobs.sweeps.contains(&path) {
                         jobs.sweeps.push(path.clone());
                     }

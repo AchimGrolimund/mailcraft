@@ -138,12 +138,44 @@ pub trait BackgroundSave {
     /// changes first, so they can't fall between two saves.
     fn follow(&self, path: &std::path::Path);
     /// Write this state of the mailbox (the session's `rev`) to `path` soon, without waiting. A
-    /// state still waiting its turn gives way to this newer one.
-    fn submit(&self, path: &std::path::Path, mailbox: Mailbox, rev: u64);
+    /// state still waiting its turn gives way to this newer one. The mailbox is copied (a cheap
+    /// copy: its items are shared) only when it is to be written: the same state handed in again
+    /// while it is on its way costs nothing.
+    fn submit(&self, path: &std::path::Path, mailbox: &Mailbox, rev: u64);
     /// What became of the states handed in, since this was last asked.
     fn reports(&self) -> Vec<SaveReport>;
-    /// Wait until nothing handed in is waiting or being written (the program is closing).
+    /// How far the writing has got, for the window to show: `None` when nothing handed in is
+    /// waiting or being written.
+    fn progress(&self) -> Option<SaveProgress> {
+        None
+    }
+    /// Wait until nothing handed in is waiting or being written (the program is closing), for a
+    /// while at most: never forever. A save cut short leaves the file as the last one left it.
     fn flush(&self);
+}
+
+/// How far the saving of a mailbox has got ([`BackgroundSave::progress`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SaveProgress {
+    pub stage: SaveStage,
+    /// How many of the stage's `total` are done.
+    pub done: u64,
+    pub total: u64,
+    /// How long the state being written has been at it, in milliseconds (0 while it waits): a
+    /// save of a moment is not worth telling.
+    pub millis: u64,
+}
+
+/// What a save is at ([`SaveProgress`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SaveStage {
+    /// Handed in, waiting its turn.
+    #[default]
+    Waiting,
+    /// Going through the messages: what each comes to in the mailbox file.
+    Messages,
+    /// Writing the bodies and attachments that aren't on disk yet, one file each.
+    Content,
 }
 
 /// Where a host gets the content of a mailbox that isn't in memory: the attachments, and the

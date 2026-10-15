@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use mailcraft_engine::io::{BackgroundSave, SaveReport};
+use mailcraft_engine::io::{BackgroundSave, SaveProgress, SaveReport, SaveStage};
 use mailcraft_engine::{Session, store};
 use mailcraft_model::{Attachment, Mailbox, Message};
 use mailcraft_ui_egui::{MailApp, Services};
@@ -108,8 +108,10 @@ fn changes_are_written_in_the_background_and_quitting_writes_the_rest() {
     let id = unread(&app);
     app.execute("mail.markRead", json!({"id": id})).unwrap();
     let before = app.session.mailbox.clone();
-    app.execute("file.new", json!({})).unwrap();
-    assert!(app.session.path.is_none() && on_disk(&path) == before);
+    // Through the saver: the window goes on, and the new mailbox takes its place once written.
+    assert_eq!(app.execute("file.new", json!({})).unwrap(), json!({"pending": "save"}));
+    frames_until(&mut app, &ctx, |app| app.session.path.is_none());
+    assert!(on_disk(&path) == before);
 }
 
 /// A saver that keeps what it is handed and answers what the test tells it to.
@@ -117,6 +119,7 @@ fn changes_are_written_in_the_background_and_quitting_writes_the_rest() {
 struct Scripted {
     handed: std::sync::Mutex<Vec<(PathBuf, u64)>>,
     answers: std::sync::Mutex<Vec<SaveReport>>,
+    progress: std::sync::Mutex<Option<SaveProgress>>,
     flushed: AtomicBool,
 }
 
@@ -124,11 +127,14 @@ struct Handle(Arc<Scripted>);
 
 impl BackgroundSave for Handle {
     fn follow(&self, _: &Path) {}
-    fn submit(&self, path: &Path, _: Mailbox, rev: u64) {
+    fn submit(&self, path: &Path, _: &Mailbox, rev: u64) {
         self.0.handed.lock().unwrap().push((path.to_path_buf(), rev));
     }
     fn reports(&self) -> Vec<SaveReport> {
         std::mem::take(&mut self.0.answers.lock().unwrap())
+    }
+    fn progress(&self) -> Option<SaveProgress> {
+        *self.0.progress.lock().unwrap()
     }
     fn flush(&self) {
         self.0.flushed.store(true, Ordering::Relaxed);
@@ -172,4 +178,107 @@ fn the_window_never_writes_itself_and_a_failure_is_told_and_tried_again() {
     // Quitting with nothing unsaved writes nothing, and still waits for the saver.
     app.save_on_exit().unwrap();
     assert!(!path.exists() && script.flushed.load(Ordering::Relaxed));
+}
+
+#[test]
+fn a_long_save_shows_how_far_it_has_got_and_closing_waits_for_it_with_the_window() {
+    let tmp = Temp::new("long");
+    let path = tmp.0.join("mailbox.mailcraft");
+    let ctx = egui::Context::default();
+    let script = Arc::new(Scripted::default());
+    let mut app = app(&path, Box::new(Handle(script.clone())));
+    let progress = |p: Option<SaveProgress>| *script.progress.lock().unwrap() = p;
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    let rev = app.session.rev();
+    app.logic(&ctx);
+    assert_eq!(*script.handed.lock().unwrap(), [(path.clone(), rev)]);
+
+    // A save of a moment isn't worth a word; one that takes a while says how far it has got.
+    progress(Some(SaveProgress { stage: SaveStage::Messages, done: 12_000, total: 200_000, millis: 100 }));
+    app.logic(&ctx);
+    assert_eq!(app.saving_text(), None);
+    progress(Some(SaveProgress { stage: SaveStage::Messages, done: 12_000, total: 200_000, millis: 4_000 }));
+    app.logic(&ctx);
+    assert_eq!(app.saving_text().as_deref(), Some("Saving the mailbox… 12000 of 200000 messages"));
+    progress(Some(SaveProgress { stage: SaveStage::Content, done: 3, total: 90_000, millis: 9_000 }));
+    app.logic(&ctx);
+    assert_eq!(app.saving_text().as_deref(), Some("Saving the mailbox… writing 3 of 90000 bodies and attachments"));
+
+    // Closing the window meanwhile keeps it open until the save is done, and says so; the window
+    // writes nothing itself.
+    assert!(!app.close_requested());
+    assert!(!app.quit_requested);
+    app.logic(&ctx);
+    assert!(!app.quit_requested && app.saving_text().unwrap().ends_with("MailCraft closes when it is done"));
+    assert!(!path.exists());
+    // Written: the window closes.
+    progress(None);
+    script.answers.lock().unwrap().push(SaveReport { path: path.clone(), rev, result: Ok(()) });
+    app.logic(&ctx);
+    assert!(app.quit_requested && !app.session.dirty);
+    assert!(app.close_requested());
+    app.save_on_exit().unwrap();
+
+    // Closed again while it waits: it closes now, and quitting waits a while at most for what
+    // is left (here the saver never answers: the error says so, and the window wrote nothing).
+    let mut app = self::app(&path, Box::new(Handle(script.clone())));
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    assert!(!app.close_requested());
+    assert!(app.close_requested());
+    let error = app.save_on_exit().unwrap_err();
+    assert!(error.contains("still being written"), "{error}");
+    assert!(!path.exists() && app.session.dirty);
+}
+
+#[test]
+fn save_new_and_open_never_write_on_the_window_while_the_saver_is_busy() {
+    // The saver is in the middle of a save that takes minutes (it never finishes here): nothing
+    // the window does writes the file itself or waits for the disk.
+    let tmp = Temp::new("busy");
+    let (path, other) = (tmp.0.join("mailbox.mailcraft"), tmp.0.join("other.mailcraft"));
+    let ctx = egui::Context::default();
+    let script = Arc::new(Scripted::default());
+    *script.progress.lock().unwrap() = Some(SaveProgress { stage: SaveStage::Messages, done: 5, total: 200_000, millis: 60_000 });
+    let mut app = app(&path, Box::new(Handle(script.clone())));
+    // Another mailbox to open, written before the window's saver was busy.
+    store::save(&other, &mailcraft_engine::sample::mailbox(NOW, 0)).unwrap();
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    let rev = app.session.rev();
+
+    let t = Instant::now();
+    // Save (Ctrl+Shift+S, the ribbon, an agent): handed to the saver, which answers later.
+    let saved = app.execute("file.save", json!({})).unwrap();
+    assert_eq!(saved["background"], json!(true));
+    assert_eq!(*script.handed.lock().unwrap(), [(path.clone(), rev)]);
+    // Open waits for the save with the window going on, and says so.
+    let opened = app.execute("file.open", json!({"path": other.to_string_lossy()})).unwrap();
+    assert_eq!(opened, json!({"pending": "save"}));
+    for _ in 0..10 {
+        app.logic(&ctx);
+    }
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    assert_eq!(app.session.path.as_deref(), Some(path.as_path()));
+    assert!(app.saving_text().unwrap().ends_with("the other mailbox opens when it is done"));
+    assert!(!path.exists());
+
+    // Written: the other mailbox opens.
+    *script.progress.lock().unwrap() = None;
+    script.answers.lock().unwrap().push(SaveReport { path: path.clone(), rev, result: Ok(()) });
+    app.logic(&ctx);
+    assert_eq!(app.session.path.as_deref(), Some(other.as_path()));
+    assert!(app.saving_text().is_none());
+
+    // A save that fails keeps the mailbox open, and says why.
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    let rev = app.session.rev();
+    assert_eq!(app.execute("file.new", json!({})).unwrap(), json!({"pending": "save"}));
+    script.answers.lock().unwrap().push(SaveReport { path: other.clone(), rev, result: Err("the disk is full".into()) });
+    app.logic(&ctx);
+    app.logic(&ctx);
+    assert_eq!(app.session.path.as_deref(), Some(other.as_path()));
+    assert!(app.status_msg.clone().unwrap().0.contains("the disk is full"));
 }

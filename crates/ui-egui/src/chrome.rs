@@ -311,6 +311,10 @@ pub fn status_bar(app: &mut MailApp, ui: &mut Ui) {
                     if !fetching.is_empty() {
                         st(ui, &fetching, t.text_dim);
                     }
+                    // A save that takes a while, in the background (R6.3).
+                    if let Some(saving) = app.saving_text() {
+                        st(ui, &saving, t.text_dim);
+                    }
                 });
             });
         });
