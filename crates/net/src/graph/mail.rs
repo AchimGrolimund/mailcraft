@@ -26,6 +26,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use mailcraft_model::sync::{
     ChangeOutcome, FolderChange, FolderChangeDone, FolderListing, GraphFolder, GraphMailRequest, GraphMailResult, MAX_FOLDER_CHANGES,
@@ -41,7 +42,7 @@ use crate::http::{self, Reply};
 
 const MAIL_FOLDERS: &str = "/v1.0/me/mailFolders";
 /// What is asked for of each folder: no more comes down than is used.
-const FOLDER_FIELDS: &str = "id,displayName,parentFolderId,childFolderCount,isHidden";
+const FOLDER_FIELDS: &str = "id,displayName,parentFolderId,childFolderCount,isHidden,totalItemCount,unreadItemCount";
 /// Folders asked for per page.
 const FOLDER_PAGE: &str = "100";
 /// Deepest a folder is followed (the mailbox's own limit).
@@ -66,6 +67,61 @@ const WELL_KNOWN: [(&str, Option<FolderKind>); 8] = [
 /// owner of `token` (an access token for Graph that covers `Mail.ReadWrite`).
 pub fn sync_folders(token: &str, request: &GraphMailRequest) -> GraphMailResult {
     sync_folders_with(&graph_base(), token, request, Gate::for_mailbox(&request.email), Retry::STANDARD)
+}
+
+/// A whole run for a Microsoft account (R3.1, R3.2): the folders as [`sync_folders`] has them,
+/// then every folder's mail ([`down`]). It comes in pieces through `emit`, each to be taken in as
+/// it comes (the folders first, then a page at a time); the last has [`GraphMailResult::partial`]
+/// false. `cancel` stops it after the page in hand.
+pub fn sync_mail(token: &str, request: &GraphMailRequest, cancel: &AtomicBool, emit: &mut dyn FnMut(GraphMailResult)) {
+    sync_mail_with(&graph_base(), token, request, Gate::for_mailbox(&request.email), Retry::STANDARD, cancel, emit);
+}
+
+/// [`sync_mail`] at `base`, through `gate`, asking again as `retry` says.
+pub(crate) fn sync_mail_with(
+    base: &str,
+    token: &str,
+    request: &GraphMailRequest,
+    gate: Arc<Gate>,
+    retry: Retry,
+    cancel: &AtomicBool,
+    emit: &mut dyn FnMut(GraphMailResult),
+) {
+    let mut folders = sync_folders_with(base, token, request, gate.clone(), retry);
+    // No listing, or a server that wants to be left alone: that is the run.
+    let listed = match &folders.listing {
+        Some(listing) if folders.busy_for.is_none() => listing.folders.clone(),
+        _ => return emit(folders),
+    };
+    folders.partial = true;
+    emit(folders);
+    let priority = if request.background { Priority::Background } else { Priority::Owner };
+    let last = match Graph::for_mail(base, token, gate, priority, retry) {
+        Ok(graph) => down::messages(&graph, request, &listed, cancel, emit),
+        Err(e) => GraphMailResult {
+            account: request.account,
+            email: request.email.clone(),
+            errors: vec![format!("Couldn't reach Microsoft for the mail: {e}")],
+            ..Default::default()
+        },
+    };
+    emit(last);
+}
+
+/// Every piece of a run of [`sync_mail_with`] put together, in order: what a caller that takes a
+/// run in at once gets.
+#[cfg(test)]
+pub(crate) fn whole_run(
+    base: &str,
+    token: &str,
+    request: &GraphMailRequest,
+    gate: Arc<Gate>,
+    retry: Retry,
+    cancel: &AtomicBool,
+) -> Vec<GraphMailResult> {
+    let mut pieces = Vec::new();
+    sync_mail_with(base, token, request, gate, retry, cancel, &mut |piece| pieces.push(piece));
+    pieces
 }
 
 /// [`sync_folders`] at `base`, through `gate`, asking again as `retry` says.
@@ -219,6 +275,9 @@ pub(crate) struct Entry {
     pub name: String,
     pub children: u64,
     pub unseen: bool,
+    /// How many messages it has, and how many are unread (0 when not said).
+    pub total: u32,
+    pub unread: u32,
 }
 
 /// [`Entry`] of one JSON value of a list, or of the answer to a change.
@@ -229,7 +288,8 @@ pub(crate) fn entry_of(value: &Value) -> Option<Entry> {
     let children = value.get("childFolderCount").map_or(Some(1), Value::as_u64)?;
     let hidden = value.get("isHidden").and_then(Value::as_bool).unwrap_or(false);
     let search = text(value, "@odata.type").to_ascii_lowercase().contains("mailsearchfolder");
-    Some(Entry { id, name, children, unseen: hidden || search })
+    let count = |name: &str| value.get(name).and_then(Value::as_u64).map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX));
+    Some(Entry { id, name, children, unseen: hidden || search, total: count("totalItemCount"), unread: count("unreadItemCount") })
 }
 
 /// Every folder of the mailbox, parents first. A listing that was cut short comes back as far
@@ -285,7 +345,7 @@ fn listing(graph: &Graph<'_>, known: &Known) -> Result<FolderListing, (FolderLis
                 }
             }
             let kind = known.kinds.get(&entry.id).copied().unwrap_or_default();
-            out.folders.push(GraphFolder { id: entry.id, parent: parent.clone(), name: entry.name, kind, ..Default::default() });
+            out.folders.push(GraphFolder { id: entry.id, parent: parent.clone(), name: entry.name, kind, total: entry.total, unread: entry.unread });
         }
     }
     Ok(out)
@@ -408,5 +468,9 @@ fn child_named(graph: &Graph<'_>, known: &Known, parent: &str, name: &str) -> Re
     Ok(found)
 }
 
+mod down;
+
+#[cfg(test)]
+mod down_tests;
 #[cfg(test)]
 mod tests;

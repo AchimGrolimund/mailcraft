@@ -339,6 +339,12 @@ pub struct GraphRequest {
     /// the folders to list ([`GraphResult::mail`]). A token obtained for this job is asked for
     /// with `Mail.ReadWrite`.
     pub mail: Option<mailcraft_model::sync::GraphMailRequest>,
+    /// Where the pieces of that mail run go as they come (R3.2): the folders, then a page at a
+    /// time, each taken in by the window as it arrives. `None`: the run comes back whole in
+    /// [`GraphResult::mail`].
+    pub mail_pieces: Option<std::sync::mpsc::SyncSender<mailcraft_model::sync::GraphMailResult>>,
+    /// Set when the owner stops the run (Cancel): it stops after the page in hand.
+    pub cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// What a [`GraphRequest`] came to. Never an error as a whole: mail goes on either way.
@@ -691,6 +697,9 @@ pub struct MailApp {
     /// What Graph is doing for an account before its mail is synchronised: the account, whether
     /// nobody asked, whether the calendar and contacts were asked for, and the answer to come.
     graph_rx: Option<(Id, bool, bool, Receiver<GraphResult>)>,
+    /// The pieces of a Graph mail run as they come (R3.2), and what they had to say.
+    graph_pieces: Option<Receiver<mailcraft_model::sync::GraphMailResult>>,
+    graph_problems: Vec<String>,
     /// When each account's calendar and contacts were last brought down (milliseconds).
     graph_checked: std::collections::HashMap<Id, f64>,
     /// Accounts whose owner hasn't allowed Graph yet ("Connect calendar and contacts").
@@ -805,6 +814,8 @@ impl MailApp {
             tokens: Default::default(),
             graph_tokens: Default::default(),
             graph_rx: None,
+            graph_pieces: None,
+            graph_problems: Vec::new(),
             graph_checked: Default::default(),
             graph_consent_needed: Default::default(),
             calendar: Default::default(),
@@ -1141,7 +1152,7 @@ impl MailApp {
                     .map(|()| json!({"pending": "signIn", "account": account.id}))
             }
             "ui.cancelSync" => {
-                if self.sync_rx.is_none() {
+                if self.sync_rx.is_none() && self.graph_pieces.is_none() {
                     return Some(Err(tl!("No Send/Receive is running").to_string()));
                 }
                 // The run stops at the next safe place; what it brought stays. The rest of a
@@ -1405,6 +1416,8 @@ impl MailApp {
                         favorites,
                         favorites_scopes: favorites,
                         mail: None,
+                        mail_pieces: None,
+                        cancel: Default::default(),
                     };
                     self.session.sync_status =
                         if ask.outbox.is_empty() { tl!("Updating the calendar and contacts…") } else { tl!("Sending…") }.to_string();
@@ -1471,6 +1484,9 @@ impl MailApp {
         let directory = free && self.graph_checked.get(&account).is_none_or(|at| now - at > 900_000.0);
         let changes = if free { self.calendar_changes(account) } else { None };
         let calendar = (free && !directory && (!quiet || changes.is_some())).then(|| self.calendar_window());
+        // The mail comes a piece at a time; a busy window holds the run back rather than letting
+        // pieces pile up.
+        let (pieces, taken) = std::sync::mpsc::sync_channel(8);
         let ask = GraphRequest {
             account: owner,
             oauth: self.effective_oauth(oauth),
@@ -1487,8 +1503,13 @@ impl MailApp {
             favorites: false,
             favorites_scopes: false,
             mail: Some(mail),
+            mail_pieces: Some(pieces),
+            cancel: self.services.sync_cancel.clone(),
         };
         let Some(graph) = &self.services.graph else { return Err(tl!("This build can't connect to Microsoft").to_string()) };
+        self.services.sync_cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.graph_pieces = Some(taken);
+        self.graph_problems.clear();
         self.graph_rx = Some((account, quiet, directory, graph(ask)));
         self.session.sync_status = tl!("Sending and receiving…").to_string();
         Ok(json!({"started": true, "account": account, "graph": true}))
@@ -1589,8 +1610,40 @@ impl MailApp {
     /// go on with the mail (for an account kept in step through Graph: take its folders in, and
     /// the run is over). Public for a host's tests, which have no window.
     pub fn poll_graph(&mut self) {
-        let Some((account, quiet, directory, rx)) = &self.graph_rx else { return };
+        let Some((account, quiet, directory, _)) = &self.graph_rx else { return };
         let (account, quiet, directory) = (*account, *quiet, *directory);
+        // The mail's pieces first, each taken in as it comes; the job's answer is looked at once
+        // the last of them is in.
+        if let Some(pieces) = &self.graph_pieces {
+            let mut taken = Vec::new();
+            let mut over = false;
+            // A few a frame: each one redraws the lists, and the window should stay quick.
+            for _ in 0..4 {
+                match pieces.try_recv() {
+                    Ok(piece) => taken.push(piece),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        over = true;
+                        break;
+                    }
+                }
+            }
+            for piece in taken {
+                match mailcraft_engine::cmd::graph_mail::apply_graph_mail(&mut self.session, piece) {
+                    Ok(said) => {
+                        let errors =
+                            said["errors"].as_array().map(|all| all.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>());
+                        self.graph_problems.extend(errors.unwrap_or_default());
+                    }
+                    Err(e) => self.graph_problems.push(e.to_string()),
+                }
+            }
+            if !over {
+                return;
+            }
+            self.graph_pieces = None;
+        }
+        let Some((_, _, _, rx)) = &self.graph_rx else { return };
         let mut result = match rx.try_recv() {
             Ok(r) => r,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
@@ -1645,6 +1698,7 @@ impl MailApp {
         }
         // An account kept in step through Graph: its folders, and the run is over (no IMAP leg).
         if self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft) {
+            errors.append(&mut self.graph_problems);
             let status = self.session.sync_status.clone();
             match result.mail.take() {
                 Some(mail) => match mailcraft_engine::cmd::graph_mail::apply_graph_mail(&mut self.session, mail) {
@@ -1852,9 +1906,14 @@ impl MailApp {
         }
     }
 
+    /// Whether a job of Microsoft Graph is under way for an account.
+    pub fn graph_running(&self) -> bool {
+        self.graph_rx.is_some()
+    }
+
     /// Whether a Send/Receive is running.
     pub fn syncing(&self) -> bool {
-        self.sync_rx.is_some()
+        self.sync_rx.is_some() || self.graph_pieces.is_some()
     }
 
     /// Take in what a Send/Receive has brought so far. It arrives in pieces (what was sent, what
@@ -1991,6 +2050,10 @@ impl MailApp {
         self.poll_admin_consent();
         self.sweep_admin_consent();
         self.poll_graph();
+        // The pieces of a Graph mail run come without waking the window: it looks again soon.
+        if self.graph_pieces.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(150));
+        }
         self.poll_calendar();
         self.poll_calendar_check();
         self.poll_free_busy();

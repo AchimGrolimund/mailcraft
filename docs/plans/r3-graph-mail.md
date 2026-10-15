@@ -144,3 +144,4 @@ Total: about 76–122 hours before R3.9.
 | 2026-10-15 | minor | Graph client row: immutable ids on mail requests only (spec S4) |
 | 2026-10-15 | minor | R3.2 split into R3.2.1 (stand-in and model), R3.2.2 (delta down, resumable) and R3.2.3 (fetching), from the R3.2 decision session; sign-in row dropped (done in R3.1) |
 | 2026-10-15 | minor | R3.2.1 done; the stand-in holds its generated mailbox in memory (a round of 200,000 messages takes about 2 s) |
+| 2026-10-15 | minor | R3.2.2 done |

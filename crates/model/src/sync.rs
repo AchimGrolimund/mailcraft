@@ -700,6 +700,50 @@ pub struct GraphMailResult {
     /// Pages of message delta, in the order they came: each is taken in by itself (R3 spec S10).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<MessagePage>,
+    /// More of this run comes after this piece: a run arrives in pieces (the folders, then a page
+    /// at a time), each taken in as it comes.
+    #[serde(skip_serializing_if = "is_false")]
+    pub partial: bool,
+    /// Every folder's delta reached its end in this run: a message the server said left its folder
+    /// and that turned up in no other is removed now (R3 spec S9, S11).
+    #[serde(skip_serializing_if = "is_false")]
+    pub whole: bool,
+    /// How far the run has got, for the status bar (R3 spec S15).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<GraphProgress>,
+    /// The owner stopped the run (Cancel) after the page in hand: the next one goes on from there.
+    #[serde(skip_serializing_if = "is_false")]
+    pub stopped: bool,
+}
+
+impl GraphMailResult {
+    /// Take in the next piece of the same run, for a caller that takes a run in at once: the
+    /// pages in the order they came, and what the last piece says of the end.
+    pub fn absorb(&mut self, piece: GraphMailResult) {
+        self.changes.extend(piece.changes);
+        if piece.listing.is_some() {
+            self.listing = piece.listing;
+        }
+        self.errors.extend(piece.errors);
+        self.busy_for = piece.busy_for.or(self.busy_for);
+        self.pages.extend(piece.pages);
+        (self.partial, self.whole, self.stopped) = (piece.partial, piece.whole, piece.stopped);
+        if piece.progress.is_some() {
+            self.progress = piece.progress;
+        }
+    }
+}
+
+/// How far a run has got: the folder being read (its server id), how many of its messages came in
+/// this run and how many it has, and which folder of how many it is.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GraphProgress {
+    pub folder: String,
+    pub read: u32,
+    pub total: u32,
+    pub number: u32,
+    pub folders: u32,
 }
 
 #[cfg(test)]

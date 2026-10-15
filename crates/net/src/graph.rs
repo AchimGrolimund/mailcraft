@@ -1807,7 +1807,7 @@ pub use favorites::favorites;
 pub mod pace;
 
 pub mod mail;
-pub use mail::sync_folders;
+pub use mail::{sync_folders, sync_mail};
 
 mod check;
 pub use check::{CHECK_TITLE, CalendarCheck, CheckStep, STEPS as CHECK_STEPS, check_calendar, check_start, no_sign_in};
