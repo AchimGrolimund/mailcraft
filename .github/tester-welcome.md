@@ -8,6 +8,7 @@ Welcome, and thank you for signing up to test MailCraft.
 **Reporting**
 - One problem per issue, through the [problem form](https://github.com/billsecond/mailcraft/issues/new?template=problem.yml). Mention this issue so it's linked to you.
 - Say which version you're on (File › About MailCraft) and whether it lost anything, crashed, or disagrees with Outlook on the web. Those get the `data-loss`, `crash` and `out-of-step` labels and are fixed first.
+- From the release after 0.3.0, paste **Help › Copy Diagnostics** into the report: it has the version, the platform and the end of the log, with addresses, names and paths taken out.
 - Put nothing private in an issue: no message content, addresses or organisation names.
 
 **This issue is your log.** A short comment once a week is plenty: which devices you used, roughly how many days, and anything odd that didn't merit its own issue.
