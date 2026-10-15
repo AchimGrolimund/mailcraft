@@ -26,6 +26,7 @@ pub mod dialogs;
 pub mod favorites_sync;
 pub mod files;
 pub mod forms;
+pub mod graph_fetch;
 pub mod i18n;
 pub mod icons;
 pub mod keys;
@@ -90,6 +91,8 @@ pub struct Services {
     /// background thread: send the Outbox (no "authenticated SMTP" switch stands in its way) and
     /// bring the calendar and the contacts down. Absent in the browser.
     pub graph: Option<Box<dyn Fn(GraphRequest) -> Receiver<GraphResult>>>,
+    /// Desktop: fetch messages of a Microsoft account whole on a background thread (R3.2).
+    pub graph_fetch: Option<Box<dyn Fn(graph_fetch::GraphFetchJob) -> Receiver<mailcraft_model::sync::GraphFetchResult>>>,
     /// Desktop: ask the DNS for a domain's mail exchangers on a background thread (best first),
     /// so account setup can tell whose servers an address at a company's own domain uses. Only
     /// the domain is given, never the mailbox name.
@@ -693,13 +696,15 @@ pub struct MailApp {
     /// What signing in on a provider's page brought back this session, per account. Never saved.
     tokens: std::collections::HashMap<Id, Tokens>,
     /// Microsoft Graph tokens obtained this session, per account. Never saved.
-    graph_tokens: std::collections::HashMap<Id, Tokens>,
+    pub(crate) graph_tokens: std::collections::HashMap<Id, Tokens>,
     /// What Graph is doing for an account before its mail is synchronised: the account, whether
     /// nobody asked, whether the calendar and contacts were asked for, and the answer to come.
     graph_rx: Option<(Id, bool, bool, Receiver<GraphResult>)>,
     /// The pieces of a Graph mail run as they come (R3.2), and what they had to say.
     graph_pieces: Option<Receiver<mailcraft_model::sync::GraphMailResult>>,
     graph_problems: Vec<String>,
+    /// Messages of Microsoft accounts being fetched whole ([`graph_fetch`]).
+    pub(crate) fetching: graph_fetch::Fetching,
     /// When each account's calendar and contacts were last brought down (milliseconds).
     graph_checked: std::collections::HashMap<Id, f64>,
     /// Accounts whose owner hasn't allowed Graph yet ("Connect calendar and contacts").
@@ -816,6 +821,7 @@ impl MailApp {
             graph_rx: None,
             graph_pieces: None,
             graph_problems: Vec::new(),
+            fetching: Default::default(),
             graph_checked: Default::default(),
             graph_consent_needed: Default::default(),
             calendar: Default::default(),
@@ -934,6 +940,10 @@ impl MailApp {
             }
             self.dialog = dialogs::open_dialog(self, name, &params);
             return Ok(json!({"pending": name}));
+        }
+        // A message not fetched yet is fetched first, and then the command goes on (R3.2).
+        if let Some(r) = self.fetch_first(id, &params) {
+            return r;
         }
         if let Some(r) = files::intercept(self, id, &params) {
             return r;
@@ -1158,6 +1168,7 @@ impl MailApp {
                 // The run stops at the next safe place; what it brought stays. The rest of a
                 // round that was under way is called off with it.
                 self.services.sync_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.pause_fetch();
                 self.sync_queue.clear();
                 self.session.sync_status = tl!("Stopping…").to_string();
                 Ok(json!({"cancelling": true}))
@@ -1506,6 +1517,7 @@ impl MailApp {
             mail_pieces: Some(pieces),
             cancel: self.services.sync_cancel.clone(),
         };
+        self.resume_fetch();
         let Some(graph) = &self.services.graph else { return Err(tl!("This build can't connect to Microsoft").to_string()) };
         self.services.sync_cancel.store(false, std::sync::atomic::Ordering::Relaxed);
         self.graph_pieces = Some(taken);
@@ -1629,6 +1641,10 @@ impl MailApp {
                 }
             }
             for piece in taken {
+                // New mail may be waiting to be fetched whole: the background looks again.
+                if !piece.pages.is_empty() {
+                    self.fetching.wake();
+                }
                 match mailcraft_engine::cmd::graph_mail::apply_graph_mail(&mut self.session, piece) {
                     Ok(said) => {
                         let errors =
@@ -2050,6 +2066,10 @@ impl MailApp {
         self.poll_admin_consent();
         self.sweep_admin_consent();
         self.poll_graph();
+        self.drive_fetch();
+        if self.fetching.busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
         // The pieces of a Graph mail run come without waking the window: it looks again soon.
         if self.graph_pieces.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));

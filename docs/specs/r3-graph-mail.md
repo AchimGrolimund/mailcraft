@@ -115,7 +115,8 @@ up to 200,000 messages are usable within minutes of being added.
       MB (default up to 10 MB). A larger message is fetched only when opened, replied to,
       forwarded or saved, and the progress line says how many wait for that. Choosing a larger
       limit fetches the rest in the background; choosing a smaller one removes nothing already
-      fetched.
+      fetched. A message's size is Graph's extended property `Integer 0x0E08` (`PidTagMessageSize`),
+      asked for with the delta; one whose size isn't said is fetched.
 13. Search covers headers and previews of every message, and the whole text of fetched ones; while
     the background fetch isn't finished, results say how many messages weren't searched in full.
 14. Microsoft allows 4 requests at once per mailbox. Background fetching uses at most 2; what the
@@ -248,3 +249,4 @@ milestone after beta); importing into server folders.
 | 2026-10-15 | minor | S4: immutable ids are asked for on mail requests only; calendar, contacts and Favorites keep ordinary ids (found in R3.1, #39) |
 | 2026-10-15 | minor | S9–S15 from the R3.2 decision session with Martin Ball: pages of 100, newest page of every folder first, every folder on each run, moves kept by server id, changes here never overwritten, pages saved with their links by the ordinary save, fetched as part of the message, "Download messages in full" per account (default up to 10 MB), progress in the status bar, Cancel stops all of the account's Graph work |
 | 2026-10-15 | minor | S10: a round begun in an earlier run is followed by one more before the folder counts as current (found in R3.2.2) |
+| 2026-10-15 | minor | S12: where a message's size comes from (found in R3.2.3) |

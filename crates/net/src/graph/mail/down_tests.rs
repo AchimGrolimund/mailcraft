@@ -178,3 +178,29 @@ fn a_round_begun_in_an_earlier_run_is_followed_by_one_that_brings_what_changed_s
     assert!(rest.last().unwrap().whole);
     assert!(rest.iter().flat_map(|p| &p.pages).any(|p| p.removed.contains(&ids[0])), "the deletion comes in the round after");
 }
+
+#[test]
+fn messages_come_with_their_size_and_are_fetched_whole_by_their_immutable_id() {
+    let server = StandIn::start().unwrap();
+    let inbox = server.state().well_known("inbox");
+    let ids = server.state().mailbox.generate(&inbox, 3, NOW);
+    server.state().mailbox.update(&ids[1], |m| m.size = 30 << 20);
+    let pieces = run(&server, Vec::new(), &AtomicBool::new(false));
+    let sizes: Vec<u64> = pieces.iter().flat_map(|p| &p.pages).flat_map(|p| &p.messages).map(|m| m.server.size).collect();
+    assert_eq!(sizes.len(), 3);
+    assert!(sizes[0] > 100 && sizes[0] < 1_000 && sizes[1] == 30 << 20, "{sizes:?}");
+
+    server.state().mailbox.delete(&ids[2]);
+    let request = mailcraft_model::sync::GraphFetchRequest { account: 3, email: "owner@example.org".into(), ids: ids.clone(), background: true };
+    let got = super::fetch::fetch_messages_with(&server.url(), TOKEN, &request, Arc::new(Gate::new()), QUICK, &AtomicBool::new(false));
+    assert_eq!(got.fetched.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), [ids[0].as_str(), ids[1].as_str()]);
+    assert!(String::from_utf8_lossy(&got.fetched[0].mime).contains("Subject: Message 0\r\n"));
+    assert_eq!(got.missing, [ids[2].clone()]);
+    assert!(got.errors.is_empty() && !got.offline);
+    // Every one asked for by its immutable id.
+    assert!(server.state().requests.iter().filter(|r| r.target.contains("$value")).all(|r| r.header("prefer").contains("ImmutableId")));
+
+    // Cancel: nothing more is asked.
+    let cancelled = super::fetch::fetch_messages_with(&server.url(), TOKEN, &request, Arc::new(Gate::new()), QUICK, &AtomicBool::new(true));
+    assert!(cancelled.fetched.is_empty());
+}

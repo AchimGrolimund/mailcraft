@@ -77,14 +77,17 @@ pub struct Message {
     pub internet_id: String,
     /// Its MIME when it is to be something else than what is made of the rest.
     pub mime: Option<String>,
+    /// The size the server says it is (`PidTagMessageSize`); 0: the size of its MIME.
+    pub size: u64,
     /// When it last changed, in the stand-in's count of changes.
     changed: u64,
 }
 
 impl Message {
     /// The message as a list of messages writes it, with its id as asked for and only what
-    /// `select` names (and its id) when it names anything.
-    fn json(&self, immutable: bool, select: Option<&[String]>) -> Value {
+    /// `select` names (and its id) when it names anything; with its size when that was asked for
+    /// (`$expand` of the extended property `Integer 0x0E08`, `PidTagMessageSize`).
+    fn json(&self, immutable: bool, select: Option<&[String]>, size: bool) -> Value {
         let address = |address: &str| json!({"emailAddress": {"name": address.split('@').next().unwrap_or(""), "address": address}});
         let mut all = json!({
             "id": shown(&self.id, immutable),
@@ -105,6 +108,10 @@ impl Message {
         });
         if let (Some(select), Some(map)) = (select, all.as_object_mut()) {
             map.retain(|name, _| name == "id" || select.iter().any(|s| s == name));
+        }
+        if size {
+            let bytes = if self.size > 0 { self.size } else { self.mime().len() as u64 };
+            all["singleValueExtendedProperties"] = json!([{"id": "Integer 0xe08", "value": bytes.to_string()}]);
         }
         all
     }
@@ -153,6 +160,7 @@ struct Round {
     page: usize,
     select: Option<Vec<String>>,
     newest_first: bool,
+    size: bool,
 }
 
 /// What a `$deltatoken` stands for: the folder, and the changes it has seen.
@@ -162,6 +170,7 @@ struct Seen {
     upto: u64,
     select: Option<Vec<String>>,
     newest_first: bool,
+    size: bool,
 }
 
 /// The stand-in's messages, and the rounds of delta under way.
@@ -297,7 +306,7 @@ impl Mail {
                 // What changed again since the round began comes in the next round.
                 Key::Message(id) => {
                     if let Some(m) = self.messages.get(id).filter(|m| m.folder == round.folder && m.changed <= round.upto) {
-                        out.push(m.json(immutable, round.select.as_deref()));
+                        out.push(m.json(immutable, round.select.as_deref(), round.size));
                     }
                 }
                 Key::Gone(id) => {
@@ -337,11 +346,20 @@ impl State {
                 let Some(seen) = self.mailbox.seen.get(token).filter(|s| s.folder == folder).cloned() else { return Err(self.expired()) };
                 let upto = self.mailbox.changes;
                 let keys = self.mailbox.keys(&folder, Some(seen.upto), upto, seen.newest_first);
-                Round { folder: folder.clone(), upto, keys: Arc::new(keys), at: 0, page: 0, select: seen.select, newest_first: seen.newest_first }
+                Round {
+                    folder: folder.clone(),
+                    upto,
+                    keys: Arc::new(keys),
+                    at: 0,
+                    page: 0,
+                    select: seen.select,
+                    newest_first: seen.newest_first,
+                    size: seen.size,
+                }
             }
             _ => {
                 if let Some((other, _)) =
-                    asked.query.iter().find(|(name, _)| !matches!(name.as_str(), "$select" | "$top" | "$orderby" | "$deltatoken"))
+                    asked.query.iter().find(|(name, _)| !matches!(name.as_str(), "$select" | "$top" | "$orderby" | "$deltatoken" | "$expand"))
                 {
                     return Err(bad(format!("The query parameter '{other}' is not one this stand-in answers for a message delta.")));
                 }
@@ -362,9 +380,20 @@ impl State {
                         .filter(|n| (1..=MAX_PAGE).contains(n))
                         .ok_or_else(|| bad("The value of '$top' must be between 1 and 1000."))?,
                 };
+                let size = match asked.param("$expand") {
+                    None => false,
+                    Some(expand)
+                        if expand
+                            .replace(' ', "")
+                            .eq_ignore_ascii_case("singleValueExtendedProperties($filter=id eq 'Integer 0x0E08')".replace(' ', "").as_str()) =>
+                    {
+                        true
+                    }
+                    Some(_) => return Err(bad("The only expansion this stand-in answers for a message delta is the message size (Integer 0x0E08).")),
+                };
                 let upto = self.mailbox.changes;
                 let keys = self.mailbox.keys(&folder, None, upto, newest_first);
-                Round { folder: folder.clone(), upto, keys: Arc::new(keys), at: 0, page, select, newest_first }
+                Round { folder: folder.clone(), upto, keys: Arc::new(keys), at: 0, page, select, newest_first, size }
             }
         };
         // The page size: what `Prefer` says, else what the first request said, within limits.
@@ -379,7 +408,8 @@ impl State {
         let mut list = json!({"@odata.context": format!("{}/v1.0/$metadata#Collection(message)", self.base), "value": value});
         if done && self.mailbox.replays == 0 {
             let token = self.mailbox.token();
-            let seen = Seen { folder: folder.clone(), upto: round.upto, select: round.select.clone(), newest_first: round.newest_first };
+            let seen =
+                Seen { folder: folder.clone(), upto: round.upto, select: round.select.clone(), newest_first: round.newest_first, size: round.size };
             self.mailbox.seen.insert(token.clone(), seen);
             list["@odata.deltaLink"] = json!(format!("{base}?$deltatoken={token}"));
         } else {

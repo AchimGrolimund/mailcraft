@@ -157,3 +157,89 @@ fn two_hundred_thousand_messages_interrupted_three_times_arrive_once_each() {
     assert_eq!(ids, there(&server));
     assert_eq!(s.mailbox.message(flagged_id).map(|m| m.body.text.as_str()), Some("The whole of it, fetched."));
 }
+
+/// The window, its Send/Receive and the background fetch, the whole way: messages come down as
+/// headers and previews, then whole in the background within the account's limit; a larger one
+/// when it is opened; and a reply to one not yet fetched waits for it.
+#[test]
+fn messages_download_whole_in_the_background_on_opening_and_before_a_reply() {
+    use mailcraft_model::sync::Tokens;
+    use mailcraft_net::oauth::GraphTokens;
+    use mailcraft_ui_egui::graph_fetch::GraphFetchJob;
+    use mailcraft_ui_egui::{GraphRequest, MailApp, Services};
+
+    let server = StandIn::start().unwrap();
+    let inbox_there = server.state().well_known("inbox");
+    let ids = server.state().mailbox.generate(&inbox_there, 30, NOW);
+    server.state().mailbox.update(&ids[3], |m| m.size = 30 << 20);
+    let url = server.url();
+    let mut session = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
+    session.graph_mail = true;
+    let mut app = MailApp::new(session, Services::default());
+    (app.autosave, app.auto_sync) = (false, false);
+    let base = url.clone();
+    app.services.graph = Some(Box::new(move |request: GraphRequest| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let base = base.clone();
+        std::thread::spawn(move || {
+            let _route = mailcraft_net::graph::standin::route(&base);
+            let tokens = Tokens { access: TOKEN.into(), refresh: "ref".into(), expires_at: mailcraft_time::now() + 3_600, ..Default::default() };
+            let renewed = GraphTokens { tokens, extras_missing: false, covers_favorites: false };
+            let _ = tx.send(super::graph_with(request, "UTC", &move |_, _, _| Ok(renewed.clone())));
+        });
+        rx
+    }));
+    let base = url.clone();
+    app.services.graph_fetch = Some(Box::new(move |job: GraphFetchJob| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let base = base.clone();
+        std::thread::spawn(move || {
+            let _route = mailcraft_net::graph::standin::route(&base);
+            let _ = tx.send(mailcraft_net::graph::fetch_messages(&job.access, &job.request, &job.cancel));
+        });
+        rx
+    }));
+    // IMAP is there, and never asked.
+    app.services.sync = Some(Box::new(|_| std::sync::mpsc::channel().1));
+    let account = app.execute("account.add", json!({"email": "avery@mail.example", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
+    app.seed_graph_token(
+        account,
+        Tokens { access: TOKEN.into(), refresh: "ref".into(), expires_at: mailcraft_time::now() + 3_600, ..Default::default() },
+    );
+    let wait = |app: &mut MailApp, done: &dyn Fn(&MailApp) -> bool| {
+        for _ in 0..4_000 {
+            app.poll_graph();
+            app.drive_fetch();
+            if done(app) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        panic!("it didn't happen");
+    };
+    app.execute("ui.sync", json!({"account": account})).unwrap();
+    wait(&mut app, &|app| !app.graph_running());
+    let by = |app: &MailApp, id: &str| app.session.mailbox.messages.values().find(|m| m.server.as_ref().is_some_and(|s| s.id == id)).unwrap().id;
+    // In the background: all but the large one.
+    wait(&mut app, &|app| app.session.mailbox.messages.values().filter(|m| m.unfetched).count() == 1);
+    let large = by(&app, &ids[3]);
+    assert!(app.session.mailbox.message(large).unwrap().unfetched);
+    assert!(app.session.mailbox.message(by(&app, &ids[0])).unwrap().body.text.contains("The words of message 1."));
+
+    // Opened: at once.
+    app.session.sel.messages = vec![large];
+    wait(&mut app, &|app| !app.session.mailbox.message(large).unwrap().unfetched);
+
+    // A reply to one that isn't here whole waits for it, and then opens with its text.
+    let late = server.state().mailbox.add(&inbox_there, "Late", NOW + 60);
+    server.state().mailbox.update(&late, |m| m.size = 40 << 20);
+    app.execute("ui.sync", json!({"account": account})).unwrap();
+    wait(&mut app, &|app| !app.graph_running());
+    let late = by(&app, &late);
+    assert!(app.session.mailbox.message(late).unwrap().unfetched);
+    let pending = app.run("mail.reply", json!({"id": late})).unwrap();
+    assert_eq!(pending["pending"], "download");
+    wait(&mut app, &|app| app.session.compose.is_some());
+    assert!(app.session.compose.as_ref().unwrap().subject.contains("Late"));
+    assert!(!app.session.mailbox.message(late).unwrap().unfetched);
+}

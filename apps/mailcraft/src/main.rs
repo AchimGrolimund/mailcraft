@@ -780,6 +780,7 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
     let busy_ctx = ctx.clone();
     let check_ctx = ctx.clone();
     let approval_ctx = ctx.clone();
+    let fetch_ctx = ctx.clone();
     let (sync_ctx, sign_in_ctx, graph_ctx, mx_ctx, test_ctx) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone(), ctx);
     let sync_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel = sync_cancel.clone();
@@ -813,6 +814,10 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
             background(&sign_in_ctx, "sign-in", move || sign_in(&ctx, request))
         })),
         graph: Some(Box::new(move |request| background(&graph_ctx, "microsoft graph", move || graph(request)))),
+        // Messages of a Microsoft account fetched whole, a few at a time (R3.2).
+        graph_fetch: Some(Box::new(move |job: mailcraft_ui_egui::graph_fetch::GraphFetchJob| {
+            background(&fetch_ctx, "message download", move || mailcraft_net::graph::fetch_messages(&job.access, &job.request, &job.cancel))
+        })),
         lookup_mx: Some(Box::new(move |domain| {
             background(&mx_ctx, "mail exchangers", move || mailcraft_net::lookup_mx(&domain).map_err(|e| e.to_string()))
         })),

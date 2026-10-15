@@ -36,6 +36,9 @@ use crate::http::{self, Url};
 
 /// What is asked for of each message: what the message list needs (R3 spec S9).
 const FIELDS: &str = "receivedDateTime,sentDateTime,subject,from,toRecipients,ccRecipients,bodyPreview,isRead,flag,categories,importance,parentFolderId,internetMessageId,hasAttachments";
+/// A message's size on the server (`PidTagMessageSize`), which Graph gives only as an extended
+/// property: what "Download messages in full" is held against.
+const SIZE: &str = "singleValueExtendedProperties($filter=id eq 'Integer 0x0E08')";
 /// Messages to a page.
 const PAGE_SIZE: &str = "odata.maxpagesize=100";
 /// Most pages of one folder in one run (a million messages): a server that never ends a round
@@ -166,7 +169,7 @@ fn page(
     let url = match &one.link {
         Some(url) => url.clone(),
         None => {
-            let query = http::form(&[("$select", FIELDS), ("$orderby", "receivedDateTime desc")]);
+            let query = http::form(&[("$select", FIELDS), ("$orderby", "receivedDateTime desc"), ("$expand", SIZE)]);
             graph.url(&format!("{MAIL_FOLDERS}/{}/messages/delta?{query}", http::encode(&one.folder.id)))
         }
     };
@@ -188,7 +191,7 @@ fn page(
             }
             return Ok(());
         }
-        401 | 403 | 429 | 503 | 504 => return Err(graph.refusal(super::super::Doing::Folders, &reply, "")),
+        401 | 403 | 429 | 503 | 504 => return Err(graph.refusal(super::super::Doing::Mail, &reply, "")),
         // Gone meanwhile, or not to be read: the next run's listing says.
         status => {
             log::info!("graph mail: a folder's mail couldn't be read (status {status}); it waits for the next run");
@@ -255,6 +258,16 @@ fn link_of(graph: &Graph<'_>, json: &Value, name: &str) -> Option<(String, Url)>
     Some((link.to_string(), url))
 }
 
+/// The size among a message's extended properties (`Integer 0xe08`, however its id is written).
+fn size_of(value: &Value) -> u64 {
+    let all = value.get("singleValueExtendedProperties").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    all.iter()
+        .take(16)
+        .find(|p| text(p, "id").to_ascii_lowercase().replace("0x0e08", "0xe08").ends_with("0xe08"))
+        .and_then(|p| text(p, "value").trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
 enum Entry {
     Message(Box<GraphMessage>),
     Removed(String),
@@ -306,6 +319,7 @@ fn entry_of(value: &Value, folder: &str) -> Option<Entry> {
         categories,
         importance,
         gone: false,
+        size: size_of(value),
     };
     Some(Entry::Message(Box::new(GraphMessage {
         server,

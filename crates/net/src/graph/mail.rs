@@ -469,6 +469,9 @@ fn child_named(graph: &Graph<'_>, known: &Known, parent: &str, name: &str) -> Re
 }
 
 mod down;
+mod fetch;
+
+pub use fetch::fetch_messages;
 
 #[cfg(test)]
 mod down_tests;

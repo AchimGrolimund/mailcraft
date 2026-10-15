@@ -111,6 +111,21 @@ pub fn show_message(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, place: Pla
     header(app, ui, m, place, |app, ui, t| remote::line(app, ui, m, &doc, access, progress, place, t));
     // A meeting that came with the message: what it is, and the ways to answer it.
     invitation::bar(app, ui, m, place);
+    // Only its headers and a preview are here yet (R3.2): say so, and why.
+    if m.unfetched {
+        let t = Tokens::get(ui.ctx());
+        let said = if app.fetching.fetching(m.id) {
+            tl!("Downloading the whole message…")
+        } else if app.fetching.offline {
+            tl!("This message isn't on this computer yet. It will download when you're online.")
+        } else {
+            tl!("Only the beginning of this message is here. The rest downloads with the next Send/Receive.")
+        };
+        egui::Frame::NONE.fill(t.ribbon).inner_margin(egui::Margin { left: 20, right: 20, top: 6, bottom: 6 }).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new(said).font(crate::theme::regular(12.0)).color(t.text_dim));
+        });
+    }
     // The body gets the part of the pane that can be seen, whatever was laid out above it: a
     // header too wide for a narrow pane must not make the text run out of sight with it.
     let room = ui.available_rect_before_wrap().intersect(ui.clip_rect());
