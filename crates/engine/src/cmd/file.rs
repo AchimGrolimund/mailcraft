@@ -89,7 +89,14 @@ fn open(s: &mut Session, v: &Value) -> CmdResult {
     s.replace_mailbox(mailbox);
     // Only a real file is a place to save back to.
     s.path = if v.get("data").is_some() { None } else { p::str(v, "path").map(Into::into) };
+    // A mailbox whose owner chose another way than Microsoft Graph of reading Outlook's
+    // Favorites, which is no more: said once, and the file is saved without it.
+    let favorites_now_graph = s.mailbox.take_retired_favorites_choices();
+    if favorites_now_graph > 0 {
+        s.mailbox_changed();
+    }
     Ok(json!({
+        "favoritesNowGraph": favorites_now_graph,
         "accounts": s.mailbox.accounts.len(),
         "messages": s.mailbox.messages.len(),
         "contacts": s.mailbox.contacts.len(),

@@ -8,9 +8,7 @@
 //! token (SASL XOAUTH2) instead of a password, and [`lookup_mx`] finds out where a domain's mail
 //! goes, which tells its provider. [`graph`] asks Microsoft Graph for what a Microsoft 365
 //! account has that IMAP and SMTP don't reach: sending where SMTP is switched off, the calendar,
-//! the contacts, and which folders the owner keeps under Favorites in Outlook. [`ews`] reads
-//! those Favorites through Exchange Web Services instead, for an account whose owner chose
-//! that way (it exists until 1 April 2027, and reads nothing else). All of them
+//! the contacts, and which folders the owner keeps under Favorites in Outlook. All of them
 //! block, so a host calls them on a background thread; every connection has timeouts.
 //!
 //! A password or a token is only ever sent inside TLS, or to a server on this machine. It never
@@ -25,8 +23,6 @@ pub const AVAILABLE: bool = false;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod dns;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod ews;
 #[cfg(not(target_arch = "wasm32"))]
 mod favorite_paths;
 #[cfg(not(target_arch = "wasm32"))]
@@ -100,12 +96,6 @@ mod native {
         /// seconds the service asked to be left alone for, when it said.
         #[error("{text}")]
         Busy { text: String, retry_after: Option<u32> },
-        /// The organisation the account belongs to doesn't allow the service, for anybody or for
-        /// this program (Exchange Web Services' 403 with an `X-EWS-Policy-Reason` header: the
-        /// service is switched off there, or the program is not on its list). Asking again
-        /// changes nothing; only the organisation's administrator can.
-        #[error("{0}")]
-        Blocked(String),
     }
 
     impl NetError {
@@ -126,7 +116,6 @@ mod native {
                 NetError::ConsentNeeded(text) => NetError::ConsentNeeded(clean(text)),
                 NetError::Forbidden(text) => NetError::Forbidden(clean(text)),
                 NetError::Busy { text, retry_after } => NetError::Busy { text: clean(text), retry_after },
-                NetError::Blocked(text) => NetError::Blocked(clean(text)),
                 unworded @ (NetError::SignInCancelled | NetError::SignInTimedOut) => unworded,
             }
         }

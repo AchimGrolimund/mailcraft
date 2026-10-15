@@ -32,7 +32,6 @@ MailCraft connects only to these, over encrypted connections:
 |---|---|---|
 | Your mail provider's servers (IMAP, SMTP) | Send/Receive, and on the timer you set | What a mail program sends: your sign-in and your mail |
 | Microsoft's sign-in pages and Microsoft Graph, for an account that signs in with Microsoft | When you sign in; for calendar, contacts, sending mail, working hours, categories and Outlook's Favorites | Your sign-in happens on Microsoft's page in your browser; the program receives tokens, never your password |
-| Exchange Web Services, for a work or school account | Only if you choose it for Outlook's Favorites | Read requests for the list of favourite folders |
 | A public DNS-over-HTTPS resolver (Cloudflare, then Google) | Once, when you press Connect while adding an account at a domain the program does not know | The domain of your address (the part after the @), never the mailbox name |
 | The web address of a picture in a message | Only when you ask for a message's pictures, or for a sender or domain you chose to always download from | The address alone: no cookies, no referrer, no sign-in |
 

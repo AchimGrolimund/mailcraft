@@ -323,7 +323,6 @@ fn quiet_link(app: &mut MailApp, ui: &mut Ui, account: Id, step: crate::favorite
     let kind = match step {
         crate::favorites_sync::Step::CopyMessage => "favoritesCopyMessage",
         crate::favorites_sync::Step::Help => "favoritesHelp",
-        crate::favorites_sync::Step::Use(_) => "favoritesSwitch",
     };
     app.hit.add(kind, account, r);
     if resp.hovered() {
@@ -332,36 +331,25 @@ fn quiet_link(app: &mut MailApp, ui: &mut Ui, account: Id, step: crate::favorite
     let width = (r.max.x - COUNT_RIGHT - r.min.x - NAME_LEFT).max(0.0);
     paint_clipped(ui.painter(), pos2(r.min.x + NAME_LEFT, r.center().y - TEXT_RISE), width, tl!(step.label()), regular(NAME_SIZE), t.accent_text);
     if resp.on_hover_text(tl!(step.about())).clicked() {
-        crate::favorites_sync::choice::step_taken(app, account, step);
+        crate::favorites_sync::step_taken(app, account, step);
     }
 }
 
 /// What is said under the Favorites heading, when there is something to say of an account's
 /// Favorites in Outlook ([`crate::favorites_sync`]): the offer to show them, why they can't be
 /// had, or why the last look came to nothing, with "Try again" after it: one row. When what
-/// stands in the way is somebody else's to change (an administrator has to approve it, the
-/// organisation doesn't allow Exchange Web Services, Microsoft has switched it off), the
+/// stands in the way is somebody else's to change (an administrator has to approve it), the
 /// sentence that says so, and under it a row for each thing the owner can do about it.
 fn favorites_note(app: &mut MailApp, ui: &mut Ui, account: Id, note: &Note) {
     let t = Tokens::get(ui.ctx());
-    if matches!(note, Note::Approval(_) | Note::Blocked | Note::Ended) {
+    if matches!(note, Note::Approval) {
         let r = quiet_lines(ui, tl!(note.text()));
         app.hit.add("favoritesNote", account, r);
-        let about = match note {
-            Note::Approval(_) => {
-                tl!(
-                    "Your organisation keeps this permission for its administrators to give. Once one of them has approved it, choose it again here. Until then the Favorites kept in MailCraft are shown."
-                )
-            }
-            Note::Blocked => {
-                tl!(
-                    "The server turned MailCraft away: your organisation has switched Exchange Web Services off, or lets only the programs on its own list use it. The Favorites kept in MailCraft are shown."
-                )
-            }
-            _ => tl!("Microsoft switched Exchange Web Services off for everybody on 1 April 2027. The Favorites kept in MailCraft are shown."),
-        };
+        let about = tl!(
+            "Your organisation keeps this permission for its administrators to give. Once one of them has approved it, choose it again here. Until then the Favorites kept in MailCraft are shown."
+        );
         ui.interact(r, ui.id().with(("favorites_note", account)), Sense::hover()).on_hover_text(about);
-        for step in app.favorites_steps(account, note) {
+        for step in app.favorites_steps(note) {
             quiet_link(app, ui, account, step);
         }
         return;
@@ -380,30 +368,18 @@ fn favorites_note(app: &mut MailApp, ui: &mut Ui, account: Id, note: &Note) {
                 ui.painter().rect_filled(highlight(r), 0.0, t.panel.lerp_to_gamma(t.hover, 0.7));
             }
             paint_clipped(ui.painter(), pos2(left, y), width, tl!("Show Outlook's Favorites"), font, t.accent_text);
-            // An account of an organisation has a choice of how they are read; any other signs
-            // in with Microsoft once more for it.
-            let choice = app.favorites_choice(account);
-            let about = if choice {
-                tl!(
-                    "Choose how MailCraft reads the folders you keep under Favorites in Outlook. They are only read, never changed, and everything else stays as it is."
-                )
-            } else {
-                tl!(
-                    "Sign in with Microsoft once more to let MailCraft read the folders you keep under Favorites in Outlook. They are only read, never changed, and everything else stays as it is."
-                )
-            };
-            if resp.on_hover_text(about).clicked() {
-                let asked = match choice {
-                    true => app.run("ui.dialog", json!({"name": "favoritesSource", "account": account})),
-                    false => app.run("ui.connectFavorites", json!({"account": account})),
-                };
-                if let Err(e) = asked {
-                    app.status(e);
-                }
+            // Signing in with Microsoft once more, for that alone.
+            let about = tl!(
+                "Sign in with Microsoft once more to let MailCraft read the folders you keep under Favorites in Outlook. They are only read, never changed, and everything else stays as it is."
+            );
+            if resp.on_hover_text(about).clicked()
+                && let Err(e) = app.run("ui.connectFavorites", json!({"account": account}))
+            {
+                app.status(e);
             }
         }
         // (Said above, in more than a row.)
-        Note::Approval(_) | Note::Blocked | Note::Ended => {}
+        Note::Approval => {}
         Note::Refused(why) => {
             let resp = ui.interact(highlight(r), ui.id().with(("favorites_note", account)), Sense::hover());
             app.hit.add("favoritesNote", account, r);

@@ -141,7 +141,7 @@ fn stand_in(host: &Arc<Mutex<Host>>) -> Services {
             }
             rx
         })),
-        admin_consent_link: Some(Box::new(|oauth, tenant, _| {
+        admin_consent_link: Some(Box::new(|oauth, tenant| {
             let directory = if tenant.is_empty() { "organizations" } else { tenant };
             Some(format!("https://login.example.org/{directory}/v2.0/adminconsent?client_id={}", oauth.client_id))
         })),

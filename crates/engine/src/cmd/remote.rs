@@ -115,7 +115,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .params(r#"{"download": CategoriesDownload} — the mailbox's categories as a host brought them from the account's server: {"account": number, "email"?: string, "categories": [{"name": string, "color": [r, g, b]}]}"#),
         CommandSpec::new("sync.applyFavorites", "Apply Downloaded Favorites", "Send / Receive", apply_favorites_command)
             .pure()
-            .params(r#"{"download": FavoritesDownload} — the account's Favorites as a host read them from its server (the folders Outlook shows under Favorites): {"account": number, "email"?: string, "outcome": "read"|"missing"|"notPermitted"|"failed", "folders": [{"path": [string] (names from the top of the mailbox down to the folder), "kind": "inbox"|"drafts"|"sent"|"deleted"|"junk"|"archive"|"outbox"|"custom", "root"?: the same (which special folder the first name of the path is)}], "skipped": number, "unresolved": number} — "read": the folders of that account that match (by kind first, then by path, whatever the case) are its Favorites from now on, in that order, and `folder.favorite` is refused for it; "missing" or "notPermitted": the server has no list to show, and the Favorites marked here are what there is; "failed": nothing changes. The marks made here are never touched. It makes no difference how the host read it (Microsoft Graph, Exchange Web Services); for an account set to keep its own (`account.favoritesSource` with "none") nothing of a list is kept. Answers {"outcome", "from": "server"|"mailbox", "favorites": [number], "absent": number (listed by the server, not a folder here), "changed": bool}"#),
+            .params(r#"{"download": FavoritesDownload} — the account's Favorites as a host read them from its server (the folders Outlook shows under Favorites): {"account": number, "email"?: string, "outcome": "read"|"missing"|"notPermitted"|"failed", "folders": [{"path": [string] (names from the top of the mailbox down to the folder), "kind": "inbox"|"drafts"|"sent"|"deleted"|"junk"|"archive"|"outbox"|"custom", "root"?: the same (which special folder the first name of the path is)}], "skipped": number, "unresolved": number} — "read": the folders of that account that match (by kind first, then by path, whatever the case) are its Favorites from now on, in that order, and `folder.favorite` is refused for it; "missing" or "notPermitted": the server has no list to show, and the Favorites marked here are what there is; "failed": nothing changes. The marks made here are never touched. Answers {"outcome", "from": "server"|"mailbox", "favorites": [number], "absent": number (listed by the server, not a folder here), "changed": bool}"#),
         CommandSpec::new("sync.forgetRemote", "Forget Downloaded Calendar and Contacts", "Send / Receive", forget_command)
             .pure()
             .params(r#"{"account": number} — removes the events, contacts and calendars that came from that account's server"#),
@@ -3522,20 +3522,12 @@ fn folder_of_favorite(mailbox: &Mailbox, account: Id, favorite: &RemoteFavorite)
 /// no list, or it may not be read, what was kept of one goes, and the favourites marked here
 /// are what the pane shows; when it couldn't be read this time, nothing changes. The marks made
 /// here ([`mailcraft_model::Folder::favorite`]) are never touched. Not an undo step.
-///
-/// However the host read it (Microsoft Graph, Exchange Web Services) makes no difference here.
-/// For an account whose owner chose to keep MailCraft's own Favorites (`account.favoritesSource`
-/// with `none`), nothing of a list is kept, whatever a read that was under way brings.
 pub fn apply_favorites(s: &mut Session, download: &FavoritesDownload) -> CmdResult {
     let account = owner(&s.mailbox, download.account, &download.email)?.id;
     let mut download = download.clone();
     download.tidy();
     let mut absent = 0usize;
-    // The owner said "not now" for this account (`account.favoritesSource`): its Favorites are
-    // the ones marked here, whatever a read that was under way brings.
-    let own = s.mailbox.account(account).is_some_and(|a| a.favorites_source == mailcraft_model::FavoritesSource::None);
     let changed = match download.outcome {
-        _ if own => s.mailbox.set_server_favorites(account, None),
         FavoritesOutcome::Read => {
             let mut folders: Vec<Id> = Vec::new();
             for favorite in &download.folders {

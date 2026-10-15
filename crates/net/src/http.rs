@@ -155,9 +155,6 @@ pub(crate) struct Reply {
     pub(crate) body: Vec<u8>,
     /// What its `Retry-After` header says, when it has one.
     pub(crate) retry_after: Option<String>,
-    /// What its `X-EWS-Policy-Reason` header says, when it has one: why an organisation's
-    /// policy turned the request away (Exchange Web Services).
-    pub(crate) policy: Option<String>,
 }
 
 /// `text` as one piece of a URL or a form: everything but letters, digits and `-._~` as `%XX`.
@@ -444,7 +441,6 @@ struct Head {
     length: Option<u64>,
     chunked: bool,
     retry_after: Option<String>,
-    policy: Option<String>,
 }
 
 /// [`read_reply`] with a body of no more than the usual size.
@@ -477,7 +473,7 @@ pub(crate) fn read_reply<R: Read>(stream: &mut R, started: Instant, patience: Du
     } else {
         reader.rest(max_body)?
     };
-    Ok(Reply { status: head.status, body, retry_after: head.retry_after, policy: head.policy })
+    Ok(Reply { status: head.status, body, retry_after: head.retry_after })
 }
 
 fn read_head<R: Read>(reader: &mut Reader<'_, R>) -> Result<Head, NetError> {
@@ -511,8 +507,6 @@ fn read_head<R: Read>(reader: &mut Reader<'_, R>) -> Result<Head, NetError> {
             head.chunked = value.rsplit(',').next().is_some_and(|last| last.trim().eq_ignore_ascii_case("chunked"));
         } else if name.eq_ignore_ascii_case("retry-after") {
             head.retry_after = Some(tidy(value));
-        } else if name.eq_ignore_ascii_case("x-ews-policy-reason") {
-            head.policy = Some(tidy(value));
         }
     }
     Err(nonsense("the server's answer has too many headers"))
@@ -831,7 +825,7 @@ mod tests {
             let answer = format!("HTTP/1.1 429 Too Many Requests\r\n{headers}Content-Length: 2\r\n\r\n{{}}");
             read_reply(&mut answer.as_bytes(), Instant::now(), SOON, MAX_BODY).unwrap()
         };
-        assert_eq!(reply("Retry-After: 30\r\n"), Reply { status: 429, body: b"{}".to_vec(), retry_after: Some("30".into()), policy: None });
+        assert_eq!(reply("Retry-After: 30\r\n"), Reply { status: 429, body: b"{}".to_vec(), retry_after: Some("30".into()) });
         assert_eq!(reply("retry-after:  Wed, 21 Oct 2026 07:28:00 GMT \r\n").retry_after.as_deref(), Some("Wed, 21 Oct 2026 07:28:00 GMT"));
         assert_eq!(reply("X-Other: 1\r\n").retry_after, None);
         // Cut to size and to one line, like any text from a server.

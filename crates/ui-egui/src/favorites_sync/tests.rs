@@ -8,7 +8,7 @@ use mailcraft_engine::Session;
 use mailcraft_engine::cmd::folder::{favorites, favorites_from_server};
 use mailcraft_model::remote::{ContactsDownload, EventsDownload};
 use mailcraft_model::sync::{SyncRequest, SyncResult, Tokens};
-use mailcraft_model::{Directory, FavoritesSource, FolderKind, Id};
+use mailcraft_model::{Directory, FolderKind, Id};
 use serde_json::json;
 
 use super::*;
@@ -37,15 +37,8 @@ struct Host {
     /// one for the Favorites comes to.
     sign_ins: Vec<(bool, bool)>,
     sign_in_error: Option<String>,
-    /// The reads through Exchange Web Services it was asked for (whether each brought a token
-    /// along), how they go, and how often the owner was sent to the page for it.
-    ews_jobs: Vec<bool>,
-    ews_unconsented: bool,
-    ews_blocked: bool,
-    ews_stale_token: bool,
-    ews_sign_ins: usize,
-    /// The links for an administrator it was asked to make: the directory and the way.
-    links: Vec<(String, FavoritesSource)>,
+    /// The links for an administrator it was asked to make: the directory of each.
+    links: Vec<String>,
 }
 
 fn favorite(path: &[&str], kind: FolderKind, root: FolderKind) -> RemoteFavorite {
@@ -118,14 +111,6 @@ impl Rig {
             let tokens =
                 Tokens { access: "graph-tok-3".into(), refresh: "ref-3".into(), expires_at: mailcraft_time::now() + 3600, ..Default::default() };
             let (tx, rx) = mpsc::channel();
-            // (For Exchange Web Services alone: counted by itself, and agreed to unless told otherwise.)
-            if request.ews {
-                host.ews_sign_ins += 1;
-                let agreed = host.sign_in_error.is_none();
-                host.ews_unconsented &= !agreed;
-                let _ = tx.send(host.sign_in_error.clone().map_or(Ok(Tokens { access: "ews-tok-2".into(), ..tokens.clone() }), Err));
-                return rx;
-            }
             host.sign_ins.push((request.graph, request.favorites));
             let _ = tx.send(match &host.sign_in_error {
                 Some(error) if request.favorites => Err(error.clone()),
@@ -134,39 +119,8 @@ impl Rig {
             rx
         }));
         let shared = host.clone();
-        app.services.ews = Some(Box::new(move |request: crate::EwsRequest| {
-            let mut host = shared.lock().unwrap();
-            host.ews_jobs.push(!request.access.is_empty());
-            let mut out = crate::EwsResult { account: request.account.id, ..Default::default() };
-            let download = |outcome: FavoritesOutcome, folders: Vec<RemoteFavorite>| {
-                Some(FavoritesDownload { outcome, folders, ..Default::default() }.for_account(&request.account))
-            };
-            if request.access.is_empty() && host.ews_unconsented {
-                out.consent_needed = true;
-            } else if host.ews_blocked {
-                out.blocked = true;
-            } else if !request.access.is_empty() && std::mem::take(&mut host.ews_stale_token) {
-                out.token_refused = true;
-            } else {
-                if request.access.is_empty() {
-                    out.tokens = Some(Tokens {
-                        access: "ews-tok".into(),
-                        refresh: "ref-4".into(),
-                        expires_at: mailcraft_time::now() + 3600,
-                        ..Default::default()
-                    });
-                }
-                let folders = if host.outcome == FavoritesOutcome::Read { host.folders.clone() } else { Vec::new() };
-                out.favorites = download(host.outcome, folders);
-                out.favorites_error = host.why.clone();
-            }
-            let (tx, rx) = mpsc::channel();
-            let _ = tx.send(out);
-            rx
-        }));
-        let shared = host.clone();
-        app.services.admin_consent_link = Some(Box::new(move |oauth, tenant, source| {
-            shared.lock().unwrap().links.push((tenant.to_string(), source));
+        app.services.admin_consent_link = Some(Box::new(move |oauth, tenant| {
+            shared.lock().unwrap().links.push(tenant.to_string());
             Some(format!(
                 "https://login.example.org/{}/adminconsent?client_id={}",
                 if tenant.is_empty() { "organizations" } else { tenant },
@@ -619,10 +573,9 @@ fn the_offer_is_one_line_under_the_heading_and_in_the_options() {
     assert!(harness.state().hit.rect("favoritesOption", 0).is_none());
 }
 
-// ---- the owner's choice of how they are read: Microsoft Graph, Exchange Web Services, not now ----
+// ---- an account of an organisation: an administrator may have to approve it ----
 
-/// A directory of an organisation, as a sign-in names it (invented), and Microsoft's own for
-/// personal accounts.
+/// A directory of an organisation, as a sign-in names it (invented).
 const ORGANISATION: &str = "3a1c5e7b-9d2f-4a6c-8e0b-1d3f5a7c9e2b";
 
 impl Rig {
@@ -633,59 +586,30 @@ impl Rig {
         rig
     }
 
-    /// Look at the servers `ms` on: the calendar's job and the read through Exchange Web
-    /// Services, when either is due, and what they and a sign-in bring.
-    fn look_all(&mut self, ms: f64) {
-        self.at += ms;
-        for _ in 0..3 {
-            self.app.calendar_tick_at(true, self.at);
-            self.app.poll_calendar();
-            self.app.favorites_tick_at(self.at);
-            self.app.poll_favorites();
-            self.app.poll_sign_in();
-        }
-    }
-
-    fn choose(&mut self, source: &str) -> serde_json::Value {
-        self.app.execute("ui.favoritesSource", json!({"account": self.account, "source": source})).unwrap()
-    }
-
     fn state(&mut self) -> serde_json::Value {
         self.app.execute("ui.favorites", json!({"account": self.account})).unwrap()
-    }
-
-    /// The reads through Exchange Web Services the host was asked for (whether each brought a
-    /// token along), and how often the owner was sent to Microsoft's page for it.
-    fn asked_of_ews(&self) -> (Vec<bool>, usize) {
-        let host = self.host.lock().unwrap();
-        (host.ews_jobs.clone(), host.ews_sign_ins)
     }
 }
 
 #[test]
-fn which_kind_of_microsoft_account_it_is_says_whether_there_is_a_choice() {
+fn which_kind_of_microsoft_account_it_is_is_known_and_nothing_of_it_is_saved() {
     let mut rig = Rig::new();
-    // Nobody has said: no choice, as before there was one.
-    assert_eq!((rig.app.directory(rig.account), rig.app.favorites_choice(rig.account)), (Directory::Unknown, false));
-    assert!(rig.app.execute("ui.dialog", json!({"name": "favoritesSource", "account": rig.account})).is_err());
+    assert_eq!(rig.app.directory(rig.account), Directory::Unknown);
     // A sign-in names the directory: an organisation's, or the one of personal accounts.
     rig.app.note_directory(rig.account, Directory::PERSONAL_TENANT);
-    assert_eq!((rig.app.directory(rig.account), rig.app.favorites_choice(rig.account)), (Directory::Personal, false));
-    assert_eq!(rig.state()["offered"], json!(["graph", "none"]));
+    assert_eq!((rig.app.directory(rig.account), rig.state()["directory"].clone()), (Directory::Personal, json!("personal")));
     rig.app.note_directory(rig.account, ORGANISATION);
-    assert_eq!((rig.app.directory(rig.account), rig.app.favorites_choice(rig.account)), (Directory::Organisation, true));
-    assert_eq!(rig.state()["offered"], json!(["graph", "ews", "none"]));
+    assert_eq!((rig.app.directory(rig.account), rig.state()["directory"].clone()), (Directory::Organisation, json!("organisation")));
     // Nothing a token says that isn't a directory changes that, and nothing of it is saved.
     for junk in ["", "common", " "] {
         rig.app.note_directory(rig.account, junk);
     }
-    assert!(rig.app.favorites_choice(rig.account));
+    assert_eq!(rig.app.directory(rig.account), Directory::Organisation);
     let file = String::from_utf8(mailcraft_engine::io::write_mailbox(&rig.app.session.mailbox).unwrap()).unwrap();
     assert!(!file.contains("directory") && !file.contains(ORGANISATION) && !file.contains("favoritesSource"));
     // What was written down with the account goes before what a sign-in says…
     rig.app.execute("account.edit", json!({"id": rig.account, "directory": "personal"})).unwrap();
-    assert!(!rig.app.favorites_choice(rig.account));
-    rig.app.execute("account.edit", json!({"id": rig.account, "directory": "organisation"})).unwrap();
+    assert_eq!(rig.app.directory(rig.account), Directory::Personal);
     // …and the account's settings say it when nothing else does.
     let other = rig.app.execute(
         "account.add",
@@ -697,155 +621,63 @@ fn which_kind_of_microsoft_account_it_is_says_whether_there_is_a_choice() {
     assert_eq!(rig.app.directory(other), Directory::Organisation);
     // An account that doesn't sign in with Microsoft has no Favorites in Outlook at all.
     let local = rig.app.session.mailbox.accounts[0].id;
-    assert!(!rig.app.favorites_choice(local) && rig.app.directory(local) == Directory::Unknown);
-    // The choice opens for the account that has one.
-    rig.app.execute("ui.dialog", json!({"name": "favoritesSource"})).unwrap();
-    assert_eq!(rig.app.dialog.as_ref().map(|dialog| dialog.name()), Some("favoritesSource"));
+    assert_eq!(rig.app.directory(local), Directory::Unknown);
+    // Whichever kind it is, they are read through Microsoft Graph: there is nothing to choose.
+    assert!(rig.app.execute("ui.favoritesSource", json!({"account": rig.account, "source": "graph"})).is_err());
+    assert!(rig.app.execute("ui.dialog", json!({"name": "favoritesSource", "account": rig.account})).is_err());
+    let state = rig.state();
+    assert!(state.get("source").is_none() && state.get("offered").is_none() && state.get("choice").is_none(), "{state}");
 }
 
 #[test]
-fn exchange_web_services_is_read_by_a_job_of_its_own_and_asks_on_the_page_only_when_the_owner_chose() {
-    let mut rig = Rig::organisation();
-    let own = rig.listed();
-    rig.look_all(0.0);
-    assert_eq!(rig.jobs().len(), 1, "Graph, as an account that never chose");
-    // The owner chooses Exchange Web Services, which the sign-in covers: read at once, by its
-    // own job, with a token asked for without the owner; Graph is no longer asked for the list.
-    let chosen = rig.choose("ews");
-    assert_eq!((chosen["pending"].clone(), chosen["source"].clone()), (json!("read"), json!("ews")));
-    rig.look_all(SECOND);
-    assert_eq!(rig.asked_of_ews(), (vec![false], 0));
-    assert_eq!(rig.listed(), [rig.receipts, rig.sent, rig.projects]);
-    assert!(rig.note().is_none() && favorites_from_server(&rig.app.session, rig.account));
-    // Every quarter of an hour, with the token that was kept; and the calendar's jobs go on
-    // without the Favorites.
-    let graph_jobs = rig.jobs().len();
-    rig.look_all(5.0 * MINUTE + SECOND);
-    rig.look_all(5.0 * MINUTE + SECOND);
-    assert_eq!(rig.host.lock().unwrap().ews_jobs.len(), 1);
-    rig.look_all(5.0 * MINUTE + SECOND);
-    assert_eq!(rig.host.lock().unwrap().ews_jobs.clone(), [false, true]);
-    assert!(rig.jobs().len() > graph_jobs && rig.jobs()[graph_jobs..].iter().all(|(favorites, scopes, _)| !favorites && !scopes));
-    // A Send/Receive the owner asked for reads them too.
-    rig.app.execute("ui.sync", json!({"account": rig.account})).unwrap();
-    rig.settle();
-    rig.look_all(SECOND);
-    assert_eq!(rig.host.lock().unwrap().ews_jobs.len(), 3);
-    // The token that was kept is no longer taken: dropped, and another is had at the next look.
-    rig.host.lock().unwrap().ews_stale_token = true;
-    rig.look_all(16.0 * MINUTE);
-    rig.look_all(SECOND);
-    assert_eq!(rig.host.lock().unwrap().ews_jobs[3..], [true, false]);
-    assert!(rig.note().is_none());
-
-    // The sign-in stops covering it (the owner took the permission back): nobody is sent to a
-    // page for that. The offer, the owner's own favourites, and not again that day.
-    rig.host.lock().unwrap().ews_unconsented = true;
-    rig.app.favorites.ews_tokens.clear();
-    rig.look_all(16.0 * MINUTE);
-    assert_eq!((rig.note(), rig.listed(), rig.host.lock().unwrap().ews_sign_ins), (Some(Note::Offer), own.clone(), 0));
-    let asked = rig.host.lock().unwrap().ews_jobs.len();
-    for _ in 0..30 {
-        rig.look_all(20.0 * MINUTE);
-    }
-    assert_eq!(rig.host.lock().unwrap().ews_jobs.len(), asked);
-    // The owner chooses it again: now the page comes up, once, for that alone.
-    rig.choose("ews");
-    rig.look_all(SECOND);
-    rig.look_all(SECOND);
-    assert_eq!((rig.asked_of_ews().1, rig.host.lock().unwrap().sign_ins.len()), (1, 0));
-    assert_eq!(rig.listed(), [rig.receipts, rig.sent, rig.projects]);
-    assert!(rig.note().is_none() && rig.app.dialog.is_none());
-
-    // An answer that arrives after the owner chose another way is nobody's.
-    rig.app.favorites.due.insert(rig.account);
-    assert!(rig.app.favorites_tick_at(rig.at + 1.0));
-    rig.choose("none");
-    rig.app.poll_favorites();
-    assert_eq!((rig.listed(), rig.note()), (own, Some(Note::Offer)));
-}
-
-#[test]
-fn what_stands_in_the_way_is_said_with_what_the_owner_can_do_about_it() {
-    // Graph, and an administrator has to approve it: the line, the link, and the other way.
+fn an_administrator_who_has_to_approve_it_is_said_with_what_the_owner_can_do_about_it() {
     let mut rig = Rig::organisation();
     rig.host.lock().unwrap().unconsented = true;
     rig.app.graph_tokens.clear();
-    rig.look_all(0.0);
+    rig.look(0.0);
+    // An account of an organisation is offered them as any other is: a sign-in for Graph's two.
+    assert_eq!(rig.note(), Some(Note::Offer));
     rig.host.lock().unwrap().sign_in_error = Some(NEEDS_APPROVAL.to_string());
-    let chosen = rig.choose("graph");
-    assert_eq!(chosen["pending"], "signIn");
+    assert_eq!(rig.app.execute("ui.connectFavorites", json!({})).unwrap()["pending"], "signIn");
     rig.settle();
-    assert_eq!(rig.note(), Some(Note::Approval(FavoritesSource::Graph)));
+    assert_eq!(rig.note(), Some(Note::Approval));
     let state = rig.state();
     assert_eq!(
         (state["line"].clone(), state["text"].clone(), state["steps"].clone()),
-        (json!("approval"), json!(NEEDS_APPROVAL), json!(["copyMessage", "help", "useEws"]))
+        (json!("approval"), json!(NEEDS_APPROVAL), json!(["copyMessage", "help"]))
     );
     // The link names the organisation's own directory, as this run's sign-in said it.
     let copied = rig.app.execute("ui.copyAdminConsentLink", json!({})).unwrap();
-    assert_eq!(copied["url"], format!("https://login.example.org/{ORGANISATION}/adminconsent?client_id="));
-    assert_eq!(rig.host.lock().unwrap().links, [(ORGANISATION.to_string(), FavoritesSource::Graph)]);
+    assert_eq!(copied, json!({"account": rig.account, "url": format!("https://login.example.org/{ORGANISATION}/adminconsent?client_id=")}));
+    assert_eq!(rig.host.lock().unwrap().links, [ORGANISATION.to_string()]);
+    let message = rig.app.execute("ui.copyAdminMessage", json!({"account": rig.account})).unwrap();
+    assert!(message.get("source").is_none() && message["text"].as_str().unwrap().contains(ORGANISATION));
     // Not asked again that day, and nothing else is any different.
     let sign_ins = rig.host.lock().unwrap().sign_ins.len();
     for _ in 0..30 {
-        rig.look_all(20.0 * MINUTE);
+        rig.look(20.0 * MINUTE);
     }
-    assert_eq!((rig.host.lock().unwrap().sign_ins.len(), rig.note()), (sign_ins, Some(Note::Approval(FavoritesSource::Graph))));
+    assert_eq!((rig.host.lock().unwrap().sign_ins.len(), rig.note()), (sign_ins, Some(Note::Approval)));
     assert!(rig.app.dialog.is_none() && !rig.app.has_sync_problems());
-
-    // Exchange Web Services instead, where an administrator has to approve that too: the same
-    // line, for that way, with a link for it and Graph as the other way.
-    rig.host.lock().unwrap().ews_unconsented = true;
-    rig.choose("ews");
-    rig.look_all(SECOND);
-    assert_eq!((rig.note(), rig.host.lock().unwrap().ews_sign_ins), (Some(Note::Approval(FavoritesSource::Ews)), 1));
-    assert_eq!(rig.state()["steps"], json!(["copyMessage", "help", "useGraph"]));
-    rig.app.execute("ui.copyAdminConsentLink", json!({"account": rig.account})).unwrap();
-    assert_eq!(rig.host.lock().unwrap().links.last(), Some(&(ORGANISATION.to_string(), FavoritesSource::Ews)));
-    for _ in 0..30 {
-        rig.look_all(20.0 * MINUTE);
-    }
-    assert_eq!(rig.host.lock().unwrap().ews_sign_ins, 1);
-
-    // The organisation doesn't allow Exchange Web Services: said, with Graph offered instead.
-    let mut rig = Rig::organisation();
-    rig.look_all(0.0);
-    rig.host.lock().unwrap().ews_blocked = true;
-    rig.choose("ews");
-    rig.look_all(SECOND);
-    assert_eq!(rig.note(), Some(Note::Blocked));
-    let state = rig.state();
-    assert_eq!(
-        (state["line"].clone(), state["text"].clone(), state["steps"].clone(), state["from"].clone()),
-        (json!("blocked"), json!(EWS_NOT_ALLOWED), json!(["useGraph"]), json!("mailbox"))
-    );
-    let asked = rig.host.lock().unwrap().ews_jobs.len();
-    for _ in 0..30 {
-        rig.look_all(20.0 * MINUTE);
-    }
-    assert_eq!(rig.host.lock().unwrap().ews_jobs.len(), asked);
-    // Graph instead: its page (the list wasn't Graph's before), and then its list.
-    rig.choose("graph");
+    // Once an administrator has approved, "Try again" asks for the Favorites' permissions again.
+    rig.host.lock().unwrap().sign_in_error = None;
+    rig.host.lock().unwrap().unconsented = false;
+    rig.app.execute("ui.signInAgain", json!({"account": rig.account})).unwrap();
     rig.settle();
-    rig.look_all(SECOND);
-    assert_eq!((rig.host.lock().unwrap().sign_ins.clone(), rig.note()), (vec![(true, true)], None));
-    assert_eq!(rig.listed(), [rig.receipts, rig.sent, rig.projects]);
+    rig.look(SECOND);
+    assert_eq!(rig.host.lock().unwrap().sign_ins.last(), Some(&(true, true)));
+    assert_eq!((rig.note(), rig.listed()), (None, vec![rig.receipts, rig.sent, rig.projects]));
 
-    // A build that can make no link says so; one that has no such job keeps the choice.
+    // A build that can make no link says so.
     let mut rig = Rig::organisation();
-    (rig.app.services.admin_consent_link, rig.app.services.ews) = (None, None);
+    rig.app.services.admin_consent_link = None;
     assert!(rig.app.execute("ui.copyAdminConsentLink", json!({})).unwrap_err().contains("link"));
-    assert_eq!(rig.choose("ews")["pending"], json!(null));
-    assert_eq!(rig.app.favorites_source(rig.account), FavoritesSource::Ews);
 }
 
 #[test]
-fn the_new_commands_take_anything_and_say_what_they_cannot_do() {
+fn the_admin_commands_take_anything_and_say_what_they_cannot_do() {
     let mut plain = MailApp::new(Session::at(mailcraft_engine::sample::mailbox(NOW, 0), NOW, 0), Services::default());
-    for command in ["ui.favoritesSource", "ui.copyAdminConsentLink"] {
-        assert!(plain.execute(command, json!({})).unwrap_err().contains("Microsoft"), "{command}");
-    }
+    assert!(plain.execute("ui.copyAdminConsentLink", json!({})).unwrap_err().contains("Microsoft"));
     assert!(plain.execute("ui.dialog", json!({"name": "favoritesSource"})).is_err());
     let mut rig = Rig::organisation();
     for odd in [
@@ -854,96 +686,49 @@ fn the_new_commands_take_anything_and_say_what_they_cannot_do() {
         json!({"account": "x"}),
         json!({"account": 999_999}),
         json!({"source": 7}),
-        json!({"source": "sideways"}),
-        json!({"source": ["ews"]}),
-        json!({"source": "x".repeat(10_000)}),
+        json!({"source": "ews"}),
         json!({"answer": {"outcome": "approval", "why": "x".repeat(10_000)}}),
         json!({"answer": {"outcome": "blocked", "folders": 7}}),
     ] {
-        let _ = rig.app.execute("ui.favoritesSource", odd.clone());
         let _ = rig.app.execute("ui.copyAdminConsentLink", odd.clone());
         let _ = rig.app.execute("ui.favorites", odd.clone());
         let _ = rig.app.execute("ui.dialog", json!({"name": "favoritesSource", "account": odd}));
         let _ = rig.app.execute("ui.closeDialog", json!({}));
         let _ = rig.app.execute("ui.cancelSignIn", json!({}));
         rig.settle();
-        rig.look_all(SECOND);
+        rig.look(SECOND);
     }
-    assert!(rig.app.execute("ui.favoritesSource", json!({"source": "sideways"})).unwrap_err().contains("graph, ews or none"));
+    // What Exchange Web Services once answered is no answer any more.
+    assert!(rig.app.execute("ui.favorites", json!({"answer": {"outcome": "blocked"}})).is_err());
     // An account that goes takes what was remembered of it along.
-    rig.choose("ews");
-    rig.look_all(SECOND);
     rig.app.execute("account.remove", json!({"id": rig.account})).unwrap();
-    assert!(rig.app.favorites.ews_tokens.is_empty() && rig.app.favorites.directories.is_empty() && rig.app.favorites.tenants.is_empty());
-    assert!(rig.app.favorites.ews_rx.is_none() && rig.app.favorites.chose.is_empty());
+    assert!(rig.app.favorites.directories.is_empty() && rig.app.favorites.tenants.is_empty());
 }
 
 #[test]
-fn the_offer_opens_the_choice_for_an_organisation_and_the_choice_does_what_is_picked() {
+fn what_stands_in_the_way_is_a_sentence_under_the_heading_with_a_row_for_each_thing_to_do() {
     use egui_kittest::kittest::Queryable as _;
     let mut rig = Rig::organisation();
     rig.host.lock().unwrap().unconsented = true;
     rig.app.graph_tokens.clear();
-    rig.look_all(0.0);
+    rig.look(0.0);
     let (mut harness, host, [account, ..]) = window(rig);
     let at = |h: &egui_kittest::Harness<'static, MailApp>, kind: &str, id: Id| h.state().hit.rect(kind, id);
+    // The offer asks for Graph's two permissions on the provider's page, for an organisation's
+    // account as for any other: no dialog, no choice.
     let offer = at(&harness, "favoritesOffer", account).expect("the offer");
-    // A click opens the choice, and sends nobody anywhere by itself.
+    host.lock().unwrap().sign_in_error = Some(NEEDS_APPROVAL.to_string());
     click(&mut harness, offer.center());
-    assert_eq!(harness.state().dialog.as_ref().map(|dialog| dialog.name()), Some("favoritesSource"));
-    {
-        let host = host.lock().unwrap();
-        assert!(host.sign_ins.is_empty() && host.ews_sign_ins == 0);
-    }
-    // The three, one under the other, each saying what there is to say of it.
-    let rows: Vec<egui::Rect> = ["favoritesChooseGraph", "favoritesChooseEws", "favoritesChooseNone"]
-        .iter()
-        .map(|kind| at(&harness, kind, account).expect("a way"))
-        .collect();
-    assert!(rows.windows(2).all(|pair| pair[1].min.y >= pair[0].max.y));
-    for said in [
-        "Microsoft Graph",
-        "Exchange Web Services",
-        "Not now",
-        "1 April 2027",
-        "administrator",
-        "MailCraft keeps its own Favorites",
-        "avery@mail.example",
-    ] {
-        assert!(harness.query_all_by_label_contains(said).next().is_some(), "{said}");
-    }
-    // Nothing is marked to begin with, and Continue waits for a pick.
-    harness.get_by_label("Continue").click();
-    harness.run_steps(3);
-    assert!(harness.state().dialog.is_some() && harness.state().favorites_source(account) == FavoritesSource::Unset);
-    click(&mut harness, rows[1].center());
-    harness.get_by_label("Continue").click();
-    harness.run_steps(4);
-    assert!(harness.state().dialog.is_none());
-    assert_eq!(harness.state().favorites_source(account), FavoritesSource::Ews);
-    assert_eq!(harness.state().session.mailbox.account(account).unwrap().oauth.as_ref().unwrap().directory, Directory::Organisation);
-    // Cancel changes nothing.
-    harness.state_mut().execute("ui.dialog", json!({"name": "favoritesSource", "account": account})).unwrap();
-    harness.run_steps(3);
-    let none = at(&harness, "favoritesChooseNone", account).unwrap();
-    click(&mut harness, none.center());
-    harness.get_by_label("Cancel").click();
-    harness.run_steps(3);
-    assert!(harness.state().dialog.is_none() && harness.state().favorites_source(account) == FavoritesSource::Ews);
-
-    // What stands in the way, under the heading: the sentence, then a row for each thing to do.
-    harness.state_mut().execute("ui.favoritesSource", json!({"account": account, "source": "graph"})).unwrap();
     harness.run_steps(6);
-    harness.state_mut().execute("ui.favorites", json!({"account": account, "answer": {"outcome": "approval"}})).unwrap();
-    harness.run_steps(3);
+    assert!(harness.state().dialog.is_none());
+    assert_eq!(host.lock().unwrap().sign_ins, [(true, true)]);
     let heading = at(&harness, "folderHeading", 0).unwrap();
     let line = at(&harness, "favoritesNote", account).expect("the sentence");
     let copy = at(&harness, "favoritesCopyMessage", account).expect("the message to copy");
     let help = at(&harness, "favoritesHelp", account).expect("the way to what to do next");
-    let switch = at(&harness, "favoritesSwitch", account).expect("the other way");
-    assert!(line.min.y >= heading.max.y - 0.5 && copy.min.y >= line.max.y - 0.5);
-    assert!(help.min.y >= copy.max.y - 0.5 && switch.min.y >= help.max.y - 0.5);
+    assert!(line.min.y >= heading.max.y - 0.5 && copy.min.y >= line.max.y - 0.5 && help.min.y >= copy.max.y - 0.5);
     assert!(line.height() >= 24.0);
+    assert!(at(&harness, "favoritesSwitch", account).is_none(), "there is no other way to switch to");
     click(&mut harness, copy.center());
     assert_eq!(host.lock().unwrap().links.len(), 1);
     assert!(harness.state().status_msg.as_ref().is_some_and(|(text, _)| text.contains("The message is on the clipboard")));
@@ -953,75 +738,28 @@ fn the_offer_opens_the_choice_for_an_organisation_and_the_choice_does_what_is_pi
     assert!(harness.query_all_by_label_contains("Your organisation has to approve MailCraft first").next().is_some());
     harness.get_by_label("Not now").click();
     harness.run_steps(4);
-    assert!(harness.state().dialog.is_none() && harness.state().favorites_source(account) == FavoritesSource::Graph);
-    let switch = at(&harness, "favoritesSwitch", account).expect("the other way");
-    click(&mut harness, switch.center());
-    assert_eq!(harness.state().favorites_source(account), FavoritesSource::Ews);
-    assert!(at(&harness, "favoritesNote", account).is_none(), "another way was chosen: what was said of the first is gone");
-    // The organisation doesn't allow Exchange Web Services: the sentence and one way out.
-    harness.state_mut().execute("ui.favorites", json!({"account": account, "answer": {"outcome": "blocked"}})).unwrap();
-    harness.run_steps(3);
-    let line = at(&harness, "favoritesNote", account).expect("the sentence");
-    let switch = at(&harness, "favoritesSwitch", account).expect("the other way");
-    assert!(at(&harness, "favoritesCopyMessage", account).is_none() && at(&harness, "favoritesHelp", account).is_none());
-    assert!(switch.min.y >= line.max.y - 0.5);
-    let before = host.lock().unwrap().sign_ins.len();
-    click(&mut harness, switch.center());
-    harness.run_steps(4);
-    assert_eq!(harness.state().favorites_source(account), FavoritesSource::Graph);
-    assert_eq!(host.lock().unwrap().sign_ins.len(), before + 1);
+    assert!(harness.state().dialog.is_none());
+    assert!(at(&harness, "favoritesNote", account).is_some());
 }
 
 #[test]
-fn file_options_has_the_choice_for_each_account_that_has_one() {
+fn file_options_offers_an_organisations_account_the_same_connection_as_any_other() {
     let mut rig = Rig::organisation();
-    rig.look_all(0.0);
-    let (mut harness, _, [account, ..]) = window(rig);
+    rig.host.lock().unwrap().unconsented = true;
+    rig.app.graph_tokens.clear();
+    rig.look(0.0);
+    let (mut harness, host, [account, ..]) = window(rig);
     let at = |h: &egui_kittest::Harness<'static, MailApp>, kind: &str, id: Id| h.state().hit.rect(kind, id);
     harness.state_mut().execute("ui.backstage", json!({"value": true, "page": "options"})).unwrap();
     harness.run_steps(3);
     let switch = at(&harness, "favoritesOption", 0).expect("the switch");
-    let ways: Vec<egui::Rect> =
-        ["favoritesGraph", "favoritesEws", "favoritesNone"].iter().map(|kind| at(&harness, kind, account).expect("a way")).collect();
-    assert!(ways.iter().all(|way| way.min.y >= switch.max.y - 0.5) && ways.windows(2).all(|pair| pair[1].min.x >= pair[0].max.x));
-    // (An account of an organisation is not offered the plain "connect" beside its choice.)
-    assert!(at(&harness, "favoritesConnect", account).is_none());
-    click(&mut harness, ways[2].center());
-    assert_eq!(harness.state().favorites_source(account), FavoritesSource::None);
-    assert!(!favorites_from_server(&harness.state().session, account));
-    click(&mut harness, ways[1].center());
-    assert_eq!(harness.state().favorites_source(account), FavoritesSource::Ews);
-    // Switched off as a whole, nothing of it is shown.
-    let switch = at(&harness, "favoritesOption", 0).unwrap();
-    click(&mut harness, egui::pos2(switch.min.x + 9.0, switch.center().y));
-    assert!(at(&harness, "favoritesEws", account).is_none());
-
-    // From 1 April 2027 by the session's clock, Exchange Web Services is not among them, and
-    // an account set to it says so in a line and offers Graph.
-    let mut app = MailApp::new(Session::at(harness.state().session.mailbox.clone(), 1_806_580_800, 0), Services::default());
-    app.autosave = false;
-    assert_eq!(app.favorites_source(account), FavoritesSource::Ews);
-    assert_eq!(app.favorites_note_of(account), Some(Note::Ended));
-    assert_eq!(app.favorites_steps(account, &Note::Ended), [Step::Use(FavoritesSource::Graph)]);
-    let state = app.execute("ui.favorites", json!({"account": account})).unwrap();
-    assert_eq!(
-        (state["line"].clone(), state["text"].clone(), state["offered"].clone()),
-        (json!("ended"), json!(EWS_SWITCHED_OFF), json!(["graph", "none"]))
-    );
-    assert!(app.execute("ui.favoritesSource", json!({"account": account, "source": "ews"})).unwrap_err().contains("1 April 2027"));
-    app.execute("ui.backstage", json!({"value": true, "page": "options"})).unwrap();
-    let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1280.0, 800.0)).build_ui_state(
-        |ui, app: &mut MailApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    // No ways to choose from: the switch, and the offer to connect them.
+    for gone in ["favoritesGraph", "favoritesEws", "favoritesNone"] {
+        assert!(at(&harness, gone, account).is_none(), "{gone}");
+    }
+    let connect = at(&harness, "favoritesConnect", account).expect("the offer");
+    assert!(connect.min.y >= switch.max.y - 0.5);
+    click(&mut harness, connect.center());
     harness.run_steps(4);
-    assert!(at(&harness, "favoritesGraph", account).is_some() && at(&harness, "favoritesNone", account).is_some());
-    assert!(at(&harness, "favoritesEws", account).is_none());
-    harness.state_mut().execute("ui.backstage", json!({"value": false})).unwrap();
-    harness.run_steps(3);
-    assert!(at(&harness, "favoritesNote", account).is_some() && at(&harness, "favoritesSwitch", account).is_some());
+    assert_eq!(host.lock().unwrap().sign_ins, [(true, true)]);
 }

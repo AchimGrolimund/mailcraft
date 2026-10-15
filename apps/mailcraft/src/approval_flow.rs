@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use mailcraft_engine::Session;
 use mailcraft_model::sync::{SyncRequest, SyncResult, Tokens};
-use mailcraft_model::{FavoritesSource, Mailbox, OAuth, OAuthProvider};
+use mailcraft_model::{Mailbox, OAuth, OAuthProvider};
 use mailcraft_ui_egui::approval::{NEEDS_APPROVAL, NO_BROWSER, SIGN_IN_DECLINED};
 use mailcraft_ui_egui::{AdminConsentAnswer, AdminConsentRequest, MailApp, Services, SignInRequest};
 use serde_json::json;
@@ -93,12 +93,11 @@ fn sign_in_request(cancel: &Arc<AtomicBool>) -> SignInRequest {
         graph: false,
         mail_only: false,
         favorites: false,
-        ews: false,
     }
 }
 
-fn approval_request(tenant: &str, source: FavoritesSource, cancel: &Arc<AtomicBool>) -> AdminConsentRequest {
-    AdminConsentRequest { account: 0, oauth: settings(), tenant: tenant.into(), source, cancel: cancel.clone() }
+fn approval_request(tenant: &str, cancel: &Arc<AtomicBool>) -> AdminConsentRequest {
+    AdminConsentRequest { account: 0, oauth: settings(), tenant: tenant.into(), cancel: cancel.clone() }
 }
 
 #[test]
@@ -143,7 +142,6 @@ fn a_sign_in_that_ends_on_microsofts_page_is_told_to_the_window_in_its_own_words
     for request in [
         SignInRequest { graph: true, ..sign_in_request(&free()) },
         SignInRequest { graph: true, favorites: true, ..sign_in_request(&free()) },
-        SignInRequest { ews: true, ..sign_in_request(&free()) },
         SignInRequest { mail_only: true, ..sign_in_request(&free()) },
     ] {
         assert_eq!(super::sign_in_with(request, &|_| false), Err(NO_BROWSER.to_string()));
@@ -162,7 +160,7 @@ fn an_administrators_approval_is_asked_on_microsofts_page_and_its_answer_read() 
     let free = || Arc::new(AtomicBool::new(false));
     // An administrator approves: Microsoft's page comes back with a yes.
     let yes = page("admin_consent=True&tenant=3a1c5e7b-9d2f-4a6c-8e0b-1d3f5a7c9e2b&scope=https%3A%2F%2Fgraph.microsoft.com%2FMail.Send", &opened);
-    let approved = super::admin_consent_with(approval_request("lumen.example", FavoritesSource::Graph, &free()), &yes);
+    let approved = super::admin_consent_with(approval_request("lumen.example", &free()), &yes);
     assert_eq!(approved, AdminConsentAnswer::Approved);
     // The page that was opened: Microsoft's admin-consent page for the organisation of the
     // address, this application, everything the program asks an owner for, and the way back.
@@ -184,12 +182,13 @@ fn an_administrators_approval_is_asked_on_microsofts_page_and_its_answer_read() 
     ] {
         assert!(sent["scope"].split(' ').any(|scope| scope == permission), "{permission}: {}", sent["scope"]);
     }
-    // Exchange Web Services is in it only for an owner who chose that way for the Favorites.
-    assert!(!sent["scope"].contains("EWS"));
-    assert_eq!(super::admin_consent_with(approval_request("", FavoritesSource::Ews, &free()), &yes), AdminConsentAnswer::Approved);
-    let with_ews = opened.lock().unwrap()[1].clone();
-    assert!(with_ews.starts_with("https://login.microsoftonline.com/organizations/v2.0/adminconsent?"), "{with_ews}");
-    assert!(asked(&with_ews)["scope"].split(' ').any(|scope| scope == "https://outlook.office365.com/EWS.AccessAsUser.All"));
+    // Nothing of Exchange Web Services is in it.
+    assert!(!sent["scope"].contains("EWS") && !sent["scope"].contains("office365"));
+    // Without a directory that is known: whichever the administrator is of.
+    assert_eq!(super::admin_consent_with(approval_request("", &free()), &yes), AdminConsentAnswer::Approved);
+    let any = opened.lock().unwrap()[1].clone();
+    assert!(any.starts_with("https://login.microsoftonline.com/organizations/v2.0/adminconsent?"), "{any}");
+    assert_eq!(asked(&any)["scope"], sent["scope"]);
     // Nothing of the owner is in either address.
     for url in opened.lock().unwrap().iter() {
         assert!(!url.contains("avery") && !url.contains("login_hint") && !decoded(url).contains('@'), "{url}");
@@ -198,7 +197,7 @@ fn an_administrators_approval_is_asked_on_microsofts_page_and_its_answer_read() 
     // Whoever signed in on the page is no administrator; the approval was declined there; no
     // browser could be started; a directory that can't be one. Each is said as what it is.
     let nobody = page("admin_consent=True&error=access_denied&error_description=AADSTS90094%3A+Administrator+consent+is+required.", &opened);
-    let request = || approval_request(ORGANISATION, FavoritesSource::Graph, &free());
+    let request = || approval_request(ORGANISATION, &free());
     assert_eq!(
         super::admin_consent_with(request(), &nobody),
         AdminConsentAnswer::NotAdministrator("AADSTS90094: Administrator consent is required.".into())
@@ -210,12 +209,12 @@ fn an_administrators_approval_is_asked_on_microsofts_page_and_its_answer_read() 
     let declined = AdminConsentAnswer::Declined("AADSTS65004: The resource owner or authorization server denied the request.".into());
     assert_eq!(super::admin_consent_with(request(), &no), declined);
     let cancel = free();
-    assert_eq!(super::admin_consent_with(approval_request("", FavoritesSource::Graph, &cancel), &|_| false), AdminConsentAnswer::NoBrowser);
+    assert_eq!(super::admin_consent_with(approval_request("", &cancel), &|_| false), AdminConsentAnswer::NoBrowser);
     assert!(cancel.load(Ordering::Relaxed));
     let unopened = |_: &str| -> bool { panic!("no page is to be opened") };
-    let odd = super::admin_consent_with(approval_request("lumen.example/evil", FavoritesSource::Graph, &free()), &unopened);
+    let odd = super::admin_consent_with(approval_request("lumen.example/evil", &free()), &unopened);
     assert!(matches!(&odd, AdminConsentAnswer::Failed(why) if why.contains("tenant")), "{odd:?}");
-    let called_off = super::admin_consent_with(approval_request("", FavoritesSource::Graph, &Arc::new(AtomicBool::new(true))), &unopened);
+    let called_off = super::admin_consent_with(approval_request("", &Arc::new(AtomicBool::new(true))), &unopened);
     assert_eq!(called_off, AdminConsentAnswer::Cancelled);
 }
 
@@ -276,7 +275,7 @@ fn organisation() -> (MailApp, mailcraft_model::Id, Arc<Mutex<Microsoft>>) {
         rx
     }));
     // The host's own way of making the address an administrator is sent.
-    app.services.admin_consent_link = Some(Box::new(|oauth, tenant, source| mailcraft_net::oauth::admin_consent_url(oauth, tenant, source).ok()));
+    app.services.admin_consent_link = Some(Box::new(|oauth, tenant| mailcraft_net::oauth::admin_consent_url(oauth, tenant).ok()));
     let seen = microsoft.clone();
     app.services.sync = Some(Box::new(move |request: SyncRequest| {
         seen.lock().unwrap().syncs.push(request.access_token.clone());
@@ -305,7 +304,7 @@ fn an_account_refused_for_approval_is_told_what_to_do_and_signs_in_once_an_admin
     assert_eq!(microsoft.lock().unwrap().opened.lock().unwrap().len(), 1);
 
     // The message for an administrator: Microsoft's own page for approving this application,
-    // for everything it asks for but Exchange Web Services; nothing of the owner in it; and
+    // for everything it asks an owner for; nothing of the owner in it; and
     // nothing is opened or sent for it.
     let copied = app.execute("ui.copyAdminMessage", json!({})).unwrap();
     let (text, link) = (copied["text"].as_str().unwrap(), copied["url"].as_str().unwrap());

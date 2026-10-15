@@ -652,7 +652,11 @@ pub fn open(path: &Path) -> Result<Opened, String> {
         log::warn!("{show}: {unavailable} bodies or attachments are missing from {} or damaged", blob_dir(&file).display());
     }
     st.stamp = Stamp::of(&file, &bytes);
-    st.loaded = Loaded::of(&mailbox);
+    // A file that says what this program no longer writes (a way of reading Outlook's Favorites
+    // that is gone: `Account::retired_favorites_choice`) is written afresh at the next save,
+    // however little else has changed, so that what it said is said only once.
+    let retired = mailbox.accounts.iter().any(|a| a.retired_favorites_choice);
+    st.loaded = if retired { None } else { Loaded::of(&mailbox) };
     Ok(Opened { mailbox, split, unavailable })
 }
 

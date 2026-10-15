@@ -49,16 +49,15 @@ const ENDED_HELP: &str =
 const DECLINED_HELP: &str = "You came back from Microsoft's page without having signed in: you said no there, or the page sent you back.";
 const TIMED_OUT_HELP: &str = "The page was closed, or five minutes went by before the sign-in was finished.";
 const NO_BROWSER_HELP: &str = "Signing in happens on Microsoft's page in a web browser, and none could be started on this computer. Check that it has a default browser, then try again.";
-const ORDER: &str = "First you sign in at Microsoft. Then, once your mail works, you choose how Outlook's Favorites are shown.";
 
 impl AccountSetup {
     /// The page that says what to do when its organisation has to approve MailCraft first, for
     /// an account that exists. `None` for one that doesn't sign in with Microsoft.
     pub(super) fn approval_for(app: &MailApp, id: Id) -> Option<AccountSetup> {
         let account = app.session.mailbox.account(id).filter(|_| app.is_microsoft(id))?;
-        let (oauth, organisation, source) = app.approval_of(id).ok()?;
+        let (oauth, organisation) = app.approval_of(id).ok()?;
         let mut w = AccountSetup::blank(Page::Approval);
-        (w.email, w.oauth, w.existing, w.organisation, w.source) = (line(&account.email, LINE), Some(oauth), id, organisation, source);
+        (w.email, w.oauth, w.existing, w.organisation) = (line(&account.email, LINE), Some(oauth), id, organisation);
         w.focus = false;
         Some(w)
     }
@@ -76,7 +75,7 @@ impl AccountSetup {
 
     /// Whose approval is asked for from here.
     fn whose(&self) -> Whose {
-        Whose { account: self.existing, oauth: self.oauth.clone().unwrap_or_default(), tenant: self.directory(), source: self.source }
+        Whose { account: self.existing, oauth: self.oauth.clone().unwrap_or_default(), tenant: self.directory() }
     }
 
     /// The directory of the organisation an approval is asked of, where it can be known. For an
@@ -222,15 +221,6 @@ impl AccountSetup {
 
     // ---- the pages ----
 
-    /// One line that says in which order things come for a work or school account, so that
-    /// nobody looks for the choice about Outlook's Favorites before the sign-in.
-    fn order_line(&self, app: &MailApp, ui: &mut Ui, t: &Tokens) {
-        let reads = app.services.graph.is_some() || app.services.ews.is_some();
-        if self.existing == 0 && self.service == "Microsoft 365" && reads {
-            note(ui, tl!(ORDER), t.text_dim);
-        }
-    }
-
     /// The two things an owner can do about an approval that is needed, as buttons across the
     /// page (`details`: each with a sentence about it). Which one was pressed.
     fn approval_steps(&self, app: &mut MailApp, ui: &mut Ui, t: &Tokens, details: bool) -> Option<Action> {
@@ -272,7 +262,6 @@ impl AccountSetup {
             if self.approved {
                 note(ui, tl!("Your organisation has approved MailCraft. Now sign in with your own account."), t.green);
             }
-            self.order_line(app, ui, &t);
             ui.add_space(8.0);
             ui.vertical_centered(|ui| {
                 ui.add(egui::Spinner::new().size(30.0).color(t.accent));
@@ -414,7 +403,6 @@ impl AccountSetup {
                 t.text_dim,
             );
             note(ui, tl!("Once an administrator has approved, try again: the sign-in then goes through."), t.text_dim);
-            self.order_line(app, ui, &t);
             error(ui, &self.error);
         });
         let (mut again, mut not_now) = (false, false);
