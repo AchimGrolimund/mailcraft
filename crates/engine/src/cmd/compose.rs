@@ -587,6 +587,7 @@ fn attachments_of(c: &Compose, message_id: &str) -> Vec<Attachment> {
             content_id: signature_cid(p, message_id),
             inline: true,
             data: p.data.clone(),
+            kept: None,
         }));
     }
     if c.format == BodyFormat::Html
