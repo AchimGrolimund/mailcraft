@@ -512,6 +512,11 @@ pub struct Session {
     pub graph_mail: bool,
     /// Messages kept in step through Graph, by server id: kept between the pages of a run.
     pub(crate) graph_index: crate::cmd::graph_down::ServerIndex,
+    /// Messages being moved out of a Microsoft account that were whole in the mailbox file when
+    /// it was last saved: only for those is the server's copy removed (R3 spec S19). Never saved.
+    pub(crate) saved_whole: std::collections::HashSet<Id>,
+    /// What the server refused in the Graph run under way, for the status at its end (S20).
+    pub(crate) graph_said: Vec<String>,
     /// Set while a command an agent asked for runs (with what the owner allowed it): what the
     /// command did is checked against that ([`crate::agent`]), and undone when it oversteps.
     pub agent: Option<Vec<crate::agent::Class>>,
@@ -543,6 +548,8 @@ impl Session {
             sync_status: String::new(),
             graph_mail: false,
             graph_index: Default::default(),
+            saved_whole: Default::default(),
+            graph_said: Vec::new(),
             agent: None,
             history: Vec::new(),
             redo: Vec::new(),
@@ -732,9 +739,26 @@ impl Session {
         self.normalize();
     }
 
+    /// The mailbox file holds the mailbox as it is now (it was just saved, or nothing changed
+    /// since it was opened or saved): the messages being moved out of a Microsoft account that
+    /// are whole are whole in the file, and the server's copies may go (R3 spec S19). A host
+    /// that saves by other means than `file.save` calls this when a save of the mailbox as it is
+    /// now succeeded; the engine also notes it whenever it sees nothing unsaved.
+    pub fn note_saved(&mut self) {
+        let whole = self.mailbox.messages.values().filter(|m| m.moving_out.is_some() && !m.unfetched).map(|m| m.id);
+        self.saved_whole.extend(whole);
+        self.saved_whole.retain(|id| self.mailbox.messages.get(id).is_some_and(|m| m.moving_out.is_some()));
+    }
+
+    /// Whether the mailbox file is known to hold the mailbox as it is now.
+    pub(crate) fn file_is_current(&self) -> bool {
+        self.path.is_some() && !self.dirty
+    }
+
     /// Replace the mailbox (File › New, File › Open): history and selection start over.
     pub fn replace_mailbox(&mut self, mailbox: Mailbox) {
         self.mailbox = mailbox;
+        self.saved_whole.clear();
         self.history.clear();
         self.redo.clear();
         self.sel = Selection::default();

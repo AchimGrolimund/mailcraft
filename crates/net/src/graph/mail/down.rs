@@ -288,6 +288,11 @@ fn people(value: &Value, name: &str) -> Vec<Address> {
     value.get(name).and_then(Value::as_array).map(|all| all.iter().take(MAX_PEOPLE).filter_map(address_of).collect()).unwrap_or_default()
 }
 
+/// A date of a message's follow-up flag (`{"dateTime", "timeZone"}`), when it has one.
+fn flag_date(value: &Value, name: &str) -> Option<mailcraft_time::Timestamp> {
+    super::super::when(value.get("flag")?.get(name).filter(|date| !date.is_null()))
+}
+
 /// A message of a page, or the id of one the server says left the folder.
 fn entry_of(value: &Value, folder: &str) -> Option<Entry> {
     let id = id_of(text(value, "id"))?;
@@ -320,6 +325,9 @@ fn entry_of(value: &Value, folder: &str) -> Option<Entry> {
         importance,
         gone: false,
         size: size_of(value),
+        flag_start: flag_date(value, "startDateTime"),
+        flag_due: flag_date(value, "dueDateTime"),
+        flag_completed: flag_date(value, "completedDateTime"),
     };
     Some(Entry::Message(Box::new(GraphMessage {
         server,

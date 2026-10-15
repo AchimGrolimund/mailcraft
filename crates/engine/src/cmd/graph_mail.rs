@@ -20,12 +20,13 @@ use std::collections::{HashMap, HashSet};
 
 use mailcraft_model::sync::{
     ChangeOutcome, FolderChange, FolderListing, GraphFetchRequest, GraphFetchResult, GraphFolder, GraphLink, GraphMailRequest, GraphMailResult,
-    MAX_FOLDER_CHANGES,
+    MAX_FOLDER_CHANGES, MAX_MESSAGE_CHANGES, MessageOutcome,
 };
 use mailcraft_model::{AccountKind, Folder, FolderKind, Id, Mailbox, Queued, ServerFolder, clean_name};
 use serde_json::{Value, json};
 
 use super::graph_down::{self, Down};
+use super::graph_up::{self, Refusals};
 use super::{bad, fail};
 use crate::{CmdError, CmdResult, CommandSpec, Session, p};
 
@@ -69,6 +70,7 @@ pub fn graph_mail_request(s: &Session, account: Id) -> Result<GraphMailRequest, 
         changes: folder_changes(&s.mailbox, account, MAX_FOLDER_CHANGES).0,
         links: links(&s.mailbox, account),
         background: false,
+        messages: graph_up::message_changes(s, account, MAX_MESSAGE_CHANGES).0,
     })
 }
 
@@ -86,7 +88,7 @@ fn links(mb: &Mailbox, account: Id) -> Vec<GraphLink> {
 /// How many changes made in `account` its server hasn't heard of yet ([`super::account::unpushed`]
 /// for an account kept in step through Graph).
 pub fn unpushed(s: &Session, account: Id) -> usize {
-    folder_changes(&s.mailbox, account, 0).1
+    folder_changes(&s.mailbox, account, 0).1 + graph_up::message_changes(s, account, 0).1
 }
 
 /// The server id of the folder a folder of `account` lies in, as the server would have it:
@@ -178,10 +180,15 @@ pub fn apply_graph_fetch(s: &mut Session, result: GraphFetchResult) -> CmdResult
     if !result.email.is_empty() && !a.email.trim().eq_ignore_ascii_case(result.email.trim()) {
         return Err(fail(format!("these messages were for another account, not for {}", a.name)));
     }
+    if s.file_is_current() {
+        s.note_saved();
+    }
     let mut index = std::mem::take(&mut s.graph_index);
     let taken = result.fetched.iter().filter(|f| graph_down::take_fetched(&mut s.mailbox, &mut index, account, &f.id, &f.mime)).count();
     s.graph_index = index;
-    if taken > 0 {
+    // Gone before it could be fetched: a message being moved out of the account stays as it is.
+    let incomplete = graph_up::missing(&mut s.mailbox, account, &result.missing);
+    if taken + incomplete > 0 {
         s.mailbox_changed();
     }
     let (waiting, large) = graph_down::not_fetched(&s.mailbox, account);
@@ -234,13 +241,30 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
     if !result.email.is_empty() && !a.email.trim().eq_ignore_ascii_case(result.email.trim()) {
         return Err(fail(format!("this Send/Receive was for another account, not for {}", a.name)));
     }
-    let mut errors = result.errors.clone();
+    if s.file_is_current() {
+        s.note_saved();
+    }
     let mut taken = Taken::default();
+    let mut errors = result.errors.clone();
     for done in &result.changes {
         if let Some(said) = change_done(&mut s.mailbox, account, &done.change, &done.outcome, &mut taken) {
             errors.push(said);
         }
     }
+    // The changes of messages (R3.3): a refusal is said once per kind of change and reason, and
+    // the status says it at the end of the run.
+    let mut refusals = Refusals::default();
+    for done in &result.messages {
+        if graph_up::message_done(&mut s.mailbox, account, done, &mut refusals) {
+            match done.outcome {
+                MessageOutcome::Done { .. } => taken.pushed += 1,
+                _ => taken.updated += 1,
+            }
+        }
+    }
+    let refused = refusals.lines();
+    errors.extend(refused.iter().cloned());
+    s.graph_said.extend(refused);
     if let Some(listing) = &result.listing {
         take_listing(&mut s.mailbox, account, listing, &mut taken);
     }
@@ -276,7 +300,15 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
         (_, true) => {}
         (_, false) => {
             let t = s.local_now();
-            let said = if result.stopped && errors.is_empty() { "Stopped; carries on from here next time" } else { summary.as_str() };
+            // What the server refused in this run, said once, ahead of anything else.
+            let refused = std::mem::take(&mut s.graph_said);
+            let said = if !refused.is_empty() {
+                refused.join(" ")
+            } else if result.stopped && errors.is_empty() {
+                "Stopped; carries on from here next time".to_string()
+            } else {
+                summary.clone()
+            };
             s.sync_status = format!("{said} — {}", t.time_short(s.prefs.twelve_hour));
         }
     }
