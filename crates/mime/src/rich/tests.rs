@@ -188,7 +188,25 @@ fn arb_exact() -> impl Strategy<Value = RichText> {
         let list = if runs.is_empty() { ListKind::None } else { [ListKind::None, ListKind::Bullet, ListKind::Numbered][list as usize] };
         Paragraph::new(runs, list)
     });
-    proptest::collection::vec(paragraph, 1..8).prop_map(RichText::from_paragraphs)
+    proptest::collection::vec(paragraph, 1..8).prop_map(|ps| RichText::from_paragraphs(at_most_three_blank_lines(ps)))
+}
+
+/// `crates/html` keeps at most 3 blank lines between blocks (`MAX_SPACE`, a bound against
+/// hostile mail), so a longer run between two lines of text comes back as 3.
+// ponytail: 4+ blank lines inside a draft reopen as 3; carry the count in the HTML if anyone minds.
+fn at_most_three_blank_lines(ps: Vec<Paragraph>) -> Vec<Paragraph> {
+    let first = ps.iter().position(|p| !p.runs.is_empty());
+    let last = ps.iter().rposition(|p| !p.runs.is_empty());
+    let mut blank = 0;
+    let mut out = Vec::new();
+    for (i, p) in ps.into_iter().enumerate() {
+        let inside = first.is_some_and(|f| i > f) && last.is_some_and(|l| i < l);
+        blank = if p.runs.is_empty() { blank + 1 } else { 0 };
+        if !(inside && blank > 3) {
+            out.push(p);
+        }
+    }
+    out
 }
 
 proptest! {
