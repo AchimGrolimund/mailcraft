@@ -1,0 +1,71 @@
+{
+    "$schema": "https://fundingjson.org/schema/v1.1.0.json",
+    "version": "v1.1.0",
+    "entity": {
+        "type": "organisation",
+        "role": "steward",
+        "name": "UCS Care Group",
+        "email": "systems@ucscaregroup.co.uk",
+        "description": "UCS Care Group is a UK care provider whose sector IT support and consultancy arm stewards MailCraft, an open-source mail client, with its contributors. Funding pays for engineering time, code signing, security review and testing.",
+        "webpageUrl": { "url": "https://github.com/UCS-Care-Group" }
+    },
+    "projects": [{
+        "guid": "mailcraft",
+        "name": "MailCraft",
+        "description": "A clean-room, open-source mail, calendar, contacts and tasks program in Rust with classic Outlook's layout. It runs natively on Windows, macOS and Linux and works with Microsoft 365, Outlook.com and IMAP accounts. It is private by construction: nothing in a message runs, nothing is fetched without the owner's say-so, there is no telemetry, and passwords and sign-ins live only in the operating system's credential store. Every command is scriptable through a CLI and an MCP server.",
+        "webpageUrl": { "url": "https://github.com/UCS-Care-Group/mailcraft" },
+        "repositoryUrl": { "url": "https://github.com/UCS-Care-Group/mailcraft" },
+        "licenses": ["spdx:MIT", "spdx:Apache-2.0"],
+        "tags": ["email", "calendar", "privacy", "desktop", "rust", "productivity"]
+    }],
+    "funding": {
+        "channels": [{
+            "guid": "bank-transfer",
+            "type": "bank",
+            "address": "",
+            "description": "Bank transfer to UCS Care Group against an invoice: write to systems@ucscaregroup.co.uk."
+        }],
+        "plans": [
+            {
+                "guid": "any-amount",
+                "status": "active",
+                "name": "Any amount",
+                "description": "A one-off contribution of any size towards MailCraft.",
+                "amount": 0,
+                "currency": "GBP",
+                "frequency": "one-time",
+                "channels": ["bank-transfer"]
+            },
+            {
+                "guid": "signing",
+                "status": "active",
+                "name": "Signed builds",
+                "description": "A year of code signing for Windows and macOS (certificates, Apple Developer membership) and Microsoft publisher verification, so installs don't warn and organisations can sign in without an administrator's exception.",
+                "amount": 2500,
+                "currency": "GBP",
+                "frequency": "yearly",
+                "channels": ["bank-transfer"]
+            },
+            {
+                "guid": "security-review",
+                "status": "active",
+                "name": "Independent security review",
+                "description": "An external review of the parts that face the network and hostile mail: the HTML reader, the MIME and calendar parsers, sign-in and token handling, and picture downloads.",
+                "amount": 12500,
+                "currency": "GBP",
+                "frequency": "one-time",
+                "channels": ["bank-transfer"]
+            },
+            {
+                "guid": "beta-engineering",
+                "status": "active",
+                "name": "Engineering to beta",
+                "description": "A year of part-time engineering towards beta: mail through Microsoft Graph for Microsoft 365 and Outlook.com, large mailboxes, rich signatures, notifications, and support for testers on Windows, macOS and Linux.",
+                "amount": 35000,
+                "currency": "GBP",
+                "frequency": "yearly",
+                "channels": ["bank-transfer"]
+            }
+        ]
+    }
+}
