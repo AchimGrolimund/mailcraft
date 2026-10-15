@@ -37,7 +37,7 @@ case "$ARCH" in
   aarch64 | arm64) ARCH=aarch64; DEB_ARCH=arm64 ;;
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
-export MAILCRAFT_MAINTAINER="${MAILCRAFT_MAINTAINER:-MailCraft maintainers <31995458+billsecond@users.noreply.github.com>}"
+export MAILCRAFT_MAINTAINER="${MAILCRAFT_MAINTAINER:-MailCraft maintainers <systems@ucscaregroup.co.uk>}"
 BASENAME="mailcraft-$VERSION-linux-$ARCH"
 
 echo "==> MailCraft $VERSION for Linux $ARCH ($FORMATS)"

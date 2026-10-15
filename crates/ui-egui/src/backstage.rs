@@ -505,21 +505,19 @@ fn signatures(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     }
 }
 
-/// Who began MailCraft: named in About, here and in the Help tab's.
-pub(crate) const INITIAL_CONTRIBUTOR: &str = "William Daugherty";
-/// Where to find them.
-pub(crate) const INITIAL_CONTRIBUTOR_LINK: &str = "https://www.linkedin.com/in/wdaugherty";
+/// Everyone who has worked on MailCraft, on GitHub.
+pub(crate) const CONTRIBUTORS_LINK: &str = "https://github.com/UCS-Care-Group/mailcraft/graphs/contributors";
 
-/// The line of About that names who began the program, with their link after the name. The link
-/// is shown as where it leads, and stays in one piece.
-pub(crate) fn initial_contributor(ui: &mut Ui) {
+/// The line of About that credits the people who made the program: a link to the project's
+/// contributors, shown as where it leads, in one piece.
+pub(crate) fn contributors(ui: &mut Ui) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        ui.label(crate::i18n::fmt(tl!("Initial contributor: {name}"), &[("name", INITIAL_CONTRIBUTOR)]));
+        ui.label(tl!("Made by its contributors:"));
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-        let shown = INITIAL_CONTRIBUTOR_LINK.trim_start_matches("https://www.");
-        if ui.link(shown).on_hover_text(INITIAL_CONTRIBUTOR_LINK).clicked() {
-            ui.ctx().open_url(egui::OpenUrl::new_tab(INITIAL_CONTRIBUTOR_LINK));
+        let shown = CONTRIBUTORS_LINK.trim_start_matches("https://");
+        if ui.link(shown).on_hover_text(CONTRIBUTORS_LINK).clicked() {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(CONTRIBUTORS_LINK));
         }
     });
 }
@@ -532,7 +530,7 @@ fn about(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     ));
     ui.label(tl!("Open source under the MIT License or the Apache License 2.0, at your option."));
     section(ui, tl!("Contributors"), t);
-    initial_contributor(ui);
+    contributors(ui);
     section(ui, tl!("What it is made of"), t);
     ui.label(tl!("The interface fonts are Inter, Source Sans 3 and JetBrains Mono (SIL Open Font License 1.1). Every icon is drawn in code and is original work. No artwork, fonts or text from other mail programs are included."));
     section(ui, tl!("Your mail stays yours"), t);
