@@ -18,10 +18,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use mailcraft_model::sync::{ChangeOutcome, FolderChange, FolderListing, GraphFolder, GraphMailRequest, GraphMailResult, MAX_FOLDER_CHANGES};
+use mailcraft_model::sync::{
+    ChangeOutcome, FolderChange, FolderListing, GraphFolder, GraphLink, GraphMailRequest, GraphMailResult, MAX_FOLDER_CHANGES,
+};
 use mailcraft_model::{AccountKind, Folder, FolderKind, Id, Mailbox, Queued, ServerFolder, clean_name};
 use serde_json::{Value, json};
 
+use super::graph_down::{self, Down};
 use super::{bad, fail};
 use crate::{CmdError, CmdResult, CommandSpec, Session, p};
 
@@ -56,9 +59,20 @@ pub fn graph_mail_request(s: &Session, account: Id) -> Result<GraphMailRequest, 
         account,
         email: a.email.clone(),
         changes: folder_changes(&s.mailbox, account, MAX_FOLDER_CHANGES).0,
-        links: Vec::new(),
+        links: links(&s.mailbox, account),
         background: false,
     })
+}
+
+/// Where each folder of `account` that the server has goes on from (R3 spec S10).
+fn links(mb: &Mailbox, account: Id) -> Vec<GraphLink> {
+    mb.folders
+        .iter()
+        .filter(|f| f.account == account)
+        .filter_map(|f| f.server.as_ref())
+        .filter(|s| !s.delta.is_empty())
+        .map(|s| GraphLink { folder: s.id.clone(), link: s.delta.clone(), caught_up: s.caught_up })
+        .collect()
 }
 
 /// How many changes made in `account` its server hasn't heard of yet ([`super::account::unpushed`]
@@ -170,6 +184,19 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
     if let Some(listing) = &result.listing {
         take_listing(&mut s.mailbox, account, listing, &mut taken);
     }
+    // Mail down (R3.2): each page with its link; what is still gone once every folder is done.
+    let mut down = Down::default();
+    let mut index = std::mem::take(&mut s.graph_index);
+    for page in &result.pages {
+        graph_down::take_page(&mut s.mailbox, &mut index, account, page, &mut down);
+    }
+    s.graph_index = index;
+    if result.whole {
+        graph_down::sweep(&mut s.mailbox, account, &mut down);
+    }
+    if taken != Taken::default() || down != Down::default() || !result.pages.is_empty() {
+        s.mailbox_changed();
+    }
     if taken.pushed > 0 {
         s.forget_history();
     }
@@ -183,8 +210,16 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
         (None, 0) => "Up to date".to_string(),
         (None, _) => "Folders up to date".to_string(),
     };
-    let t = s.local_now();
-    s.sync_status = format!("{summary} — {}", t.time_short(s.prefs.twelve_hour));
+    match (&result.progress, result.partial) {
+        // Under way: how far it has got.
+        (Some(progress), true) => s.sync_status = graph_down::progress_words(&s.mailbox, account, progress),
+        (_, true) => {}
+        (_, false) => {
+            let t = s.local_now();
+            let said = if result.stopped && errors.is_empty() { "Stopped; carries on from here next time" } else { summary.as_str() };
+            s.sync_status = format!("{said} — {}", t.time_short(s.prefs.twelve_hour));
+        }
+    }
     Ok(json!({
         "pushed": taken.pushed,
         "added": taken.added,
@@ -193,6 +228,10 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
         "errors": errors,
         "busyFor": result.busy_for,
         "complete": result.listing.as_ref().map(|l| l.complete),
+        "new": down.new,
+        "changed": down.changed,
+        "gone": down.gone,
+        "removedMessages": down.removed,
         "summary": summary,
     }))
 }

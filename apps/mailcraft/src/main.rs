@@ -31,6 +31,8 @@ mod favorites_organisation_flow;
 mod file_dialogs;
 #[cfg(test)]
 mod graph_folders_flow;
+#[cfg(test)]
+mod graph_mail_flow;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
 mod logging;
@@ -512,16 +514,37 @@ fn graph_with(request: GraphRequest, zone: &str, renew: Renew<'_>) -> GraphResul
     // An account kept in step through Graph (R3): the folder changes made here go up, and every
     // folder is listed. (Nothing of a folder's name or id goes into the log.)
     if let Some(mail) = request.mail.as_ref().filter(|_| !refused) {
-        let result = graph::sync_folders(&access, mail);
-        log::info!(
-            "graph folders: {} of {} changes answered, {} folders listed, complete: {}, {} problems",
-            result.changes.len(),
-            mail.changes.len(),
-            result.listing.as_ref().map_or(0, |listing| listing.folders.len()),
-            result.listing.as_ref().is_some_and(|listing| listing.complete),
-            result.errors.len()
-        );
-        out.mail = Some(result);
+        // The run comes a piece at a time (the folders, then a page of mail at a time): to the
+        // window as each comes, or put together for a caller that takes it in at once.
+        let mut result: Option<mailcraft_model::sync::GraphMailResult> = None;
+        let (cancel, pieces) = (&request.cancel, &request.mail_pieces);
+        graph::sync_mail(&access, mail, cancel, &mut |piece| match pieces {
+            Some(to) => {
+                let summary = (piece.listing.as_ref().map(|l| l.folders.len()), piece.errors.len());
+                // Nobody is listening any more (the window closed): stop.
+                if to.send(piece).is_err() {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                if let (Some(folders), problems) = summary {
+                    log::info!("graph folders: {folders} folders listed, {problems} problems");
+                }
+            }
+            None => match &mut result {
+                Some(all) => all.absorb(piece),
+                None => result = Some(piece),
+            },
+        });
+        if let Some(result) = result {
+            log::info!(
+                "graph folders: {} of {} changes answered, {} folders listed, complete: {}, {} problems",
+                result.changes.len(),
+                mail.changes.len(),
+                result.listing.as_ref().map_or(0, |listing| listing.folders.len()),
+                result.listing.as_ref().is_some_and(|listing| listing.complete),
+                result.errors.len()
+            );
+            out.mail = Some(result);
+        }
     }
     // What was made, moved, changed or deleted in the calendar here goes up before the calendar
     // comes down: what comes down then is what the server has after it.

@@ -14,6 +14,7 @@ pub mod folder;
 pub mod format;
 #[cfg(test)]
 mod format_tests;
+pub mod graph_down;
 pub mod graph_mail;
 pub mod mail;
 pub mod people;

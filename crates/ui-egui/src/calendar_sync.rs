@@ -292,6 +292,8 @@ impl MailApp {
             favorites,
             favorites_scopes: favorites,
             mail: None,
+            mail_pieces: None,
+            cancel: Default::default(),
         };
         let Some(graph) = &self.services.graph else { return false };
         if settings {

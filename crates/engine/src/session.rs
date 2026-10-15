@@ -510,6 +510,8 @@ pub struct Session {
     /// makes such an account (`account.add` with `"kind": "microsoft"` is refused); the ones a
     /// mailbox has stay what they are. Never saved.
     pub graph_mail: bool,
+    /// Messages kept in step through Graph, by server id: kept between the pages of a run.
+    pub(crate) graph_index: crate::cmd::graph_down::ServerIndex,
     history: Vec<Undo>,
     redo: Vec<Undo>,
     rev: u64,
@@ -537,6 +539,7 @@ impl Session {
             clock,
             sync_status: String::new(),
             graph_mail: false,
+            graph_index: Default::default(),
             history: Vec::new(),
             redo: Vec::new(),
             rev: 0,

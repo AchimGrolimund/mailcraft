@@ -101,7 +101,9 @@ up to 200,000 messages are usable within minutes of being added.
     ordinary saving of the mailbox (at most every few seconds) writes them; a crash loses at most
     the pages since the last save, which come down again and change nothing (S5). Cancel,
     quitting, a crash or going offline carry on from the stored link next time: nothing twice,
-    nothing missed.
+    nothing missed. A round begun in an earlier run sees the mailbox as it was when it began, so
+    at its end one more round (begun in this run) brings what changed since; only then is the
+    folder current.
 11. A delta link the server no longer accepts (`410 Gone` or `syncStateNotFound`) means that folder
     is listed afresh; what the complete new listing doesn't have is then removed here.
 12. A message's whole content (its MIME, with attachments) is **fetched** in the background, newest
@@ -245,3 +247,4 @@ milestone after beta); importing into server folders.
 | 2026-10-15 | major | First version, from a decision session with Martin Ball |
 | 2026-10-15 | minor | S4: immutable ids are asked for on mail requests only; calendar, contacts and Favorites keep ordinary ids (found in R3.1, #39) |
 | 2026-10-15 | minor | S9–S15 from the R3.2 decision session with Martin Ball: pages of 100, newest page of every folder first, every folder on each run, moves kept by server id, changes here never overwritten, pages saved with their links by the ordinary save, fetched as part of the message, "Download messages in full" per account (default up to 10 MB), progress in the status bar, Cancel stops all of the account's Graph work |
+| 2026-10-15 | minor | S10: a round begun in an earlier run is followed by one more before the folder counts as current (found in R3.2.2) |
