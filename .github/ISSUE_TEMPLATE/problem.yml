@@ -1,0 +1,56 @@
+name: Report a problem
+description: Something went wrong, was lost, crashed, or doesn't match Outlook on the web.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This issue is **public**. Don't paste messages, addresses, names or anything from your mail. Describe what happened in your own words, with invented examples if you need them.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem?
+      options:
+        - Something I had is gone or changed without my asking (data loss)
+        - MailCraft closed by itself (crash)
+        - MailCraft and Outlook on the web disagree (out of step)
+        - Something else doesn't work
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: MailCraft version
+      description: File › About MailCraft, or the release you installed.
+      placeholder: e.g. 0.2.1
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: e.g. Windows 11 x64, macOS 15 Apple silicon, Fedora 42 KDE
+    validations:
+      required: true
+  - type: dropdown
+    id: account
+    attributes:
+      label: Account
+      options:
+        - Personal Microsoft account
+        - Work or school Microsoft 365 account
+        - Other (IMAP)
+        - None (local or sample mailbox)
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: The steps, as exactly as you can.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log (optional)
+      description: "The end of `logs/mailcraft.log` in MailCraft's settings folder (`~/.config/mailcraft`, macOS `~/Library/Application Support/MailCraft`, Windows `%APPDATA%\\MailCraft`); after a crash, `mailcraft.1.log`. Read it through first and remove anything private."
+      render: text
