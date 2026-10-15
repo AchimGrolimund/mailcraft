@@ -23,7 +23,8 @@ pub use mailcraft_html as html;
 pub use mailcraft_model as model;
 pub use mailcraft_time as time;
 pub use session::{
-    BodyFormat, CalView, Clock, Compose, ComposeMode, Filter, Module, Pane, Prefs, Quote, Scope, Selection, Session, SortBy, TaskFilter, ViewState,
+    BodyFormat, CalView, Clock, Compose, ComposeMode, Filter, InsertedSignature, Module, Pane, Prefs, Quote, Scope, Selection, Session, SortBy,
+    TaskFilter, ViewState,
 };
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq)]

@@ -165,8 +165,14 @@ pub fn signature_html(sig: &Signature, content_id: &dyn Fn(&Picture) -> String) 
 
 /// A whole HTML document holding the text, and under it `below` as it is (a quoted original).
 pub fn to_html_document(text: &RichText, below: Option<&str>) -> String {
+    document(&to_html(text), below)
+}
+
+/// A whole HTML document holding `fragment` (HTML this module wrote), and under it `below` as it
+/// is.
+pub fn document(fragment: &str, below: Option<&str>) -> String {
     let mut out = String::from("<html><head><meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\"></head><body>\r\n");
-    out.push_str(&to_html(text));
+    out.push_str(fragment);
     if let Some(below) = below {
         out.push_str(below);
         out.push_str("\r\n");

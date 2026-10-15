@@ -551,6 +551,28 @@ fn op() -> impl Strategy<Value = Op> {
     ]
 }
 
+#[test]
+fn a_signature_is_put_in_replaced_and_taken_out_as_paragraphs_of_its_own() {
+    let mut t = RichText::from_plain("Hi there");
+    t.put_signature(&RichText::from_plain("Avery\nLumen"), 2).unwrap();
+    assert_eq!(t.to_plain(), "Hi\nAvery\nLumen\n there");
+    assert_eq!((t.signature_start(), t.signature().map(|s| s.to_plain())), (Some(3), Some("Avery\nLumen".into())));
+    let (before, sig, after) = t.around_signature().unwrap();
+    assert_eq!(
+        (before.map(|b| b.to_plain()), sig.to_plain(), after.map(|a| a.to_plain())),
+        (Some("Hi".into()), "Avery\nLumen".into(), Some(" there".into()))
+    );
+    // Another replaces it, wherever asked to go.
+    t.put_signature(&RichText::from_plain("Bo"), 0).unwrap();
+    assert_eq!(t.to_plain(), "Hi\nBo\n there");
+    t.remove_signature();
+    assert_eq!((t.to_plain().as_str(), t.signature()), ("Hi\n there", None));
+    // In a body, the caret after it moves with it; one before it stays.
+    let mut b = RichBody::from_plain("Hi");
+    b.put_signature(Some(&RichText::from_plain("Avery")), 2).unwrap();
+    assert_eq!((b.plain().as_str(), b.selection().head), ("Hi\nAvery", 0));
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(400))]
 
@@ -594,6 +616,7 @@ proptest! {
             runs: vec![Run::new(text, Style { bold: b, size: Some(size), ..Style::default() })],
             list: [ListKind::None, ListKind::Bullet, ListKind::Numbered][list as usize],
             level,
+            signature: b,
         }).collect();
         let t = RichText::from_paragraphs(paragraphs);
         check(&t);

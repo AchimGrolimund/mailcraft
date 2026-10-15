@@ -172,7 +172,7 @@ fn a_formatted_draft_reopens_formatted() {
     let written = compose(&s).body.text().clone();
     run(&mut s, "compose.close", json!({}));
     run(&mut s, "mail.editDraft", json!({"id": d}));
-    assert_eq!(compose(&s).body.text(), &written);
+    assert_eq!(compose(&s).body.text(), &unmarked(&written));
     assert_eq!(compose(&s).format, crate::BodyFormat::Html);
     // A draft saved before rich text (plain text only) opens as plain text.
     s.mailbox.message_mut(d).unwrap().body = mailcraft_model::Body { text: "Old\ndraft".into(), html: None };
@@ -255,4 +255,12 @@ fn list_items_indent_and_the_selection_is_copied_as_html_and_text() {
     run(&mut s, "compose.formatPlain", json!({}));
     assert!(run(&mut s, "edit.copy", json!({"from": 0, "to": 2}))["html"].is_null());
     assert!(s.run("format.indent", &json!({})).is_err());
+}
+
+/// The text without its signature marked: a draft reopened from its HTML doesn't know which
+/// paragraphs were the signature (R4.5.2).
+pub(crate) fn unmarked(t: &mailcraft_model::RichText) -> mailcraft_model::RichText {
+    mailcraft_model::RichText::from_paragraphs(
+        t.paragraphs().iter().map(|p| mailcraft_model::rich::Paragraph { signature: false, ..p.clone() }).collect(),
+    )
 }

@@ -127,3 +127,89 @@ fn a_mailbox_from_before_has_its_signatures_and_defaults_as_they_were() {
     assert_eq!((a.signature.as_str(), a.reply_signature()), ("Standard", "Standard"));
     assert_eq!(mb.signature("standard").unwrap().plain(), "Avery Quinn\nLumen Studio");
 }
+
+/// A signature with a logo beside the words, the default account's for new mail.
+fn logo(s: &mut Session) {
+    run(s, "signature.set", json!({"name": "Logo", "text": "Avery Quinn\nLumen Studio", "default": true}));
+    let id =
+        run(s, "signature.picture.add", json!({"name": "Logo", "data": png(), "file": "lumen-logo.png", "alt": "Lumen Studio logo"}))["id"].clone();
+    run(s, "signature.picture.set", json!({"name": "Logo", "id": id, "width": 96}));
+    run(s, "signature.layout", json!({"name": "Logo", "value": "pictureLeft"}));
+}
+
+#[test]
+fn a_signature_with_a_logo_goes_out_with_the_picture_inside_the_message() {
+    let mut s = session();
+    logo(&mut s);
+    run(&mut s, "mail.new", json!({"to": "maya@lumen.example", "subject": "Plan", "body": "Hello"}));
+    run(&mut s, "compose.formatHtml", json!({}));
+    let id = run(&mut s, "compose.send", json!({}))["id"].as_u64().unwrap();
+    let m = s.mailbox.message(id).unwrap().clone();
+    let pic = m.attachments.iter().find(|a| a.inline).expect("the logo goes with the message");
+    assert!(pic.content_id.starts_with("sig-") && pic.content_id.ends_with("@mailcraft.invalid") && pic.mime == "image/png");
+    let html = m.body.html.clone().unwrap();
+    assert!(html.contains(&format!("cid:{}", pic.content_id)) && html.contains("Lumen Studio logo") && html.contains("Hello"), "{html}");
+    // The plain-text part has the words, and the picture said in words.
+    assert!(m.body.text.starts_with("Hello\n\n[Lumen Studio logo]Avery Quinn\nLumen Studio"), "{:?}", m.body.text);
+    // On the wire the picture is part of the HTML, and it reads back.
+    let bytes = mailcraft_mime::write(&m, &mailcraft_mime::WriteOptions::default());
+    assert!(String::from_utf8_lossy(&bytes).contains("multipart/related"));
+    let back = mailcraft_mime::parse(&bytes);
+    let read = back.attachments.iter().find(|a| a.content_id == pic.content_id).expect("the picture reads back");
+    assert_eq!(read.data, pic.data);
+}
+
+#[test]
+fn a_plain_text_message_has_the_signature_in_words_and_no_pictures() {
+    let mut s = session();
+    logo(&mut s);
+    run(&mut s, "mail.new", json!({"to": "maya@lumen.example", "body": "Hello"}));
+    run(&mut s, "compose.formatPlain", json!({}));
+    let id = run(&mut s, "compose.send", json!({}))["id"].as_u64().unwrap();
+    let m = s.mailbox.message(id).unwrap();
+    assert!(m.body.html.is_none() && m.attachments.is_empty());
+    assert!(m.body.text.ends_with("[Lumen Studio logo]Avery Quinn\nLumen Studio"), "{:?}", m.body.text);
+}
+
+#[test]
+fn changing_the_account_swaps_the_signature_unless_the_owner_edited_it() {
+    let mut s = session();
+    let a = account(&s);
+    let b = run(&mut s, "account.add", json!({"email": "ada@example.org", "name": "Ada"}))["id"].as_u64().unwrap();
+    let none = run(&mut s, "account.add", json!({"email": "bo@example.org", "name": "Bo"}))["id"].as_u64().unwrap();
+    run(&mut s, "signature.set", json!({"name": "Ada", "text": "Ada Byron"}));
+    run(&mut s, "signature.defaults", json!({"account": b, "new": "Ada"}));
+    run(&mut s, "signature.defaults", json!({"account": none, "new": ""}));
+    let body = |s: &Session| s.compose.as_ref().unwrap().body.plain();
+    run(&mut s, "mail.new", json!({"account": a, "body": "Hi"}));
+    run(&mut s, "compose.set", json!({"account": b}));
+    assert_eq!(body(&s), "Hi\n\nAda Byron");
+    run(&mut s, "compose.set", json!({"account": none}));
+    assert!(!body(&s).contains("Ada"), "{:?}", body(&s));
+    run(&mut s, "compose.discard", json!({}));
+    // Edited, it stays as the owner made it.
+    run(&mut s, "mail.new", json!({"account": b, "body": "Hi"}));
+    let end = s.compose.as_ref().unwrap().body.text().len();
+    run(&mut s, "compose.select", json!({"from": end}));
+    run(&mut s, "compose.type", json!({"text": ", PhD"}));
+    run(&mut s, "compose.set", json!({"account": a}));
+    assert_eq!(body(&s), "Hi\n\nAda Byron, PhD");
+}
+
+#[test]
+fn choosing_a_signature_replaces_the_one_in_the_message() {
+    let mut s = session();
+    run(&mut s, "signature.set", json!({"name": "Short", "text": "Avery"}));
+    run(&mut s, "mail.new", json!({"body": "Hi"}));
+    run(&mut s, "compose.signature", json!({"name": "Short"}));
+    assert_eq!(s.compose.as_ref().unwrap().body.plain(), "Hi\n\nAvery");
+    run(&mut s, "compose.signature", json!({}));
+    assert_eq!(s.compose.as_ref().unwrap().body.plain(), "Hi\n\nAvery Quinn\nLumen Studio");
+    // With none in it, it goes where the caret is.
+    run(&mut s, "compose.discard", json!({}));
+    run(&mut s, "signature.defaults", json!({"new": ""}));
+    run(&mut s, "mail.new", json!({"body": "Hi"}));
+    run(&mut s, "compose.select", json!({"from": 2}));
+    run(&mut s, "compose.signature", json!({"name": "Short"}));
+    assert_eq!(s.compose.as_ref().unwrap().body.plain(), "Hi\nAvery");
+}

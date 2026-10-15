@@ -243,6 +243,10 @@ pub struct Paragraph {
     /// (Stored before levels existed, it is missing, and 0.)
     #[serde(skip_serializing_if = "is_zero")]
     pub level: u8,
+    /// Part of the signature put in a message (R4.5): what choosing another replaces, and what is
+    /// swapped when the From account changes.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub signature: bool,
 }
 
 fn is_zero(n: &u8) -> bool {
@@ -255,7 +259,7 @@ fn is_none_list(l: &ListKind) -> bool {
 
 impl Paragraph {
     pub fn new(runs: Vec<Run>, list: ListKind) -> Paragraph {
-        let mut p = Paragraph { runs, list, level: 0 };
+        let mut p = Paragraph { runs, list, level: 0, signature: false };
         p.normalize();
         p
     }
@@ -321,7 +325,7 @@ impl Paragraph {
     fn split_off(&mut self, offset: usize) -> Paragraph {
         let i = self.split_at(offset);
         let tail = if i < self.runs.len() { self.runs.split_off(i) } else { Vec::new() };
-        Paragraph { runs: tail, list: self.list, level: self.level }
+        Paragraph { runs: tail, list: self.list, level: self.level, signature: self.signature }
     }
 
     /// The style of the character before `offset`, or of the first character at the start.
@@ -451,7 +455,7 @@ impl RichText {
         let mut budget = MAX_CHARS;
         'all: for p in paragraphs {
             let level = if p.list == ListKind::None { 0 } else { p.level.min(MAX_LEVEL) };
-            let mut cur = Paragraph { runs: Vec::new(), list: p.list, level };
+            let mut cur = Paragraph { runs: Vec::new(), list: p.list, level, signature: p.signature };
             for run in p.runs {
                 let style = run.style.clean();
                 if let Some(id) = run.picture {
@@ -465,7 +469,7 @@ impl RichText {
                 for (i, line) in lines(&run.text).into_iter().enumerate() {
                     if i > 0 {
                         cur.normalize();
-                        out.push(std::mem::replace(&mut cur, Paragraph { runs: Vec::new(), list: p.list, level }));
+                        out.push(std::mem::replace(&mut cur, Paragraph { runs: Vec::new(), list: p.list, level, signature: p.signature }));
                         budget = budget.saturating_sub(1);
                         if out.len() >= MAX_PARAGRAPHS || budget == 0 {
                             break 'all;
@@ -562,6 +566,66 @@ impl RichText {
             }
         }
         out
+    }
+
+    /// The first and last paragraph of the signature put in it.
+    fn signature_paragraphs(&self) -> Option<(usize, usize)> {
+        let first = self.paragraphs.iter().position(|p| p.signature)?;
+        let last = self.paragraphs.iter().rposition(|p| p.signature)?;
+        Some((first, last))
+    }
+
+    /// The position the signature put in it starts at.
+    pub fn signature_start(&self) -> Option<usize> {
+        let (a, _) = self.signature_paragraphs()?;
+        Some(self.paragraphs.iter().take(a).map(|p| p.chars() + 1).sum())
+    }
+
+    /// The signature put in it, as a document of its own; `None` when there is none.
+    pub fn signature(&self) -> Option<RichText> {
+        let (a, b) = self.signature_paragraphs()?;
+        let paragraphs = self.paragraphs.get(a..=b)?.iter().map(|p| Paragraph { signature: false, ..p.clone() }).collect();
+        Some(RichText::from_paragraphs(paragraphs))
+    }
+
+    /// The text before the signature, the signature, and the text after it, when it has one.
+    pub fn around_signature(&self) -> Option<(Option<RichText>, RichText, Option<RichText>)> {
+        let (a, b) = self.signature_paragraphs()?;
+        let part = |range: &[Paragraph]| (!range.is_empty()).then(|| RichText::from_paragraphs(range.to_vec()));
+        Some((self.paragraphs.get(..a).and_then(part), self.signature()?, self.paragraphs.get(b + 1..).and_then(part)))
+    }
+
+    /// Put `sig` in as the signature: in place of the one there, else as paragraphs of their own
+    /// at `at` (the paragraph there is cut; an empty rest of the last paragraph is left out).
+    pub fn put_signature(&mut self, sig: &RichText, at: usize) -> Result<(), ModelError> {
+        let marked: Vec<Paragraph> = sig.paragraphs.iter().map(|p| Paragraph { signature: true, ..p.clone() }).collect();
+        if self.len().saturating_add(sig.len()) > MAX_CHARS || self.paragraphs.len().saturating_add(marked.len()) > MAX_PARAGRAPHS {
+            return Err(ModelError::Invalid("the message can't hold that much text".into()));
+        }
+        if let Some((a, b)) = self.signature_paragraphs() {
+            self.paragraphs.splice(a..=b, marked);
+            return Ok(());
+        }
+        let (pi, off) = self.locate(at)?;
+        let last = pi + 1 == self.paragraphs.len();
+        let Some(target) = self.paragraphs.get_mut(pi) else { return Err(ModelError::Invalid("no such paragraph".into())) };
+        let tail = target.split_off(off);
+        let mut new = marked;
+        if !(tail.is_empty() && last) {
+            new.push(Paragraph { signature: false, ..tail });
+        }
+        self.paragraphs.splice(pi + 1..pi + 1, new);
+        Ok(())
+    }
+
+    /// Take the signature out, if there is one.
+    pub fn remove_signature(&mut self) {
+        if let Some((a, b)) = self.signature_paragraphs() {
+            self.paragraphs.drain(a..=b);
+            if self.paragraphs.is_empty() {
+                self.paragraphs.push(Paragraph::default());
+            }
+        }
     }
 
     /// The level of the list item `pos` is in (0 outside a list).

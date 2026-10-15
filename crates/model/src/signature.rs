@@ -199,6 +199,21 @@ impl Signature {
         Signature { name: name.into(), body: RichText::from_plain(&text), ..Signature::default() }
     }
 
+    /// A signature from its parts (the text a message holds of it, say), checked as any other:
+    /// pictures the text doesn't hold, or that aren't pictures within the caps, are left out.
+    pub fn assemble(name: impl Into<String>, body: RichText, pictures: &[Picture], layout: Layout) -> Signature {
+        let mut sig = Signature { name: name.into(), body, pictures: Vec::new(), layout, details: None };
+        for p in pictures {
+            if sig.picture(p.id).is_none()
+                && let Ok(mime) = sig.check(&p.data, None)
+            {
+                sig.pictures.push(Picture { mime: mime.to_string(), ..p.clone() });
+            }
+        }
+        sig.tidy();
+        sig
+    }
+
     pub fn body(&self) -> &RichText {
         &self.body
     }

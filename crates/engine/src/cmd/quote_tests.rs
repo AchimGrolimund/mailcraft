@@ -137,7 +137,7 @@ fn a_draft_of_a_reply_keeps_the_original_below() {
     run(&mut s, "compose.close", json!({}));
     run(&mut s, "mail.editDraft", json!({"id": d}));
     let c = compose(&s).clone();
-    assert_eq!(c.body.text(), before.body.text());
+    assert_eq!(c.body.text(), &super::format_tests::unmarked(before.body.text()));
     let (q, was) = (c.quote.clone().unwrap(), before.quote.clone().unwrap());
     assert_eq!(q.html, was.html);
     assert_eq!(q.text, was.text);
