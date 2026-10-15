@@ -213,6 +213,101 @@ fn a_refused_change_is_put_back_and_said_once() {
 }
 
 #[test]
+fn a_refused_delete_for_good_is_put_back_at_once_with_what_was_fetched() {
+    let mut rig = Rig::new("refused-delete@example.org");
+    let (invoice, gone) = {
+        let mut state = rig.server.state();
+        let inbox = state.well_known("inbox");
+        (state.mailbox.add(&inbox, "Invoice 42", NOW - 3_600), state.mailbox.add(&inbox, "Gone already", NOW - 7_200))
+    };
+    rig.run();
+    rig.fetch();
+    let m = rig.here("Invoice 42");
+    let whole = rig.s.mailbox.message(m).unwrap().clone();
+    assert!(!whole.unfetched);
+    {
+        let mut state = rig.server.state();
+        state.mailbox.faults.insert(invoice.clone(), Fault::Denied);
+        state.mailbox.faults.insert(gone.clone(), Fault::Gone);
+    }
+    rig.act("mail.markRead", "Invoice 42", json!({}));
+    rig.s.run("mail.deletePermanently", &json!({"ids": [m, rig.here("Gone already")]})).unwrap();
+    assert!(!rig.has("Invoice 42"));
+    let from = rig.asked();
+    let answers = rig.run();
+    let said = "Couldn't delete 'Invoice 42' for good: the server doesn't allow it.";
+    assert_eq!(Rig::errors(&answers).iter().filter(|e| e.as_str() == Some(said)).count(), 1, "said once: {answers:?}");
+    assert!(rig.s.sync_status.contains(said), "{}", rig.s.sync_status);
+    // Back at once, as the server has it (unread, in the Inbox), with all that was fetched.
+    let back = rig.s.mailbox.message(rig.here("Invoice 42")).unwrap();
+    assert_eq!((back.folder, back.read, back.unfetched), (rig.folder(FolderKind::Inbox), false, false));
+    assert_eq!((&back.body, &back.attachments), (&whole.body, &whole.attachments));
+    // The one the server no longer has stays gone, unsaid.
+    assert!(!rig.has("Gone already"));
+    assert!(!rig.s.sync_status.contains("Gone already"));
+    let deletes = rig.changes_since(from).iter().filter(|(method, _)| method == "DELETE").count();
+    assert_eq!(deletes, 2);
+    assert!(rig.s.mailbox.queued.is_empty());
+    assert_eq!(unpushed(&rig.s, rig.account), 0);
+    // The next run sends nothing, says nothing, and brings nothing twice.
+    let from = rig.asked();
+    rig.run();
+    assert_eq!(rig.changes_since(from), Vec::<(String, String)>::new());
+    assert!(!rig.s.sync_status.contains("Couldn't"), "{}", rig.s.sync_status);
+    assert_eq!(rig.s.mailbox.messages.values().filter(|m| m.subject == "Invoice 42").count(), 1);
+}
+
+#[test]
+fn emptying_deleted_items_puts_back_what_the_server_refuses_and_a_busy_server_waits() {
+    let mut rig = Rig::new("empty-deleted@example.org");
+    let ids = {
+        let mut state = rig.server.state();
+        let deleted = state.well_known("deleteditems");
+        ["Old 1", "Not allowed", "Odd one", "Busy", "Old 2"].map(|subject| state.mailbox.add(&deleted, subject, NOW - 3_600))
+    };
+    rig.run();
+    {
+        let mut state = rig.server.state();
+        state.retry_after = Some(1);
+        state.mailbox.faults.insert(ids[1].clone(), Fault::Denied);
+        state.mailbox.faults.insert(ids[2].clone(), Fault::Invalid);
+        // Busy for every try of this run; taken in the next.
+        state.mailbox.faults.insert(ids[3].clone(), Fault::Throttled(4));
+    }
+    let deleted = rig.folder(FolderKind::Deleted);
+    rig.s.run("folder.empty", &json!({"id": deleted})).unwrap();
+    assert_eq!(rig.s.mailbox.messages_in(deleted).count(), 0);
+    let from = rig.asked();
+    let answers = rig.run();
+    let errors = Rig::errors(&answers);
+    for said in [
+        "Couldn't delete 'Not allowed' for good: the server doesn't allow it.",
+        "Couldn't delete 'Odd one' for good: the server says it can't make that change.",
+    ] {
+        assert_eq!(errors.iter().filter(|e| e.as_str() == Some(said)).count(), 1, "said once: {said} in {errors:?}");
+    }
+    // The refused are back in Deleted Items; the busy one waits, deleted here.
+    let mut back: Vec<String> = rig.s.mailbox.messages_in(deleted).map(|m| m.subject.clone()).collect();
+    back.sort();
+    assert_eq!(back, ["Not allowed", "Odd one"]);
+    assert!(rig.there("Busy").is_some() && rig.there("Old 1").is_none() && rig.there("Old 2").is_none());
+    let deletes = |rig: &Rig, from: usize, id: &str| {
+        rig.server.state().requests[from..].iter().filter(|r| r.method == "DELETE" && r.path.last().is_some_and(|p| p == id)).count()
+    };
+    assert_eq!(deletes(&rig, from, &ids[1]), 1);
+    assert_eq!(unpushed(&rig.s, rig.account), 1, "the busy one is still to go");
+    // The next run: the busy one goes, the refused ones aren't asked again, nothing comes back twice.
+    let from = rig.asked();
+    rig.run();
+    assert!(rig.there("Busy").is_none());
+    assert_eq!(deletes(&rig, from, &ids[3]), 1);
+    assert_eq!(deletes(&rig, from, &ids[1]) + deletes(&rig, from, &ids[2]), 0);
+    assert!(!rig.has("Busy"));
+    assert_eq!(rig.s.mailbox.messages_in(deleted).count(), 2);
+    assert_eq!(unpushed(&rig.s, rig.account), 0);
+}
+
+#[test]
 fn a_change_here_and_one_on_the_server_end_as_s17_says() {
     let mut rig = Rig::new("both-sides@example.org");
     let (both, twice, projects) = {

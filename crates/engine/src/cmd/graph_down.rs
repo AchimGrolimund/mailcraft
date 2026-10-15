@@ -123,7 +123,7 @@ pub fn take_page(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, page: &
 }
 
 /// A message the server has and this mailbox hasn't: its headers and preview.
-fn new_message(folder: Id, server_folder: &str, there: &GraphMessage) -> Message {
+pub(crate) fn new_message(folder: Id, server_folder: &str, there: &GraphMessage) -> Message {
     let server = ServerMessage { folder: server_folder.to_string(), gone: false, ..there.server.clone() };
     Message {
         folder,

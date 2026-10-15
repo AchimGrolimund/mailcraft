@@ -20,7 +20,7 @@
 
 use std::collections::BTreeMap;
 
-use mailcraft_model::sync::{CategoriesUp, FlagUp, MessageChange, MessageChangeDone, MessageOutcome, ServerMessage, same_category};
+use mailcraft_model::sync::{CategoriesUp, FlagUp, GraphMessage, MessageChange, MessageChangeDone, MessageOutcome, ServerMessage, same_category};
 use mailcraft_model::{FlagStatus, Folder, FolderKind, Id, Mailbox, Message, Queued};
 use mailcraft_time::{DateTime, Timestamp};
 
@@ -173,7 +173,9 @@ pub struct Refusals {
 
 impl Refusals {
     fn note(&mut self, kind: Kind, why: Why, subject: &str, to: Option<String>) {
-        let entry = self.said.entry((kind, why)).or_insert_with(|| (0, shown(subject), to.clone()));
+        // A delete for good of a message nothing is known of here is of "a message".
+        let subject = if kind == Kind::Delete && subject.trim().is_empty() { String::new() } else { shown(subject) };
+        let entry = self.said.entry((kind, why)).or_insert_with(|| (0, subject, to.clone()));
         entry.0 += 1;
         if entry.2 != to {
             entry.2 = None;
@@ -198,11 +200,14 @@ impl Refusals {
                     Kind::Several => format!("change {what}"),
                     Kind::Move => format!("move {what}{to}"),
                     Kind::Copy => format!("copy {what}{to}"),
-                    Kind::Delete if many => format!("delete {n} messages on the server"),
-                    Kind::Delete => "delete a message on the server".to_string(),
+                    Kind::Delete if subject.is_empty() && !many => "delete a message for good".to_string(),
+                    Kind::Delete => format!("delete {what} for good"),
                     Kind::MovedOut => format!("remove {what} from the server after moving it here"),
                 };
-                format!("Couldn't {doing}: the server says {}.", why.words(many))
+                match (kind, why) {
+                    (Kind::Delete, Why::Denied) => format!("Couldn't {doing}: the server doesn't allow it."),
+                    _ => format!("Couldn't {doing}: the server says {}.", why.words(many)),
+                }
             })
             .collect()
     }
@@ -343,7 +348,7 @@ pub fn message_done(mb: &mut Mailbox, account: Id, done: &MessageChangeDone, ref
                             m.server = Some(ServerMessage { id: made.clone(), folder, gone: false, ..base });
                         }
                         // Gone here meanwhile (or moved out of the account): the server's copy goes too.
-                        _ => mb.queued.push(Queued::DeleteMessage { account, id: made.clone() }),
+                        _ => mb.queued.push(Queued::DeleteMessage { account, id: made.clone(), kept: None }),
                     }
                 }
                 MessageOutcome::Done { .. } => {}
@@ -362,9 +367,17 @@ pub fn message_done(mb: &mut Mailbox, account: Id, done: &MessageChangeDone, ref
             true
         }
         MessageChange::Delete { id } => {
-            mb.queued.retain(|q| !matches!(q, Queued::DeleteMessage { account: a, id: queued } if *a == account && queued == id));
+            let mut kept = None;
+            mb.queued.retain(|q| match q {
+                Queued::DeleteMessage { account: a, id: queued, kept: was } if *a == account && queued == id => {
+                    kept = kept.take().or_else(|| was.clone());
+                    false
+                }
+                _ => true,
+            });
             if let (Some(why), MessageOutcome::Refused { .. }) = (why, &done.outcome) {
-                refusals.note(Kind::Delete, why, "", None);
+                let subject = put_back(mb, account, id, kept, done.there.as_deref());
+                refusals.note(Kind::Delete, why, &subject, None);
             }
             true
         }
@@ -382,6 +395,44 @@ pub fn message_done(mb: &mut Mailbox, account: Id, done: &MessageChangeDone, ref
             true
         }
     }
+}
+
+/// A message deleted for good here whose delete the server refused, put back as the server has it
+/// (S20): in its server folder, from what was kept of it here (all that was fetched), with the
+/// server's state as it was read after the refusal or, failing that, the last synced one; from
+/// what the server said of it alone when nothing was kept (it is fetched whole later in the run,
+/// as new mail is). Kept but with nowhere on the server known (being moved out of the account, and
+/// not to be read), it goes back where it was here. A folder the server has it in that isn't here
+/// yet brings it down with its first listing. The subject, for saying so.
+fn put_back(mb: &mut Mailbox, account: Id, id: &str, kept: Option<Box<Message>>, there: Option<&GraphMessage>) -> String {
+    let subject = kept.as_ref().map(|m| m.subject.clone()).or_else(|| there.map(|t| t.subject.clone())).unwrap_or_default();
+    // Back already (it came down again meanwhile): nothing to do.
+    if mb.messages.values().any(|m| m.account == account && m.server.as_ref().is_some_and(|s| s.id == id)) {
+        return subject;
+    }
+    let there = there.filter(|t| t.server.id == id);
+    let server = there.map(|t| t.server.clone()).or_else(|| kept.as_ref().and_then(|m| m.server.clone()).filter(|s| s.id == id));
+    let folder = server.as_ref().and_then(|s| mb.folder_by_server(account, &s.folder));
+    match (kept, server, folder) {
+        (Some(kept), Some(server), Some(folder)) => {
+            let mut m = *kept;
+            (m.folder, m.uid, m.synced, m.moving_out) = (folder, 0, None, None);
+            (m.read, m.flag, m.flag_due, m.importance) = (server.read, server.flag, server.flag_due, server.importance);
+            m.categories = server.categories.clone();
+            m.server = Some(ServerMessage { id: id.to_string(), gone: false, ..server });
+            let _ = mb.add_message(m);
+        }
+        (None, Some(server), Some(folder)) => {
+            if let Some(there) = there {
+                let _ = mb.add_message(super::graph_down::new_message(folder, &server.folder, there));
+            }
+        }
+        (Some(kept), None, _) if mb.folder(kept.folder).is_some() => {
+            let _ = mb.add_message(*kept);
+        }
+        _ => {}
+    }
+    subject
 }
 
 /// Messages the server said were gone before they could be fetched: one being moved out of the

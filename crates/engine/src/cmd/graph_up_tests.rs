@@ -1,7 +1,7 @@
 //! Changes of messages of a Microsoft account, as the engine works them out and takes in what
 //! became of them. (Against the Graph stand-in itself: `apps/mailcraft-cli/tests/graph_changes.rs`.)
 
-use mailcraft_model::sync::{GraphMailResult, MessageChangeDone, MovingOut};
+use mailcraft_model::sync::{GraphMailResult, GraphMessage, MessageChangeDone, MovingOut};
 use mailcraft_model::{Account, Folder, Importance, ServerFolder};
 use serde_json::json;
 
@@ -192,7 +192,7 @@ fn what_was_made_is_the_last_synced_state_and_the_undo_history_goes() {
     // The server had added Green meanwhile: the merge is what it has now.
     let merged = vec!["Red category".to_string(), "Green category".into(), "Blue category".into()];
     let outcome = MessageOutcome::Done { categories: Some(merged.clone()), flag: None, folder: String::new(), id: String::new() };
-    let answer = apply_graph_mail(&mut s, result(account, vec![MessageChangeDone { change, outcome }])).unwrap();
+    let answer = apply_graph_mail(&mut s, result(account, vec![MessageChangeDone { change, outcome, there: None }])).unwrap();
     assert_eq!(answer["pushed"], 1);
     let here = s.mailbox.message(m).unwrap();
     let server = here.server.as_ref().unwrap();
@@ -228,7 +228,7 @@ fn a_refusal_is_put_back_and_said_once_per_kind() {
                 MessageChange::Update { id, .. } if id == "M-1" => MessageOutcome::Refused { status: 400 },
                 _ => MessageOutcome::Gone,
             };
-            MessageChangeDone { change, outcome }
+            MessageChangeDone { change, outcome, there: None }
         })
         .collect();
     let answer = apply_graph_mail(&mut s, result(account, done)).unwrap();
@@ -251,6 +251,87 @@ fn a_refusal_is_put_back_and_said_once_per_kind() {
     // The next run's status doesn't say it again.
     apply_graph_mail(&mut s, result(account, Vec::new())).unwrap();
     assert!(!s.sync_status.contains("Couldn't"), "{}", s.sync_status);
+}
+
+/// The answer to the one delete for good of a run.
+fn delete_answered(s: &mut Session, account: Id, outcome: MessageOutcome, there: Option<GraphMessage>) -> serde_json::Value {
+    let change = graph_mail_request(s, account).unwrap().messages.into_iter().find(|c| matches!(c, MessageChange::Delete { .. })).unwrap();
+    apply_graph_mail(s, result(account, vec![MessageChangeDone { change, outcome, there: there.map(Box::new) }])).unwrap()
+}
+
+#[test]
+fn a_refused_delete_for_good_is_put_back_at_once_with_all_that_was_fetched() {
+    let (mut s, account, m, _) = setup();
+    let inbox = s.mailbox.folder_of_kind(account, FolderKind::Inbox).unwrap();
+    s.mailbox.message_mut(m).unwrap().body.text = "Please pay by Friday.".into();
+    // Marked read, then deleted for good: neither reached the server.
+    s.run("mail.markRead", &json!({"ids": [m]})).unwrap();
+    s.run("mail.deletePermanently", &json!({"ids": [m]})).unwrap();
+    assert!(s.mailbox.message(m).is_none());
+    let answer = delete_answered(&mut s, account, MessageOutcome::Refused { status: 403 }, None);
+    assert_eq!(answer["errors"], json!(["Couldn't delete 'Invoice 42' for good: the server doesn't allow it."]));
+    // Back as the server has it (unread, in the Inbox), with its text, and nothing to send.
+    let back = s.mailbox.messages.values().find(|m| m.subject == "Invoice 42").unwrap();
+    assert_eq!((back.folder, back.read, back.body.text.as_str()), (inbox, false, "Please pay by Friday."));
+    assert_eq!(back.server.as_ref().map(|s| s.id.as_str()), Some("M-1"));
+    assert!(s.mailbox.queued.is_empty());
+    assert_eq!(changes(&s, account), []);
+
+    // Read on the server after the refusal: its folder and state are the server's now.
+    let (mut s, account, m, _) = setup();
+    s.mailbox.message_mut(m).unwrap().body.text = "Kept".into();
+    s.run("mail.deletePermanently", &json!({"ids": [m]})).unwrap();
+    let mut there = GraphMessage { subject: "Invoice 42".into(), ..Default::default() };
+    there.server = ServerMessage { id: "M-1".into(), folder: "F-ar".into(), read: true, importance: Importance::High, ..Default::default() };
+    let answer = delete_answered(&mut s, account, MessageOutcome::Refused { status: 400 }, Some(there.clone()));
+    assert_eq!(answer["errors"], json!(["Couldn't delete 'Invoice 42' for good: the server says it can't make that change."]));
+    let archive = s.mailbox.folder_of_kind(account, FolderKind::Archive).unwrap();
+    let back = s.mailbox.messages.values().find(|m| m.subject == "Invoice 42").unwrap();
+    assert_eq!((back.folder, back.read, back.importance, back.body.text.as_str()), (archive, true, Importance::High, "Kept"));
+    assert_eq!(changes(&s, account), []);
+
+    // Nothing kept here (a queue from before): from what the server said, to be fetched whole.
+    let (mut s, account, m, _) = setup();
+    s.run("mail.deletePermanently", &json!({"ids": [m]})).unwrap();
+    for q in &mut s.mailbox.queued {
+        if let Queued::DeleteMessage { kept, .. } = q {
+            *kept = None;
+        }
+    }
+    delete_answered(&mut s, account, MessageOutcome::Refused { status: 403 }, Some(there));
+    let back = s.mailbox.messages.values().find(|m| m.subject == "Invoice 42").unwrap();
+    assert!(back.unfetched && back.folder == archive);
+    assert_eq!(changes(&s, account), []);
+
+    // Gone from the server already: it stays gone, and nothing is said.
+    let (mut s, account, m, _) = setup();
+    s.run("mail.deletePermanently", &json!({"ids": [m]})).unwrap();
+    let answer = delete_answered(&mut s, account, MessageOutcome::Gone, None);
+    assert_eq!(answer["errors"], json!([]));
+    assert!(s.mailbox.messages.values().all(|m| m.subject != "Invoice 42"));
+    assert!(s.mailbox.queued.is_empty());
+}
+
+#[test]
+fn a_refused_delete_of_a_message_being_moved_out_puts_it_back_where_the_server_has_it() {
+    let (mut s, account, m, kept) = setup();
+    s.run("mail.move", &json!({"ids": [m], "folder": kept})).unwrap();
+    assert!(s.mailbox.message(m).unwrap().moving_out.is_some());
+    s.run("mail.deletePermanently", &json!({"ids": [m]})).unwrap();
+    let mut there = GraphMessage { subject: "Invoice 42".into(), ..Default::default() };
+    there.server = ServerMessage { id: "M-1".into(), folder: "F-in".into(), ..Default::default() };
+    delete_answered(&mut s, account, MessageOutcome::Refused { status: 403 }, Some(there));
+    let inbox = s.mailbox.folder_of_kind(account, FolderKind::Inbox).unwrap();
+    let back = s.mailbox.messages.values().find(|m| m.subject == "Invoice 42").unwrap();
+    assert_eq!((back.account, back.folder, back.moving_out.is_none()), (account, inbox, true));
+    assert_eq!(changes(&s, account), []);
+    // Not to be read either: back where it was here, still being moved.
+    let (mut s, account, m, kept) = setup();
+    s.run("mail.move", &json!({"ids": [m], "folder": kept})).unwrap();
+    s.run("mail.deletePermanently", &json!({"ids": [m]})).unwrap();
+    delete_answered(&mut s, account, MessageOutcome::Refused { status: 403 }, None);
+    let back = s.mailbox.messages.values().find(|m| m.subject == "Invoice 42").unwrap();
+    assert_eq!((back.folder, back.moving_out.as_ref().map(|o| o.id.as_str())), (kept, Some("M-1")));
 }
 
 #[test]

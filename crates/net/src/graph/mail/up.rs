@@ -17,7 +17,9 @@
 //!   made twice (S21).
 //! - **Deletes for good** (`DELETE /me/messages/{id}`), which leave the message recoverable for
 //!   the server's retention period, as Outlook does. Nothing here asks Graph to remove anything
-//!   past that (S19).
+//!   past that (S19). A delete the server refuses (403, 400) is followed by a read of the
+//!   message (`GET /me/messages/{id}`), for the engine to put it back here as the server has it;
+//!   one whose read isn't answered waits for the next run, delete and all.
 //!
 //! A request the server refuses (404, 403, 400) is answered so, for the engine to put back and
 //! say (S20), and logged by status and Graph's code alone. One it is too busy for (429, 503,
@@ -170,7 +172,7 @@ fn placed(folder: String, id: String) -> MessageOutcome {
 impl Up<'_, '_, '_> {
     fn settle(&mut self, at: usize, outcome: MessageOutcome) {
         if let Some(change) = self.changes.get(at) {
-            self.out.push(MessageChangeDone { change: (*change).clone(), outcome });
+            self.out.push(MessageChangeDone { change: (*change).clone(), outcome, there: None });
         }
     }
 
@@ -542,11 +544,37 @@ impl Up<'_, '_, '_> {
                 None => self.settle(at, MessageOutcome::Refused { status: 400 }),
             }
         }
+        // A delete for good refused is put back here as the server has it: read first. One whose
+        // look isn't answered waits for the next run with it (a delete is the same however often).
+        let mut looks = Vec::new();
         for (sub, status, body) in self.repeatable(Kind::Same, subs)? {
+            let refused_for_good = matches!(refusal(status), Some(MessageOutcome::Refused { .. }));
             if (200..300).contains(&status) {
                 self.settle(sub.at, done());
+            } else if refused_for_good && matches!(self.changes.get(sub.at), Some(MessageChange::Delete { .. })) {
+                let code = code_of(body.to_string().as_bytes(), &[self.graph.token]);
+                log::info!("graph changes: a delete of a message was refused (status {status}{code}); it is read to be put back");
+                let query = http::form(&[("$select", super::down::FIELDS), ("$expand", super::down::SIZE)]);
+                looks.push((Sub { method: "GET", url: format!("{}?{query}", sub.url), body: None, ..sub }, status));
             } else {
                 self.refused(sub.at, status, &body, "a delete of a message");
+            }
+        }
+        let refused: HashMap<usize, u16> = looks.iter().map(|(sub, status)| (sub.at, *status)).collect();
+        for (look, status, body) in self.repeatable(Kind::Read, looks.into_iter().map(|(sub, _)| sub).collect())? {
+            let was = refused.get(&look.at).copied().unwrap_or(403);
+            match status {
+                200 => {
+                    let there = super::down::message_of(&body).map(Box::new);
+                    if let Some(change) = self.changes.get(look.at) {
+                        self.out.push(MessageChangeDone { change: (*change).clone(), outcome: MessageOutcome::Refused { status: was }, there });
+                    }
+                }
+                // Gone after all.
+                404 | 410 => self.settle(look.at, MessageOutcome::Gone),
+                // Not to be read either: put back from what is kept here.
+                400 | 403 => self.settle(look.at, MessageOutcome::Refused { status: was }),
+                _ => log::info!("graph changes: a message whose delete was refused couldn't be read (status {status}); it waits for the next run"),
             }
         }
         Ok(())
