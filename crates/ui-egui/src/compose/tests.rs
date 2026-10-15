@@ -444,6 +444,8 @@ fn signature_page() -> Window {
     a.execute("mail.new", json!({})).unwrap();
     a.execute("ui.backstage", json!({"value": true, "page": "signatures"})).unwrap();
     let mut h = window(a);
+    // The sample's reminders would stand over the page.
+    h.state_mut().execute("ui.dismissReminder", json!({"all": true})).unwrap();
     h.run_steps(2);
     h
 }

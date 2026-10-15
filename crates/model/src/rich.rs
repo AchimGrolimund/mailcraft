@@ -559,7 +559,10 @@ impl RichText {
                 if let Some(url) = &run.style.link {
                     let shown = run.text.trim();
                     let bare = url.split_once(':').map_or(url.as_str(), |(_, r)| r.trim_start_matches('/'));
-                    if !shown.eq_ignore_ascii_case(url) && !shown.eq_ignore_ascii_case(bare) {
+                    // A telephone number says its link however it is spaced (`+44 (0)20…`).
+                    let digits = |t: &str| t.replace("(0)", "").chars().filter(char::is_ascii_digit).collect::<String>();
+                    let number = url.to_ascii_lowercase().starts_with("tel:") && digits(shown) == digits(bare);
+                    if !number && !shown.eq_ignore_ascii_case(url) && !shown.eq_ignore_ascii_case(bare) {
                         out.push_str(&format!(" <{url}>"));
                     }
                 }

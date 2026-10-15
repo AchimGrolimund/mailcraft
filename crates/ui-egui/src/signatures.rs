@@ -183,6 +183,154 @@ fn editing(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
             ui.label(egui::RichText::new(tl!("Changed: saved when you choose another signature or leave this page.")).color(t.text_dim));
         }
     });
+    details_form(app, ui, t);
+    preview(app, ui, t);
+}
+
+/// The details as the form holds them while they are typed, for the open signature.
+#[derive(Clone, Default)]
+struct Form {
+    signature: String,
+    fields: [String; 8],
+    /// The details kept when the form last took them: when they change by other means (a
+    /// script, undo), the form takes them again.
+    seen: Option<[String; 8]>,
+}
+
+fn fields_of(d: mailcraft_model::signature::Details) -> [String; 8] {
+    [d.name, d.title, d.organisation, d.phone, d.mobile, d.email, d.website, d.address]
+}
+
+const FIELDS: [(&str, &str); 8] = [
+    ("name", "Name"),
+    ("title", "Job title"),
+    ("organisation", "Organisation"),
+    ("phone", "Phone"),
+    ("mobile", "Mobile"),
+    ("email", "Email"),
+    ("website", "Website"),
+    ("address", "Address"),
+];
+
+/// Create from details (S14): the form; changing a field lays the signature out again while it
+/// isn't edited by hand.
+fn details_form(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
+    let Some(e) = app.session.signature_edit.as_ref() else { return };
+    let name = e.signature.name.clone();
+    let kept = e.signature.details.clone();
+    let hand_edited = kept.as_ref().is_some_and(|d| d.made != 0 && d.made != mailcraft_model::signature::text_hash(e.body.text()));
+    let key = egui::Id::new("mailcraft-signature-details");
+    let seen = kept.clone().map(fields_of);
+    let mut form: Form =
+        ui.data(|d| d.get_temp(key)).filter(|f: &Form| f.signature == name && (seen.is_none() || f.seen == seen)).unwrap_or_else(|| {
+            // The details kept, or what the default account knows of the owner to start from.
+            let d = kept.clone().unwrap_or_else(|| {
+                let a = app.session.mailbox.default_account();
+                mailcraft_model::signature::Details {
+                    name: a.map(|a| a.display_name.clone()).unwrap_or_default(),
+                    email: a.map(|a| a.email.clone()).unwrap_or_default(),
+                    ..Default::default()
+                }
+            });
+            Form { signature: name.clone(), fields: fields_of(d), seen: seen.clone() }
+        });
+    let mut changed = false;
+    egui::CollapsingHeader::new(tl!("Create from details")).default_open(true).show(ui, |ui| {
+        egui::Grid::new("signature_details").num_columns(2).spacing(vec2(10.0, 4.0)).show(ui, |ui| {
+            for (i, (_, label)) in FIELDS.iter().enumerate() {
+                ui.label(tl!(label));
+                if let Some(text) = form.fields.get_mut(i) {
+                    let field = if i == 7 { egui::TextEdit::multiline(text).desired_rows(2) } else { egui::TextEdit::singleline(text) };
+                    changed |= ui.add(field.desired_width(320.0).char_limit(mailcraft_model::signature::MAX_DETAIL)).changed();
+                }
+                ui.end_row();
+            }
+        });
+        ui.label(
+            egui::RichText::new(tl!("The logo is the signature's first picture: add one with Insert Picture.")).font(regular(11.5)).color(t.text_dim),
+        );
+        let details = || serde_json::Value::Object(FIELDS.iter().zip(&form.fields).map(|((k, _), v)| (k.to_string(), json!(v))).collect());
+        if kept.is_none() {
+            if ui.button(tl!("Make the signature from these details")).on_hover_text(tl!("Its text is replaced")).clicked() {
+                let _ = app.run("signature.details", json!({"details": details(), "restart": true}));
+            }
+        } else if hand_edited {
+            ui.label(egui::RichText::new(tl!("You edited the signature by hand, so the details no longer change it.")).color(t.text_dim));
+            if ui.button(tl!("Start again from the details")).clicked() {
+                let _ = app.run("signature.details", json!({"details": details(), "restart": true}));
+            }
+        } else if changed {
+            let _ = app.execute("signature.details", json!({"details": details()}));
+        }
+    });
+    // What is kept now, so that the next frame doesn't take it as a change from elsewhere.
+    form.seen = app.session.signature_edit.as_ref().and_then(|e| e.signature.details.clone()).map(fields_of);
+    ui.data_mut(|d| d.insert_temp(key, form));
+}
+
+/// A sample reply in which the signature is shown as recipients see it, and its plain-text form
+/// (S15). It follows the window's light or dark.
+fn preview(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
+    let Some(e) = app.session.signature_edit.as_ref() else { return };
+    let mut sig = e.signature.clone();
+    if sig.set_body(e.body.text().clone()).is_err() {
+        return;
+    }
+    let ctx = ui.ctx().clone();
+    let key = egui::Id::new("mailcraft-signature-preview");
+    let stamp = (
+        mailcraft_model::signature::text_hash(sig.body()),
+        format!("{:?}", sig.layout),
+        sig.pictures().iter().map(|p| (p.id, p.width, p.alt.clone())).collect::<Vec<_>>(),
+    );
+    let kept: Option<(u64, std::sync::Arc<mailcraft_model::Message>)> = ctx.data(|d| d.get_temp(key));
+    let hash = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        stamp.hash(&mut h);
+        h.finish()
+    };
+    let message = match kept.filter(|(k, _)| *k == hash) {
+        Some((_, m)) => m,
+        None => {
+            let cid = |p: &mailcraft_model::signature::Picture| format!("sig-{}@preview.invalid", p.id);
+            let html = format!(
+                "<p>{}</p>\r\n{}",
+                tl!("Thanks, Thursday at ten works for me. I'll bring the drawings."),
+                mailcraft_engine::mime::rich::signature_html(&sig, &cid)
+            );
+            let m = mailcraft_model::Message {
+                body: mailcraft_model::Body { text: String::new(), html: Some(html) },
+                attachments: sig
+                    .pictures()
+                    .iter()
+                    .map(|p| mailcraft_model::Attachment {
+                        content_id: cid(p),
+                        inline: true,
+                        data: p.data.clone(),
+                        ..mailcraft_model::Attachment::new(p.name.clone(), p.mime.clone(), Vec::new())
+                    })
+                    .collect(),
+                ..mailcraft_model::Message::default()
+            };
+            let m = std::sync::Arc::new(m);
+            ctx.data_mut(|d| d.insert_temp(key, (hash, m.clone())));
+            m
+        }
+    };
+    egui::CollapsingHeader::new(tl!("Preview")).default_open(true).show(ui, |ui| {
+        ui.label(egui::RichText::new(tl!("As recipients see it")).font(regular(11.5)).color(t.text_dim));
+        egui::Frame::NONE.fill(t.surface).stroke(egui::Stroke::new(1.0, t.border)).inner_margin(10.0).show(ui, |ui| {
+            // Its own scrolling area, so that what it senses (selecting its text) stays inside it.
+            egui::ScrollArea::vertical().id_salt("signature_preview").max_height(320.0).auto_shrink([false, true]).show(ui, |ui| {
+                crate::reading::show_plain_view(app, ui, &message, crate::reading::Place::Preview);
+            });
+        });
+        ui.label(egui::RichText::new(tl!("In a plain-text message")).font(regular(11.5)).color(t.text_dim));
+        egui::Frame::NONE.fill(t.surface).stroke(egui::Stroke::new(1.0, t.border)).inner_margin(10.0).show(ui, |ui| {
+            ui.label(egui::RichText::new(sig.plain()).font(crate::theme::mono(12.0)).color(t.text));
+        });
+    });
 }
 
 fn command_label(command: &str) -> &'static str {

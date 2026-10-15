@@ -1,6 +1,6 @@
 # R4.5: Rich signatures, with a logo: implementation plan
 
-> **Status:** proposed, with [the spec](../specs/r4-5-signatures.md) · **Written:** 2026-10-15 · **Change:** major (first version)
+> **Status:** done 2026-10-15 (R4.5.1 #57, R4.5.2 #58, R4.5.3 #59, R4.5.4), with [the spec](../specs/r4-5-signatures.md) · **Written:** 2026-10-15 · **Change:** minor (done; limits recorded)
 
 Requirement numbers (S1–S17) are the spec's. Issue #37. Each task is one pull request, reviewed by
 a person (`needs-review`), with `cargo xtask ci` green on all three CI platforms; task ids go in
@@ -99,3 +99,4 @@ Total: about 34–54 hours.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-15 | major | First version |
+| 2026-10-15 | minor | Done. As built: the open signature is a second document of the editing commands (`Session::doc`), not `Doc::Compose`/`Doc::Signature`; details keep an FNV hash of the text they made. Limits: a reopened draft loses the signature's marking and pictures; a message started without a signature gets none when From changes; the editor draws picture beside text in line and in the window's font (the preview shows both as sent); a picture deleted and brought back by undo is let go when the next is added; egui sends no paste for a clipboard with only a picture (a Paste Picture button); the preview follows the window's light or dark |

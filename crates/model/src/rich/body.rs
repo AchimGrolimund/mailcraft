@@ -290,6 +290,17 @@ impl RichBody {
         Ok(())
     }
 
+    /// Replace the whole text, as one step (a signature laid out again from its details).
+    pub fn replace(&mut self, text: RichText) -> Result<(), ModelError> {
+        self.edit(false, |t, s| {
+            *t = text;
+            *s = s.clamp(t.len());
+            Ok(())
+        })?;
+        self.typing = None;
+        Ok(())
+    }
+
     /// Put `sig` in as the message's signature (in place of the one there, else at `at`), or take
     /// it out (`None`), as one step. The caret stays where it was in the text around it.
     pub fn put_signature(&mut self, sig: Option<&RichText>, at: usize) -> Result<(), ModelError> {

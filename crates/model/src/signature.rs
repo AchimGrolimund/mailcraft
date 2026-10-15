@@ -17,7 +17,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::ModelError;
-use crate::rich::{Paragraph, RichText, Run, Style};
+use crate::rich::{Paragraph, RichText, Run, Style, safe_link};
 
 /// Most bytes one picture may have.
 pub const MAX_PICTURE_BYTES: usize = 256 * 1024;
@@ -113,6 +113,117 @@ pub struct Details {
 
 fn is_zero(n: &u64) -> bool {
     *n == 0
+}
+
+/// Longest a detail is kept, in characters.
+pub const MAX_DETAIL: usize = 200;
+
+impl Details {
+    /// The details as kept: no control characters (the address keeps its line breaks), trimmed,
+    /// at most [`MAX_DETAIL`] characters each.
+    pub fn clean(self) -> Details {
+        let one = |s: String| s.chars().filter(|c| !c.is_control()).take(MAX_DETAIL).collect::<String>().trim().to_string();
+        let address = self.address.chars().filter(|c| *c == '\n' || !c.is_control()).take(MAX_DETAIL).collect::<String>().trim().to_string();
+        Details {
+            name: one(self.name),
+            title: one(self.title),
+            organisation: one(self.organisation),
+            phone: one(self.phone),
+            mobile: one(self.mobile),
+            email: one(self.email),
+            website: one(self.website),
+            address,
+            made: self.made,
+        }
+    }
+
+    /// The text they make: the name in bold, the job title, the organisation, then each way of
+    /// reaching the owner as a working link (`tel:`, `mailto:`, `https:`) and the address; the
+    /// logo, when there is one, before it all.
+    pub fn text(&self, logo: Option<u32>) -> RichText {
+        let line = |runs: Vec<Run>| Paragraph::new(runs, Default::default());
+        let plain = |text: &str| Run::new(text, Style::default());
+        let linked = |text: &str, link: Option<String>| Run::new(text, Style { link, ..Style::default() });
+        let mut out = Vec::new();
+        if let Some(id) = logo {
+            out.push(line(vec![Run::picture(id, Style::default())]));
+        }
+        if !self.name.is_empty() {
+            out.push(line(vec![Run::new(&self.name, Style { bold: true, size: Some(12), ..Style::default() })]));
+        }
+        for text in [&self.title, &self.organisation] {
+            if !text.is_empty() {
+                out.push(line(vec![plain(text)]));
+            }
+        }
+        for (label, number) in [("Phone: ", &self.phone), ("Mobile: ", &self.mobile)] {
+            if !number.is_empty() {
+                out.push(line(vec![plain(label), linked(number, tel(number))]));
+            }
+        }
+        if !self.email.is_empty() {
+            let link = (self.email.contains('@') && !self.email.contains(char::is_whitespace)).then(|| format!("mailto:{}", self.email));
+            out.push(line(vec![linked(&self.email, link.as_deref().and_then(safe_link))]));
+        }
+        if !self.website.is_empty() {
+            let lower = self.website.to_ascii_lowercase();
+            let url = if lower.starts_with("https://") || lower.starts_with("http://") {
+                self.website.clone()
+            } else {
+                format!("https://{}", self.website)
+            };
+            out.push(line(vec![linked(&self.website, safe_link(&url))]));
+        }
+        for part in self.address.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            out.push(line(vec![plain(part)]));
+        }
+        RichText::from_paragraphs(out)
+    }
+}
+
+/// A telephone number as a `tel:` link: its digits, and a `+` in front when it has one; none
+/// when there are too few digits to call.
+fn tel(number: &str) -> Option<String> {
+    let international = number.trim_start().starts_with('+');
+    // `+44 (0)20…`: the (0) is dialled only from inside the country.
+    let number = if international { number.replace("(0)", "") } else { number.to_string() };
+    let digits: String = number.chars().filter(char::is_ascii_digit).collect();
+    if digits.len() < 3 {
+        return None;
+    }
+    let plus = if international { "+" } else { "" };
+    safe_link(&format!("tel:{plus}{digits}"))
+}
+
+/// A fingerprint of a text that stays the same from one version of the program to the next
+/// (FNV-1a over its paragraphs, runs and their formatting, written out), for telling whether the
+/// owner has edited what the details made.
+pub fn text_hash(text: &RichText) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325_u64;
+    let mut eat = |part: &str| {
+        for b in part.bytes().chain([0xff]) {
+            h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    for p in text.paragraphs() {
+        eat(&format!("p{:?}{}", p.list, p.level));
+        for r in &p.runs {
+            let st = &r.style;
+            eat(&r.text);
+            eat(&format!(
+                "{}{}{}{:?}{:?}{:?}{:?}{:?}",
+                st.bold,
+                st.italic,
+                st.underline,
+                st.size,
+                st.link,
+                st.color,
+                st.font.map(|f| f.label()),
+                r.picture
+            ));
+        }
+    }
+    h
 }
 
 /// Text, and at most a few pictures, the owner ends their messages with.
@@ -241,6 +352,28 @@ impl Signature {
     /// brackets, or nothing.
     pub fn plain(&self) -> String {
         self.body.to_plain_with(|id| self.picture(id).map(|p| p.alt.clone()))
+    }
+
+    /// Whether it was made from details and edited by hand since: the details no longer lay it
+    /// out.
+    pub fn hand_edited(&self) -> bool {
+        self.details.as_ref().is_some_and(|d| d.made != 0 && d.made != text_hash(&self.body))
+    }
+
+    /// Make the text from `details` (cleaned), keeping the first picture as the logo, laid out
+    /// beside the text (or above it, when the owner chose that); without one, in line.
+    pub fn lay_out(&mut self, details: Details) -> Result<(), ModelError> {
+        let mut details = details.clean();
+        let logo = self.body.pictures().first().copied().or_else(|| self.pictures.first().map(|p| p.id));
+        self.set_body(details.text(logo))?;
+        self.layout = match (logo.is_some(), self.layout) {
+            (false, _) => Layout::Inline,
+            (true, Layout::Inline) => Layout::PictureLeft,
+            (true, chosen) => chosen,
+        };
+        details.made = text_hash(&self.body);
+        self.details = Some(details);
+        Ok(())
     }
 
     /// Whether there is nothing in it.
