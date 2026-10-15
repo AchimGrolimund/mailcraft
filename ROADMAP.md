@@ -2,7 +2,7 @@
 
 **Stage: early alpha** · next: beta, as [`CONTEXT.md`](CONTEXT.md) defines it, by the plan in [`docs/plans/roadmap-reset.md`](docs/plans/roadmap-reset.md)
 
-> **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-15 · **Change:** minor (R3.2.1: messages in the Graph stand-in; D1: Copy Diagnostics in the title bar; R4.5: rich signatures with a logo; R3.1: Graph folders behind the switch for testing; R5: sign-ins remembered on Linux; R2: Exchange Web Services removed; R4: rich-text compose; R4.2: the rich-text editor) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+> **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-15 · **Change:** minor (v0.4.0; R3.2.1: messages in the Graph stand-in; D1: Copy Diagnostics in the title bar; R4.5: rich signatures with a logo; R3.1: Graph folders behind the switch for testing; R5: sign-ins remembered on Linux; R2: Exchange Web Services removed; R4: rich-text compose; R4.2: the rich-text editor) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
 
 MailCraft aims for complete parity with Microsoft Outlook, then goes further on speed, openness,
 privacy and agent control. This page is the summary; the assessment is
@@ -20,7 +20,7 @@ privacy and agent control. This page is the summary; the assessment is
 | Commands / crates | 204 commands · 12 crates, 3 apps, `xtask` | measured (source) |
 | Tests | 1,642 `#[test]`s (`cargo xtask stats`); property tests on every reader | measured |
 | Builds verified | Windows, macOS and Linux (CI on each), FreeBSD and Windows ARM64 (scheduled), the browser build (wasm) | measured |
-| Releases | five published, v0.1.0 to v0.3.0 ([Releases](https://github.com/UCS-Care-Group/mailcraft/releases)); unsigned | measured |
+| Releases | six published, v0.1.0 to v0.4.0 ([Releases](https://github.com/UCS-Care-Group/mailcraft/releases)); unsigned | measured |
 
 The gap between the two readiness numbers is the story of this release: the mailbox, the
 commands, the interface and the file formats are in good shape, and the connection to real mail
@@ -51,6 +51,7 @@ when needed; system notifications and Copy diagnostics; then a beta run with tes
 
 | Date | What landed |
 |---|---|
+| 2026-10-15 | v0.4.0 published (#11): rich signatures with a logo (R4.5), font and font colour, Copy Diagnostics in the title bar (D1), typing after switching windows (#60, and #61), and the fixes of #44, #46 and #47. |
 | 2026-10-15 | R3.2.1 (#13; [spec](docs/specs/r3-graph-mail.md) S9–S12, [plan](docs/plans/r3-graph-mail.md)): the Graph stand-in has messages: a folder's message delta in pages with next and delta links, `@removed` for what was deleted or moved out, replayed pages, forgotten links (`syncStateNotFound`) and resets (`410 Gone` with a `Location`), ordinary ids unless immutable ones are asked for, a message's MIME, folder counts, and a generated mailbox of 200,000 messages that a plain reader gets whole, once each. The mailbox file keeps whether a message is fetched, whether the server said it left its folder, whether a folder's link is a delta link, and each Microsoft account's "Download messages in full" (default up to 10 MB); files from before open as they were. Nothing is any different for the owner yet |
 | 2026-10-15 | D1 (Copy Diagnostics in the title bar; [spec](docs/specs/copy-diagnostics-button.md), [plan](docs/plans/copy-diagnostics-button.md)): a "Copy Diagnostics" pill at the right of the title bar, beside the account picture, runs the same command as Help › Copy Diagnostics, so testers find it; nothing new is collected and nothing is sent |
 | 2026-10-15 | R4.5 (rich signatures with a logo, #37; [spec](docs/specs/r4-5-signatures.md), [plan](docs/plans/r4-5-signatures.md)): a signature is rich text with up to 10 PNG, JPEG or GIF pictures (256 KB each, 512 KB together, checked by their own bytes), in line or picture beside text (the two-cell table) or above it; each account has one for new mail and one for replies and forwards, and a mailbox of 0.3.0 keeps its one for both. New mail gets it after a blank line, a reply above the original; changing From swaps it unless it was edited; Message › Signature replaces it or goes at the caret. Sent as HTML its pictures are inline parts (`multipart/related`), in plain text its words and each picture's description. File › Signatures edits it with the composer's own editor (font and colour, which the composer has too; Insert and Paste Picture, a dropped file, a picture's width by its corner, its description, the layout, the size total), makes one from details (name, title, organisation, phone, mobile, email, website, address, logo; working `tel:`, `mailto:` and `https:` links, laid out again until edited by hand) and previews it as recipients see it and in plain text. Paste keeps the first font family's name (added to the style whitelist for that alone). Also: typing in a message goes on after the window was left (#60) |
