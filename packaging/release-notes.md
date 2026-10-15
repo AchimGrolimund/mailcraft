@@ -1,10 +1,5 @@
-**What's new in 0.4.0** (an alpha for testers; sign up in [#11](https://github.com/GITHUB_REPOSITORY/issues/11)):
-- Rich signatures with a logo, in File › Signatures: one for new messages and one for replies and forwards per account, with pictures, fonts and colour; make one from your name, title, phone, email and website (the links work), and see it as recipients will before you send.
-- Font and font colour in messages you write, beside bold, italic, sizes and lists.
-- Copy Diagnostics, in Help and as a button in the title bar: the version, the system and a record of what the program did, with no message, address, password or token in it, ready to paste into a problem report. Nothing is sent.
-- Fixed: you could no longer type in a message after switching to another window and back (#60), nor, we expect, after forwarding one (#61); a message's text now fills the reading pane (#47); some web servers refused to send a message's pictures (#46); a message deleted on another device no longer counts as new mail; when Google refuses a password, MailCraft says an app password is needed (#44).
-- The project now lives at [UCS-Care-Group/mailcraft](https://github.com/UCS-Care-Group/mailcraft).
-- Known: Microsoft accounts still use IMAP; the move to Microsoft Graph is in progress. A mailbox opened in 0.4.0 may lose its signatures if opened again in 0.3.0.
+**What's new in 0.4.1** (an alpha for testers; sign up in [#11](https://github.com/GITHUB_REPOSITORY/issues/11)):
+- MCP: agents get only what the owner allows. Every command has a class for agents; sending, deleting for good, accounts, the mailbox file, options and rules are asked about in the app's window (Don't is the default), or refused by a server without a window unless started with `--allow`; files on this computer are named only inside a folder given with `--files`; message text reaches agents marked as untrusted data. See [docs/mcp.md](https://github.com/GITHUB_REPOSITORY/blob/main/docs/mcp.md).
 
 **Early alpha.** The foundations are in place and tested, but much of what a daily mail program needs is not there yet, and most of the Microsoft 365 behaviour has only been tested against stand-ins. What works is in the [README](https://github.com/GITHUB_REPOSITORY#what-works-today).
 

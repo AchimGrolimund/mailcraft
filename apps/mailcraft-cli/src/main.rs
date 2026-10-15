@@ -40,8 +40,14 @@ USAGE:
                                                 is sent)
   mailcraft-cli commands [--json]               list every command
   mailcraft-cli parity [--markdown]             feature-catalog parity
-  mailcraft-cli mcp [--connect HOST:PORT | --file F | --sample]
-                                                MCP server on stdio (headless, or bridged to the app)
+  mailcraft-cli mcp [--connect HOST:PORT | --file F | --sample] [--files DIR] [--allow CLASS,...]
+                                                MCP server on stdio (headless, or bridged to the app).
+                                                Agents get only what the owner allows: files only
+                                                inside --files DIR; sending, deleting for good,
+                                                accounts, the mailbox file and options are asked
+                                                about in the app (bridged) or refused (headless),
+                                                unless allowed with --allow send, delete, accounts,
+                                                mailbox, settings or input (clicking and typing)
   mailcraft-cli --version
 ";
 
@@ -71,6 +77,24 @@ fn open_or_new(path: &str) -> Result<Session, String> {
 fn sample() -> Session {
     let now = mailcraft_time::now();
     Session::new(mailcraft_engine::sample::mailbox(now, mailcraft_time::local_offset_minutes(now)))
+}
+
+/// Every `--allow` value, split at commas: what the owner lets an agent do without asking.
+fn allow_classes(args: &[String]) -> Result<Vec<mailcraft_mcp::Class>, String> {
+    let mut out = Vec::new();
+    for (i, a) in args.iter().enumerate() {
+        if a != "--allow" {
+            continue;
+        }
+        for name in args.get(i + 1).map(String::as_str).unwrap_or("").split(',').filter(|n| !n.trim().is_empty()) {
+            let names: Vec<&str> = mailcraft_mcp::Class::ALL.iter().map(|c| c.as_str()).collect();
+            let c = mailcraft_mcp::Class::parse(name).ok_or_else(|| format!("mcp: --allow {name}: not one of {}", names.join(", ")))?;
+            if !out.contains(&c) {
+                out.push(c);
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn arg_value(args: &[String], name: &str) -> Option<String> {
@@ -464,22 +488,30 @@ fn run(args: &[String]) -> Result<(), Failure> {
             }
         }
         "mcp" => {
-            positionals("mcp", &rest, &[value("--connect"), value("--file"), flag("--sample")])?;
+            positionals("mcp", &rest, &[value("--connect"), value("--file"), flag("--sample"), value("--files"), value("--allow")])?;
+            let allow = allow_classes(&rest)?;
+            let files = match arg_value(&rest, "--files") {
+                Some(dir) => Some(mailcraft_mcp::files::FilesDir::new(std::path::Path::new(&dir)).map_err(|e| format!("mcp: {e}"))?),
+                None => None,
+            };
             let backend: Box<dyn mailcraft_mcp::Backend> = match arg_value(&rest, "--connect") {
-                Some(addr) => {
-                    Box::new(mailcraft_mcp::Remote::connect(&addr).map_err(|e| format!("mcp: can't reach the MailCraft app at {addr}: {e}"))?)
-                }
+                Some(addr) => Box::new(
+                    mailcraft_mcp::Remote::connect(&addr)
+                        .map_err(|e| format!("mcp: can't reach the MailCraft app at {addr}: {e}"))?
+                        .with_allow(allow.clone()),
+                ),
                 None => {
                     let session = match (arg_value(&rest, "--file"), rest.iter().any(|a| a == "--sample")) {
                         (Some(f), _) => open(&f)?,
                         (None, true) => sample(),
                         (None, false) => Session::empty(),
                     };
-                    Box::new(mailcraft_mcp::Headless { session })
+                    Box::new(mailcraft_mcp::Headless::new(session, allow.clone()))
                 }
             };
+            let policy = mailcraft_mcp::tools::Policy { files, allow };
             // A client that hangs up ends the server quietly (`Failure::StdoutClosed`).
-            mailcraft_mcp::Server::new(backend).serve(std::io::stdin().lock(), std::io::stdout().lock())?;
+            mailcraft_mcp::Server::with_policy(backend, policy).serve(std::io::stdin().lock(), std::io::stdout().lock())?;
             Ok(())
         }
         "--version" | "-V" => write_stdout(|o| writeln!(o, "mailcraft-cli {}", env!("CARGO_PKG_VERSION"))),

@@ -15,6 +15,7 @@ macro_rules! tl {
 }
 
 mod account_setup;
+pub mod agent_gate;
 pub mod approval;
 pub mod backstage;
 mod calendar_sync;
@@ -735,8 +736,10 @@ pub struct MailApp {
     control_rx: Option<Receiver<ControlRequest>>,
     shot_token: u64,
     queued_shots: Vec<(u64, f64, u32)>,
-    pending_shots: Vec<(u64, Option<String>, std::sync::mpsc::Sender<Value>, f64)>,
+    pending_shots: Vec<(u64, Option<String>, bool, std::sync::mpsc::Sender<Value>, f64)>,
     pub(crate) synthetic: Vec<egui::Event>,
+    /// What agents want that waits for the owner's yes ([`agent_gate`]).
+    pub(crate) asking: agent_gate::Questions,
     styled: bool,
     /// The interface theme setting last installed in egui ([`theme::apply`]).
     applied_theme: Option<theme::Appearance>,
@@ -840,6 +843,7 @@ impl MailApp {
             queued_shots: Vec::new(),
             pending_shots: Vec::new(),
             synthetic: Vec::new(),
+            asking: Default::default(),
             styled: false,
             applied_theme: None,
             fonts_frames: 0,
@@ -2281,6 +2285,8 @@ impl MailApp {
         }
         dialogs::show(self, &ctx);
         reminders::show(self, &ctx);
+        // Over everything: what an agent wants that needs the owner.
+        agent_gate::show(self, &ctx);
         let title = format!("{} - MailCraft", self.title_stem());
         if title != self.sent_title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
@@ -2329,12 +2335,14 @@ impl MailApp {
                 control::Outcome::Done(v) => {
                     let _ = reply.send(v);
                 }
-                control::Outcome::Screenshot { path } => {
+                control::Outcome::Screenshot { path, inline } => {
                     self.shot_token += 1;
                     let token = self.shot_token;
                     self.queued_shots.push((token, now_ms() + 120.0, 0));
-                    self.pending_shots.push((token, path, reply, now_ms() + 8000.0));
+                    self.pending_shots.push((token, path, inline, reply, now_ms() + 8000.0));
                 }
+                // The owner is asked first; the answer goes back from there.
+                control::Outcome::Pending => {}
             }
         }
         self.control_rx = Some(rx);
@@ -2375,12 +2383,12 @@ impl MailApp {
         });
         for (token, image) in events {
             if let Some(i) = self.pending_shots.iter().position(|(t, ..)| *t == token) {
-                let (_, path, reply, _) = self.pending_shots.remove(i);
-                let _ = reply.send(control::save_screenshot(&image, path.as_deref()));
+                let (_, path, inline, reply, _) = self.pending_shots.remove(i);
+                let _ = reply.send(if inline { control::inline_screenshot(&image) } else { control::save_screenshot(&image, path.as_deref()) });
             }
         }
         let now = now_ms();
-        self.pending_shots.retain(|(_, _, reply, deadline)| {
+        self.pending_shots.retain(|(_, _, _, reply, deadline)| {
             if now < *deadline {
                 return true;
             }

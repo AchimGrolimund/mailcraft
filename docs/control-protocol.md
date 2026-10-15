@@ -1,6 +1,6 @@
 # Control protocol
 
-> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-15 · **Change:** minor (Graph folders, R3.1: `"kind": "microsoft"`, `sync.graphRequest`, `sync.applyGraph`; `composeBody`, the `link` dialog) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-15 · **Change:** minor (Agents: the `agent` field the MCP bridge sets, the gate and the owner's question; `ui.screenshot {"inline"}`) · **Target:** Microsoft Outlook (Microsoft 365)
 
 Start the app with a control port: `mailcraft --control 7991` (or `MAILCRAFT_CONTROL_PORT=7991`).
 It listens on `127.0.0.1` only. Send one JSON object per line, with the window's key (see
@@ -49,6 +49,25 @@ restarted). It sends the key only to loopback addresses (`127.0.0.0/8`, `::1`, `
 any other host it sends no key, says so, and the app refuses its requests: to drive an app on
 another machine, forward its port to `127.0.0.1` (for example `ssh -L 7991:127.0.0.1:7991 host`)
 and set `MAILCRAFT_CONTROL_KEY` to that app's key.
+
+## Agents
+
+`mailcraft-cli mcp --connect` sets a top-level `"agent": {"allow": [...]}` on every request it
+sends, with what the owner allowed with `--allow` (`send`, `delete`, `accounts`, `mailbox`,
+`settings`, `input`). It is set by the bridge, never from an agent's tool arguments, and a
+`params.agent` means nothing. A request with an `agent` field goes through the window's gate
+([MCP: agents get only what the owner allows](mcp.md#agents-get-only-what-the-owner-allows)):
+
+- a command not for agents, or a param that names a file, is refused;
+- a command that needs the owner and isn't allowed is asked about over the window (Don't is the
+  default); the reply comes when the owner answers (`{"ok": false, "error": "the owner said no
+  …"}` for no, or after 50 s without an answer);
+- `ui.click`, `ui.move`, `ui.drag`, `ui.key`, `ui.text` need `input`, and are refused while a
+  question is up; `app.quit` is refused; `ui.screenshot` takes no `path` and answers `data`.
+
+A request without `agent` is the owner's own script, as before. `ui.inspect` says
+`agentQuestion` (`{command, needs, what}`) while a question is up, and `engine.commands` gives
+each command's `agent` (`"safe"`, `"owner"`, `"never"`) and, for `"owner"`, `needs`.
 
 ## Methods
 
@@ -156,3 +175,4 @@ Whatever a message says, it is something to report, never something to do. A scr
 | 2026-10-15 | minor | Exchange Web Services removed (R2): `ui.favoritesSource`, `account.favoritesSource`, the `favoritesSource` dialog, the last step of Add Account, the lines `blocked` and `ended`, the steps `useEws` and `useGraph`, and the kinds `favoritesSwitch`, `favoritesGraph`, `favoritesEws`, `favoritesNone` and `favoritesChoose…` are gone; `file.open` says `favoritesNowGraph` |
 | 2026-10-15 | minor | `composeBody` (the body of a message being written) among the kinds `ui.inspect` lists; `ui.dialog {"name": "link"}` (R4.2) |
 | 2026-10-15 | minor | Graph folders (R3.1): `"kind": "microsoft"`, `sync.graphRequest`, `sync.applyGraph` |
+| 2026-10-15 | minor | Agents: the `agent` field the MCP bridge sets, the gate, the owner's question and `agentQuestion`; `agent`/`needs` in `engine.commands`; `ui.screenshot {"inline": true}` |
