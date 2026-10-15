@@ -53,6 +53,7 @@ fn open(path: &str) -> Result<Session, String> {
         eprintln!("warning: {path}: {} bodies or attachments are missing from its content folder, or damaged", opened.unavailable);
     }
     let mut s = Session::new(opened.mailbox);
+    s.graph_mail = graph_mail_switch();
     s.path = Some(path.into());
     Ok(s)
 }
@@ -164,6 +165,42 @@ fn write_stdout(write: impl FnOnce(&mut std::io::StdoutLock<'static>) -> std::io
     write(&mut out)?;
     out.flush()?;
     Ok(())
+}
+
+/// The switch for testing Microsoft accounts kept in step through Microsoft Graph (R3 spec S35):
+/// `MAILCRAFT_GRAPH_MAIL=1`.
+fn graph_mail_switch() -> bool {
+    std::env::var("MAILCRAFT_GRAPH_MAIL").is_ok_and(|value| value.trim() == "1")
+}
+
+/// `sync` for an account kept in step through Microsoft Graph: the folder changes made here go
+/// up and the folders are listed. The token for Graph is taken from `MAILCRAFT_ACCESS_TOKEN`, or
+/// the owner signs in on Microsoft's page (for Graph, with `Mail.ReadWrite`).
+fn sync_graph(s: &mut Session, account: mailcraft_model::Id, path: &str) -> Result<(), Failure> {
+    let request = mailcraft_engine::cmd::graph_mail::graph_mail_request(s, account)?;
+    let token = match std::env::var("MAILCRAFT_ACCESS_TOKEN") {
+        Ok(token) => token,
+        Err(_) => {
+            let mut oauth = s.mailbox.account(account).and_then(|a| a.oauth.clone()).unwrap_or_default();
+            if oauth.client_id.is_empty() {
+                let built_in = option_env!("MAILCRAFT_MS_CLIENT_ID").unwrap_or_default().to_string();
+                oauth.client_id = std::env::var("MAILCRAFT_MS_CLIENT_ID").unwrap_or(built_in);
+            }
+            let open = |url: &str| eprintln!("sync: open this page in a browser to sign in:\n{url}");
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let resource = mailcraft_net::oauth::Resource::GraphMail;
+            mailcraft_net::oauth::sign_in_for(&oauth, &request.email, &open, &cancel, resource).map_err(|e| format!("sync: {e}"))?.access
+        }
+    };
+    let result = mailcraft_net::graph::sync_folders(&token, &request);
+    let failed = !result.errors.is_empty();
+    for e in &result.errors {
+        eprintln!("sync: {e}");
+    }
+    let applied = mailcraft_engine::cmd::graph_mail::apply_graph_mail(s, result)?;
+    s.run("file.save", &json!({"path": path}))?;
+    print_json(&applied)?;
+    if failed { Err(Failure::Error("sync: finished with errors".into())) } else { Ok(()) }
 }
 
 fn print_json(v: &Value) -> Result<(), Failure> {
@@ -296,6 +333,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
                 (None, true) => sample(),
                 (None, false) => Session::new(Mailbox::with_local_account("", "")),
             };
+            s.graph_mail = graph_mail_switch();
             let print = rest.iter().any(|a| a == "--print");
             let mut i = 0;
             while let Some(a) = rest.get(i) {
@@ -331,10 +369,15 @@ fn run(args: &[String]) -> Result<(), Failure> {
                     .mailbox
                     .accounts
                     .iter()
-                    .find(|a| a.kind == mailcraft_model::AccountKind::Imap)
+                    .find(|a| a.kind.has_server())
                     .map(|a| a.id)
                     .ok_or("sync: no account in this mailbox is connected to a mail server")?,
             };
+            // An account kept in step through Microsoft Graph (R3, behind MAILCRAFT_GRAPH_MAIL=1):
+            // its folders, through Graph alone.
+            if s.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft) {
+                return sync_graph(&mut s, account, path);
+            }
             let mut request = mailcraft_engine::cmd::account::sync_request(&s, account)?;
             // Secrets come from the environment or a sign-in, never from the command line (which
             // other users can list).

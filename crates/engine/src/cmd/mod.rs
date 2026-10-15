@@ -14,6 +14,7 @@ pub mod folder;
 pub mod format;
 #[cfg(test)]
 mod format_tests;
+pub mod graph_mail;
 pub mod mail;
 pub mod people;
 #[cfg(test)]
@@ -51,6 +52,7 @@ pub fn registry() -> Registry {
     v.extend(rules::specs());
     v.extend(category::specs());
     v.extend(account::specs());
+    v.extend(graph_mail::specs());
     v.extend(remote::specs());
     Registry::new(v)
 }

@@ -104,6 +104,10 @@ const MICROSOFT_GRAPH: &str =
 /// which is where its list of categories and their colours is. Nothing that works without it
 /// depends on it: a sign-in that doesn't cover it keeps everything it had ([`refresh_graph`]).
 const MICROSOFT_GRAPH_EXTRAS: &str = "https://graph.microsoft.com/MailboxSettings.Read";
+/// What keeping a Microsoft account's folders and mail in step through Graph takes (R3): reading
+/// and changing them. Asked for only for an account that is kept in step that way
+/// ([`Resource::GraphMail`]), which only the switch for testing makes until R3.2.
+const MICROSOFT_GRAPH_MAIL: &str = "https://graph.microsoft.com/Mail.ReadWrite";
 /// And what showing the Favorites of Outlook takes on top of that, when the owner wants them:
 /// reading the mailbox's configuration items (of which one holds the list) and reading folders
 /// by name. Only ever read. Nothing else depends on them: a sign-in that doesn't cover them
@@ -170,6 +174,11 @@ pub enum Resource {
     /// Microsoft Graph ([`crate::graph`]): sending mail where SMTP is switched off, the calendar
     /// and the contacts.
     Graph,
+    /// Microsoft Graph with the folders and mail of a Microsoft account read and written through
+    /// it (`Mail.ReadWrite`, R3): only for an account kept in step through Graph, which is made
+    /// only behind the switch for testing (`MAILCRAFT_GRAPH_MAIL=1`) until the owners agree to
+    /// the permission for everybody (R3.2).
+    GraphMail,
 }
 
 /// Where a provider signs people in, and what it is asked for.
@@ -219,6 +228,7 @@ impl Endpoints {
                 let (scope, consent) = match resource {
                     Resource::Mail => (MICROSOFT_SCOPE.to_string(), format!("{MICROSOFT_GRAPH} {MICROSOFT_GRAPH_EXTRAS}")),
                     Resource::Graph => (format!("{MICROSOFT_GRAPH} {SIGN_IN_SCOPE}"), MICROSOFT_GRAPH_EXTRAS.to_string()),
+                    Resource::GraphMail => (format!("{MICROSOFT_GRAPH} {MICROSOFT_GRAPH_MAIL} {SIGN_IN_SCOPE}"), MICROSOFT_GRAPH_EXTRAS.to_string()),
                 };
                 // (With the Favorites' permissions on the same page, were that wanted: what was
                 // asked for before them is then what a refused page falls back to.)
@@ -650,7 +660,7 @@ pub fn refresh_for_at(endpoints: &Endpoints, oauth: &OAuth, refresh_token: &str,
         // The sign-in is good and Graph is what it doesn't cover: because nobody agreed to it,
         // or because the provider won't hand it to this application. Asking the owner on the
         // provider's page is how either is put right, or shown for what it is.
-        (Resource::Graph, About::Consent | About::Scope, NetError::Proto(ProtoError::Auth(why))) => {
+        (Resource::Graph | Resource::GraphMail, About::Consent | About::Scope, NetError::Proto(ProtoError::Auth(why))) => {
             // Said in a code alone, this reads like a sign-in that is over, which it isn't.
             NetError::ConsentNeeded(if why == STALE { "the sign-in doesn't cover Microsoft Graph".to_string() } else { why })
         }
@@ -687,6 +697,17 @@ pub struct GraphTokens {
 pub fn refresh_graph(oauth: &OAuth, refresh_token: &str) -> Result<GraphTokens, NetError> {
     let plain = Endpoints::for_resource(oauth, Resource::Graph);
     let all = Endpoints { scope: format!("{MICROSOFT_GRAPH} {MICROSOFT_GRAPH_EXTRAS} {SIGN_IN_SCOPE}"), ..plain.clone() };
+    refresh_graph_at(&all, &plain, &Endpoints::of(oauth), oauth, refresh_token)
+}
+
+/// [`refresh_graph`] for an account whose folders and mail are kept in step through Graph
+/// ([`Resource::GraphMail`]): the tokens are asked for with `Mail.ReadWrite` too. A sign-in that
+/// doesn't cover it gets [`NetError::ConsentNeeded`], and the owner is asked on the provider's
+/// page ([`sign_in_for`] with [`Resource::GraphMail`]); nothing is asked without it, since the
+/// account's mail can't be had any other way.
+pub fn refresh_graph_mail(oauth: &OAuth, refresh_token: &str) -> Result<GraphTokens, NetError> {
+    let plain = Endpoints::for_resource(oauth, Resource::GraphMail);
+    let all = Endpoints { scope: format!("{MICROSOFT_GRAPH} {MICROSOFT_GRAPH_MAIL} {MICROSOFT_GRAPH_EXTRAS} {SIGN_IN_SCOPE}"), ..plain.clone() };
     refresh_graph_at(&all, &plain, &Endpoints::of(oauth), oauth, refresh_token)
 }
 

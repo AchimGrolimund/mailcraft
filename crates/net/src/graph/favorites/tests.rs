@@ -342,7 +342,8 @@ fn the_stand_in_takes_only_what_the_reference_documents() {
     assert_eq!(ask("GET", "/v1.0/me/mailFolders/inbox?%24select=wellKnownName"), 400);
     assert_eq!(ask("GET", "/v1.0/me/mailFolders/inbox?%24filter=isHidden"), 400);
     assert_eq!(ask("GET", "/v1.0/me/mailFolders/Inbox"), 400);
-    assert_eq!(ask("DELETE", "/v1.0/me/mailFolders/inbox"), 405);
+    // (The special folders are not to be deleted.)
+    assert_eq!(ask("DELETE", "/v1.0/me/mailFolders/inbox"), 403);
     // Without the token it was set up with, nothing is answered.
     let stranger = Graph::at(&server.url(), "somebody-elses-token").unwrap();
     let reply = stranger.ask(&stranger.url(item), "GET", &[], None, ASK_TIMEOUT, MAX_BATCH).unwrap();

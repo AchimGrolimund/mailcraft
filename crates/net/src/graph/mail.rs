@@ -1,0 +1,412 @@
+//! A Microsoft account's folders through Microsoft Graph (R3.1; R3 spec S4, S6–S8, S14, S21).
+//!
+//! [`sync_folders`] takes a [`GraphMailRequest`] (what the engine worked out from the mailbox)
+//! and an access token, makes the folder changes it holds on the server, then lists every mail
+//! folder the mailbox has, and answers a [`GraphMailResult`] for the engine to take in. It
+//! blocks; a host calls it on a background thread.
+//!
+//! - **Asked of the server.** `GET /me/mailFolders/{well-known name}` for which folder is the
+//!   Inbox, the Drafts… and the top of the mailbox (twenty to a `$batch`); `GET /me/mailFolders`
+//!   and `GET /me/mailFolders/{id}/childFolders`, page by page, for the folders; `POST
+//!   /me/mailFolders[/{id}/childFolders]` to make one, `PATCH /me/mailFolders/{id}` to rename
+//!   one, `POST /me/mailFolders/{id}/move` to move one (Delete Folder is a move into Deleted
+//!   Items, as Outlook does), `DELETE /me/mailFolders/{id}` to delete one for good. Every
+//!   request asks for immutable ids, goes through the mailbox's gate, and is asked again or not
+//!   as [`pace`](super::pace) has it: a move or a folder that is made is never made twice by a
+//!   second try.
+//! - **The listing** is a walk of every folder's subfolders, in full, each run: folders are few,
+//!   and Graph's folder delta isn't documented to reach every depth. Hidden folders and search
+//!   folders are left out with what lies under them. A folder's name is kept whole, `/` and `\`
+//!   and all: the tree comes from where each folder was found, never from splitting a name.
+//!   A listing that doesn't get to its end says so ([`FolderListing::complete`]), and then
+//!   nothing is removed for being missing from it.
+//! - **What comes back is hostile JSON.** Every list, id and name is capped; an entry that
+//!   can't be read is passed over (and makes the listing incomplete); nothing in it is run or
+//!   fetched. No folder's name or id goes into an error or a log line.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+
+use mailcraft_model::sync::{
+    ChangeOutcome, FolderChange, FolderChangeDone, FolderListing, GraphFolder, GraphMailRequest, GraphMailResult, MAX_FOLDER_CHANGES,
+    MAX_LISTED_FOLDERS,
+};
+use mailcraft_model::{FolderKind, clean_name};
+use serde_json::{Value, json};
+
+use super::pace::{Gate, Kind, Priority, Retry};
+use super::{ASK_TIMEOUT, BATCH, BATCH_SIZE, Doing, Graph, IMMUTABLE_IDS, MAX_BATCH, MAX_PAGE, WRITE_TIMEOUT, graph_base, nonsense, text};
+use crate::NetError;
+use crate::http::{self, Reply};
+
+const MAIL_FOLDERS: &str = "/v1.0/me/mailFolders";
+/// What is asked for of each folder: no more comes down than is used.
+const FOLDER_FIELDS: &str = "id,displayName,parentFolderId,childFolderCount,isHidden";
+/// Folders asked for per page.
+const FOLDER_PAGE: &str = "100";
+/// Deepest a folder is followed (the mailbox's own limit).
+const MAX_DEPTH: usize = 32;
+/// Longest id taken from the server, and longest name sent to it.
+const MAX_ID: usize = 1_024;
+const MAX_NAME: usize = 255;
+/// The folders asked for by their well-known names, with what each is here. `msgfolderroot` is
+/// the top of the mailbox: what lies in it directly is at the top here.
+const WELL_KNOWN: [(&str, Option<FolderKind>); 8] = [
+    ("msgfolderroot", None),
+    ("inbox", Some(FolderKind::Inbox)),
+    ("drafts", Some(FolderKind::Drafts)),
+    ("sentitems", Some(FolderKind::Sent)),
+    ("deleteditems", Some(FolderKind::Deleted)),
+    ("archive", Some(FolderKind::Archive)),
+    ("junkemail", Some(FolderKind::Junk)),
+    ("outbox", Some(FolderKind::Outbox)),
+];
+
+/// Make the folder changes of `request` on the server and list the mailbox's folders, as the
+/// owner of `token` (an access token for Graph that covers `Mail.ReadWrite`).
+pub fn sync_folders(token: &str, request: &GraphMailRequest) -> GraphMailResult {
+    sync_folders_with(&graph_base(), token, request, Gate::for_mailbox(&request.email), Retry::STANDARD)
+}
+
+/// [`sync_folders`] at `base`, through `gate`, asking again as `retry` says.
+pub(crate) fn sync_folders_with(base: &str, token: &str, request: &GraphMailRequest, gate: Arc<Gate>, retry: Retry) -> GraphMailResult {
+    let mut out = GraphMailResult { account: request.account, email: request.email.clone(), ..Default::default() };
+    let priority = if request.background { Priority::Background } else { Priority::Owner };
+    let graph = match Graph::for_mail(base, token, gate.clone(), priority, retry) {
+        Ok(graph) => graph,
+        Err(e) => {
+            out.errors.push(format!("Couldn't reach Microsoft for the folders: {e}"));
+            return out;
+        }
+    };
+    let stop = |out: &mut GraphMailResult, e: &NetError| {
+        if let NetError::Busy { retry_after, .. } = e {
+            out.busy_for = Some(retry_after.unwrap_or(0).max(gate.paused_for().map_or(0, |left| u32::try_from(left.as_secs()).unwrap_or(u32::MAX))));
+        }
+        out.errors.push(format!("Couldn't bring the folders in step with Microsoft: {e}"));
+    };
+    // Which folder is which: the top of the mailbox, and the special folders.
+    let known = match well_known(&graph) {
+        Ok(known) => known,
+        Err(e) => {
+            stop(&mut out, &e);
+            return out;
+        }
+    };
+    // What was changed here goes up first: the listing then shows the server after it.
+    let mut made: HashMap<u64, String> = HashMap::new();
+    for change in request.changes.iter().take(MAX_FOLDER_CHANGES) {
+        match make_change(&graph, &known, &made, change) {
+            Ok(Some(outcome)) => {
+                if let (FolderChange::Create { folder, .. }, ChangeOutcome::Done { folder: there }) = (change, &outcome) {
+                    made.insert(*folder, there.id.clone());
+                }
+                out.changes.push(FolderChangeDone { change: change.clone(), outcome });
+            }
+            // Not now (its parent isn't on the server yet): the next run.
+            Ok(None) => {}
+            Err(e) => {
+                // The rest wait for the next run; the listing still says what the server has.
+                log::info!("graph folders: a change got no answer; the rest wait for the next run");
+                let token_refused = e.is_refused_sign_in();
+                stop(&mut out, &e);
+                if token_refused || matches!(e, NetError::Busy { .. }) {
+                    return out;
+                }
+                break;
+            }
+        }
+    }
+    match listing(&graph, &known) {
+        Ok(listing) => {
+            log::debug!("graph folders: {} listed, complete: {}", listing.folders.len(), listing.complete);
+            out.listing = Some(listing);
+        }
+        Err((listing, e)) => {
+            log::info!("graph folders: the listing was cut short ({} listed)", listing.folders.len());
+            stop(&mut out, &e);
+            if !e.is_refused_sign_in() {
+                out.listing = Some(listing);
+            }
+        }
+    }
+    out
+}
+
+/// The server's ids of the top of the mailbox and of the special folders.
+#[derive(Debug, Default)]
+struct Known {
+    root: String,
+    kinds: HashMap<String, FolderKind>,
+}
+
+impl Known {
+    /// A parent as the server has it (`msgfolderroot`'s id) as the mailbox has it (empty).
+    fn parent_here(&self, parent: &str) -> String {
+        if parent == self.root { String::new() } else { parent.to_string() }
+    }
+}
+
+/// An id as the server writes one: visible ASCII, not too long.
+fn id_of(value: &str) -> Option<String> {
+    let fits = !value.is_empty() && value.len() <= MAX_ID && value.bytes().all(|b| b.is_ascii_graphic() && !matches!(b, b'"' | b'\\'));
+    fits.then(|| value.to_string())
+}
+
+/// `GET /me/mailFolders/{name}` for every well-known name, twenty to a batch (one at a time
+/// when the server won't take a batch). Every name has to get an answer (a folder, or "there is
+/// none"): which folder is the Inbox is not guessed.
+fn well_known(graph: &Graph<'_>) -> Result<Known, NetError> {
+    let select = http::form(&[("$select", "id")]);
+    let requests: Vec<Value> = WELL_KNOWN
+        .iter()
+        .enumerate()
+        .map(|(n, (name, _))| json!({"id": n.to_string(), "method": "GET", "url": format!("/me/mailFolders/{name}?{select}"), "headers": {"Prefer": IMMUTABLE_IDS}}))
+        .collect();
+    let body = json!({"requests": requests}).to_string();
+    let reply = graph.call(Kind::Read, &graph.url(BATCH), "POST", &[("Content-Type", "application/json")], Some(&body), ASK_TIMEOUT, MAX_BATCH)?;
+    let mut answers: Vec<Option<Option<String>>> = vec![None; WELL_KNOWN.len()];
+    if reply.status == 200 {
+        let json = serde_json::from_slice::<Value>(&reply.body).unwrap_or(Value::Null);
+        let said = json.get("responses").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        for one in said.iter().take(BATCH_SIZE * 2) {
+            let n = one.get("id").and_then(Value::as_str).and_then(|n| n.parse::<usize>().ok());
+            let Some(slot) = n.and_then(|n| answers.get_mut(n)) else { continue };
+            *slot = match one.get("status").and_then(Value::as_u64) {
+                Some(200) => one.get("body").map(|body| id_of(text(body, "id"))).filter(Option::is_some),
+                // The mailbox has no such folder (an Archive, say).
+                Some(404) => Some(None),
+                _ => None,
+            };
+        }
+    } else if matches!(reply.status, 401 | 403 | 429 | 503 | 504) {
+        return Err(graph.refusal(Doing::Folders, &reply, &body));
+    }
+    // What the batch didn't settle, one at a time.
+    for ((name, _), slot) in WELL_KNOWN.iter().zip(answers.iter_mut()).filter(|(_, slot)| slot.is_none()) {
+        let url = graph.url(&format!("{MAIL_FOLDERS}/{name}?{select}"));
+        let reply = graph.call(Kind::Read, &url, "GET", &[], None, ASK_TIMEOUT, MAX_PAGE)?;
+        *slot = match reply.status {
+            200 => {
+                let json = serde_json::from_slice::<Value>(&reply.body).unwrap_or(Value::Null);
+                Some(Some(id_of(text(&json, "id")).ok_or_else(|| nonsense("Microsoft Graph named a folder without an id"))?))
+            }
+            404 => Some(None),
+            _ => return Err(graph.refusal(Doing::Folders, &reply, "")),
+        };
+    }
+    let mut known = Known::default();
+    for ((_, kind), answer) in WELL_KNOWN.iter().zip(answers) {
+        let Some(Some(id)) = answer else { continue };
+        match kind {
+            None => known.root = id,
+            Some(kind) => {
+                known.kinds.entry(id).or_insert(*kind);
+            }
+        }
+    }
+    if known.root.is_empty() {
+        return Err(nonsense("Microsoft Graph didn't say where the top of the mailbox is"));
+    }
+    Ok(known)
+}
+
+/// A folder in an answer: its id, its name, how many folders lie in it, and whether it is one
+/// that isn't shown (hidden, or a search folder). `None` for what can't be read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Entry {
+    pub id: String,
+    pub name: String,
+    pub children: u64,
+    pub unseen: bool,
+}
+
+/// [`Entry`] of one JSON value of a list, or of the answer to a change.
+pub(crate) fn entry_of(value: &Value) -> Option<Entry> {
+    let id = id_of(text(value, "id"))?;
+    let name = clean_name(&text(value, "displayName").chars().take(MAX_NAME).collect::<String>())?;
+    // A count that isn't given is read as "maybe": the folder is looked into.
+    let children = value.get("childFolderCount").map_or(Some(1), Value::as_u64)?;
+    let hidden = value.get("isHidden").and_then(Value::as_bool).unwrap_or(false);
+    let search = text(value, "@odata.type").to_ascii_lowercase().contains("mailsearchfolder");
+    Some(Entry { id, name, children, unseen: hidden || search })
+}
+
+/// Every folder of the mailbox, parents first. A listing that was cut short comes back as far
+/// as it got, with why.
+fn listing(graph: &Graph<'_>, known: &Known) -> Result<FolderListing, (FolderListing, NetError)> {
+    let query = http::form(&[("$top", FOLDER_PAGE), ("$select", FOLDER_FIELDS)]);
+    let mut out = FolderListing { folders: Vec::new(), complete: true };
+    let mut seen: HashSet<String> = HashSet::from([known.root.clone()]);
+    // Where to look next: a folder's server id (empty: the top), and how deep that is.
+    let mut queue: VecDeque<(String, usize)> = VecDeque::from([(String::new(), 0)]);
+    while let Some((parent, depth)) = queue.pop_front() {
+        let path = if parent.is_empty() {
+            format!("{MAIL_FOLDERS}?{query}")
+        } else {
+            format!("{MAIL_FOLDERS}/{}/childFolders?{query}", http::encode(&parent))
+        };
+        let mut found: Vec<Entry> = Vec::new();
+        let mut unreadable = 0usize;
+        let room = MAX_LISTED_FOLDERS.saturating_sub(out.folders.len());
+        let listed = graph.list(Doing::Folders, graph.url(&path), &[], room.saturating_add(1), &mut |value| match entry_of(value) {
+            Some(entry) => found.push(entry),
+            None => unreadable += 1,
+        });
+        match listed {
+            Ok(whole) => out.complete &= whole && unreadable == 0,
+            // The server is busy, can't be reached, or won't take the sign-in: the walk ends here.
+            Err(e) if matches!(e, NetError::Busy { .. }) || e.is_unreachable() || e.is_refused_sign_in() => {
+                out.complete = false;
+                return Err((out, e));
+            }
+            // This folder's list couldn't be had (it went while the walk was under way, or the
+            // server stumbled): what is under it isn't known, and the walk goes on.
+            Err(e) => {
+                log::debug!("graph folders: a list of subfolders couldn't be read: {e}");
+                out.complete = false;
+            }
+        }
+        for entry in found {
+            if out.folders.len() >= MAX_LISTED_FOLDERS {
+                out.complete = false;
+                break;
+            }
+            // A hidden folder or a search folder is not shown, nor what lies under it; one that
+            // came twice is the first one.
+            if entry.unseen || !seen.insert(entry.id.clone()) {
+                continue;
+            }
+            if entry.children > 0 {
+                if depth + 1 < MAX_DEPTH {
+                    queue.push_back((entry.id.clone(), depth + 1));
+                } else {
+                    out.complete = false;
+                }
+            }
+            let kind = known.kinds.get(&entry.id).copied().unwrap_or_default();
+            out.folders.push(GraphFolder { id: entry.id, parent: parent.clone(), name: entry.name, kind });
+        }
+    }
+    Ok(out)
+}
+
+/// Make one change on the server. `None` when it can't be made yet (the folder it goes in isn't
+/// on the server). An error is what stops the run's changes (busy, no answer, no sign-in).
+fn make_change(graph: &Graph<'_>, known: &Known, made: &HashMap<u64, String>, change: &FolderChange) -> Result<Option<ChangeOutcome>, NetError> {
+    // The server's id of a folder it is asked about: one it wrote, and nothing else.
+    let checked = |id: &str| id_of(id).ok_or_else(|| NetError::Config("a folder change names a folder the server can't have".into()));
+    let name_of = |name: &str| clean_name(&name.chars().take(MAX_NAME).collect::<String>());
+    match change {
+        FolderChange::Create { folder: _, name, parent, parent_folder } => {
+            let Some(name) = name_of(name) else { return Ok(Some(refused("a folder needs a name"))) };
+            let parent = match (parent.is_empty(), parent_folder) {
+                (false, _) => checked(parent)?,
+                (true, Some(local)) => match made.get(local) {
+                    Some(id) => id.clone(),
+                    None => return Ok(None),
+                },
+                (true, None) => String::new(),
+            };
+            let path = if parent.is_empty() { MAIL_FOLDERS.to_string() } else { format!("{MAIL_FOLDERS}/{}/childFolders", http::encode(&parent)) };
+            let body = json!({"displayName": name}).to_string();
+            let reply =
+                graph.call(Kind::Once, &graph.url(&path), "POST", &[("Content-Type", "application/json")], Some(&body), WRITE_TIMEOUT, MAX_PAGE)?;
+            match reply.status {
+                200 | 201 => Ok(Some(done(known, &reply, &parent)?)),
+                // There is one of that name there: an earlier try whose answer was lost, or one
+                // made elsewhere. It is that one.
+                409 => Ok(Some(match child_named(graph, known, &parent, &name)? {
+                    Some(there) => ChangeOutcome::Done { folder: there },
+                    None => refused("the server has a folder of that name there"),
+                })),
+                404 => Ok(Some(ChangeOutcome::Gone)),
+                _ => outcome_of(graph, &reply, &body),
+            }
+        }
+        FolderChange::Rename { folder: _, id, name } => {
+            let Some(name) = name_of(name) else { return Ok(Some(refused("a folder needs a name"))) };
+            let id = checked(id)?;
+            let body = json!({"displayName": name}).to_string();
+            let url = graph.url(&format!("{MAIL_FOLDERS}/{}", http::encode(&id)));
+            let reply = graph.call(Kind::Same, &url, "PATCH", &[("Content-Type", "application/json")], Some(&body), WRITE_TIMEOUT, MAX_PAGE)?;
+            match reply.status {
+                200 | 201 => Ok(Some(done_in_place(known, &reply)?)),
+                409 => Ok(Some(refused("the server has a folder of that name there"))),
+                404 | 410 => Ok(Some(ChangeOutcome::Gone)),
+                _ => outcome_of(graph, &reply, &body),
+            }
+        }
+        FolderChange::Move { folder: _, id, parent } => {
+            let id = checked(id)?;
+            let to = if parent.is_empty() { known.root.clone() } else { checked(parent)? };
+            let body = json!({"destinationId": to}).to_string();
+            let url = graph.url(&format!("{MAIL_FOLDERS}/{}/move", http::encode(&id)));
+            let reply = graph.call(Kind::Once, &url, "POST", &[("Content-Type", "application/json")], Some(&body), WRITE_TIMEOUT, MAX_PAGE)?;
+            match reply.status {
+                200 | 201 => Ok(Some(done(known, &reply, &to)?)),
+                409 => Ok(Some(refused("the server has a folder of that name there"))),
+                404 | 410 => Ok(Some(ChangeOutcome::Gone)),
+                _ => outcome_of(graph, &reply, &body),
+            }
+        }
+        FolderChange::Delete { id } => {
+            let id = checked(id)?;
+            let url = graph.url(&format!("{MAIL_FOLDERS}/{}", http::encode(&id)));
+            let reply = graph.call(Kind::Same, &url, "DELETE", &[], None, WRITE_TIMEOUT, MAX_PAGE)?;
+            match reply.status {
+                200..=299 => Ok(Some(ChangeOutcome::Done { folder: GraphFolder { id, ..Default::default() } })),
+                404 | 410 => Ok(Some(ChangeOutcome::Gone)),
+                _ => outcome_of(graph, &reply, ""),
+            }
+        }
+    }
+}
+
+fn refused(why: &str) -> ChangeOutcome {
+    ChangeOutcome::Refused { why: why.to_string() }
+}
+
+/// The folder in the answer to a change, which now lies in `parent` (a server id).
+fn done(known: &Known, reply: &Reply, parent: &str) -> Result<ChangeOutcome, NetError> {
+    let json = serde_json::from_slice::<Value>(&reply.body).unwrap_or(Value::Null);
+    let entry = entry_of(&json).ok_or_else(|| nonsense("Microsoft Graph's answer about a folder isn't one"))?;
+    let kind = known.kinds.get(&entry.id).copied().unwrap_or_default();
+    Ok(ChangeOutcome::Done { folder: GraphFolder { id: entry.id, parent: known.parent_here(parent), name: entry.name, kind } })
+}
+
+/// [`done`] for a folder that stayed where it was: the answer says where that is.
+fn done_in_place(known: &Known, reply: &Reply) -> Result<ChangeOutcome, NetError> {
+    let json = serde_json::from_slice::<Value>(&reply.body).unwrap_or(Value::Null);
+    let parent = id_of(text(&json, "parentFolderId")).unwrap_or_default();
+    done(known, reply, &parent)
+}
+
+/// What a status other than the hoped-for one means for a change: a refusal for good (said in
+/// plain words), or an error that stops the run's changes (busy, no sign-in).
+fn outcome_of(graph: &Graph<'_>, reply: &Reply, sent: &str) -> Result<Option<ChangeOutcome>, NetError> {
+    match reply.status {
+        400 => Ok(Some(refused("the server says the change isn't one it can make"))),
+        403 => Ok(Some(refused("the server says this account may not make that change"))),
+        _ => Err(graph.refusal(Doing::Folders, reply, sent)),
+    }
+}
+
+/// The folder called `name` (in any case) in `parent` (a server id; empty: the top).
+fn child_named(graph: &Graph<'_>, known: &Known, parent: &str, name: &str) -> Result<Option<GraphFolder>, NetError> {
+    let query = http::form(&[("$top", FOLDER_PAGE), ("$select", FOLDER_FIELDS)]);
+    let path =
+        if parent.is_empty() { format!("{MAIL_FOLDERS}?{query}") } else { format!("{MAIL_FOLDERS}/{}/childFolders?{query}", http::encode(parent)) };
+    let mut found = None;
+    let wanted = name.to_lowercase();
+    graph.list(Doing::Folders, graph.url(&path), &[], MAX_LISTED_FOLDERS, &mut |value| {
+        if let Some(entry) = entry_of(value).filter(|entry| found.is_none() && entry.name.to_lowercase() == wanted) {
+            let kind = known.kinds.get(&entry.id).copied().unwrap_or_default();
+            found = Some(GraphFolder { id: entry.id, parent: parent.to_string(), name: entry.name, kind });
+        }
+    })?;
+    Ok(found)
+}
+
+#[cfg(test)]
+mod tests;

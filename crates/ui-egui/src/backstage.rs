@@ -109,6 +109,7 @@ fn info(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
         };
         let detail = match a.kind {
             AccountKind::Local => tl!("On this device only: no mail server").to_string(),
+            AccountKind::Microsoft => tl!("Signs in with Microsoft · folders kept in step through Microsoft Graph (testing)").to_string(),
             AccountKind::Imap => {
                 let servers = format!(
                     "{} · {}",

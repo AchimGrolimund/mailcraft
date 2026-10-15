@@ -86,6 +86,36 @@ pub struct Folder {
     pub uid_validity: u32,
     #[serde(skip_serializing_if = "is_zero")]
     pub uid_seen: u32,
+    /// For a folder of a [`AccountKind::Microsoft`] account that the server has: what the
+    /// server calls it and what it last said of it ([`ServerFolder`]). `None` for a folder that
+    /// only exists here (one made here that the server is yet to hear of, or a folder of any
+    /// other account). A file written before this was kept has none.
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "crate::sync::lenient")]
+    pub server: Option<ServerFolder>,
+}
+
+/// A folder as a Microsoft account's server knows it (ADR 0003): its server id, which stays the
+/// same when the folder is renamed or moved, and what the server last said of its name and of
+/// the folder it lies in. A change made here is the difference between those and the folder as
+/// it is now; nothing else is kept of it.
+///
+/// The id is one mailbox's own: a folder of a shared mailbox (after beta) will also need that
+/// mailbox's address, which goes beside the id here, not into it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ServerFolder {
+    /// The server's id of the folder (Graph's immutable id).
+    pub id: String,
+    /// Its name, as the server last said.
+    pub name: String,
+    /// The server id of the folder it lies in, as the server last said; empty for one at the top
+    /// of the mailbox.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub parent: String,
+    /// Where the folder's mail goes on from next time (Graph's delta link, or the next page of a
+    /// listing that was cut short); empty until its mail has been read once (R3.2).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub delta: String,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -139,6 +169,19 @@ pub enum AccountKind {
     Local,
     /// Synchronised with an IMAP server; sends through SMTP.
     Imap,
+    /// A Microsoft account (Outlook.com, Microsoft 365) whose folders and mail are kept in step
+    /// through Microsoft Graph alone, never by IMAP or SMTP (ADR 0002). It has no server
+    /// settings and signs in with Microsoft ([`Account::oauth`]). Until R3 is whole one is made
+    /// only behind a switch for testing (`MAILCRAFT_GRAPH_MAIL=1`, R3 spec S35): without it
+    /// every account is what it was.
+    Microsoft,
+}
+
+impl AccountKind {
+    /// Whether the account is kept in step with a server (by IMAP or by Microsoft Graph).
+    pub fn has_server(self) -> bool {
+        matches!(self, AccountKind::Imap | AccountKind::Microsoft)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -297,6 +340,26 @@ pub struct OAuth {
     pub directory: Directory,
 }
 
+/// A change made here to what a Microsoft account's server has that comparing with what the
+/// server last said can't show (ADR 0003): it waits here until a run has told the server. Each
+/// names what it is about by its server id. (R3.3 adds a copy and a delete for good of a
+/// message.)
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Queued {
+    /// A folder was deleted for good here (from Deleted Items, or by emptying it): the server
+    /// deletes it too, which keeps it recoverable for the server's retention period.
+    DeleteFolder { account: Id, id: String },
+}
+
+impl Queued {
+    pub fn account(&self) -> Id {
+        match self {
+            Queued::DeleteFolder { account, .. } => *account,
+        }
+    }
+}
+
 /// A change made here to a message the mail server has, which the server is yet to be told. The
 /// next synchronisation pushes it, and it stays listed until the server has taken it on
 /// ([`crate::sync::RemoteOp`]). The server's copy is named by the path of its mailbox (`from`,
@@ -420,6 +483,10 @@ pub struct Mailbox {
     /// a server's list has been taken in.
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::sync::lenient_list")]
     pub favorites_from_server: Vec<ServerFavorites>,
+    /// Changes to what a Microsoft account's server has that its next run is to tell it and that
+    /// can't be worked out by comparing ([`Queued`]), oldest first.
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::sync::lenient_list")]
+    pub queued: Vec<Queued>,
     /// The time zone the wall-clock times of the events are written in ([`Event::start`]): the
     /// zone the calendar was shown in when they were written, by its name in the IANA database
     /// (`Europe/Berlin`) or as an offset (`UTC+05:30`). Empty in a mailbox written before zones
@@ -449,6 +516,7 @@ impl Default for Mailbox {
             event_changes: Vec::new(),
             event_checks: Vec::new(),
             favorites_from_server: Vec::new(),
+            queued: Vec::new(),
             zone: String::new(),
             next_id: 1,
         }
@@ -531,6 +599,7 @@ impl Mailbox {
         self.pending.retain(|p| p.account() != id);
         self.event_changes.retain(|change| change.account != id);
         self.event_checks.retain(|check| check.account != id);
+        self.queued.retain(|queued| queued.account() != id);
         self.favorites_from_server.retain(|list| list.account != id);
         Ok(())
     }
@@ -648,8 +717,55 @@ impl Mailbox {
         parts.join("/")
     }
 
+    /// How many folders down `id` is (1 at the top), counted by its parents: a name may hold a
+    /// `/` ([`Mailbox::names_may_hold_slashes`]).
     fn depth(&self, id: Id) -> usize {
-        self.folder_path(id).split('/').count()
+        let mut depth = 0;
+        let mut cur = Some(id);
+        while let Some(f) = cur.and_then(|c| self.folder(c)) {
+            depth += 1;
+            cur = f.parent;
+            if depth > MAX_DEPTH {
+                break;
+            }
+        }
+        depth
+    }
+
+    /// Whether the names of `account`'s folders may hold `/` (and `\`): a Microsoft account's
+    /// server allows them, and its folders are known by their server ids, never by a path. Any
+    /// other account's folders are named by their path on an IMAP server, where `/` parts them.
+    pub fn names_may_hold_slashes(&self, account: Id) -> bool {
+        self.account(account).is_some_and(|a| a.kind == AccountKind::Microsoft)
+    }
+
+    /// The folder of `account` that its server calls `id` ([`Folder::server`]).
+    pub fn folder_by_server(&self, account: Id, id: &str) -> Option<Id> {
+        if id.is_empty() {
+            return None;
+        }
+        self.folders.iter().find(|f| f.account == account && f.server.as_ref().is_some_and(|s| s.id == id)).map(|f| f.id)
+    }
+
+    /// Remove exactly the folders `gone` with the mail in them: what a Microsoft account's server
+    /// no longer has (R3 spec S8). A folder under one of them that isn't itself among them goes up
+    /// to the top of its account rather than with it. Nothing is told to any server.
+    pub fn remove_folders(&mut self, gone: &[Id]) {
+        if gone.is_empty() {
+            return;
+        }
+        let gone: HashSet<Id> = gone.iter().copied().collect();
+        self.folders.retain(|f| !gone.contains(&f.id));
+        for f in &mut self.folders {
+            if f.parent.is_some_and(|p| gone.contains(&p)) {
+                f.parent = None;
+            }
+        }
+        self.messages.retain(|_, m| !gone.contains(&m.folder));
+        for list in &mut self.favorites_from_server {
+            list.folders.retain(|folder| !gone.contains(folder));
+        }
+        self.pending.retain(|p| !matches!(p, Pending::Move { to, .. } if gone.contains(to)));
     }
 
     fn name_taken(&self, account: Id, parent: Option<Id>, name: &str, except: Option<Id>) -> bool {
@@ -661,7 +777,7 @@ impl Mailbox {
     /// Create a folder under `parent` (or at the account's top level).
     pub fn add_folder(&mut self, account: Id, parent: Option<Id>, name: &str) -> Result<Id, ModelError> {
         let name = clean_name(name).ok_or_else(|| invalid("a folder needs a name"))?;
-        if name.contains('/') {
+        if name.contains('/') && !self.names_may_hold_slashes(account) {
             return Err(invalid("a folder name can't contain /"));
         }
         if self.account(account).is_none() {
@@ -687,10 +803,10 @@ impl Mailbox {
     /// Rename a folder the user made (standard folders keep their names).
     pub fn rename_folder(&mut self, id: Id, name: &str) -> Result<(), ModelError> {
         let name = clean_name(name).ok_or_else(|| invalid("a folder needs a name"))?;
-        if name.contains('/') {
+        let f = self.folder(id).ok_or(not_found("folder", id))?;
+        if name.contains('/') && !self.names_may_hold_slashes(f.account) {
             return Err(invalid("a folder name can't contain /"));
         }
-        let f = self.folder(id).ok_or(not_found("folder", id))?;
         if f.kind != FolderKind::Custom {
             return Err(invalid(format!("{} can't be renamed", f.name)));
         }
@@ -729,9 +845,12 @@ impl Mailbox {
     /// Delete a folder the user made: it moves into Deleted Items with its messages; a folder
     /// already there is removed for good. Returns `true` when it was removed permanently.
     ///
-    /// None of this is pushed to a mail server (a mailbox there stays, and comes back as a
-    /// folder with the next synchronisation); the changes still waiting to be pushed that
-    /// mention a removed folder are dropped with it.
+    /// For an IMAP account none of this is pushed to the mail server (a mailbox there stays, and
+    /// comes back as a folder with the next synchronisation); the changes still waiting to be
+    /// pushed that mention a removed folder are dropped with it. For a Microsoft account the move
+    /// into Deleted Items is the change its next run sends (the folder's parent differs from what
+    /// the server last said), and a folder removed for good is queued for the server to delete
+    /// ([`Queued::DeleteFolder`]), as Outlook does (ADR 0003).
     pub fn delete_folder(&mut self, id: Id) -> Result<bool, ModelError> {
         let f = self.folder(id).ok_or(not_found("folder", id))?.clone();
         if f.kind != FolderKind::Custom {
@@ -758,6 +877,18 @@ impl Mailbox {
                 let gone = self.subtree(id);
                 let remotes: Vec<String> =
                     self.folders.iter().filter(|f| gone.contains(&f.id) && !f.remote.is_empty()).map(|f| f.remote.clone()).collect();
+                // The server deletes what it has of them: each folder it has whose parent it
+                // doesn't have among them (deleting that takes what is under it along).
+                if self.names_may_hold_slashes(f.account) {
+                    let on_server = |p: Id| gone.contains(&p) && self.folder(p).is_some_and(|parent| parent.server.is_some());
+                    let deletes: Vec<Queued> = self
+                        .folders
+                        .iter()
+                        .filter(|g| gone.contains(&g.id) && (g.id == id || !g.parent.is_some_and(on_server)))
+                        .filter_map(|g| g.server.as_ref().map(|server| Queued::DeleteFolder { account: f.account, id: server.id.clone() }))
+                        .collect();
+                    self.queued.extend(deletes);
+                }
                 self.folders.retain(|f| !gone.contains(&f.id));
                 self.messages.retain(|_, m| !gone.contains(&m.folder));
                 for list in &mut self.favorites_from_server {

@@ -958,7 +958,14 @@ impl AccountSetup {
             said => said,
         };
         let added = match self.add_command(&tokens.name) {
-            Some((command, params)) => app.execute(command, params),
+            Some((command, mut params)) => {
+                // With the switch for testing on, a Microsoft account is kept in step through
+                // Microsoft Graph, without mail servers (R3, MAILCRAFT_GRAPH_MAIL=1).
+                if app.session.graph_mail && self.oauth.as_ref().is_some_and(|o| o.provider == mailcraft_model::OAuthProvider::Microsoft) {
+                    params["kind"] = json!("microsoft");
+                }
+                app.execute(command, params)
+            }
             None => Err(tl!("Check the account's settings").to_string()),
         };
         match added.map(|v| v.get("id").and_then(Value::as_u64)) {
@@ -2134,6 +2141,44 @@ mod tests {
         assert!(says(&h, "Noor@Example.org is set up") && says(&h, "Your mail is downloading now"));
         click(&mut h, "Done");
         assert_eq!(page(&h), None);
+    }
+
+    /// (R3.1) With the switch for testing on, the same account is kept in step through Microsoft
+    /// Graph: signed in for Graph with its mail, no mail servers, and its first run a Graph job.
+    #[test]
+    fn behind_the_switch_a_microsoft_account_is_kept_in_step_through_graph() {
+        let mut a = app(false);
+        a.session.graph_mail = true;
+        a.services.microsoft_client_id = APP_ID.into();
+        lookups(&mut a, Some(Ok(vec![MICROSOFT_MX])));
+        let asked: Log<(bool, bool)> = Default::default();
+        let log = asked.clone();
+        a.services.sign_in = Some(Box::new(move |req: SignInRequest| {
+            log.lock().unwrap().push((req.graph, req.mail_write));
+            let (tx, rx) = mpsc::channel();
+            tx.send(Ok(signed_in("Noor Haddad"))).unwrap();
+            rx
+        }));
+        let imap = syncs(&mut a);
+        let jobs: Log<(String, String, Option<mailcraft_model::sync::GraphMailRequest>)> = Default::default();
+        let log = jobs.clone();
+        a.services.graph = Some(Box::new(move |req: crate::GraphRequest| {
+            log.lock().unwrap().push((req.access.clone(), req.refresh.clone(), req.mail.clone()));
+            mpsc::channel().1
+        }));
+        let mut h = open(a, json!({}));
+        connect(&mut h, "Noor@Example.org");
+        h.run_steps(4);
+        assert_eq!(page(&h), Some(Page::Done));
+        assert_eq!(*asked.lock().unwrap(), [(true, true)]);
+        let account = h.state().session.mailbox.accounts[0].clone();
+        assert_eq!((account.kind, account.incoming.is_none(), account.outgoing.is_none()), (AccountKind::Microsoft, true, true));
+        // No IMAP: one Graph job, its token renewed for it, with the folders to list.
+        assert!(imap.lock().unwrap().is_empty());
+        let jobs = jobs.lock().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!((jobs[0].0.as_str(), jobs[0].1.as_str()), ("", "ref-1"));
+        assert_eq!(jobs[0].2.as_ref().map(|mail| (mail.account, mail.email.as_str())), Some((account.id, "Noor@Example.org")));
     }
 
     /// (a, continued) What can go wrong on the way, and the ways on from there.

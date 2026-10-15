@@ -178,6 +178,10 @@ pub struct MailFolder {
     /// The well-known name it also answers to (`inbox`, `sentitems`, `msgfolderroot`…); empty
     /// for a folder that has none.
     pub well_known: String,
+    /// It is hidden (`isHidden`): a list leaves it out unless hidden folders are asked for.
+    pub hidden: bool,
+    /// It is a search folder (`#microsoft.graph.mailSearchFolder`).
+    pub search: bool,
 }
 
 /// One entry of the Favorites, as the cached configuration of Outlook on the web lists it.
@@ -249,7 +253,8 @@ pub struct State {
     /// It says yes to a change of an event's time and leaves the time as it was.
     pub keeps_times: bool,
     /// What it answers to the next requests of a method instead of doing them: the method, the
-    /// status and the name of the error.
+    /// status and the name of the error. (A method may be followed by a path, `POST /v1.0/me/mailFolders`,
+    /// for the requests of that method to that address only.)
     pub fail_next: Vec<(String, u16, String)>,
     /// It lets a change say whether another time may be proposed (`allowNewTimeProposals`),
     /// which the reference lists for a new event and not for an update. Otherwise a change that
@@ -282,6 +287,17 @@ pub struct State {
     /// How many questions about a folder to come are told to come back later (429, with a
     /// `Retry-After`) instead of being answered.
     pub throttle_folders: usize,
+    /// How many seconds a request that is told to come back later is told to wait (`Retry-After`);
+    /// `None` for one.
+    pub retry_after: Option<u32>,
+    /// Lists of folders include hidden ones even when they aren't asked for (`includeHiddenFolders`).
+    /// (A client has to leave them out either way.)
+    pub lists_hidden: bool,
+    /// Most folders a page of a list of folders holds, whatever `$top` asked for; 0 for as asked.
+    pub folder_page: usize,
+    /// The folders whose list of subfolders can't be had just now (500): a walk of the folders is
+    /// cut short there.
+    pub broken_lists: Vec<String>,
     /// The prefixes the document writes its two namespaces with (`a` and `b` unless said).
     pub prefixes: (String, String),
     before: Option<Vec<Stored>>,
@@ -737,7 +753,7 @@ impl State {
         self.made += 1;
         let id = format!("AQMkAGV4YW1wbGUtb3JnLW1haWxib3gtZm9sZGVycwAuAAADk1v_Qx7RkS-nTtqB3L0d9EBAFh2c-Kp_0aTmWvN4uYx1RoAAAIB{:04}AAAA=", self.made);
         let parent = parent.map(str::to_string).unwrap_or_else(|| self.well_known("msgfolderroot"));
-        self.folders.push(MailFolder { id: id.clone(), name: name.to_string(), parent, well_known: String::new() });
+        self.folders.push(MailFolder { id: id.clone(), name: name.to_string(), parent, ..Default::default() });
         id
     }
 
@@ -823,6 +839,45 @@ impl State {
 
     /// `GET /me/mailFolders/{id}`: the folder, with the properties that were asked for by name.
     fn mail_folder_read(&mut self, asked: &Asked, named: &str) -> Result<Answer, Refusal> {
+        if let Some((other, _)) = asked.query.iter().find(|(name, _)| name != "$select") {
+            return Err(bad(format!("The query parameter '{other}' is not one this stand-in answers for a mail folder.")));
+        }
+        let select: Option<Vec<&str>> = asked.param("$select").map(|names| names.split(',').map(str::trim).collect());
+        if let Some(unknown) = select.iter().flatten().find(|name| !MAIL_FOLDER_PROPERTIES.contains(name)) {
+            return Err(refuse(400, "BadRequest", format!("Could not find a property named '{unknown}' on type 'microsoft.graph.mailFolder'.")));
+        }
+        let folder = self.mail_folder(named)?.clone();
+        let mut all = self.folder_json(&folder, select.as_deref());
+        all["@odata.context"] = json!(format!("{}/v1.0/$metadata#users('me')/mailFolders/$entity", self.base));
+        Ok((200, Some(all)))
+    }
+
+    /// A folder as Graph writes one, with only the properties `select` names (and its id) when
+    /// it names any.
+    fn folder_json(&self, folder: &MailFolder, select: Option<&[&str]>) -> Value {
+        let children = self.folders.iter().filter(|other| other.parent == folder.id).count();
+        let mut all = json!({
+            "id": folder.id,
+            "displayName": folder.name,
+            "parentFolderId": folder.parent,
+            "childFolderCount": children,
+            "unreadItemCount": 0,
+            "totalItemCount": 0,
+            "sizeInBytes": 0,
+            "isHidden": folder.hidden,
+        });
+        if let (Some(select), Some(map)) = (select, all.as_object_mut()) {
+            map.retain(|name, _| name == "id" || select.contains(&name.as_str()));
+        }
+        if folder.search {
+            all["@odata.type"] = json!("#microsoft.graph.mailSearchFolder");
+        }
+        all
+    }
+
+    /// Everything under `/v1.0/me/mailFolders`: a list of folders, one folder, and what is done to
+    /// one. Every one of them may be refused (403) or told to come back later (429).
+    fn mail_folders(&mut self, asked: &Asked, method: &str, folder: Option<&str>, rest: &[&str]) -> Result<Answer, Refusal> {
         if self.folders_denied {
             return Err(refuse(403, "ErrorAccessDenied", "Access is denied. Check credentials and try again."));
         }
@@ -834,30 +889,192 @@ impl State {
                 "Application is over its MailboxConcurrency limit while the request was being processed.",
             ));
         }
-        if let Some((other, _)) = asked.query.iter().find(|(name, _)| name != "$select") {
-            return Err(bad(format!("The query parameter '{other}' is not one this stand-in answers for a mail folder.")));
+        let root = self.well_known("msgfolderroot");
+        match (method, folder, rest) {
+            ("GET", None, []) => self.folder_list(asked, &root),
+            ("POST", None, []) => self.folder_create(asked, &root),
+            ("GET", Some(named), []) => self.mail_folder_read(asked, named),
+            ("PATCH", Some(named), []) => self.folder_rename(asked, named),
+            ("DELETE", Some(named), []) => self.folder_delete(named),
+            ("GET", Some(named), ["childFolders"]) => {
+                let id = self.mail_folder(named)?.id.clone();
+                self.folder_list(asked, &id)
+            }
+            ("POST", Some(named), ["childFolders"]) => {
+                let id = self.mail_folder(named)?.id.clone();
+                self.folder_create(asked, &id)
+            }
+            ("POST", Some(named), ["move"]) => self.folder_move(asked, named),
+            (_, _, [] | ["childFolders"] | ["move"]) => Err(refuse(405, "MethodNotAllowed", "The method is not allowed on this resource.")),
+            (_, _, [other, ..]) => Err(refuse(400, "BadRequest", format!("Resource not found for the segment '{other}'."))),
+        }
+    }
+
+    /// The folders that lie in `parent`, in pages: hidden ones only when they are asked for.
+    fn folder_list(&self, asked: &Asked, parent: &str) -> Result<Answer, Refusal> {
+        if self.broken_lists.iter().any(|broken| broken == parent) {
+            return Err(refuse(500, "ErrorInternalServerError", "An internal server error occurred. The operation failed."));
+        }
+        if let Some((other, _)) = asked.query.iter().find(|(name, _)| !["$select", "$top", "$skip", "includeHiddenFolders"].contains(&name.as_str()))
+        {
+            return Err(bad(format!("The query parameter '{other}' is not one this stand-in answers for a list of folders.")));
         }
         let select: Option<Vec<&str>> = asked.param("$select").map(|names| names.split(',').map(str::trim).collect());
         if let Some(unknown) = select.iter().flatten().find(|name| !MAIL_FOLDER_PROPERTIES.contains(name)) {
             return Err(refuse(400, "BadRequest", format!("Could not find a property named '{unknown}' on type 'microsoft.graph.mailFolder'.")));
         }
-        let folder = self.mail_folder(named)?;
-        let children = self.folders.iter().filter(|other| other.parent == folder.id).count();
-        let mut all = json!({
-            "@odata.context": format!("{}/v1.0/$metadata#users('me')/mailFolders/$entity", self.base),
-            "id": folder.id,
-            "displayName": folder.name,
-            "parentFolderId": folder.parent,
-            "childFolderCount": children,
-            "unreadItemCount": 0,
-            "totalItemCount": 0,
-            "sizeInBytes": 0,
-            "isHidden": false,
-        });
-        if let (Some(select), Some(map)) = (&select, all.as_object_mut()) {
-            map.retain(|name, _| name == "@odata.context" || name == "id" || select.contains(&name.as_str()));
+        let hidden = self.lists_hidden || asked.param("includeHiddenFolders") == Some("true");
+        let entries: Vec<Value> = self
+            .folders
+            .iter()
+            .filter(|folder| folder.parent == parent && (hidden || !folder.hidden))
+            .map(|folder| self.folder_json(folder, select.as_deref()))
+            .collect();
+        let number = |name: &str| asked.param(name).map(|n| n.parse::<usize>().map_err(|_| bad(format!("The value of '{name}' is not a number."))));
+        let top = number("$top").transpose()?.unwrap_or(PAGE);
+        if !(1..=1_000).contains(&top) {
+            return Err(bad("The value of '$top' must be between 1 and 1000."));
         }
-        Ok((200, Some(all)))
+        let top = if self.folder_page > 0 { top.min(self.folder_page) } else { top };
+        let skip = number("$skip").transpose()?.unwrap_or(0);
+        let total = entries.len();
+        let page: Vec<Value> = entries.into_iter().skip(skip).take(top).collect();
+        let mut list = json!({"@odata.context": format!("{}/v1.0/$metadata#users('me')/mailFolders", self.base), "value": page});
+        if skip.saturating_add(top) < total {
+            let path = asked.target.split('?').next().unwrap_or("");
+            let mut query: Vec<(String, String)> = asked.query.iter().filter(|(name, _)| name != "$skip" && name != "$top").cloned().collect();
+            query.push(("$top".into(), top.to_string()));
+            query.push(("$skip".into(), (skip + top).to_string()));
+            let pairs: Vec<(&str, &str)> = query.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect();
+            list["@odata.nextLink"] = json!(format!("{}{path}?{}", self.base, crate::http::form(&pairs)));
+        }
+        Ok((200, Some(list)))
+    }
+
+    /// Whether `parent` has a folder called `name` (in any case) other than `except`.
+    fn name_taken(&self, parent: &str, name: &str, except: &str) -> bool {
+        self.folders.iter().any(|folder| folder.parent == parent && folder.id != except && folder.name.to_lowercase() == name.to_lowercase())
+    }
+
+    /// The `displayName` of a body that may say nothing else (`isHidden` too, when `hidden` may).
+    fn display_name(asked: &Asked, hidden: bool) -> Result<String, Refusal> {
+        let body = asked.json();
+        let Some(map) = body.as_object() else { return Err(bad("The body of the request is not a JSON object.")) };
+        if let Some(other) = map.keys().find(|key| *key != "displayName" && !(hidden && *key == "isHidden")) {
+            return Err(bad(format!("The property '{other}' does not exist on type 'microsoft.graph.mailFolder' or can't be written.")));
+        }
+        match map.get("displayName").and_then(Value::as_str) {
+            Some(name) if !name.trim().is_empty() => Ok(name.to_string()),
+            _ => Err(bad("A folder needs a displayName.")),
+        }
+    }
+
+    /// `POST …/childFolders` (or `POST /me/mailFolders`, at the top): a new folder, 201.
+    fn folder_create(&mut self, asked: &Asked, parent: &str) -> Result<Answer, Refusal> {
+        let name = State::display_name(asked, true)?;
+        if self.name_taken(parent, &name, "") {
+            return Err(refuse(409, "ErrorFolderExists", "A folder with the specified name already exists."));
+        }
+        let hidden = asked.json().get("isHidden").and_then(Value::as_bool).unwrap_or(false);
+        let id = self.add_folder(&name, Some(parent));
+        let folder = self.folders.iter_mut().find(|folder| folder.id == id).ok_or_else(not_found)?;
+        folder.hidden = hidden;
+        let folder = folder.clone();
+        Ok((201, Some(self.folder_json(&folder, None))))
+    }
+
+    /// `PATCH /me/mailFolders/{id}`: its name, 200. The special folders keep theirs.
+    fn folder_rename(&mut self, asked: &Asked, named: &str) -> Result<Answer, Refusal> {
+        let name = State::display_name(asked, false)?;
+        let folder = self.mail_folder(named)?.clone();
+        if !folder.well_known.is_empty() {
+            return Err(refuse(403, "ErrorAccessDenied", "Access is denied. Check credentials and try again."));
+        }
+        if self.name_taken(&folder.parent, &name, &folder.id) {
+            return Err(refuse(409, "ErrorFolderExists", "A folder with the specified name already exists."));
+        }
+        self.rename_folder(&folder.id, &name);
+        let folder = self.mail_folder(&folder.id)?.clone();
+        Ok((200, Some(self.folder_json(&folder, None))))
+    }
+
+    /// `POST /me/mailFolders/{id}/move` with a `destinationId` (an id or a well-known name): 201.
+    fn folder_move(&mut self, asked: &Asked, named: &str) -> Result<Answer, Refusal> {
+        let body = asked.json();
+        let keys: Vec<&String> = body.as_object().map(|map| map.keys().collect()).unwrap_or_default();
+        let Some(to) = body.get("destinationId").and_then(Value::as_str).filter(|_| keys.len() == 1) else {
+            return Err(bad("A move takes a destinationId and nothing else."));
+        };
+        let folder = self.mail_folder(named)?.clone();
+        let destination = self.mail_folder(to)?.id.clone();
+        if !folder.well_known.is_empty() {
+            return Err(refuse(403, "ErrorAccessDenied", "Access is denied. Check credentials and try again."));
+        }
+        if self.under(&destination, &folder.id) {
+            return Err(bad("A folder can't be moved into itself."));
+        }
+        if self.name_taken(&destination, &folder.name, &folder.id) {
+            return Err(refuse(409, "ErrorFolderExists", "A folder with the specified name already exists."));
+        }
+        self.move_folder(&folder.id, &destination);
+        let folder = self.mail_folder(&folder.id)?.clone();
+        Ok((201, Some(self.folder_json(&folder, None))))
+    }
+
+    /// `DELETE /me/mailFolders/{id}`: into Deleted Items; from there (or under it), gone with
+    /// everything under it. 204.
+    fn folder_delete(&mut self, named: &str) -> Result<Answer, Refusal> {
+        let folder = self.mail_folder(named)?.clone();
+        if !folder.well_known.is_empty() {
+            return Err(refuse(403, "ErrorAccessDenied", "Access is denied. Check credentials and try again."));
+        }
+        let deleted = self.well_known("deleteditems");
+        if self.under(&folder.id, &deleted) {
+            self.remove_folder(&folder.id);
+        } else {
+            self.move_folder(&folder.id, &deleted);
+        }
+        Ok((204, None))
+    }
+
+    /// Whether the folder `id` is `ancestor` or lies somewhere under it.
+    pub fn under(&self, id: &str, ancestor: &str) -> bool {
+        let mut at = id.to_string();
+        for _ in 0..64 {
+            if at == ancestor {
+                return true;
+            }
+            match self.folders.iter().find(|folder| folder.id == at) {
+                Some(folder) => at = folder.parent.clone(),
+                None => return false,
+            }
+        }
+        false
+    }
+
+    /// The folder called `name`, wherever it is.
+    pub fn folder_named(&self, name: &str) -> Option<&MailFolder> {
+        self.folders.iter().find(|folder| folder.name == name)
+    }
+
+    /// Rename the folder `id` (as another program would).
+    pub fn rename_folder(&mut self, id: &str, name: &str) {
+        if let Some(folder) = self.folders.iter_mut().find(|folder| folder.id == id) {
+            folder.name = name.to_string();
+        }
+    }
+
+    /// Put the folder `id` in `parent` (as another program would).
+    pub fn move_folder(&mut self, id: &str, parent: &str) {
+        if let Some(folder) = self.folders.iter_mut().find(|folder| folder.id == id) {
+            folder.parent = parent.to_string();
+        }
+    }
+
+    /// Take the folder `id` away with everything under it (as another program would).
+    pub fn remove_folder(&mut self, id: &str) {
+        let gone: Vec<String> = self.folders.iter().filter(|folder| self.under(&folder.id, id)).map(|folder| folder.id.clone()).collect();
+        self.folders.retain(|folder| !gone.contains(&folder.id));
     }
 
     /// `/beta/me/mailFolders/{folder}/userConfigurations…`: the cached configuration of Outlook
@@ -1408,7 +1625,8 @@ impl State {
         if asked.header("authorization") != format!("Bearer {}", self.token) {
             return Err(refuse(401, "InvalidAuthenticationToken", "Access token validation failure."));
         }
-        if let Some(at) = self.fail_next.iter().position(|(method, _, _)| *method == asked.method) {
+        let aimed = format!("{} /{}", asked.method, asked.path.join("/"));
+        if let Some(at) = self.fail_next.iter().position(|(method, _, _)| *method == asked.method || *method == aimed) {
             let (_, status, code) = self.fail_next.remove(at);
             let code: &'static str = match code.as_str() {
                 "TooManyRequests" => "TooManyRequests",
@@ -1428,8 +1646,8 @@ impl State {
             ("POST", ["v1.0", "$batch"]) => self.batch(asked),
             // (User configurations are in the beta version only.)
             (_, ["beta", "me", "mailFolders", rest @ ..]) => self.user_configuration(asked, method, rest),
-            (_, ["v1.0", "me", "mailFolders", folder]) if method == "GET" => self.mail_folder_read(asked, folder),
-            (_, ["v1.0", "me", "mailFolders", _]) => Err(refuse(405, "MethodNotAllowed", "The method is not allowed on this resource.")),
+            (_, ["v1.0", "me", "mailFolders"]) => self.mail_folders(asked, method, None, &[]),
+            (_, ["v1.0", "me", "mailFolders", folder, rest @ ..]) => self.mail_folders(asked, method, Some(folder), rest),
             (_, ["v1.0", "me", rest @ ..]) => self.me(asked, method, rest),
             (_, [first, ..]) => Err(refuse(400, "BadRequest", format!("Resource not found for the segment '{first}'."))),
             _ => Err(refuse(400, "BadRequest", "Resource not found.")),
@@ -1775,7 +1993,7 @@ impl State {
             self.requests.push(one);
             // A request that is told to come back later says when among its own headers.
             let headers = if status == 429 || status == 503 {
-                json!({"Content-Type": "application/json", "Retry-After": "1"})
+                json!({"Content-Type": "application/json", "Retry-After": self.retry_after.unwrap_or(1).to_string()})
             } else {
                 json!({"Content-Type": "application/json"})
             };
@@ -1860,6 +2078,7 @@ impl StandIn {
             name: "Top of Information Store".into(),
             parent: "AQMkAGV4YW1wbGUtb3JnLW1haWxib3gtZm9sZGVycwAuAAADk1v_Qx7RkS-nTtqB3L0d9EBAFh2c-Kp_0aTmWvN4uYx1RoAAAIBAQAAAA==".into(),
             well_known: "msgfolderroot".into(),
+            ..Default::default()
         };
         state.folders.push(top);
         let special = [
@@ -1889,6 +2108,7 @@ impl StandIn {
                 };
                 asked.status = status;
                 state.requests.push(asked);
+                let wait = state.retry_after.unwrap_or(1);
                 drop(state);
                 let reason = match status {
                     200 => "OK",
@@ -1899,10 +2119,12 @@ impl StandIn {
                     401 => "Unauthorized",
                     403 => "Forbidden",
                     404 => "Not Found",
+                    405 => "Method Not Allowed",
+                    409 => "Conflict",
                     429 => "Too Many Requests",
                     _ => "Other",
                 };
-                let retry = if status == 429 || status == 503 { "Retry-After: 1\r\n" } else { "" };
+                let retry = if status == 429 || status == 503 { format!("Retry-After: {wait}\r\n") } else { String::new() };
                 let answer = match body {
                     Some(body) => {
                         let body = body.to_string();
