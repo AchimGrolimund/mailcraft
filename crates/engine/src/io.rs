@@ -14,9 +14,17 @@ pub const MAX_FILE: u64 = 512 << 20;
 /// The mailbox file's extension.
 pub const MAILBOX_EXT: &str = "mailcraft";
 
+/// How a mailbox file in format 3 begins: the form a desktop program keeps it in, a log of
+/// records beside a folder of content (`crate::store`). One self-contained file is JSON.
+pub const INDEX_MAGIC: &[u8; 16] = b"MailCraft index\n";
+
+/// The message for a mailbox file that keeps its content in a folder beside it, read without it.
+const KEPT_BESIDE: &str = "this mailbox file keeps its messages' content in a folder beside it; open it where it is kept, or save it as one file first (File › Open & Export › Save Mailbox As)";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
-    /// A MailCraft mailbox (`.mailcraft`, JSON; kept on disk with a content folder beside it).
+    /// A MailCraft mailbox (`.mailcraft`: one JSON file, or a log of records with a content folder
+    /// beside it, `crate::store`).
     Mailbox,
     /// One Internet message.
     Eml,
@@ -40,8 +48,12 @@ impl Format {
         }
     }
 
-    /// The format by name, else by what the bytes start with.
+    /// The format by name, else by what the bytes start with. A mailbox file in format 3 is a
+    /// mailbox whatever it is called (none of the other formats starts like one).
     pub fn detect(name: &str, bytes: &[u8]) -> Option<Format> {
+        if bytes.starts_with(INDEX_MAGIC) {
+            return Some(Format::Mailbox);
+        }
         if let Some(f) = Format::from_extension(name) {
             return Some(f);
         }
@@ -76,15 +88,13 @@ impl Format {
 /// (`crate::store`); the file alone isn't the mailbox, and is opened by path instead
 /// ([`open_path`]).
 pub fn read_mailbox(bytes: &[u8]) -> Result<Mailbox, String> {
+    if bytes.starts_with(INDEX_MAGIC) {
+        return Err(KEPT_BESIDE.into());
+    }
     let mut mb: Mailbox = serde_json::from_slice(bytes).map_err(|e| format!("this isn't a MailCraft mailbox ({e})"))?;
     match mb.version {
         0 | 1 => {}
-        2 => {
-            return Err(
-                "this mailbox file keeps its messages' content in a folder beside it; open it where it is kept, or save it as one file first (File › Open & Export › Save Mailbox As)"
-                    .into(),
-            );
-        }
+        2 => return Err(KEPT_BESIDE.into()),
         newer => return Err(format!("this mailbox was written by a newer MailCraft (format {newer})")),
     }
     for line in mb.repair() {

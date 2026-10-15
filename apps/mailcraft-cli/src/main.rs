@@ -606,7 +606,7 @@ mod tests {
         let kept = file("kept.mailcraft");
         run(&strings(&["import", &kept, &eml])).unwrap();
         assert!(std::path::Path::new(&format!("{kept}.blobs")).is_dir());
-        assert!(!std::fs::read_to_string(&kept).unwrap().contains("Line 150 of a long message"));
+        assert!(!String::from_utf8_lossy(&std::fs::read(&kept).unwrap()).contains("Line 150 of a long message"));
         let s = open(&kept).unwrap();
         let wrote = long.replace("\r\n", "\n");
         let text = |s: &Session| s.mailbox.messages.values().next().unwrap().body.text.replace("\r\n", "\n");
