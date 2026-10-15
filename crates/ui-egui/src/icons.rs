@@ -634,6 +634,17 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
             pen.line_c(&[(10.5, 10.5), (17.0, 17.0)], red);
         }
         "formatHtml" => pen.text(10.0, 10.0, 8.5, "</>", c, true),
+        "increaseIndent" | "decreaseIndent" => {
+            pen.line(&[(3.0, 4.0), (17.0, 4.0)]);
+            pen.line(&[(9.5, 8.0), (17.0, 8.0)]);
+            pen.line(&[(9.5, 12.0), (17.0, 12.0)]);
+            pen.line(&[(3.0, 16.0), (17.0, 16.0)]);
+            if name == "increaseIndent" {
+                pen.fill(&[(3.0, 7.0), (7.0, 10.0), (3.0, 13.0)], a);
+            } else {
+                pen.fill(&[(7.0, 7.0), (3.0, 10.0), (7.0, 13.0)], a);
+            }
+        }
         "formatPlain" => {
             pen.line(&[(4.0, 5.5), (16.0, 5.5)]);
             pen.line(&[(4.0, 10.0), (16.0, 10.0)]);
@@ -826,4 +837,6 @@ pub const NAMES: &[&str] = &[
     "clearFormatting",
     "formatHtml",
     "formatPlain",
+    "increaseIndent",
+    "decreaseIndent",
 ];

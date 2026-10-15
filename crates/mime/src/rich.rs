@@ -11,43 +11,83 @@
 //! alignment and everything else are dropped.
 
 use mailcraft_html::{Block, BlockKind, Marker, Span};
-use mailcraft_model::rich::{ListKind, MAX_SIZE, MIN_SIZE, Paragraph, RichText, Run, Style, safe_link};
+use mailcraft_model::rich::{ListKind, MAX_LEVEL, MAX_SIZE, MIN_SIZE, Paragraph, RichText, Run, Style, safe_link};
 
-/// The text as an HTML fragment (what goes inside `<body>`).
+/// The text as an HTML fragment (what goes inside `<body>`). A list item a level deeper than the
+/// one before it is in a list of its own inside that item (`<ul><li>a<ul><li>b</li></ul></li></ul>`),
+/// as Outlook, Word and the web's editors write nested lists.
 pub fn to_html(text: &RichText) -> String {
     let mut out = String::new();
-    let mut open: Option<ListKind> = None;
-    for p in text.paragraphs() {
-        if open != Some(p.list) {
-            close_list(&mut out, open);
-            open = match p.list {
-                ListKind::None => None,
-                ListKind::Bullet => {
-                    out.push_str("<ul style=\"margin-top:0;margin-bottom:0\">");
-                    Some(ListKind::Bullet)
-                }
-                ListKind::Numbered => {
-                    out.push_str("<ol style=\"margin-top:0;margin-bottom:0\">");
-                    Some(ListKind::Numbered)
-                }
-            };
+    // The lists open, outermost first: each with its kind and whether an item of it is open.
+    let mut open: Vec<(ListKind, bool)> = Vec::new();
+    let paragraphs = text.paragraphs();
+    for (i, p) in paragraphs.iter().enumerate() {
+        if p.list == ListKind::None {
+            close_to(&mut out, &mut open, 0);
+            out.push_str("<div>");
+            paragraph(&mut out, p);
+            out.push_str("</div>\r\n");
+            continue;
         }
-        let tag = if p.list == ListKind::None { "div" } else { "li" };
-        out.push('<');
-        out.push_str(tag);
-        out.push('>');
-        if p.is_empty() {
-            out.push_str("<br>");
-        } else {
-            runs(&mut out, p);
+        let depth = usize::from(p.level.min(MAX_LEVEL)) + 1;
+        close_to(&mut out, &mut open, depth);
+        // A list of the other kind at this level ends the one that is open there.
+        if open.len() == depth && open.last().is_some_and(|(kind, _)| *kind != p.list) {
+            close_to(&mut out, &mut open, depth - 1);
         }
-        out.push_str("</");
-        out.push_str(tag);
-        out.push('>');
+        // The item before at this level ends here.
+        if open.len() == depth
+            && let Some((_, item)) = open.last_mut()
+            && *item
+        {
+            out.push_str("</li>");
+            *item = false;
+        }
+        while open.len() < depth {
+            out.push_str(if p.list == ListKind::Numbered {
+                "<ol style=\"margin-top:0;margin-bottom:0\">"
+            } else {
+                "<ul style=\"margin-top:0;margin-bottom:0\">"
+            });
+            open.push((p.list, false));
+        }
+        out.push_str("<li>");
+        if let Some((_, item)) = open.last_mut() {
+            *item = true;
+        }
+        paragraph(&mut out, p);
+        // The item stays open for a deeper list that follows it.
+        let deeper = paragraphs.get(i + 1).is_some_and(|next| next.list != ListKind::None && next.level > p.level);
+        if !deeper {
+            out.push_str("</li>");
+            if let Some((_, item)) = open.last_mut() {
+                *item = false;
+            }
+        }
         out.push_str("\r\n");
     }
-    close_list(&mut out, open);
+    close_to(&mut out, &mut open, 0);
     out
+}
+
+/// Close lists (and their open items) until `depth` are left open.
+fn close_to(out: &mut String, open: &mut Vec<(ListKind, bool)>, depth: usize) {
+    while open.len() > depth {
+        let Some((kind, item)) = open.pop() else { break };
+        if item {
+            out.push_str("</li>");
+        }
+        out.push_str(if kind == ListKind::Numbered { "</ol>" } else { "</ul>" });
+    }
+}
+
+/// A paragraph's runs, or a line break for an empty one.
+fn paragraph(out: &mut String, p: &Paragraph) {
+    if p.is_empty() {
+        out.push_str("<br>");
+    } else {
+        runs(out, p);
+    }
 }
 
 /// A whole HTML document holding the text, and under it `below` as it is (a quoted original).
@@ -60,14 +100,6 @@ pub fn to_html_document(text: &RichText, below: Option<&str>) -> String {
     }
     out.push_str("</body></html>\r\n");
     out
-}
-
-fn close_list(out: &mut String, open: Option<ListKind>) {
-    match open {
-        Some(ListKind::Bullet) => out.push_str("</ul>"),
-        Some(ListKind::Numbered) => out.push_str("</ol>"),
-        _ => {}
-    }
 }
 
 /// The runs of a paragraph. White space is kept as typed: a space at the start or the end of the
@@ -176,13 +208,14 @@ impl Reader {
                 }
                 BlockKind::Rule | BlockKind::Image { .. } => {}
                 kind => {
-                    let list = match kind {
-                        BlockKind::ListItem { marker: Marker::Bullet, .. } => ListKind::Bullet,
-                        BlockKind::ListItem { marker: Marker::Number(_) | Marker::Label(_), .. } => ListKind::Numbered,
-                        _ => ListKind::None,
+                    // A nested list keeps its level, as deep as the model goes.
+                    let (list, level) = match kind {
+                        BlockKind::ListItem { marker: Marker::Bullet, depth } => (ListKind::Bullet, *depth),
+                        BlockKind::ListItem { marker: Marker::Number(_) | Marker::Label(_), depth } => (ListKind::Numbered, *depth),
+                        _ => (ListKind::None, 0),
                     };
                     self.gap(b.space);
-                    self.paragraph(&b.spans, list);
+                    self.paragraph(&b.spans, list, level.min(MAX_LEVEL));
                 }
             }
         }
@@ -198,7 +231,7 @@ impl Reader {
         }
     }
 
-    fn paragraph(&mut self, spans: &[Span], list: ListKind) {
+    fn paragraph(&mut self, spans: &[Span], list: ListKind, level: u8) {
         let mut cur: Vec<Run> = Vec::new();
         for span in spans {
             let style = Style {
@@ -211,12 +244,12 @@ impl Reader {
             let text = span.text.replace('\u{a0}', " ");
             for (i, line) in text.split('\n').enumerate() {
                 if i > 0 {
-                    self.out.push(Paragraph::new(std::mem::take(&mut cur), list));
+                    self.out.push(Paragraph::new(std::mem::take(&mut cur), list).at_level(level));
                 }
                 cur.push(Run::new(line, style.clone()));
             }
         }
-        self.out.push(Paragraph::new(cur, list));
+        self.out.push(Paragraph::new(cur, list).at_level(level));
     }
 }
 

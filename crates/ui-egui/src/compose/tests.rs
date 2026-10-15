@@ -335,3 +335,105 @@ fn a_long_message_lays_out_only_what_changes() {
     // Generous: a debug build on whatever machine runs the tests.
     assert!(t0.elapsed().as_secs() < 20, "{:?}", t0.elapsed());
 }
+
+/// A clipboard that takes HTML, as the desktop's does: what was put on it, and what it holds.
+#[derive(Clone, Default)]
+struct Board(std::rc::Rc<std::cell::RefCell<(Vec<(String, String)>, Option<String>)>>);
+
+impl crate::RichClipboard for Board {
+    fn put(&self, html: &str, text: &str) -> Result<(), String> {
+        self.0.borrow_mut().0.push((html.to_string(), text.to_string()));
+        Ok(())
+    }
+    fn html(&self) -> Option<String> {
+        self.0.borrow().1.clone()
+    }
+}
+
+#[test]
+fn copy_puts_html_and_text_on_the_clipboard_and_paste_takes_html_first() {
+    let board = Board::default();
+    let mut a = app();
+    a.services.clipboard = Some(Box::new(board.clone()));
+    a.execute("mail.new", json!({"to": "maya@lumen.example"})).unwrap();
+    a.execute("compose.set", json!({"body": "Plan\nfirst\nsecond"})).unwrap();
+    a.execute("format.bold", json!({"from": 0, "to": 4})).unwrap();
+    a.execute("format.numbering", json!({"from": 5, "to": 17})).unwrap();
+    a.execute("format.indent", json!({"from": 11, "to": 11})).unwrap();
+    a.execute("compose.select", json!({"from": 0, "to": 17})).unwrap();
+    a.body_focus_wanted = true;
+    let mut h = window(a);
+    h.run_steps(2);
+    h.event(Event::Copy);
+    h.run_steps(2);
+    let (html, text) = board.0.borrow().0.last().cloned().expect("the selection went on the clipboard");
+    assert_eq!(text, "Plan\n1. first\n   1. second");
+    assert!(html.starts_with("<div><b>Plan</b></div>") && html.contains("<ol style=\"margin-top:0;margin-bottom:0\"><li>first\r\n<ol"), "{html}");
+    // Nothing went through egui's text clipboard as well (it would take the HTML's place).
+    assert!(!h.output().platform_output.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(_))));
+    // A paste takes the clipboard's HTML (reduced to the set) over the text egui read.
+    key_with(&mut h, Modifiers::CTRL, Key::End);
+    key(&mut h, Key::Enter);
+    key(&mut h, Key::Enter);
+    board.0.borrow_mut().1 = Some("<p>Then <i>this</i><script>x()</script></p><ul><li>a<ul><li>b</li></ul></li></ul>".into());
+    h.event(Event::Paste("text that is not used".into()));
+    h.run_steps(2);
+    let body = h.state().session.compose.as_ref().unwrap().body.clone();
+    // (The paragraph and the list are a blank line apart, as a reader shows them.)
+    assert!(body.plain().ends_with("second\nThen this\n\na\nb"), "{:?}", body.plain());
+    let n = body.text().paragraphs().len();
+    let tail: Vec<(ListKind, u8)> = body.text().paragraphs()[n - 2..].iter().map(|p| (p.list, p.level)).collect();
+    assert_eq!(tail, [(ListKind::Bullet, 0), (ListKind::Bullet, 1)]);
+    assert!(body.text().paragraphs()[n - 4].runs.iter().any(|r| r.style.italic && r.text == "this"));
+    // Without HTML on it, the text.
+    board.0.borrow_mut().1 = None;
+    h.event(Event::Paste("!".into()));
+    h.run_steps(2);
+    assert!(plain(&h).ends_with("b!"));
+    // Cut: on the clipboard, and out of the text.
+    key_with(&mut h, Modifiers::SHIFT, Key::ArrowLeft);
+    h.event(Event::Cut);
+    h.run_steps(2);
+    assert_eq!(board.0.borrow().0.last().map(|(_, t)| t.as_str()), Some("   - !"), "a piece of an item is copied as one");
+    assert!(plain(&h).ends_with("\nb"));
+}
+
+#[test]
+fn tab_takes_a_list_item_a_level_deeper_and_shift_tab_out() {
+    let mut h = writing();
+    h.state_mut().run("format.numbering", json!({})).unwrap();
+    h.run_steps(2);
+    type_in(&mut h, "one");
+    key(&mut h, Key::Enter);
+    key(&mut h, Key::Tab);
+    type_in(&mut h, "one.one");
+    key(&mut h, Key::Enter);
+    type_in(&mut h, "one.two");
+    let levels = |h: &Window| h.state().session.compose.as_ref().unwrap().body.text().paragraphs().iter().map(|p| p.level).collect::<Vec<_>>();
+    assert_eq!(levels(&h), [0, 1, 1], "Enter goes on at the same level");
+    assert_eq!(plain(&h), "one\none.one\none.two", "Tab at an item's start is no tab character");
+    assert_eq!(mailcraft_model::rich::numbers(h.state().session.compose.as_ref().unwrap().body.text().paragraphs()), [1, 1, 2]);
+    // Tab inside an item's text is a tab; the ribbon buttons do what the keys do.
+    type_in(&mut h, "");
+    key(&mut h, Key::Tab);
+    assert!(plain(&h).ends_with("one.two\t"));
+    key(&mut h, Key::Backspace);
+    h.state_mut().run("format.indent", json!({})).unwrap();
+    h.run_steps(2);
+    assert_eq!(levels(&h), [0, 1, 2]);
+    assert!(editor::has_focus(&h.ctx));
+    key_with(&mut h, Modifiers::SHIFT, Key::Tab);
+    key_with(&mut h, Modifiers::SHIFT, Key::Tab);
+    assert_eq!(levels(&h), [0, 1, 0]);
+    key_with(&mut h, Modifiers::SHIFT, Key::Tab);
+    assert_eq!(kinds(&h), [ListKind::Numbered, ListKind::Numbered, ListKind::None]);
+    // Enter on an empty item a level deep: a level out, then out of the list.
+    key(&mut h, Key::ArrowUp);
+    key(&mut h, Key::End);
+    key(&mut h, Key::Enter);
+    assert_eq!((levels(&h), kinds(&h)[2]), (vec![0, 1, 1, 0], ListKind::Numbered));
+    key(&mut h, Key::Enter);
+    assert_eq!(levels(&h), [0, 1, 0, 0]);
+    key(&mut h, Key::Enter);
+    assert_eq!(kinds(&h)[2], ListKind::None);
+}

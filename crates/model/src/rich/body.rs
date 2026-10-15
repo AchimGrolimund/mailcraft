@@ -194,7 +194,12 @@ impl RichBody {
             && self.text.list_at(sel.head) != ListKind::None
             && self.text.paragraph_is_empty(sel.head)
         {
-            self.edit(false, |t, _| t.set_list(sel.head, sel.head, ListKind::None))?;
+            // A level out first, then out of the list.
+            if self.text.level_at(sel.head) > 0 {
+                self.edit(false, |t, _| t.indent(sel.head, sel.head, -1).map(|_| ()))?;
+            } else {
+                self.edit(false, |t, _| t.set_list(sel.head, sel.head, ListKind::None))?;
+            }
             self.typing = None;
             return Ok(());
         }
@@ -392,6 +397,28 @@ impl RichBody {
         self.edit(false, |t, _| t.set_list(sel.start(), sel.end(), now))?;
         self.typing = None;
         Ok(now)
+    }
+
+    /// Move the list items the selection touches a level deeper (`by` 1) or shallower (-1); an
+    /// item at the outermost level that goes shallower leaves its list. Whether anything changed.
+    pub fn indent(&mut self, by: i8) -> Result<bool, ModelError> {
+        let sel = self.selection;
+        let before = self.text.clone();
+        self.edit(false, |t, _| {
+            let touched: Vec<usize> = t.pieces(sel.start(), sel.end())?.iter().map(|(i, _, _)| *i).collect();
+            t.indent(sel.start(), sel.end(), by)?;
+            if by < 0 {
+                for i in touched {
+                    let outermost = before.paragraphs.get(i).is_some_and(|b| b.list != ListKind::None && b.level == 0);
+                    if let Some(p) = t.paragraphs.get_mut(i).filter(|_| outermost) {
+                        p.list = ListKind::None;
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        self.typing = None;
+        Ok(self.text != before)
     }
 
     /// Plain text again: the selection loses its formatting and its paragraphs their bullets

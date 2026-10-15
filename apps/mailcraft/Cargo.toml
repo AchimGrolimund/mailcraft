@@ -52,6 +52,10 @@ keyring = { version = "3.6", default-features = false, features = ["windows-nati
 # so neither building nor installing needs a system library, and the secret travels to the
 # service encrypted (a Diffie-Hellman session, RustCrypto) rather than in the clear.
 keyring = { version = "3.6", default-features = false, features = ["async-secret-service", "async-io", "crypto-rust"] }
+# Under Wayland the clipboard is the compositor's (its data-control protocol, which KDE Plasma
+# and the wlroots compositors have); where it isn't offered (GNOME), arboard falls back to the
+# X11 clipboard through XWayland.
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd = { workspace = true }
@@ -64,3 +68,7 @@ getrandom = "0.3"
 # could be started (egui's own way of opening a link doesn't). Already in the tree: eframe's
 # `links` feature runs on it.
 webbrowser = "1.2"
+# The system's clipboard with HTML on it, for copying and pasting formatted text in a message
+# being written (egui's own clipboard carries text only). Already in the tree: egui's window
+# layer copies text through it.
+arboard = { version = "3.6", default-features = false }

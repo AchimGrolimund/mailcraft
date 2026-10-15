@@ -37,6 +37,9 @@ pub const MAX_SIZE: u8 = 36;
 /// Longest link address, in bytes.
 pub const MAX_LINK: usize = 2048;
 
+/// The deepest a list item may be indented: levels 0 (the outermost) to this, eight in all.
+pub const MAX_LEVEL: u8 = 7;
+
 /// What a paragraph is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,8 +49,8 @@ pub enum ListKind {
     None,
     /// An item of a bulleted list.
     Bullet,
-    /// An item of a numbered list; the number is its place among the numbered paragraphs right
-    /// above it.
+    /// An item of a numbered list; the number is its place among the numbered items of its level
+    /// right above it (see [`numbers`]).
     Numbered,
 }
 
@@ -137,13 +140,21 @@ impl Run {
     }
 }
 
-/// One paragraph: its runs, and whether it is a list item.
+/// One paragraph: its runs, whether it is a list item, and how deep in its list.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Paragraph {
     pub runs: Vec<Run>,
     #[serde(skip_serializing_if = "is_none_list")]
     pub list: ListKind,
+    /// How deep a list item is indented, 0 to [`MAX_LEVEL`]; always 0 for an ordinary paragraph.
+    /// (Stored before levels existed, it is missing, and 0.)
+    #[serde(skip_serializing_if = "is_zero")]
+    pub level: u8,
+}
+
+fn is_zero(n: &u8) -> bool {
+    *n == 0
 }
 
 fn is_none_list(l: &ListKind) -> bool {
@@ -152,9 +163,16 @@ fn is_none_list(l: &ListKind) -> bool {
 
 impl Paragraph {
     pub fn new(runs: Vec<Run>, list: ListKind) -> Paragraph {
-        let mut p = Paragraph { runs, list };
+        let mut p = Paragraph { runs, list, level: 0 };
         p.normalize();
         p
+    }
+
+    /// The same paragraph at a level of its list (kept within 0 to [`MAX_LEVEL`]; an ordinary
+    /// paragraph has none).
+    pub fn at_level(mut self, level: u8) -> Paragraph {
+        self.level = if self.list == ListKind::None { 0 } else { level.min(MAX_LEVEL) };
+        self
     }
 
     /// The paragraph's text without formatting.
@@ -211,7 +229,7 @@ impl Paragraph {
     fn split_off(&mut self, offset: usize) -> Paragraph {
         let i = self.split_at(offset);
         let tail = if i < self.runs.len() { self.runs.split_off(i) } else { Vec::new() };
-        Paragraph { runs: tail, list: self.list }
+        Paragraph { runs: tail, list: self.list, level: self.level }
     }
 
     /// The style of the character before `offset`, or of the first character at the start.
@@ -334,13 +352,14 @@ impl RichText {
         let mut out: Vec<Paragraph> = Vec::new();
         let mut budget = MAX_CHARS;
         'all: for p in paragraphs {
-            let mut cur = Paragraph { runs: Vec::new(), list: p.list };
+            let level = if p.list == ListKind::None { 0 } else { p.level.min(MAX_LEVEL) };
+            let mut cur = Paragraph { runs: Vec::new(), list: p.list, level };
             for run in p.runs {
                 let style = run.style.clean();
                 for (i, line) in lines(&run.text).into_iter().enumerate() {
                     if i > 0 {
                         cur.normalize();
-                        out.push(std::mem::replace(&mut cur, Paragraph { runs: Vec::new(), list: p.list }));
+                        out.push(std::mem::replace(&mut cur, Paragraph { runs: Vec::new(), list: p.list, level }));
                         budget = budget.saturating_sub(1);
                         if out.len() >= MAX_PARAGRAPHS || budget == 0 {
                             break 'all;
@@ -393,21 +412,20 @@ impl RichText {
     /// address after its text when the text doesn't say it.
     pub fn to_plain(&self) -> String {
         let mut out = String::new();
-        let mut number = 0u32;
+        let numbers = numbers(&self.paragraphs);
         for (i, p) in self.paragraphs.iter().enumerate() {
             if i > 0 {
                 out.push('\n');
             }
+            if p.list != ListKind::None {
+                for _ in 0..p.level {
+                    out.push_str("   ");
+                }
+            }
             match p.list {
-                ListKind::None => number = 0,
-                ListKind::Bullet => {
-                    number = 0;
-                    out.push_str("- ");
-                }
-                ListKind::Numbered => {
-                    number = number.saturating_add(1);
-                    out.push_str(&format!("{number}. "));
-                }
+                ListKind::None => {}
+                ListKind::Bullet => out.push_str("- "),
+                ListKind::Numbered => out.push_str(&format!("{}. ", numbers.get(i).copied().unwrap_or(1))),
             }
             for run in &p.runs {
                 out.push_str(&run.text);
@@ -421,6 +439,11 @@ impl RichText {
             }
         }
         out
+    }
+
+    /// The level of the list item `pos` is in (0 outside a list).
+    pub fn level_at(&self, pos: usize) -> u8 {
+        self.locate(pos).ok().and_then(|(p, _)| self.paragraphs.get(p)).map_or(0, |p| p.level)
     }
 
     /// Paragraph and offset of a position.
@@ -552,9 +575,11 @@ impl RichText {
     /// it goes into. The position after it.
     pub fn insert(&mut self, at: usize, text: &str, style: &Style) -> Result<usize, ModelError> {
         let (p, _) = self.locate(at)?;
-        let list = self.paragraphs.get(p).map_or(ListKind::None, |p| p.list);
+        let (list, level) = self.paragraphs.get(p).map_or((ListKind::None, 0), |p| (p.list, p.level));
         let style = style.clone().clean();
-        let fragment = RichText::from_paragraphs(lines(text).into_iter().map(|l| Paragraph::new(vec![Run::new(l, style.clone())], list)).collect());
+        let fragment = RichText::from_paragraphs(
+            lines(text).into_iter().map(|l| Paragraph::new(vec![Run::new(l, style.clone())], list).at_level(level)).collect(),
+        );
         self.insert_rich(at, &fragment)
     }
 
@@ -575,6 +600,7 @@ impl RichText {
         let Some(first) = parts.next() else { return Ok(at) };
         if off == 0 && first.list != ListKind::None {
             target.list = first.list;
+            target.level = first.level;
         }
         target.runs.extend(first.runs);
         let rest: Vec<Paragraph> = parts.collect();
@@ -650,9 +676,26 @@ impl RichText {
         for (i, _, _) in self.pieces(from, to)? {
             if let Some(p) = self.paragraphs.get_mut(i) {
                 p.list = kind;
+                if kind == ListKind::None {
+                    p.level = 0;
+                }
             }
         }
         Ok(())
+    }
+
+    /// Move the list items `[from, to)` touches `by` levels deeper (or shallower when negative),
+    /// within 0 to [`MAX_LEVEL`]. Ordinary paragraphs stay as they are. Whether anything moved.
+    pub fn indent(&mut self, from: usize, to: usize, by: i8) -> Result<bool, ModelError> {
+        let mut moved = false;
+        for (i, _, _) in self.pieces(from, to)? {
+            if let Some(p) = self.paragraphs.get_mut(i).filter(|p| p.list != ListKind::None) {
+                let level = p.level.saturating_add_signed(by).min(MAX_LEVEL);
+                moved |= level != p.level;
+                p.level = level;
+            }
+        }
+        Ok(moved)
     }
 
     /// Make the text `text` with as small an edit as there is: the characters both share at the
@@ -674,6 +717,36 @@ impl RichText {
         *self = next;
         Ok(())
     }
+}
+
+/// The number of each paragraph that is an item of a numbered list (0 for the others), as the
+/// window, the plain-text part and the HTML part (`<ol>` in `<ol>`) all number them: an item
+/// counts on from the item before it at its level, and a list starts again at 1 after anything
+/// that ends it there: an ordinary paragraph, an item of the other kind at that level, or an item
+/// at a shallower level.
+pub fn numbers(paragraphs: &[Paragraph]) -> Vec<u32> {
+    // Per level: the kind of the list open there, and how far it has counted.
+    let mut open: Vec<(ListKind, u32)> = Vec::new();
+    paragraphs
+        .iter()
+        .map(|p| {
+            if p.list == ListKind::None {
+                open.clear();
+                return 0;
+            }
+            let level = usize::from(p.level.min(MAX_LEVEL));
+            open.truncate(level + 1);
+            while open.len() <= level {
+                open.push((ListKind::None, 0));
+            }
+            let Some(here) = open.get_mut(level) else { return 0 };
+            if here.0 != p.list {
+                *here = (p.list, 0);
+            }
+            here.1 = here.1.saturating_add(1);
+            if p.list == ListKind::Numbered { here.1 } else { 0 }
+        })
+        .collect()
 }
 
 #[cfg(test)]

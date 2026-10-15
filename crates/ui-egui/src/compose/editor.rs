@@ -21,7 +21,7 @@ use egui::text::{CCursor, LayoutJob, TextFormat};
 use egui::{Align2, Event, Galley, Key, Modifiers, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
 use mailcraft_engine::BodyFormat;
 use mailcraft_model::RichText;
-use mailcraft_model::rich::{ListKind, Paragraph, Selection, Style};
+use mailcraft_model::rich::{ListKind, Paragraph, Selection, Style, numbers};
 use serde_json::{Value, json};
 
 use crate::MailApp;
@@ -30,8 +30,13 @@ use crate::theme::{Tokens, regular, semibold};
 /// The message's own font size on screen, in points (the reading pane's).
 pub const BASE_SIZE: f32 = 13.0;
 
-/// How far a list item's text stands in, its bullet or number in that room.
+/// How far a list item's text stands in for each level, its bullet or number in the last step.
 const INDENT: f32 = 28.0;
+
+/// How far the text of a paragraph stands in: list items by their level.
+fn indent_of(p: &Paragraph) -> f32 {
+    if p.list == ListKind::None { 0.0 } else { INDENT * (f32::from(p.level) + 1.0) }
+}
 
 /// Longest text an input method is shown composing.
 const MAX_PREEDIT: usize = 256;
@@ -106,7 +111,7 @@ struct Para {
 
 impl Para {
     fn indent(&self) -> f32 {
-        if self.source.list == ListKind::None { 0.0 } else { INDENT }
+        indent_of(&self.source)
     }
 
     fn height(&self) -> f32 {
@@ -145,24 +150,6 @@ pub(crate) struct Layout {
     laid: usize,
 }
 
-/// The number of each numbered paragraph, as the plain-text part and the HTML number them.
-fn numbers(paragraphs: &[Paragraph]) -> Vec<u32> {
-    let mut n = 0u32;
-    paragraphs
-        .iter()
-        .map(|p| match p.list {
-            ListKind::Numbered => {
-                n = n.saturating_add(1);
-                n
-            }
-            _ => {
-                n = 0;
-                0
-            }
-        })
-        .collect()
-}
-
 impl Layout {
     /// Bring the layout up to `doc`: the paragraphs that changed (and only those) are laid out
     /// again. Whether anything did.
@@ -199,7 +186,7 @@ impl Layout {
     }
 
     fn lay(&mut self, ctx: &egui::Context, p: &Paragraph, number: u32, plain: bool, t: &Tokens, width: f32) -> Para {
-        let indent = if p.list == ListKind::None { 0.0 } else { INDENT };
+        let indent = indent_of(p);
         let mut job = LayoutJob::default();
         job.wrap.max_width = (width - indent).max(24.0);
         for run in &p.runs {
@@ -470,16 +457,30 @@ pub(crate) fn show(app: &mut MailApp, ui: &mut Ui, min_height: f32, take_focus: 
                     st.preedit = text.chars().take(MAX_PREEDIT).collect();
                     None
                 }
-                Event::Copy | Event::Cut => {
-                    if !sel.is_empty()
-                        && let Some(c) = app.session.compose.as_ref()
-                        && let Ok(part) = c.body.text().slice(sel.start(), sel.end())
-                    {
-                        ctx.copy_text(part.to_plain());
+                Event::Copy | Event::Cut if !sel.is_empty() => {
+                    // HTML of the set and its text, through the host's clipboard where it has
+                    // one that takes HTML (the desktop); egui's takes the text.
+                    let cut = matches!(event, Event::Cut);
+                    if let Ok(got) = app.execute(if cut { "edit.cut" } else { "edit.copy" }, json!({})) {
+                        let text = got.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+                        let html = got.get("html").and_then(Value::as_str);
+                        let put = match (&app.services.clipboard, html) {
+                            (Some(board), Some(html)) => board.put(html, &text),
+                            _ => Err(String::new()),
+                        };
+                        if put.is_err() {
+                            ctx.copy_text(text);
+                        }
+                        reveal = true;
                     }
-                    (matches!(event, Event::Cut) && !sel.is_empty()).then(|| Ask { command: "compose.delete", params: json!({}) })
+                    None
                 }
-                Event::Paste(text) => ask("edit.paste", json!({"text": text})),
+                // What is pasted comes as HTML when the clipboard has some (reduced to the set
+                // by `edit.paste`), else as the text egui read from it.
+                Event::Paste(text) => match app.services.clipboard.as_ref().and_then(|board| board.html()).filter(|h| !h.trim().is_empty()) {
+                    Some(html) => ask("edit.paste", json!({"html": html})),
+                    None => ask("edit.paste", json!({"text": text})),
+                },
                 Event::Key { key, pressed: true, modifiers, .. } => {
                     let (asked, vertical) = key_press(&layout, &mut st, sel, plain, key, modifiers, page);
                     if !vertical {
@@ -524,13 +525,28 @@ pub(crate) fn show(app: &mut MailApp, ui: &mut Ui, min_height: f32, take_focus: 
         let row = p.galley.rows.first().map_or(Rect::from_min_size(at, vec2(0.0, p.height())), |r| r.rect().translate(at.to_vec2()));
         let ink = if plain { t.text } else { p.source.runs.first().map_or(t.text, |r| if r.style.link.is_some() { t.accent_text } else { t.text }) };
         let size = if plain { BASE_SIZE } else { on_screen(p.source.runs.first().and_then(|r| r.style.size)) };
+        // The marker stands in the last step of the indent: a bullet of the level's kind (filled
+        // circle, open circle, square, and round again), or the item's number.
+        let step = origin.x + p.indent() - INDENT;
         match p.source.list {
             ListKind::None => {}
             ListKind::Bullet => {
-                painter.circle_filled(pos2(origin.x + INDENT * 0.45, row.center().y), (size * 0.19).clamp(2.0, 5.0), ink);
+                let c = pos2(step + INDENT * 0.45, row.center().y);
+                let r = (size * 0.19).clamp(2.0, 5.0);
+                match p.source.level % 3 {
+                    0 => {
+                        painter.circle_filled(c, r, ink);
+                    }
+                    1 => {
+                        painter.circle_stroke(c, r * 0.9, Stroke::new(1.0, ink));
+                    }
+                    _ => {
+                        painter.rect_filled(Rect::from_center_size(c, vec2(r * 1.6, r * 1.6)), 0.0, ink);
+                    }
+                }
             }
             ListKind::Numbered => {
-                painter.text(pos2(origin.x + INDENT - 7.0, row.center().y), Align2::RIGHT_CENTER, format!("{}.", p.number), regular(size), ink);
+                painter.text(pos2(step + INDENT - 7.0, row.center().y), Align2::RIGHT_CENTER, format!("{}.", p.number), regular(size), ink);
             }
         }
     }
@@ -664,13 +680,18 @@ fn key_press(layout: &Layout, st: &mut State, sel: Selection, plain: bool, key: 
         Key::Backspace => ask("compose.delete", json!({})),
         Key::Delete if sel.is_empty() && word && head < len => ask("compose.delete", json!({"from": head, "to": layout.word_right(head)})),
         Key::Delete => ask("compose.delete", json!({"forward": true})),
-        Key::Tab if !m.command && !m.alt && !m.shift => ask("compose.type", json!({"text": "\t"})),
-        // Shift+Tab takes an item out of its list (there is one level of list).
-        Key::Tab if m.shift && !plain => match layout.para_at(head).map(|p| p.source.list) {
-            Some(ListKind::Bullet) => ask("format.bullets", json!({})),
-            Some(ListKind::Numbered) => ask("format.numbering", json!({})),
-            _ => None,
-        },
+        // In a list, Tab at an item's start (or over a selection) takes it a level deeper and
+        // Shift+Tab a level out (out of the list from the outermost); elsewhere Tab is a tab.
+        Key::Tab if !m.command && !m.alt && !m.shift => {
+            let in_list = layout.para_at(head).is_some_and(|p| p.source.list != ListKind::None);
+            let at_start = layout.paragraph_ends(head).0 == head;
+            if in_list && !plain && (at_start || !sel.is_empty()) {
+                ask("format.indent", json!({}))
+            } else {
+                ask("compose.type", json!({"text": "\t"}))
+            }
+        }
+        Key::Tab if m.shift && !plain && layout.para_at(head).is_some_and(|p| p.source.list != ListKind::None) => ask("format.outdent", json!({})),
         _ => None,
     };
     (asked, false)
@@ -679,15 +700,6 @@ fn key_press(layout: &Layout, st: &mut State, sel: Selection, plain: bool, key: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mailcraft_model::rich::Run;
-
-    #[test]
-    fn numbers_start_again_after_anything_else() {
-        let p = |list| Paragraph::new(vec![Run::plain("x")], list);
-        let doc =
-            [p(ListKind::Numbered), p(ListKind::Numbered), p(ListKind::Bullet), p(ListKind::Numbered), p(ListKind::None), p(ListKind::Numbered)];
-        assert_eq!(numbers(&doc), [1, 2, 0, 1, 0, 1]);
-    }
 
     #[test]
     fn words_are_letters_and_digits() {

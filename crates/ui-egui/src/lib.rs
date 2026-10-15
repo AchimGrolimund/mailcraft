@@ -148,6 +148,18 @@ pub struct Services {
     /// ("I'm an administrator"). The answer arrives through the channel and the host wakes the
     /// UI. Absent in the browser.
     pub admin_consent: Option<Box<dyn Fn(AdminConsentRequest) -> Receiver<AdminConsentAnswer>>>,
+    /// Desktop: the system's clipboard for what egui's can't carry, HTML: the body of a message
+    /// being written copies its selection as HTML and text, and pastes HTML when there is some.
+    /// Absent in the browser and the tests: copying and pasting are then text.
+    pub clipboard: Option<Box<dyn RichClipboard>>,
+}
+
+/// The system's clipboard with HTML on it ([`Services::clipboard`]).
+pub trait RichClipboard {
+    /// Put `html` on the clipboard with `text` beside it for programs that take text.
+    fn put(&self, html: &str, text: &str) -> Result<(), String>;
+    /// The HTML on the clipboard, when what is on it has HTML.
+    fn html(&self) -> Option<String>;
 }
 
 /// Files delivered asynchronously.

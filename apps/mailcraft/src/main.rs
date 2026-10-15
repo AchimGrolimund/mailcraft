@@ -21,6 +21,7 @@ mod apple_events;
 mod approval_flow;
 #[cfg(test)]
 mod calendar_flow;
+mod clipboard;
 mod control_server;
 #[cfg(test)]
 mod favorites_flow;
@@ -780,6 +781,7 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
             background(&approval_ctx, "admin consent", move || admin_consent(&ctx, request))
         })),
         secrets: secrets::store(),
+        clipboard: clipboard::board(),
         microsoft_client_id: microsoft_client_id(),
         ..Default::default()
     }
