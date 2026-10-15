@@ -315,6 +315,32 @@ fn toggling_a_selection_turns_it_on_unless_all_of_it_is() {
 }
 
 #[test]
+fn enter_goes_on_with_a_list_and_ends_it_on_an_empty_item() {
+    let mut b = RichBody::from_plain("one");
+    b.select(0, 0).unwrap();
+    b.toggle_list(ListKind::Numbered).unwrap();
+    b.select(3, 3).unwrap();
+    b.type_text("\n").unwrap();
+    b.type_text("two").unwrap();
+    b.type_text("\n").unwrap();
+    let kinds = |b: &RichBody| b.text().paragraphs().iter().map(|p| p.list).collect::<Vec<_>>();
+    assert_eq!(kinds(&b), [ListKind::Numbered; 3]);
+    // Enter on the empty item: no new paragraph, the item is an ordinary paragraph now.
+    b.type_text("\n").unwrap();
+    assert_eq!(kinds(&b), [ListKind::Numbered, ListKind::Numbered, ListKind::None]);
+    assert_eq!((b.plain().as_str(), b.selection()), ("one\ntwo\n", Selection::caret(8)));
+    // Once more, an ordinary new paragraph; and one undo step brings the item back.
+    b.type_text("\n").unwrap();
+    assert_eq!(b.plain(), "one\ntwo\n\n");
+    b.undo();
+    b.undo();
+    assert_eq!(kinds(&b), [ListKind::Numbered; 3]);
+    assert_eq!(b.text().paragraph_span(5), Some((4, 7)));
+    assert_eq!(b.text().paragraph_span(99), None);
+    assert!(b.text().paragraph_is_empty(8) && !b.text().paragraph_is_empty(0) && !b.text().paragraph_is_empty(99));
+}
+
+#[test]
 fn lists_toggle_and_backspace_ends_an_item() {
     let mut b = RichBody::from_plain("a\nb\nc");
     b.select(0, 3).unwrap();

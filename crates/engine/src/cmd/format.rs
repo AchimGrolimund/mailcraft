@@ -19,7 +19,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("compose.select", "Select Text", "Message", select).pure().params(r#"{"from": number, "to"?: number} (to: the caret, default from)"#).when(needs_compose),
         CommandSpec::new("compose.type", "Type", "Message", type_text)
             .pure()
-            .params(r#"{"text": string} — over the selection, in the formatting at the caret; a line break starts a paragraph"#)
+            .params(r#"{"text": string} — over the selection, in the formatting at the caret; a line break starts a paragraph (of the same kind; a line break alone in an empty list item ends the list there)"#)
             .when(needs_compose),
         CommandSpec::new("compose.delete", "Delete Text", "Message", delete)
             .pure()

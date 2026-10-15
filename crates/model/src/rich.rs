@@ -456,6 +456,19 @@ impl RichText {
         self.locate(pos).ok().and_then(|(p, _)| self.paragraphs.get(p)).map_or(ListKind::None, |p| p.list)
     }
 
+    /// Whether the paragraph `pos` is in has no text (false past the end).
+    pub fn paragraph_is_empty(&self, pos: usize) -> bool {
+        self.locate(pos).ok().and_then(|(p, _)| self.paragraphs.get(p)).is_some_and(Paragraph::is_empty)
+    }
+
+    /// Where the paragraph `pos` is in starts and ends, as `[from, to)` (the break after it not
+    /// included); `None` past the end.
+    pub fn paragraph_span(&self, pos: usize) -> Option<(usize, usize)> {
+        let (p, off) = self.locate(pos).ok()?;
+        let n = self.paragraphs.get(p)?.chars();
+        Some((pos - off, pos - off + n))
+    }
+
     /// The whole link the position is in or at an end of, as `[from, to)`.
     pub fn link_span(&self, pos: usize) -> Option<(usize, usize)> {
         let (pi, off) = self.locate(pos).ok()?;

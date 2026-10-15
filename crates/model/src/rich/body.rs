@@ -184,10 +184,20 @@ impl RichBody {
     }
 
     /// Type `text` over the selection, in [`RichBody::typing_style`]. A line break starts a new
-    /// paragraph of the same kind.
+    /// paragraph of the same kind, except that a line break alone in an empty list item ends the
+    /// list there (Enter on an empty bullet), as word processors do.
     pub fn type_text(&mut self, text: &str) -> Result<(), ModelError> {
         let style = self.typing_style();
         let sel = self.selection;
+        if sel.is_empty()
+            && matches!(text, "\n" | "\r" | "\r\n")
+            && self.text.list_at(sel.head) != ListKind::None
+            && self.text.paragraph_is_empty(sel.head)
+        {
+            self.edit(false, |t, _| t.set_list(sel.head, sel.head, ListKind::None))?;
+            self.typing = None;
+            return Ok(());
+        }
         let continues = sel.is_empty() && self.typing == Some(sel.head) && !text.contains(['\n', '\r']) && self.can_undo();
         let mut end = 0;
         self.edit(continues, |t, s| {
