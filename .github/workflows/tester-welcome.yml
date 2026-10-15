@@ -1,0 +1,25 @@
+# Posts the welcome reply (.github/tester-welcome.md) on every new tester sign-up: issues the
+# tester-signup form opens, which carry the `tester` label. Nothing from the issue is read or run.
+name: Tester welcome
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  welcome:
+    if: contains(github.event.issue.labels.*.name, 'tester')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github/tester-welcome.md
+          sparse-checkout-cone-mode: false
+      - run: gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body-file .github/tester-welcome.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}

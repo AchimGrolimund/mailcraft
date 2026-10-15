@@ -22,7 +22,7 @@ MailCraft follows the architecture and conventions of [WordCraft](https://github
 - **Files:** `.eml` and `.mbox` messages, `.ics` calendars, `.vcf` contacts, in and out; the mailbox as a `.mailcraft` file with its message content in a folder beside it, saved in the background, or as one self-contained file.
 - **Reading mail safely:** HTML mail is laid out with its tables, colours, lists and the pictures attached to it, readable in light and dark, without running anything in it; pictures on the web are downloaded only when you ask (for one message, always for a sender, or for all mail if you switch that on), and the request tells the sender's server nothing but the picture's address; links show where they go.
 - **Look:** Outlook's layout: the rail, the folder pane, a one-row ribbon (or the classic three-row one, your choice), light and dark following the system's setting unless you choose; the system's own interface font on Windows.
-- **Installing:** every release is on the [Releases page](https://github.com/billsecond/mailcraft/releases) with its checksums: a Windows installer (`.msi`) and portable zip for x64, x86 and ARM64; `.AppImage`, `.deb`, `.rpm`, `.flatpak` and `.tar.gz` for Linux on x86_64 and aarch64; a macOS disk image for Apple silicon and Intel; a FreeBSD tarball; a static site for the browser. The builds are not signed yet, so Windows and macOS ask before running them. One window per mailbox: starting MailCraft again, or opening a message file or a `mailto:` link, goes to the window that is already open. See [docs/releasing.md](docs/releasing.md) for what has been built and tested so far.
+- **Installing:** every release is on the [Releases page](https://github.com/UCS-Care-Group/mailcraft/releases) with its checksums: a Windows installer (`.msi`) and portable zip for x64, x86 and ARM64; `.AppImage`, `.deb`, `.rpm`, `.flatpak` and `.tar.gz` for Linux on x86_64 and aarch64; a macOS disk image for Apple silicon and Intel; a FreeBSD tarball; a static site for the browser. The builds are not signed yet, so Windows and macOS ask before running them. One window per mailbox: starting MailCraft again, or opening a message file or a `mailto:` link, goes to the window that is already open. See [docs/releasing.md](docs/releasing.md) for what has been built and tested so far.
 - **Agents:** a CLI, a JSON control channel and an MCP server expose every command; the same registry drives the ribbon and the keyboard.
 
 ## What it looks like
@@ -46,7 +46,7 @@ The browser build is the same app with three differences that a browser imposes:
 ## Build and run
 
 ```
-git clone https://github.com/billsecond/mailcraft
+git clone https://github.com/UCS-Care-Group/mailcraft
 cd mailcraft
 cargo run --release -p mailcraft -- --sample
 ```
@@ -109,7 +109,7 @@ A crate may only depend on lower layers, and nothing below L6 knows about the UI
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) first (it is for people as much as for agents): the never-crash rules, the asset policy and the quality gates are short and not negotiable. Work to beta is a list of issues, one per task in [the plan](docs/plans/roadmap-reset.md): claim one before you build it.
 
-**Want to test it on your own mail?** [Sign up as a tester](https://github.com/billsecond/mailcraft/issues/new?template=tester-signup.yml), for the alpha now or the beta later.
+**Want to test it on your own mail?** [Sign up as a tester](https://github.com/UCS-Care-Group/mailcraft/issues/new?template=tester-signup.yml), for the alpha now or the beta later.
 
 ## License
 
