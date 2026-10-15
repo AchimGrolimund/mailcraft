@@ -64,7 +64,9 @@ up to 200,000 messages are usable within minutes of being added.
 6. The folder list is read in full each run by walking every mail folder's subfolders (folder delta
    isn't documented to cover every depth; folders are few). Hidden folders and search folders are
    not shown. Order: the well-known folders first, as Outlook orders them, then the rest
-   alphabetically, nested.
+   alphabetically, nested. A folder's name may contain `/` or `\` (Exchange's IMAP leaves such
+   folders out altogether; seen on a tester's mailbox, 2026-10-15): the tree is built from each
+   folder's parent id, a name is never split into a path, and a path shown is the names joined.
 7. New Folder, Rename, Move Folder reach the server. Delete Folder moves the folder under Deleted
    Items, as Outlook does.
 8. A folder the complete listing no longer has is removed here with its mail, which the server no

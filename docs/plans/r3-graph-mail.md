@@ -18,10 +18,11 @@ ones, rather than bending the uid-based ones. Hours are guesses until a task is 
 | Server ids | A server id on `Message` and `Folder`, a delta link per folder, and the last synced state of a message widened to read, flag, categories, importance and folder (ADR 0003); older files open with these empty |
 | Graph client | `Prefer: IdType="ImmutableId"` on every request (S4); the retry policy by kind of request, `Retry-After`, a per-account pause and at most 4 requests at once, 2 for background work (S14, S21) |
 | Folders | The full walk of mail folders, hidden and search folders left out, Outlook's order (S6); New, Rename, Move, Delete Folder to Deleted Items (S7); removal only after a complete listing (S8) |
-| Stand-in | Folders: list, childFolders, create, PATCH, move, delete; 429 with `Retry-After` |
+| Stand-in | Folders: list, childFolders, create, PATCH, move, delete, names with `/` and `\\`; 429 with `Retry-After` |
 
 **Done when:** stand-in flow tests both ways (a folder made here is there; one renamed, moved or
-deleted there is so here, keeping its server id and its messages); a listing cut off removes
+deleted there is so here, keeping its server id and its messages); folders named `Sales/Marketing` and
+`A\\B` are listed under their parent, whole; a listing cut off removes
 nothing; a 429 pauses and resumes; a mailbox file from 0.2.1 opens.
 
 ## R3.2 Mail down (#13) (16–26 h)
