@@ -1741,15 +1741,10 @@ impl MailApp {
             self.sync_refused |= refused;
             self.note_sync_problems(account, &piece.errors, false);
             match mailcraft_engine::cmd::account::apply_sync_part(&mut self.session, &mut self.sync_totals, piece) {
-                Ok(v) => {
-                    // New mail while the owner is elsewhere: the taskbar (or Dock) says so.
-                    if v["new"].as_u64().unwrap_or(0) > 0
-                        && let Some(ctx) = &self.ctx
-                        && !ctx.input(|i| i.focused)
-                    {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
-                    }
-                }
+                // New mail doesn't ask the taskbar for attention: KDE and Windows keep the button lit
+                // until the window is clicked, and a first download lit it all day. System
+                // notifications (R7.1) are how new mail is announced; reminders still ask.
+                Ok(_) => {}
                 Err(e) => self.status(e.to_string()),
             }
             // Once it brings mail down, the run has told the server what there was to tell: what
