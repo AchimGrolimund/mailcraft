@@ -1,6 +1,6 @@
 # Roadmap reset: implementation plan
 
-> **Status:** accepted 2026-10-14, with [the spec](../specs/roadmap-reset.md); tracked in [#2](https://github.com/billsecond/mailcraft/issues/2) · **Written:** 2026-10-14 · **Change:** major (first version)
+> **Status:** accepted 2026-10-14, with [the spec](../specs/roadmap-reset.md); tracked in [#2](https://github.com/billsecond/mailcraft/issues/2) · **Written:** 2026-10-14 · **Change:** minor (R3 detailed; R3.6 changed)
 
 The order of the work to beta. Each step is one pull request or a short series, small enough to
 take or refuse on its own. Task ids are `R<step>.<n>` and go in commit messages
@@ -30,6 +30,8 @@ secrets). Hours are guesses from the gap list until a step has been done.
 
 ## R3. Graph mail for Microsoft accounts (60–100 h) [review]
 
+Detailed in [the R3 spec](../specs/r3-graph-mail.md) and [plan](r3-graph-mail.md) (2026-10-15).
+
 The critical path. Built against the Graph stand-in (`crates/net/src/graph/standin.rs`), held to
 the documented API; the sync request/apply split stays (`crates/model/src/sync.rs`), so the
 engine does no I/O.
@@ -41,7 +43,7 @@ engine does no I/O.
 | R3.3 | Changes up: read, flag, categories, importance, move, copy, delete, from the existing pending-changes queue; each reaches the server or is refused with a reason | One test per kind; a refused change is put back and said |
 | R3.4 | Drafts kept in the server's Drafts, both ways; sending through Graph as today | A draft written here is in Outlook on the web's Drafts (stand-in) and back |
 | R3.5 | Undo after the server has it sends the reverse change | Undo of a move and a delete, tested |
-| R3.6 | Imported mail goes to a local folder; moving it to a server folder uploads it | Tested |
+| R3.6 | Imported mail goes to a local folder; moving it to a server folder is refused with the reason (Graph can't upload received mail) | Tested |
 | R3.7 | The switch for an account synced by IMAP: say what will happen, back up the mailbox file, download afresh, keep local folders, unsent drafts and MailCraft's favourites | A mailbox from 0.2.1 switches and keeps those |
 | R3.8 | Microsoft accounts stop using IMAP and SMTP; the XOAUTH2 path stays until R3 is proven on testers, then goes | No IMAP connection for a Microsoft account in the flows |
 | R3.9 | The author's own mailbox on the new path for a week before R8 | No data-loss incident |
@@ -105,3 +107,4 @@ Total before the beta run: about 130–220 hours of focused work.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-14 | major | First version |
+| 2026-10-15 | minor | R3 detailed in its own spec and plan; R3.6: imported mail can't be uploaded through Graph |

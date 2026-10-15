@@ -10,9 +10,17 @@ A glossary of the words the project uses with one meaning. Not a spec: how thing
 
 ## Accounts
 
-- **Microsoft account**: an account that signs in with Microsoft. Either a **personal Microsoft account** (Outlook.com, Hotmail, Live) or a **work or school account** (Microsoft 365, in an organisation's directory).
+- **Microsoft account**: an account that signs in with Microsoft and whose mail is kept in step through Microsoft Graph, never IMAP or SMTP. Either a **personal Microsoft account** (Outlook.com, Hotmail, Live) or a **work or school account** (Microsoft 365, in an organisation's directory).
 - **IMAP account**: any other account, reached by IMAP and SMTP with a password.
+- **Shared mailbox**: a mailbox other than the owner's own that the owner may open (a team's, or another person's as their delegate). Not supported before beta.
 
+## Mail
+
+- **Server id**: the name the server gives a message or a folder, which stays the same when the folder is renamed or moved and when the message is moved within the mailbox. How MailCraft knows it is the same message or folder. The Message-ID a message carries is not a server id: it can be missing or shared.
+- **Fetched**: a message whose whole content (body and attachments) is on this computer. Until then it shows its headers and a preview, and is fetched when the owner opens it or in the background, newest first.
+- **Delete**: move to Deleted Items, here and on the server. Undo moves it back.
+- **Delete for good**: remove from every folder (Shift+Del, or emptying Deleted Items). As in Outlook, the server keeps it recoverable for its retention period; MailCraft never removes anything past that.
+- **Held message**: a message in the Outbox that MailCraft will not send by itself, because it may already have gone (the server didn't say) or the server refused it. The owner looks and decides.
 - **Local folder**: a folder that exists only on this computer, never on a server. The only place mail may be changed without the server knowing.
 - **In step**: an account is in step when every change the owner made to its mail has reached the server or been refused with a reason, and what the server holds is what MailCraft shows. Undoing a change that reached the server is another change sent to it.
 

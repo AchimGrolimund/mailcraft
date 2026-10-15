@@ -39,3 +39,6 @@ and MailCraft's own favourites.
   removed once the switch is proven; the IMAP code for other accounts stays.
 - A first download of a large mailbox is bound by Graph's throttling; it has to resume and show
   progress.
+- Imported mail stays in local folders (amended 2026-10-15, [ADR 0003](0003-server-ids-and-changes-from-the-last-synced-state.md),
+  [R3 spec](../specs/r3-graph-mail.md) S30): Graph can't put received mail into a mailbox folder as
+  an ordinary message, so moving imported mail into a server folder is refused with that reason.
