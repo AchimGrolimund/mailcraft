@@ -152,6 +152,11 @@ pub struct Services {
     /// being written copies its selection as HTML and text, and pastes HTML when there is some.
     /// Absent in the browser and the tests: copying and pasting are then text.
     pub clipboard: Option<Box<dyn RichClipboard>>,
+    /// Desktop: what Help › Copy Diagnostics puts on the clipboard (`ui.copyDiagnostics`): the
+    /// version, the platform and the end of the logs with addresses, names, paths, hosts, links,
+    /// ids and quoted text taken out. Never sent anywhere. Absent in the browser and the tests:
+    /// the copy then has the version and the platform only.
+    pub diagnostics: Option<Box<dyn Fn() -> String>>,
 }
 
 /// The system's clipboard with HTML on it ([`Services::clipboard`]).
@@ -617,6 +622,12 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "Message",
         r#"{"pane": true} | {"window": number} (default: where the keys go) — the whole body of the message being read"#,
     ),
+    (
+        "ui.copyDiagnostics",
+        "Copy Diagnostics",
+        "Help",
+        r#"{} — the version, the platform and the end of the program's log, with addresses, names, paths, hosts, links, ids and quoted text taken out, to the clipboard for a problem report. Nothing is sent"#,
+    ),
     ("ui.copyLinkAddress", "Copy Link Address", "Message", r#"{"url": string} — a link's address (http, https, mailto or tel) to the clipboard"#),
     (
         "ui.toggleCalendarGroup",
@@ -1052,6 +1063,22 @@ impl MailApp {
                 self.ui.backstage = false;
                 let _ = self.session.run("view.mail", &json!({}));
                 Ok(json!({}))
+            }
+            "ui.copyDiagnostics" => {
+                let text = match &self.services.diagnostics {
+                    Some(report) => report(),
+                    None => format!(
+                        "### MailCraft diagnostics\n\n- Version: {}\n- Platform: {} {}\n\nNo log is kept here.\n",
+                        env!("CARGO_PKG_VERSION"),
+                        std::env::consts::OS,
+                        std::env::consts::ARCH
+                    ),
+                };
+                if let Some(ctx) = &self.ctx {
+                    ctx.copy_text(text.clone());
+                }
+                self.status(tl!("Diagnostics copied. Nothing was sent."));
+                Ok(json!({"text": text}))
             }
             "ui.sync" => self.start_sync(p),
             "ui.checkCalendar" => self.check_calendar(p),

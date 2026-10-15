@@ -49,8 +49,7 @@ body:
     validations:
       required: true
   - type: textarea
-    id: log
+    id: diagnostics
     attributes:
-      label: Log (optional)
-      description: "The end of `logs/mailcraft.log` in MailCraft's settings folder (`~/.config/mailcraft`, macOS `~/Library/Application Support/MailCraft`, Windows `%APPDATA%\\MailCraft`); after a crash, `mailcraft.1.log`. Read it through first and remove anything private."
-      render: text
+      label: Diagnostics
+      description: "In MailCraft: Help › Copy Diagnostics, then paste here. It has the version, the platform and the end of the log, with addresses, names, paths, hosts, links and quoted text taken out. Read it before you submit. If MailCraft crashed, start it again first: the copy includes the run before. Version 0.3.0 and earlier don't have the button; leave this empty."
