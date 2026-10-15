@@ -179,6 +179,13 @@ fn cmd_ci() -> Result<(), String> {
         ("layers", Box::new(cmd_layers)),
         ("wasm", Box::new(cmd_wasm)),
     ];
+    // `XTASK_CI_SKIP=clippy,wasm`: steps another runner covers (CI runs them on Linux only).
+    let skip = std::env::var("XTASK_CI_SKIP").unwrap_or_default();
+    let skipped: Vec<&str> = skip.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+    let steps: Vec<Step> = steps.into_iter().filter(|(name, _)| !skipped.contains(name)).collect();
+    if !skipped.is_empty() {
+        eprintln!("ci: skipping {} (XTASK_CI_SKIP)", skipped.join(", "));
+    }
     let mut done = Vec::new();
     for (name, f) in &steps {
         eprintln!("\n=== ci: {name} ===");
