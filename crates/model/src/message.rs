@@ -5,7 +5,7 @@ use std::sync::Arc;
 use mailcraft_time::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::sync::RemoteFlags;
+use crate::sync::{RemoteFlags, ServerMessage};
 use crate::{Address, Id};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -157,6 +157,12 @@ pub struct Message {
     /// copy that comes down is matched to it by its Message-ID instead of being added.
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "crate::sync::lenient")]
     pub synced: Option<RemoteFlags>,
+    /// For a message of a Microsoft account that the server has: its server id and what the
+    /// server last said of it ([`ServerMessage`], ADR 0003). `None` for a message the server
+    /// hasn't got (or hasn't said so yet), and for every message of any other account; `uid` and
+    /// `synced` are IMAP's and stay as they are.
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "crate::sync::lenient")]
+    pub server: Option<ServerMessage>,
 }
 
 fn is_zero(n: &u32) -> bool {

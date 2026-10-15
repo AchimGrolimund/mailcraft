@@ -245,6 +245,9 @@ pub struct SignInRequest {
     /// [`favorites_sync::NEEDS_APPROVAL`], [`favorites_sync::REFUSED_BY_ORGANISATION`] or
     /// [`favorites_sync::REFUSED_FOR_ACCOUNT`].
     pub favorites: bool,
+    /// With `graph`: ask also for reading and changing mail (`Mail.ReadWrite`), for an account kept
+    /// in step through Microsoft Graph (R3, behind the switch for testing).
+    pub mail_write: bool,
 }
 
 /// What the host needs to check an account's calendar connection ([`Services::check_calendar`]).
@@ -322,6 +325,10 @@ pub struct GraphRequest {
     /// Favorites takes ([`GraphResult::favorites_covered`] says whether it has them). Without
     /// it, a token is asked for as it always was.
     pub favorites_scopes: bool,
+    /// For an account kept in step through Microsoft Graph (R3): the folder changes to make and
+    /// the folders to list ([`GraphResult::mail`]). A token obtained for this job is asked for
+    /// with `Mail.ReadWrite`.
+    pub mail: Option<mailcraft_model::sync::GraphMailRequest>,
 }
 
 /// What a [`GraphRequest`] came to. Never an error as a whole: mail goes on either way.
@@ -365,6 +372,8 @@ pub struct GraphResult {
     /// When a token was obtained for this job: whether it is good for reading the Favorites
     /// (it was asked for with that, and the sign-in covers it).
     pub favorites_covered: Option<bool>,
+    /// What the folders came to, when [`GraphRequest::mail`] asked.
+    pub mail: Option<mailcraft_model::sync::GraphMailResult>,
 }
 
 /// A sign-in the host is busy with.
@@ -1238,6 +1247,10 @@ impl MailApp {
             graph,
             mail_only,
             favorites,
+            // An account kept in step through Graph needs its mail read and changed there too.
+            mail_write: graph
+                && (self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft)
+                    || (account == 0 && self.session.graph_mail)),
         };
         let rx = sign_in(request);
         self.signing_in = Some(SigningIn { graph, favorites, quiet, account, rx, cancel });
@@ -1250,7 +1263,10 @@ impl MailApp {
     pub(crate) fn begin_setup_sign_in(&mut self, oauth: mailcraft_model::OAuth, email: &str, mail_only: bool) -> Result<(), String> {
         self.setup_sign_in = None;
         self.mail_only_next = mail_only;
-        self.begin_sign_in(0, oauth, email, String::new(), false, false)
+        // With the switch for testing on, a Microsoft account is kept in step through Graph (R3):
+        // its sign-in is for Graph, with its mail, rather than for IMAP and SMTP.
+        let graph = self.session.graph_mail && oauth.provider == mailcraft_model::OAuthProvider::Microsoft && !mail_only;
+        self.begin_sign_in(0, oauth, email, String::new(), false, graph)
     }
 
     /// Account setup: what the sign-in started with `begin_setup_sign_in` came to, once it has.
@@ -1294,6 +1310,10 @@ impl MailApp {
                 first
             }
         };
+        // An account kept in step through Microsoft Graph has no IMAP leg at all (R3).
+        if self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft) {
+            return self.start_graph_mail(account, quiet);
+        }
         let mut request = mailcraft_engine::cmd::account::sync_request(&self.session, account).map_err(|e| e.to_string())?;
         // A run that only tells the server what changed here, when that is all it was started for.
         request.push_only = self.push_only_next.remove(&account) && quiet && request.outbox.is_empty();
@@ -1344,6 +1364,7 @@ impl MailApp {
                         settings: false,
                         favorites,
                         favorites_scopes: favorites,
+                        mail: None,
                     };
                     self.session.sync_status =
                         if ask.outbox.is_empty() { tl!("Updating the calendar and contacts…") } else { tl!("Sending…") }.to_string();
@@ -1377,6 +1398,62 @@ impl MailApp {
         Ok(json!({"started": true, "account": account}))
     }
 
+    /// A Send/Receive of an account kept in step through Microsoft Graph (R3, behind the switch
+    /// for testing): one Graph job sends the Outbox, makes the folder changes made here, lists
+    /// the folders and, when they are due, brings the calendar and the contacts; no IMAP, no
+    /// SMTP. Its token is always renewed for the job, with `Mail.ReadWrite`.
+    fn start_graph_mail(&mut self, account: Id, quiet: bool) -> Result<Value, String> {
+        if self.services.graph.is_none() {
+            return Err(tl!("This build can't connect to Microsoft").to_string());
+        }
+        let owner = self.session.mailbox.account(account).cloned().ok_or_else(|| tl!("The account is gone").to_string())?;
+        let oauth = owner.oauth.clone().ok_or_else(|| tl!("This account has no sign-in with Microsoft").to_string())?;
+        let address = owner.email.clone();
+        let kept = self.tokens.get(&account).or(self.graph_tokens.get(&account)).map(|t| t.refresh.clone()).filter(|r| !r.is_empty());
+        let refresh = kept.or_else(|| self.remembered("refresh", &address)).unwrap_or_default();
+        if refresh.is_empty() {
+            // Nobody asked for this run: no page is put in front of the owner.
+            if quiet {
+                return Err(format!("{} {address}", tl!("Use Send/Receive to sign in to")));
+            }
+            self.begin_sign_in(account, oauth, &address, String::new(), false, true)?;
+            return Ok(json!({"pending": "signIn", "account": account}));
+        }
+        let mail = mailcraft_engine::cmd::graph_mail::graph_mail_request(&self.session, account).map_err(|e| e.to_string())?;
+        let outbox: Vec<mailcraft_model::Message> = match self.session.mailbox.folder_of_kind(account, mailcraft_model::FolderKind::Outbox) {
+            Some(folder) => self.session.mailbox.messages_in(folder).map(|m| m.as_ref().clone()).collect(),
+            None => Vec::new(),
+        };
+        // The calendar and the contacts as for any account that signs in with Microsoft: the
+        // wide stretch every quarter of an hour, and what was changed in the calendar here.
+        let now = now_ms();
+        let free = !self.calendar_syncing();
+        let directory = free && self.graph_checked.get(&account).is_none_or(|at| now - at > 900_000.0);
+        let changes = if free { self.calendar_changes(account) } else { None };
+        let calendar = (free && !directory && (!quiet || changes.is_some())).then(|| self.calendar_window());
+        let ask = GraphRequest {
+            account: owner,
+            oauth: self.effective_oauth(oauth),
+            refresh,
+            // (Renewed for the job: a token kept from another job may not cover the mail.)
+            access: String::new(),
+            outbox,
+            directory,
+            calendar,
+            changes,
+            asks: self.calendar_asks(account, directory, calendar),
+            settings: false,
+            // (The calendar's own job reads them, with a token that covers them.)
+            favorites: false,
+            favorites_scopes: false,
+            mail: Some(mail),
+        };
+        let Some(graph) = &self.services.graph else { return Err(tl!("This build can't connect to Microsoft").to_string()) };
+        self.graph_rx = Some((account, quiet, directory, graph(ask)));
+        self.session.sync_status = tl!("Sending and receiving…").to_string();
+        Ok(json!({"started": true, "account": account, "graph": true}))
+    }
+
     /// Nobody has set this mailbox up: it holds only the placeholder account and no mail.
     pub fn needs_setup(&self) -> bool {
         let mb = &self.session.mailbox;
@@ -1384,7 +1461,7 @@ impl MailApp {
     }
 
     fn server_accounts(&self) -> Vec<Id> {
-        self.session.mailbox.accounts.iter().filter(|a| a.kind == mailcraft_model::AccountKind::Imap).map(|a| a.id).collect()
+        self.session.mailbox.accounts.iter().filter(|a| a.kind.has_server()).map(|a| a.id).collect()
     }
 
     /// How much of `account` waits to go to its server: mail in the Outbox, and changes made here
@@ -1469,8 +1546,9 @@ impl MailApp {
     }
 
     /// Graph answered: keep its token, take in the calendar and contacts, file what it sent, and
-    /// go on with the mail.
-    fn poll_graph(&mut self) {
+    /// go on with the mail (for an account kept in step through Graph: take its folders in, and
+    /// the run is over). Public for a host's tests, which have no window.
+    pub fn poll_graph(&mut self) {
         let Some((account, quiet, directory, rx)) = &self.graph_rx else { return };
         let (account, quiet, directory) = (*account, *quiet, *directory);
         let mut result = match rx.try_recv() {
@@ -1524,6 +1602,29 @@ impl MailApp {
             if let Err(e) = mailcraft_engine::cmd::account::apply_sync(&mut self.session, sent) {
                 errors.push(e.to_string());
             }
+        }
+        // An account kept in step through Graph: its folders, and the run is over (no IMAP leg).
+        if self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft) {
+            let status = self.session.sync_status.clone();
+            match result.mail.take() {
+                Some(mail) => match mailcraft_engine::cmd::graph_mail::apply_graph_mail(&mut self.session, mail) {
+                    Ok(taken) => {
+                        let said = taken["errors"].as_array().map(|all| all.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>());
+                        errors.extend(said.unwrap_or_default());
+                    }
+                    Err(e) => errors.push(e.to_string()),
+                },
+                // No answer for the folders (the token couldn't be had, or Graph wasn't reached):
+                // what the job said is why.
+                None if result.consent_needed => self.session.sync_status = status,
+                None => {}
+            }
+            errors.dedup();
+            if !errors.is_empty() {
+                self.session.sync_status = errors.first().cloned().unwrap_or_default();
+            }
+            self.note_sync_problems(account, &errors, true);
+            return;
         }
         self.note_sync_problems(account, &errors, false);
         let skip: Vec<Id> = result.sent.iter().chain(&result.held).copied().collect();

@@ -28,6 +28,8 @@ mod favorites_flow;
 #[cfg(test)]
 mod favorites_organisation_flow;
 mod file_dialogs;
+#[cfg(test)]
+mod graph_folders_flow;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
 mod logging;
@@ -148,6 +150,17 @@ fn keep_pictures() -> Option<std::sync::Arc<picture_cache::Cache>> {
 /// Where the log files live: `logs` in the preferences folder (see `logging`).
 fn log_dir() -> Option<PathBuf> {
     Some(prefs_path()?.parent()?.join("logs"))
+}
+
+/// The switch for testing Microsoft accounts kept in step through Microsoft Graph (R3 spec S35):
+/// `MAILCRAFT_GRAPH_MAIL=1`. Off, Add Account makes them as it always did (on IMAP), and nothing
+/// else is any different.
+fn graph_mail_switch() -> bool {
+    let on = std::env::var("MAILCRAFT_GRAPH_MAIL").is_ok_and(|value| value.trim() == "1");
+    if on {
+        log::info!("Microsoft accounts may be kept in step through Microsoft Graph (MAILCRAFT_GRAPH_MAIL=1, for testing)");
+    }
+    on
 }
 
 /// Runs without preferences (`MAILCRAFT_NO_PREFS`, agents' test runs) neither read nor write them,
@@ -290,7 +303,9 @@ fn sign_in_with(request: SignInRequest, open_page: &dyn Fn(&str) -> bool) -> Res
     // "Connect calendar and contacts": the owner asked, so the page comes up, for what Microsoft
     // Graph needs rather than for mail.
     if request.graph {
-        return on_the_page(&Endpoints::for_resource(&request.oauth, Resource::Graph));
+        // (For an account kept in step through Graph, its mail too: R3.)
+        let resource = if request.mail_write { Resource::GraphMail } else { Resource::Graph };
+        return on_the_page(&Endpoints::for_resource(&request.oauth, resource));
     }
     if !request.refresh.is_empty() {
         match mailcraft_net::oauth::refresh(&request.oauth, &request.refresh) {
@@ -416,8 +431,16 @@ fn graph_in(request: GraphRequest, zone: &str) -> GraphResult {
     use mailcraft_net::oauth;
     // A token for everything Graph is asked for, and for reading the Favorites of Outlook when
     // the window wants that too (it stops wanting it for the day once it was told no).
+    // (An account kept in step through Graph has its token asked for with its mail, R3.)
+    let mail = request.mail.is_some();
     graph_with(request, zone, &|settings, refresh, favorites| {
-        if favorites { oauth::refresh_graph_with_favorites(settings, refresh) } else { oauth::refresh_graph(settings, refresh) }
+        if mail {
+            oauth::refresh_graph_mail(settings, refresh)
+        } else if favorites {
+            oauth::refresh_graph_with_favorites(settings, refresh)
+        } else {
+            oauth::refresh_graph(settings, refresh)
+        }
     })
 }
 
@@ -484,6 +507,20 @@ fn graph_with(request: GraphRequest, zone: &str, renew: Renew<'_>) -> GraphResul
                 out.errors.push(format!("Couldn't send \"{}\" through Microsoft: {e}", message.subject.trim()));
             }
         }
+    }
+    // An account kept in step through Graph (R3): the folder changes made here go up, and every
+    // folder is listed. (Nothing of a folder's name or id goes into the log.)
+    if let Some(mail) = request.mail.as_ref().filter(|_| !refused) {
+        let result = graph::sync_folders(&access, mail);
+        log::info!(
+            "graph folders: {} of {} changes answered, {} folders listed, complete: {}, {} problems",
+            result.changes.len(),
+            mail.changes.len(),
+            result.listing.as_ref().map_or(0, |listing| listing.folders.len()),
+            result.listing.as_ref().is_some_and(|listing| listing.complete),
+            result.errors.len()
+        );
+        out.mail = Some(result);
     }
     // What was made, moved, changed or deleted in the calendar here goes up before the calendar
     // comes down: what comes down then is what the server has after it.
@@ -944,6 +981,7 @@ fn main() -> eframe::Result {
             let (mailbox, path, unavailable) = first_mailbox(sample, mailbox_path);
             let (file_dialog, dialogs) = file_dialogs::hook(&cc.egui_ctx);
             let mut session = Session::new(mailbox);
+            session.graph_mail = graph_mail_switch();
             let kept = path.is_some();
             session.path = path;
             // A run that keeps its mailbox and its settings keeps downloaded pictures too.

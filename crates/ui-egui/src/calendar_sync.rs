@@ -291,6 +291,7 @@ impl MailApp {
             settings,
             favorites,
             favorites_scopes: favorites,
+            mail: None,
         };
         let Some(graph) = &self.services.graph else { return false };
         if settings {

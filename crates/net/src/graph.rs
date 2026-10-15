@@ -305,6 +305,7 @@ enum Doing {
     Writing,
     Categories,
     Favorites,
+    Folders,
 }
 
 fn nonsense(text: &str) -> NetError {
@@ -315,16 +316,92 @@ fn nonsense(text: &str) -> NetError {
 struct Graph<'a> {
     base: Url,
     token: &'a str,
+    /// Every request asks for immutable ids (`Prefer: IdType="ImmutableId"`, R3 spec S4).
+    immutable: bool,
+    /// The ground rules of a mailbox's mail ([`pace`]): its gate, who is waiting, and how a
+    /// request is asked again. `None`: one try, as it always was.
+    pace: Option<Pace>,
 }
+
+/// What [`Graph::call`] goes by.
+struct Pace {
+    gate: std::sync::Arc<pace::Gate>,
+    priority: pace::Priority,
+    retry: pace::Retry,
+}
+
+/// What `Prefer` asks for of the ids in every answer to the Graph code of mail.
+const IMMUTABLE_IDS: &str = "IdType=\"ImmutableId\"";
 
 impl<'a> Graph<'a> {
     /// Graph at `base` (its own address, or a stand-in on this machine in the tests), for `token`.
+    ///
+    /// For the calendar, the contacts, sending and the Favorites: every request is tried once,
+    /// and ids come as Graph's ordinary ones, as the mailbox files of 0.2.x keep them for events
+    /// and contacts. (Immutable ids there would make every event and contact a mailbox has look
+    /// gone and new; that change waits for a step that re-keys them.)
     fn at(base: &str, token: &'a str) -> Result<Graph<'a>, NetError> {
         // A token that isn't one is not sent anywhere; it is also what a header can't carry.
         if token.is_empty() || token.len() > MAX_TOKEN || !token.bytes().all(|b| b.is_ascii_graphic()) {
             return Err(NetError::Proto(ProtoError::Auth("there is no sign-in to show Microsoft Graph".into())));
         }
-        Ok(Graph { base: Url::parse(base)?, token })
+        Ok(Graph { base: Url::parse(base)?, token, immutable: false, pace: None })
+    }
+
+    /// Graph for a Microsoft account's mail (R3): every request asks for immutable ids, goes
+    /// through the mailbox's `gate` and is asked again as [`pace`] has it.
+    fn for_mail(
+        base: &str,
+        token: &'a str,
+        gate: std::sync::Arc<pace::Gate>,
+        priority: pace::Priority,
+        retry: pace::Retry,
+    ) -> Result<Graph<'a>, NetError> {
+        let graph = Graph::at(base, token)?;
+        Ok(Graph { immutable: true, pace: Some(Pace { gate, priority, retry }), ..graph })
+    }
+
+    /// [`Graph::ask`] by the ground rules of mail ([`pace`]), when this Graph has them: a place
+    /// at the mailbox's gate first; a "busy" answer pauses the gate for as long as the server
+    /// asked and, for a request of a `kind` that may be repeated, is asked again after it; so is
+    /// one that couldn't reach the server. What comes back is the last answer, whatever its
+    /// status, or why there was none.
+    fn call(
+        &self,
+        kind: pace::Kind,
+        url: &Url,
+        method: &str,
+        more: &[(&str, &str)],
+        body: Option<&str>,
+        patience: Duration,
+        max_body: usize,
+    ) -> Result<Reply, NetError> {
+        let Some(pace) = &self.pace else { return self.ask(url, method, more, body, patience, max_body) };
+        let mut tries = 0u32;
+        loop {
+            tries = tries.saturating_add(1);
+            let permit = pace.gate.enter(pace.priority, pace.retry.longest_wait)?;
+            let asked = self.ask(url, method, more, body, patience, max_body);
+            drop(permit);
+            let again = kind.may_repeat() && tries < pace.retry.tries;
+            match asked {
+                Ok(reply) if matches!(reply.status, 429 | 503 | 504) => {
+                    let wait = pace.retry.wait_before(tries.saturating_add(1), wait_of(reply.retry_after.as_deref(), mailcraft_time::now()));
+                    // Everybody asking this mailbox waits, not just this request.
+                    pace.gate.pause(wait);
+                    log::debug!("graph: busy (status {}), every request of the mailbox waits {} s", reply.status, wait.as_secs());
+                    if !again || wait > pace.retry.longest_wait {
+                        return Ok(reply);
+                    }
+                }
+                Err(e) if again && e.is_unreachable() => {
+                    let wait = pace.retry.wait_before(tries.saturating_add(1), None);
+                    log::debug!("graph: no answer; asking again in {} s", wait.as_secs());
+                    std::thread::sleep(wait);
+                }
+                other => return other,
+            }
+        }
     }
 
     /// `path` (with its query) on Graph.
@@ -344,7 +421,16 @@ impl<'a> Graph<'a> {
     ) -> Result<Reply, NetError> {
         let bearer = format!("Bearer {}", self.token);
         let mut headers = vec![("Authorization", bearer.as_str()), ("Accept", "application/json")];
-        headers.extend_from_slice(more);
+        // Immutable ids, beside whatever else is preferred: one `Prefer` header, its values
+        // parted by commas (RFC 7240).
+        let preferred = more.iter().filter(|(name, _)| name.eq_ignore_ascii_case("Prefer")).map(|(_, value)| *value);
+        let prefer = if self.immutable { std::iter::once(IMMUTABLE_IDS).chain(preferred).collect::<Vec<_>>().join(", ") } else { String::new() };
+        if self.immutable {
+            headers.push(("Prefer", prefer.as_str()));
+            headers.extend(more.iter().filter(|(name, _)| !name.eq_ignore_ascii_case("Prefer")));
+        } else {
+            headers.extend_from_slice(more);
+        }
         http::request(url, &Request { method, headers: &headers, body, patience, max_body }).map_err(|e| e.without(self.token))
     }
 
@@ -365,7 +451,7 @@ impl<'a> Graph<'a> {
             if started.elapsed() >= LIST_TIMEOUT {
                 return Err(NetError::Proto(ProtoError::Io("Microsoft Graph took too long to answer".into())));
             }
-            let reply = self.ask(&url, "GET", more, None, ASK_TIMEOUT, MAX_PAGE)?;
+            let reply = self.call(pace::Kind::Read, &url, "GET", more, None, ASK_TIMEOUT, MAX_PAGE)?;
             if reply.status != 200 {
                 return Err(self.refusal(doing, &reply, ""));
             }
@@ -454,6 +540,7 @@ fn refusal(doing: Doing, reply: &Reply, sent: &[&str], now: Timestamp) -> NetErr
                 Doing::Writing => "this account may not change its calendar through Microsoft Graph",
                 Doing::Categories => "this account may not read its list of categories through Microsoft Graph",
                 Doing::Favorites => "this account may not read its Favorites through Microsoft Graph",
+                Doing::Folders => "this account may not read or change its folders through Microsoft Graph",
             };
             NetError::Forbidden(format!("{what}{}", code()))
         }
@@ -1716,6 +1803,11 @@ pub use settings::{MailboxSettings, WorkingHours, mailbox_settings};
 
 mod favorites;
 pub use favorites::favorites;
+
+pub mod pace;
+
+pub mod mail;
+pub use mail::sync_folders;
 
 mod check;
 pub use check::{CHECK_TITLE, CalendarCheck, CheckStep, STEPS as CHECK_STEPS, check_calendar, check_start, no_sign_in};

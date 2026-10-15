@@ -37,10 +37,14 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-const ACCOUNT: &str = r#"{"email": string, "displayName"?: string, "name"?: string, "username"?: string, "incoming"?: {"host": string, "port"?: number, "security"?: "tls"|"starttls"|"none"} | null, "outgoing"?: same | null, "auth"?: "password"|"oauth2" (oauth2: sign in on the provider's page), "provider"?: "microsoft", "clientId"?: string, "tenant"?: string, "directory"?: "organisation"|"personal" (which kind of Microsoft account signs in, when the sign-in said)}"#;
+/// Why `account.add` won't make an account kept in step through Microsoft Graph.
+pub const GRAPH_MAIL_OFF: &str =
+    "Microsoft accounts kept in step through Microsoft Graph are being tested: start MailCraft with MAILCRAFT_GRAPH_MAIL=1 to add one";
+
+const ACCOUNT: &str = r#"{"email": string, "displayName"?: string, "name"?: string, "username"?: string, "incoming"?: {"host": string, "port"?: number, "security"?: "tls"|"starttls"|"none"} | null, "outgoing"?: same | null, "auth"?: "password"|"oauth2" (oauth2: sign in on the provider's page), "provider"?: "microsoft", "clientId"?: string, "tenant"?: string, "directory"?: "organisation"|"personal" (which kind of Microsoft account signs in, when the sign-in said), "kind"?: "imap"|"local"|"microsoft" (microsoft: kept in step through Microsoft Graph, no mail servers; only while MAILCRAFT_GRAPH_MAIL=1 is set)}"#;
 
 fn has_server(s: &Session) -> Option<&'static str> {
-    if s.mailbox.accounts.iter().any(|a| a.kind == AccountKind::Imap) {
+    if s.mailbox.accounts.iter().any(|a| a.kind.has_server()) {
         None
     } else {
         Some("no account is connected to a mail server (File › Add Account)")
@@ -173,7 +177,7 @@ fn preset(_: &mut Session, v: &Value) -> CmdResult {
     }))
 }
 
-fn apply_fields(a: &mut Account, v: &Value) -> Result<(), CmdError> {
+fn apply_fields(a: &mut Account, v: &Value, graph_mail: bool) -> Result<(), CmdError> {
     let line = |k: &str| p::str(v, k).map(|t| t.replace(['\r', '\n'], " ").trim().chars().take(254).collect::<String>());
     if let Some(e) = line("email") {
         a.email = e;
@@ -194,7 +198,28 @@ fn apply_fields(a: &mut Account, v: &Value) -> Result<(), CmdError> {
         a.outgoing = o;
     }
     sign_in(a, v)?;
-    a.kind = if a.incoming.is_some() || a.outgoing.is_some() { AccountKind::Imap } else { AccountKind::Local };
+    // A Microsoft account kept in step through Graph (R3): asked for by name, and only while the
+    // switch for testing is on; one that is that already stays it.
+    let microsoft = match p::str(v, "kind").map(|k| k.trim().to_ascii_lowercase()) {
+        None => a.kind == AccountKind::Microsoft,
+        Some(k) if k == "microsoft" || k == "graph" => {
+            if !graph_mail && a.kind != AccountKind::Microsoft {
+                return Err(fail(GRAPH_MAIL_OFF));
+            }
+            true
+        }
+        Some(k) if k == "imap" || k == "local" => false,
+        Some(_) => return Err(bad("`kind` is imap, local or microsoft")),
+    };
+    if microsoft {
+        // Graph and nothing else: no mail servers, and a sign-in with Microsoft.
+        a.kind = AccountKind::Microsoft;
+        (a.incoming, a.outgoing) = (None, None);
+        let o = a.oauth.get_or_insert_with(OAuth::default);
+        o.provider = OAuthProvider::Microsoft;
+    } else {
+        a.kind = if a.incoming.is_some() || a.outgoing.is_some() { AccountKind::Imap } else { AccountKind::Local };
+    }
     if !a.address().is_valid() {
         return Err(bad(format!("\"{}\" isn't an e-mail address", a.email)));
     }
@@ -206,7 +231,7 @@ fn apply_fields(a: &mut Account, v: &Value) -> Result<(), CmdError> {
 
 fn add(s: &mut Session, v: &Value) -> CmdResult {
     let mut a = Account::default();
-    apply_fields(&mut a, v)?;
+    apply_fields(&mut a, v, s.graph_mail)?;
     if s.mailbox.accounts.iter().any(|x| x.email.eq_ignore_ascii_case(&a.email)) {
         return Err(fail(format!("{} is already set up", a.email)));
     }
@@ -231,7 +256,7 @@ fn add(s: &mut Session, v: &Value) -> CmdResult {
 fn edit(s: &mut Session, v: &Value) -> CmdResult {
     let id = p::req_id(v, "id")?;
     let mut a = s.mailbox.account(id).cloned().ok_or_else(|| fail(format!("no account with id {id}")))?;
-    apply_fields(&mut a, v)?;
+    apply_fields(&mut a, v, s.graph_mail)?;
     if s.mailbox.accounts.iter().any(|x| x.id != id && x.email.eq_ignore_ascii_case(&a.email)) {
         return Err(fail(format!("{} is already set up", a.email)));
     }
@@ -341,6 +366,9 @@ pub fn sync_request(s: &Session, account: Id) -> Result<SyncRequest, CmdError> {
 /// A change the server refused stays counted until it goes through, so a host must not answer
 /// a count that doesn't fall by trying again at once.
 pub fn unpushed(s: &Session, account: Id) -> usize {
+    if s.mailbox.account(account).is_some_and(|a| a.kind == AccountKind::Microsoft) {
+        return super::graph_mail::unpushed(s, account);
+    }
     remote_ops(&s.mailbox, account, 0).1
 }
 
@@ -425,8 +453,14 @@ fn remote_ops(mb: &Mailbox, account: Id, limit: usize) -> (Vec<RemoteOp>, usize)
 
 fn request(s: &mut Session, v: &Value) -> CmdResult {
     let account = p::id(v, "account")
-        .or_else(|| s.mailbox.accounts.iter().find(|a| a.kind == AccountKind::Imap).map(|a| a.id))
+        .or_else(|| s.mailbox.accounts.iter().find(|a| a.kind.has_server()).map(|a| a.id))
         .ok_or_else(|| fail("no account is connected to a mail server"))?;
+    // One kept in step through Microsoft Graph has a request of its own (`sync.graphRequest`).
+    if s.mailbox.account(account).is_some_and(|a| a.kind == AccountKind::Microsoft) {
+        let mut req = serde_json::to_value(super::graph_mail::graph_mail_request(s, account)?).map_err(|e| fail(e.to_string()))?;
+        req["graph"] = json!(true);
+        return Ok(req);
+    }
     let req = sync_request(s, account)?;
     serde_json::to_value(&req).map_err(|e| fail(e.to_string()))
 }

@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Account, FlagStatus, FolderKind, Id, Message};
+use crate::{Account, FlagStatus, FolderKind, Id, Importance, Message};
 
 /// A folder as the mailbox knows it, for the server side to continue from.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +178,23 @@ impl RemoteFlags {
     pub fn at(self, uid: u32) -> RemoteFlags {
         RemoteFlags { uid, ..self }
     }
+}
+
+/// A message as a Microsoft account's server knows it (ADR 0003): its server id (Graph's
+/// immutable id, which stays the same when the message moves within the mailbox) and what the
+/// server last said of the properties a change made here is worked out from. The difference
+/// between these and the message as it is now is what a run sends (R3.3).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ServerMessage {
+    pub id: String,
+    /// The server id of the folder it is in.
+    pub folder: String,
+    pub read: bool,
+    pub flag: FlagStatus,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
+    pub importance: Importance,
 }
 
 /// A value from a mailbox file, or `None` when what the file holds in its place isn't one (a
@@ -460,6 +477,150 @@ pub fn summary_line(error: Option<&str>, new: usize, sent: usize) -> String {
         (0, s) => format!("{s} message{} sent", plural(s)),
         (n, s) => format!("{n} new message{}, {s} sent", plural(n)),
     }
+}
+
+// ---- Microsoft Graph (R3) ----
+//
+// A Microsoft account is kept in step through Graph alone (ADR 0002), and its folders and
+// messages are known by their server ids (ADR 0003). These are its own request and answer,
+// beside the IMAP ones above rather than bent into them: no UIDs, no paths.
+
+/// Most changes to folders one Graph run is asked to make; more go over several runs.
+pub const MAX_FOLDER_CHANGES: usize = 500;
+/// Most folders a listing holds; a mailbox with more is listed in part (and nothing is removed
+/// for being missing from it).
+pub const MAX_LISTED_FOLDERS: usize = 10_000;
+
+/// A change made here to a folder of a Microsoft account, for its server to take on: worked out
+/// from the difference between the folder and what the server last said of it
+/// ([`crate::ServerFolder`]), or waiting in [`crate::Mailbox::queued`]. Folders are named by
+/// their server ids; a parent that is empty is the top of the mailbox.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FolderChange {
+    /// The folder `folder` only exists here: the server makes it, called `name`, under the
+    /// folder `parent`; or, when `parent_folder` names a folder of this mailbox that is made in
+    /// the same run, under that one once it is.
+    #[serde(rename_all = "camelCase")]
+    Create {
+        folder: Id,
+        name: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        parent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_folder: Option<Id>,
+    },
+    /// The folder `folder`, which the server calls `id`, is called `name` now.
+    Rename { folder: Id, id: String, name: String },
+    /// The folder `folder`, which the server calls `id`, lies in `parent` now. (Delete Folder is
+    /// one of these: into Deleted Items, as Outlook does.)
+    Move {
+        folder: Id,
+        id: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        parent: String,
+    },
+    /// The folder the server calls `id` was deleted for good here.
+    Delete { id: String },
+}
+
+impl FolderChange {
+    /// The folder of this mailbox the change is about; `None` for one that is gone here.
+    pub fn folder(&self) -> Option<Id> {
+        match self {
+            FolderChange::Create { folder, .. } | FolderChange::Rename { folder, .. } | FolderChange::Move { folder, .. } => Some(*folder),
+            FolderChange::Delete { .. } => None,
+        }
+    }
+}
+
+/// What a Graph run for a Microsoft account is asked to do: the folder changes made here go up,
+/// then every folder of the mailbox is listed. The access token is handed to the host's Graph
+/// code beside this, never in it: nothing here is a secret, and it may be logged by count.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GraphMailRequest {
+    pub account: Id,
+    /// The account's address: the mailbox whose requests are counted together (Microsoft allows
+    /// a few at once per mailbox), and what the answer is checked against.
+    pub email: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<FolderChange>,
+    /// Nobody is waiting for this run: it gets the share of requests background work has.
+    #[serde(skip_serializing_if = "is_false")]
+    pub background: bool,
+}
+
+/// One folder of a Microsoft account's mailbox, as the server lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GraphFolder {
+    /// The server's id.
+    pub id: String,
+    /// The server id of the folder it lies in; empty for one at the top of the mailbox.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub parent: String,
+    /// Its name, whole: it may hold `/` or `\`, and is never split into a path.
+    pub name: String,
+    /// Which special folder it is, when the server says it is one of them.
+    pub kind: FolderKind,
+}
+
+/// Every folder the server has, parents before what lies in them. Hidden folders and search
+/// folders are not among them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FolderListing {
+    pub folders: Vec<GraphFolder>,
+    /// The listing went to its end: a folder that isn't in it is one the server doesn't have.
+    /// A listing that was cut short (a page that didn't come, a limit reached) only adds and
+    /// updates; nothing is removed for being missing from it (R3 spec S8).
+    pub complete: bool,
+}
+
+/// What the server made of a [`FolderChange`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChangeOutcome {
+    /// Done: the folder as the server has it now (for a deletion, empty).
+    Done { folder: GraphFolder },
+    /// The server no longer has the folder: there is nothing to do (the listing removes it).
+    Gone,
+    /// The server won't (403, 400, a name that is taken there): the folder is put back to what
+    /// the server has, and this says why, in plain words.
+    Refused { why: String },
+}
+
+/// A change and what became of it. A change that isn't answered (the server was busy, the
+/// connection went) is not here: it is worked out again for the next run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderChangeDone {
+    pub change: FolderChange,
+    pub outcome: ChangeOutcome,
+}
+
+/// What a Graph run for a Microsoft account brought back.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GraphMailResult {
+    pub account: Id,
+    /// The address of the account the run was for: an answer is not taken in by another account
+    /// that happens to have the id.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub email: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<FolderChangeDone>,
+    /// Every folder of the mailbox, when it could be listed at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub listing: Option<FolderListing>,
+    /// Problems worth telling the owner; empty when all went well.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<String>,
+    /// The server said it was busy and to stay away this many seconds: all Graph work for the
+    /// account waits that long (R3 spec S14).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub busy_for: Option<u32>,
 }
 
 #[cfg(test)]

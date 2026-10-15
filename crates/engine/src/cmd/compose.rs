@@ -508,7 +508,7 @@ fn send(s: &mut Session, _: &Value) -> CmdResult {
     let account = s.mailbox.account(m.account).cloned().ok_or_else(|| fail("the account is gone"))?;
     // An account with a server queues the message for the next Send/Receive; a local one has
     // nowhere to send it, so it is filed as sent (and delivered to local accounts it names).
-    let queued = account.kind == AccountKind::Imap;
+    let queued = account.kind.has_server();
     let kind = if queued { FolderKind::Outbox } else { FolderKind::Sent };
     m.folder = s.mailbox.folder_of_kind(account.id, kind).ok_or_else(|| fail(format!("this account has no {} folder", kind.default_name())))?;
     let id = s.mailbox.add_message(m.clone())?;

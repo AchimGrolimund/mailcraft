@@ -1,6 +1,6 @@
 # MailCraft architecture
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-15 · **Change:** minor (the Secret Service on Linux and FreeBSD behind `Services::secrets`; `StoreTrouble`; Exchange Web Services removed: the Favorites of Outlook are read through Microsoft Graph alone, and there is no choice of a way) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-15 · **Change:** minor (R3.1: a Microsoft account kept in step through Graph behind a switch for testing, server ids, `graph::pace`; the Secret Service on Linux and FreeBSD behind `Services::secrets`; `StoreTrouble`; Exchange Web Services removed: the Favorites of Outlook are read through Microsoft Graph alone, and there is no choice of a way) · **Target:** Microsoft Outlook (Microsoft 365)
 
 How MailCraft is built today. Rules for working in the code are in [`AGENTS.md`](../AGENTS.md). The
 shape — layers, "everything is a command", the swappable egui front end, the control channel, MCP,
@@ -81,6 +81,27 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
   host first asks Graph to send the Outbox and, every quarter of an hour, for the calendar and
   contacts (`crates/net/src/graph.rs`); the engine merges them as server-kept, read-only items
   (`cmd/remote.rs`, `Origin`). Mail itself still goes over IMAP.
+- **A Microsoft account kept in step through Graph alone (R3, behind a switch for testing).**
+  With `MAILCRAFT_GRAPH_MAIL=1` (`Session::graph_mail`) a Microsoft account is
+  `AccountKind::Microsoft`: no mail servers, never IMAP or SMTP ([ADR 0002](adr/0002-graph-mail-for-microsoft-accounts.md)).
+  Its folders and messages are known by server ids, beside what the server last said of them
+  (`ServerFolder` on `Folder::server`, `ServerMessage` on `Message::server`;
+  [ADR 0003](adr/0003-server-ids-and-changes-from-the-last-synced-state.md)); a change made here is
+  the difference between the two, and only what comparing can't show waits in
+  `Mailbox::queued` (a folder deleted for good). The request and answer are Graph's own, beside
+  the IMAP ones (`GraphMailRequest`, `FolderChange`, `GraphMailResult`, `FolderListing` in
+  `crates/model/src/sync.rs`): `sync.graphRequest` / `graph_mail_request` and `sync.applyGraph` /
+  `apply_graph_mail` (`crates/engine/src/cmd/graph_mail.rs`) are pure, and
+  `mailcraft_net::graph::sync_folders` (`crates/net/src/graph/mail.rs`) does the talking on the
+  host's Graph job: the changes first, then a walk of every folder (hidden and search folders
+  left out, the tree from where each was found, names whole). What comes back is taken in by
+  server id; the server wins but for what was changed here and hasn't reached it; a listing that
+  didn't finish removes nothing. Every request of the mail code asks for immutable ids and goes by
+  `graph::pace`: one gate per mailbox (4 requests at once, 2 for background work, all paused
+  while the server says it is busy) and one retry policy by kind (reads and same-every-time
+  changes again after `Retry-After`, a POST never by itself). The token is asked for with
+  `Mail.ReadWrite` (`oauth::refresh_graph_mail`, `Resource::GraphMail`) for these accounts only.
+  R3.1 covers the folders; mail comes in R3.2.
 - **The Favorites are Outlook's, read and never written.** For the same accounts the host also
   reads which folders the owner keeps under Favorites in Outlook (`crates/net/src/graph/favorites.rs`:
   one configuration item of the mailbox, of which one entry is read with an XML reader that
@@ -151,3 +172,4 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
 | 2026-10-13 | minor | The owner chooses how they are read (M4.3): `ews` in `net` (Exchange Web Services, until 1 April 2027), `Account::favorites_source`, the choice and its job in the front end |
 | 2026-10-15 | minor | Sign-ins remembered on Linux and FreeBSD (R5): the Secret Service behind `Services::secrets`, and `SecretStore::take_trouble` for a store that can't be used |
 | 2026-10-15 | minor | Exchange Web Services removed (R2): Graph is the one way of reading the Favorites; a mailbox that chose the other opens and says so once |
+| 2026-10-15 | minor | R3.1: `AccountKind::Microsoft` behind the switch for testing; server ids (`ServerFolder`, `ServerMessage`, `Mailbox::queued`); Graph's own sync types; `graph::mail` and `graph::pace` in `net`; `cmd/graph_mail.rs` in the engine |

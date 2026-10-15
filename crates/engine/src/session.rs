@@ -466,6 +466,11 @@ pub struct Session {
     pub clock: Clock,
     /// What the last synchronisation reported, for the status bar.
     pub sync_status: String,
+    /// Microsoft accounts may be kept in step through Microsoft Graph (R3): the switch for
+    /// testing, which a host turns on when `MAILCRAFT_GRAPH_MAIL=1` (R3 spec S35). Off, nothing
+    /// makes such an account (`account.add` with `"kind": "microsoft"` is refused); the ones a
+    /// mailbox has stay what they are. Never saved.
+    pub graph_mail: bool,
     history: Vec<Undo>,
     redo: Vec<Undo>,
     rev: u64,
@@ -491,6 +496,7 @@ impl Session {
             dirty: false,
             clock,
             sync_status: String::new(),
+            graph_mail: false,
             history: Vec::new(),
             redo: Vec::new(),
             rev: 0,
