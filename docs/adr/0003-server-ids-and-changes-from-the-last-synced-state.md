@@ -18,7 +18,8 @@ because nothing would send the reverse change.
 ## Decision
 
 1. **Server ids.** For a Microsoft account, a message is known by Graph's immutable id (asked for
-   with `Prefer: IdType="ImmutableId"` on every request), which stays the same when the message
+   with `Prefer: IdType="ImmutableId"` on every mail request; calendar and contacts keep Graph's
+   ordinary ids until a later step re-keys them), which stays the same when the message
    moves within the mailbox, and a folder by its Graph id, which stays the same when it is renamed
    or moved. A folder's path is kept for showing only. The Message-ID stays a field of the message
    and is never trusted to say two messages are the same.

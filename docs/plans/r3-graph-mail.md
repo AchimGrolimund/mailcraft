@@ -1,6 +1,6 @@
 # R3: Graph mail for Microsoft accounts: implementation plan
 
-> **Status:** proposed, with [the spec](../specs/r3-graph-mail.md) · **Written:** 2026-10-15 · **Change:** major (first version)
+> **Status:** proposed, with [the spec](../specs/r3-graph-mail.md) · **Written:** 2026-10-15 · **Change:** minor (S4 wording)
 
 Refines step R3 of [the roadmap reset plan](roadmap-reset.md). Requirement numbers (S1–S36) are
 the spec's. Each task is one pull request, reviewed by a person (`needs-review`), with
@@ -16,7 +16,7 @@ ones, rather than bending the uid-based ones. Hours are guesses until a task is 
 |---|---|
 | Account kind | `AccountKind::Microsoft` (S1); behind the testing switch (S35); Add Account makes one only with the switch on |
 | Server ids | A server id on `Message` and `Folder`, a delta link per folder, and the last synced state of a message widened to read, flag, categories, importance and folder (ADR 0003); older files open with these empty |
-| Graph client | `Prefer: IdType="ImmutableId"` on every request (S4); the retry policy by kind of request, `Retry-After`, a per-account pause and at most 4 requests at once, 2 for background work (S14, S21) |
+| Graph client | `Prefer: IdType="ImmutableId"` on every mail request (S4); the retry policy by kind of request, `Retry-After`, a per-account pause and at most 4 requests at once, 2 for background work (S14, S21) |
 | Folders | The full walk of mail folders, hidden and search folders left out, Outlook's order (S6); New, Rename, Move, Delete Folder to Deleted Items (S7); removal only after a complete listing (S8) |
 | Stand-in | Folders: list, childFolders, create, PATCH, move, delete, names with `/` and `\`; 429 with `Retry-After` |
 
@@ -110,3 +110,4 @@ Total: about 76–122 hours before R3.9.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-15 | major | First version |
+| 2026-10-15 | minor | Graph client row: immutable ids on mail requests only (spec S4) |
