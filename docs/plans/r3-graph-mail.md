@@ -34,7 +34,7 @@ already asks Microsoft accounts for `Mail.ReadWrite`.
 
 | Part | What |
 |---|---|
-| Stand-in | Message delta per folder: pages (`odata.maxpagesize`), `@odata.nextLink` and `@odata.deltaLink`, newest first, `@removed`, a page served twice, `410 Gone` and `syncStateNotFound`, moves between folders; `$value` (MIME); a generated mailbox of 200,000 messages made as it is asked for, not held whole; the record of requests capped |
+| Stand-in | Message delta per folder: pages (`odata.maxpagesize`), `@odata.nextLink` and `@odata.deltaLink`, newest first, `@removed`, a page served twice, `410 Gone` and `syncStateNotFound`, moves between folders; `$value` (MIME); a generated mailbox of 200,000 messages (held in memory: a round of it takes about 2 s); the record of requests capped |
 | Model | Fetched as a field of the message (S12); a message's "gone from this folder" mark (S9); the per-account "Download messages in full" setting (S12), read leniently by older files |
 | Sync types | Graph message pages beside `GraphMailResult`: messages new and changed, `@removed`, the folder's next or delta link, counts for progress (S10, S15) |
 
@@ -143,3 +143,4 @@ Total: about 76–122 hours before R3.9.
 | 2026-10-15 | major | First version |
 | 2026-10-15 | minor | Graph client row: immutable ids on mail requests only (spec S4) |
 | 2026-10-15 | minor | R3.2 split into R3.2.1 (stand-in and model), R3.2.2 (delta down, resumable) and R3.2.3 (fetching), from the R3.2 decision session; sign-in row dropped (done in R3.1) |
+| 2026-10-15 | minor | R3.2.1 done; the stand-in holds its generated mailbox in memory (a round of 200,000 messages takes about 2 s) |

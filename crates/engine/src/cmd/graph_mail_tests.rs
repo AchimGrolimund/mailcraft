@@ -20,7 +20,7 @@ fn session() -> (Session, Id) {
 }
 
 fn folder(id: &str, parent: &str, name: &str, kind: FolderKind) -> GraphFolder {
-    GraphFolder { id: id.into(), parent: parent.into(), name: name.into(), kind }
+    GraphFolder { id: id.into(), parent: parent.into(), name: name.into(), kind, ..Default::default() }
 }
 
 /// What the server has to begin with: the special folders, and a few of the owner's.
