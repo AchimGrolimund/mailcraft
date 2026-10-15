@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use mailcraft_model::{Attachment, Id, Importance, Mailbox, Message};
+use mailcraft_model::{Attachment, Id, Importance, Mailbox, Message, RichBody};
 use mailcraft_time::{Date, DateTime, Timestamp, Weekday, Zone};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -290,7 +290,9 @@ pub struct Compose {
     pub cc: String,
     pub bcc: String,
     pub subject: String,
-    pub body: String,
+    /// What the owner writes, in rich text, with its selection and its own undo. Stored as plain
+    /// text before rich text; that still reads.
+    pub body: RichBody,
     pub attachments: Vec<Attachment>,
     pub importance: Importance,
     pub in_reply_to: String,

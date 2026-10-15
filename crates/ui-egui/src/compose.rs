@@ -297,7 +297,7 @@ pub fn show(app: &mut MailApp, ui: &mut Ui) {
     }
 
     // The body takes what is left.
-    let mut body = c.body.clone();
+    let mut body = c.body.plain();
     egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("compose_body").show(ui, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 10, bottom: 16 }).show(ui, |ui| {
             let rows = ((ui.available_height() / 19.0) as usize).max(8);

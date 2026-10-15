@@ -1,6 +1,7 @@
 //! Writing mail: new messages, replies, forwards, drafts, sending.
 
-use mailcraft_model::{AccountKind, Address, Attachment, Body, FolderKind, Id, Importance, Message, format_list};
+use mailcraft_model::rich::Style;
+use mailcraft_model::{AccountKind, Address, Attachment, Body, FolderKind, Id, Importance, Message, RichBody, format_list};
 use serde_json::{Value, json};
 
 use super::{bad, base64_decode, done, fail, needs_compose, needs_message, source};
@@ -78,7 +79,7 @@ fn new(s: &mut Session, v: &Value) -> CmdResult {
         cc: text("cc", link.cc.join("; ")),
         bcc: text("bcc", link.bcc.join("; ")),
         subject: text("subject", link.subject),
-        body: format!("{body}{}", signature_block(s, account, None)),
+        body: RichBody::from_plain(&format!("{body}{}", signature_block(s, account, None))),
         ..Default::default()
     };
     s.compose = Some(c);
@@ -163,7 +164,7 @@ fn respond(s: &mut Session, v: &Value, mode: ComposeMode) -> CmdResult {
         to: format_list(&to),
         cc: format_list(&cc),
         subject: prefixed(if mode == ComposeMode::Forward { "FW" } else { "RE" }, &m.subject),
-        body: format!("{}{body}", signature_block(s, m.account, None)),
+        body: RichBody::from_plain(&format!("{}{body}", signature_block(s, m.account, None))),
         attachments: if mode == ComposeMode::Forward { m.attachments.clone() } else { Vec::new() },
         in_reply_to: if mode == ComposeMode::Forward { String::new() } else { m.message_id.clone() },
         references: if mode == ComposeMode::Forward { Vec::new() } else { references },
@@ -198,7 +199,7 @@ fn edit_draft(s: &mut Session, v: &Value) -> CmdResult {
         cc: format_list(&m.cc),
         bcc: format_list(&m.bcc),
         subject: m.subject.clone(),
-        body: m.body.text.clone(),
+        body: RichBody::from_plain(&m.body.text),
         attachments: m.attachments.clone(),
         importance: m.importance,
         in_reply_to: m.in_reply_to.clone(),
@@ -221,11 +222,14 @@ fn set(s: &mut Session, v: &Value) -> CmdResult {
     };
     let c = compose_mut(s)?;
     let before = c.clone();
-    for (key, field) in [("to", &mut c.to), ("cc", &mut c.cc), ("bcc", &mut c.bcc), ("subject", &mut c.subject), ("body", &mut c.body)] {
+    for (key, field) in [("to", &mut c.to), ("cc", &mut c.cc), ("bcc", &mut c.bcc), ("subject", &mut c.subject)] {
         if let Some(text) = p::str(v, key) {
-            // One line for everything but the body.
-            *field = if key == "body" { text.to_string() } else { text.replace(['\r', '\n'], " ") };
+            *field = text.replace(['\r', '\n'], " ");
         }
+    }
+    // The body as plain text: what didn't change keeps its formatting.
+    if let Some(text) = p::str(v, "body") {
+        c.body.set_plain(text).map_err(|e| fail(e.to_string()))?;
     }
     if let Some(i) = importance {
         c.importance = i;
@@ -285,10 +289,12 @@ fn signature(s: &mut Session, v: &Value) -> CmdResult {
     }
     let c = compose_mut(s)?;
     // Above the quoted original, at the end of what was typed.
-    match c.body.find("\n\n-----Original Message-----") {
-        Some(at) => c.body.insert_str(at, &block),
-        None => c.body.push_str(&block),
-    }
+    let text = c.body.plain();
+    let at = match text.find("\n\n-----Original Message-----") {
+        Some(at) => text.get(..at).map_or(0, |t| t.chars().count()),
+        None => c.body.text().len(),
+    };
+    c.body.insert_at(at, &block, &Style::default()).map_err(|e| fail(e.to_string()))?;
     c.dirty = true;
     done()
 }
@@ -363,7 +369,7 @@ fn build(s: &Session, c: &Compose, strict: bool) -> Result<Message, CmdError> {
         message_id: mailcraft_mime::new_message_id(
             domain,
             now,
-            s.rev().wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ c.body.len() as u64 ^ (c.subject.len() as u64) << 32,
+            s.rev().wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ c.body.text().len() as u64 ^ (c.subject.len() as u64) << 32,
         ),
         in_reply_to: c.in_reply_to.clone(),
         references: c.references.clone(),
@@ -374,7 +380,7 @@ fn build(s: &Session, c: &Compose, strict: bool) -> Result<Message, CmdError> {
         subject: c.subject.trim().to_string(),
         date: now,
         received: now,
-        body: Body { text: c.body.clone(), html: None },
+        body: Body { text: c.body.text().to_plain(), html: None },
         attachments: c.attachments.clone(),
         read: true,
         importance: c.importance,

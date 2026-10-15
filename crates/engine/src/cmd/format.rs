@@ -1,0 +1,210 @@
+//! Writing in rich text: the selection in the message being written, typing, formatting and
+//! undo inside the message (`mailcraft_model::rich`).
+//!
+//! These are pure commands: they change the message being written, never the mailbox, so they
+//! are not on the mailbox's undo history. The message has its own (`compose.undo`).
+//! Positions count characters of the body's text, a paragraph break being one.
+
+use mailcraft_model::ModelError;
+use mailcraft_model::rich::{Format, ListKind, MAX_SIZE, MIN_SIZE};
+use serde_json::{Value, json};
+
+use super::{bad, fail, needs_compose};
+use crate::{CmdError, CmdResult, CommandSpec, Compose, Session, p};
+
+const RANGE: &str = r#"{"from"?: number, "to"?: number} (default: the selection)"#;
+
+pub fn specs() -> Vec<CommandSpec> {
+    vec![
+        CommandSpec::new("compose.select", "Select Text", "Message", select).pure().params(r#"{"from": number, "to"?: number} (to: the caret, default from)"#).when(needs_compose),
+        CommandSpec::new("compose.type", "Type", "Message", type_text)
+            .pure()
+            .params(r#"{"text": string} — over the selection, in the formatting at the caret; a line break starts a paragraph"#)
+            .when(needs_compose),
+        CommandSpec::new("compose.delete", "Delete Text", "Message", delete)
+            .pure()
+            .params(r#"{"from"?: number, "to"?: number, "forward"?: bool} (default: the selection, else the character before the caret, or after it with forward)"#)
+            .when(needs_compose),
+        CommandSpec::new("compose.undo", "Undo Typing", "Message", undo).pure().when(|s| match &s.compose {
+            None => Some("no message is being written"),
+            Some(c) if !c.body.can_undo() => Some("nothing to undo in the message"),
+            Some(_) => None,
+        }),
+        CommandSpec::new("compose.redo", "Redo Typing", "Message", redo).pure().when(|s| match &s.compose {
+            None => Some("no message is being written"),
+            Some(c) if !c.body.can_redo() => Some("nothing to redo in the message"),
+            Some(_) => None,
+        }),
+        CommandSpec::new("format.bold", "Bold", "Message › Basic Text", bold).pure().params(RANGE).when(needs_compose),
+        CommandSpec::new("format.italic", "Italic", "Message › Basic Text", italic).pure().params(RANGE).when(needs_compose),
+        CommandSpec::new("format.underline", "Underline", "Message › Basic Text", underline).pure().params(RANGE).when(needs_compose),
+        CommandSpec::new("format.size", "Font Size", "Message › Basic Text", size)
+            .pure()
+            .params(r#"{"size": number (points, 8–36) | null (the message's own size), "from"?: number, "to"?: number}"#)
+            .when(needs_compose),
+        CommandSpec::new("format.bullets", "Bullets", "Message › Basic Text", bullets).pure().params(RANGE).when(needs_compose),
+        CommandSpec::new("format.numbering", "Numbering", "Message › Basic Text", numbering).pure().params(RANGE).when(needs_compose),
+        CommandSpec::new("format.clear", "Clear All Formatting", "Message › Basic Text", clear).pure().params(RANGE).when(needs_compose),
+        CommandSpec::new("compose.link", "Link", "Message › Include", link)
+            .pure()
+            .params(r#"{"url"?: string (http, https, mailto or tel; none: remove the link), "from"?: number, "to"?: number}"#)
+            .when(needs_compose),
+    ]
+}
+
+fn compose_mut(s: &mut Session) -> Result<&mut Compose, CmdError> {
+    s.compose.as_mut().ok_or_else(|| fail("no message is being written"))
+}
+
+fn model(e: ModelError) -> CmdError {
+    fail(e.to_string())
+}
+
+/// A position from the params.
+fn position(v: &Value, key: &str) -> Result<Option<usize>, CmdError> {
+    match v.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => p::u64(v, key).and_then(|n| usize::try_from(n).ok()).map(Some).ok_or_else(|| bad(format!("`{key}` is a position (a number)"))),
+    }
+}
+
+/// Select what `from` and `to` name, when the params name something.
+fn select_range(c: &mut Compose, v: &Value) -> Result<(), CmdError> {
+    let (from, to) = (position(v, "from")?, position(v, "to")?);
+    if from.is_none() && to.is_none() {
+        return Ok(());
+    }
+    let sel = c.body.selection();
+    let from = from.unwrap_or(sel.start());
+    let to = to.unwrap_or(from);
+    c.body.select(from, to).map_err(model)
+}
+
+/// Run an edit of the body; the message is changed when its text is.
+fn edit<T>(s: &mut Session, v: &Value, f: impl FnOnce(&mut Compose) -> Result<T, ModelError>) -> Result<T, CmdError> {
+    let c = compose_mut(s)?;
+    select_range(c, v)?;
+    let before = c.body.text().clone();
+    let out = f(c).map_err(model)?;
+    if *c.body.text() != before {
+        c.dirty = true;
+    }
+    Ok(out)
+}
+
+/// What the answer of an edit says: the selection now.
+fn state(s: &Session) -> Value {
+    match &s.compose {
+        Some(c) => {
+            let sel = c.body.selection();
+            json!({"from": sel.anchor, "to": sel.head, "length": c.body.text().len()})
+        }
+        None => json!({}),
+    }
+}
+
+fn select(s: &mut Session, v: &Value) -> CmdResult {
+    let from = position(v, "from")?.ok_or_else(|| bad("`from` (number) is required"))?;
+    let to = position(v, "to")?.unwrap_or(from);
+    compose_mut(s)?.body.select(from, to).map_err(model)?;
+    Ok(state(s))
+}
+
+fn type_text(s: &mut Session, v: &Value) -> CmdResult {
+    let text = p::req_str(v, "text")?.to_string();
+    edit(s, &json!({}), |c| c.body.type_text(&text))?;
+    Ok(state(s))
+}
+
+fn delete(s: &mut Session, v: &Value) -> CmdResult {
+    let forward = p::bool(v, "forward").unwrap_or(false);
+    let named = position(v, "from")?.is_some() || position(v, "to")?.is_some();
+    edit(s, v, |c| {
+        let sel = c.body.selection();
+        if named || !sel.is_empty() {
+            c.body.delete(sel.start(), sel.end())
+        } else if forward {
+            c.body.delete_forward()
+        } else {
+            c.body.backspace()
+        }
+    })?;
+    Ok(state(s))
+}
+
+fn undo(s: &mut Session, _: &Value) -> CmdResult {
+    let c = compose_mut(s)?;
+    if !c.body.undo() {
+        return Err(fail("nothing to undo in the message"));
+    }
+    c.dirty = true;
+    Ok(state(s))
+}
+
+fn redo(s: &mut Session, _: &Value) -> CmdResult {
+    let c = compose_mut(s)?;
+    if !c.body.redo() {
+        return Err(fail("nothing to redo in the message"));
+    }
+    c.dirty = true;
+    Ok(state(s))
+}
+
+fn bold(s: &mut Session, v: &Value) -> CmdResult {
+    let on = edit(s, v, |c| c.body.toggle_bold())?;
+    Ok(json!({"bold": on}))
+}
+
+fn italic(s: &mut Session, v: &Value) -> CmdResult {
+    let on = edit(s, v, |c| c.body.toggle_italic())?;
+    Ok(json!({"italic": on}))
+}
+
+fn underline(s: &mut Session, v: &Value) -> CmdResult {
+    let on = edit(s, v, |c| c.body.toggle_underline())?;
+    Ok(json!({"underline": on}))
+}
+
+fn size(s: &mut Session, v: &Value) -> CmdResult {
+    let size = match v.get("size") {
+        Some(Value::Null) => None,
+        Some(_) => {
+            let n = p::u64(v, "size").filter(|n| (u64::from(MIN_SIZE)..=u64::from(MAX_SIZE)).contains(n));
+            Some(
+                n.and_then(|n| u8::try_from(n).ok())
+                    .ok_or_else(|| bad(format!("`size` is a number of points, {MIN_SIZE} to {MAX_SIZE}, or null")))?,
+            )
+        }
+        None => return Err(bad("`size` (points, or null) is required")),
+    };
+    edit(s, v, |c| c.body.format(Format::Size(size)))?;
+    Ok(json!({"size": size}))
+}
+
+fn list(s: &mut Session, v: &Value, kind: ListKind) -> CmdResult {
+    let now = edit(s, v, |c| c.body.toggle_list(kind))?;
+    Ok(json!({"list": now}))
+}
+
+fn bullets(s: &mut Session, v: &Value) -> CmdResult {
+    list(s, v, ListKind::Bullet)
+}
+
+fn numbering(s: &mut Session, v: &Value) -> CmdResult {
+    list(s, v, ListKind::Numbered)
+}
+
+fn clear(s: &mut Session, v: &Value) -> CmdResult {
+    edit(s, v, |c| c.body.clear_formatting())?;
+    Ok(state(s))
+}
+
+fn link(s: &mut Session, v: &Value) -> CmdResult {
+    let url = match v.get("url") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(u)) => Some(u.clone()),
+        Some(_) => return Err(bad("`url` is a string")),
+    };
+    edit(s, v, |c| c.body.set_link(url.as_deref()))?;
+    Ok(state(s))
+}

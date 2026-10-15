@@ -1528,7 +1528,7 @@ fn a_mailto_link_handed_to_the_program_starts_a_message() {
     a.open_path(" mailto:maya@lumen.example?subject=Hello%20there&body=Hi%20Maya ");
     let c = a.session.compose.clone().unwrap();
     assert_eq!((c.to.as_str(), c.subject.as_str()), ("maya@lumen.example", "Hello there"));
-    assert!(c.body.starts_with("Hi Maya"));
+    assert!(c.body.plain().starts_with("Hi Maya"));
     // Something that only looks like a file is still treated as one (and isn't found).
     let mut b = app();
     b.open_path("mailto.eml");

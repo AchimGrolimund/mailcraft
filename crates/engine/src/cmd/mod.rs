@@ -11,6 +11,9 @@ pub mod edit;
 mod favorites_tests;
 pub mod file;
 pub mod folder;
+pub mod format;
+#[cfg(test)]
+mod format_tests;
 pub mod mail;
 pub mod people;
 pub mod remote;
@@ -34,6 +37,7 @@ pub fn registry() -> Registry {
     v.extend(edit::specs());
     v.extend(mail::specs());
     v.extend(compose::specs());
+    v.extend(format::specs());
     v.extend(folder::specs());
     v.extend(view::specs());
     v.extend(calendar::specs());

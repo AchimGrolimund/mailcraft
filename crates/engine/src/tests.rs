@@ -160,7 +160,7 @@ fn replies_address_the_right_people_and_quote() {
     let c = s.compose.clone().unwrap();
     assert_eq!(c.to, "Tomás Rivera <tomas@lumen.example>; Maya Okafor <maya@lumen.example>");
     assert_eq!((c.cc.as_str(), c.subject.as_str()), ("", "RE: Release checklist"));
-    assert!(c.body.starts_with("\n\nAvery Quinn\nLumen Studio\n\n-----Original Message-----\nFrom: Tomás Rivera <tomas@lumen.example>\nSent: Tuesday, October 13, 2026 4:20 PM\n"), "{}", c.body);
+    assert!(c.body.plain().starts_with("\n\nAvery Quinn\nLumen Studio\n\n-----Original Message-----\nFrom: Tomás Rivera <tomas@lumen.example>\nSent: Tuesday, October 13, 2026 4:20 PM\n"), "{}", c.body.plain());
     assert_eq!(c.references.last().map(String::as_str), Some(s.mailbox.message(id).unwrap().message_id.as_str()));
     run(&mut s, "mail.reply", json!({}));
     assert_eq!(s.compose.as_ref().unwrap().to, "Tomás Rivera <tomas@lumen.example>");
@@ -215,7 +215,7 @@ fn a_mailto_link_starts_a_message() {
     let c = s.compose.clone().unwrap();
     assert_eq!((c.to.as_str(), c.cc.as_str(), c.bcc.as_str()), ("maya@lumen.example; lin@lumen.example", "jonas@lumen.example", ""));
     assert_eq!(c.subject, "Lunch on Friday?");
-    assert!(c.body.starts_with("Noon\nat the usual place"), "{:?}", c.body);
+    assert!(c.body.plain().starts_with("Noon\nat the usual place"), "{:?}", c.body.plain());
     // It sends like any other message.
     run(&mut s, "compose.send", json!({}));
     let sent = kind(&s, FolderKind::Sent);
@@ -1970,7 +1970,7 @@ fn parity_has_a_floor_that_only_rises() {
     let s = session();
     let p = catalog::parity(&s.registry);
     let percent = p["percent"].as_f64().unwrap();
-    assert!(percent >= 48.0, "catalog parity fell to {percent}%");
+    assert!(percent >= 56.0, "catalog parity fell to {percent}%");
     // Every catalog id is spelled like a command id.
     for f in catalog::features() {
         assert!(f.id.contains('.') && !f.id.contains(' '), "{}", f.id);
