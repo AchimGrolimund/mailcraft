@@ -110,7 +110,7 @@ fn a_save_appends_what_changed_and_nothing_else() {
         ..Default::default()
     })
     .unwrap();
-    mb.signatures.push(mailcraft_model::Signature { name: "Short".into(), ..Default::default() });
+    mb.signatures.push(mailcraft_model::Signature::plain_text("Short", ""));
     let many = save(&path, &mb).unwrap();
     assert!(!many.compacted && many.blobs == 1 && many.bytes < 20_000, "{many:?}");
     assert!(peek(&path) == mb);
