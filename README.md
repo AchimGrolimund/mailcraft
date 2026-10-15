@@ -4,6 +4,8 @@
 
 **An open-source mail, calendar, contacts and tasks program, written from scratch in Rust.**
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/UCS-Care-Group/mailcraft/badge)](https://scorecard.dev/viewer/?uri=github.com/UCS-Care-Group/mailcraft)
+
 MailCraft is a clean-room reimplementation of the mail client people already know how to use: the ribbon, the folder pane, the message list with its reading pane, conversations, flags, categories, rules, a calendar with recurring meetings, people and to-dos. It is a native, GPU-rendered app (no Electron, no web view), it also runs in a browser tab through WebAssembly, and every action in it is a command that scripts and AI agents can run too.
 
 > **Status: early alpha (0.4).** The foundations are in place and tested; a lot of what a daily driver needs is not there yet. See [ROADMAP.md](ROADMAP.md) and [docs/gaps.md](docs/gaps.md) for an honest list.
@@ -101,7 +103,7 @@ A crate may only depend on lower layers, and nothing below L6 knows about the UI
 ## Principles
 
 - **Never crash.** People trust a mail program with years of correspondence. No panics in non-test code, every input (files, servers, command parameters) treated as hostile, a failed command leaves the mailbox exactly as it was.
-- **Your mail stays yours.** Nothing in a message runs, nothing in a message is fetched unless you ask for its pictures, passwords and sign-ins are held in memory, kept by the operating system's credential store when you want them remembered, and never written to MailCraft's own files or logs.
+- **Your mail stays yours.** Nothing in a message runs, nothing in a message is fetched unless you ask for its pictures, passwords and sign-ins are held in memory, kept by the operating system's credential store when you want them remembered, and never written to MailCraft's own files or logs. What MailCraft defends against, and how: [docs/threat-model.md](docs/threat-model.md).
 - **Clean room.** Built from public specifications (RFC 5322, MIME, IMAP, SMTP, OAuth 2.0, iCalendar, vCard) and from watching how mail programs behave, never from anyone's code or assets. Every icon is drawn in code; every asset is listed in [ATTRIBUTION.md](ATTRIBUTION.md).
 - **Everything is a command.** One registry behind the ribbon, the shortcuts, command search, the CLI, the control channel and MCP.
 

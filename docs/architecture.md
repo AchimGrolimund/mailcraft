@@ -1,6 +1,6 @@
 # MailCraft architecture
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-15 · **Change:** minor (R3.1: a Microsoft account kept in step through Graph behind a switch for testing, server ids, `graph::pace`; the Secret Service on Linux and FreeBSD behind `Services::secrets`; `StoreTrouble`; Exchange Web Services removed: the Favorites of Outlook are read through Microsoft Graph alone, and there is no choice of a way) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-15 · **Change:** minor (cargo-deny, pinned actions, zizmor, Scorecard, the threat model; R3.1: a Microsoft account kept in step through Graph behind a switch for testing, server ids, `graph::pace`; the Secret Service on Linux and FreeBSD behind `Services::secrets`; `StoreTrouble`; Exchange Web Services removed: the Favorites of Outlook are read through Microsoft Graph alone, and there is no choice of a way) · **Target:** Microsoft Outlook (Microsoft 365)
 
 How MailCraft is built today. Rules for working in the code are in [`AGENTS.md`](../AGENTS.md). The
 shape — layers, "everything is a command", the swappable egui front end, the control channel, MCP,
@@ -154,7 +154,12 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
   `ical`, `vcard`, `proto`) and round-tripping what the writers produce; in-process fake IMAP and
   SMTP servers on loopback for `net`; `engine/src/tests.rs::hostile_params_never_panic` runs every
   command with junk params; an MCP acceptance test drives a realistic triage through the protocol.
-- `cargo xtask ci`: fmt, clippy `-D warnings`, tests, asset attribution, layering, wasm build.
+- `cargo xtask ci`: fmt, clippy `-D warnings`, tests, asset attribution, layering, wasm build,
+  `cargo deny check` ([`deny.toml`](../deny.toml): RustSec advisories, licences, sources; skipped
+  with a hint when cargo-deny isn't installed, required in CI).
+- Workflows pin every third-party action to a commit SHA (Dependabot keeps them current); zizmor
+  checks them, OpenSSF Scorecard scores the repository. What all this defends against:
+  [`threat-model.md`](threat-model.md).
 - `cargo xtask parity` regenerates [`parity-checklist.md`](parity-checklist.md); a test keeps the
   catalog percentage above a floor that only rises.
 - GitHub Actions (shared `storytold/craft-common-actions` workflows): packaging lint, FreeBSD and
@@ -165,6 +170,7 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-11 | major | First architecture doc |
+| 2026-10-15 | minor | Supply-chain gates: cargo-deny in `cargo xtask ci` and CI, pinned actions, zizmor, Scorecard; link to the threat model |
 | 2026-10-12 | patch | `html` also makes the line a message list shows (`preview`, `text_preview`) |
 | 2026-10-12 | minor | Calendar changes are checked against what comes down; the strict Graph stand-in |
 | 2026-10-12 | minor | Time zones (M3.5): `time::Zone`, the mailbox's zone stamp and how stored times are read |

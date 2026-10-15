@@ -1,6 +1,6 @@
 # Contributing to MailCraft
 
-> **Status:** current · **Written:** 2026-10-15 · **Change:** major (first version)
+> **Status:** current · **Written:** 2026-10-15 · **Last updated:** 2026-10-15 · **Change:** minor (cargo-deny in `cargo xtask ci`)
 
 Thank you for wanting to help. MailCraft holds people's mail, so the way work comes in matters as
 much as the work. The words here have the meanings in [`CONTEXT.md`](CONTEXT.md).
@@ -26,7 +26,7 @@ Issues labelled `post-beta` are parked: they aren't open to claims until beta is
 - **One issue, one pull request**, based on current `main`, small enough to review in one sitting.
   Say `Closes #<issue>` in the description.
 - **`cargo xtask ci` passes** on your machine before every commit (fmt, clippy, tests, assets,
-  layers, wasm). Commits carry the task id (`R3.2: messages come down by delta`).
+  layers, wasm, and cargo-deny when it is installed). Commits carry the task id (`R3.2: messages come down by delta`).
 - **Every crash fix and every data-loss fix comes with a regression test.**
 - **Tests never touch a real mailbox.** Use the fake servers in `crates/net/src/fake.rs` and the
   Graph stand-ins, with `example.org` addresses.
