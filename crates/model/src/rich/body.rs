@@ -290,6 +290,34 @@ impl RichBody {
         Ok(())
     }
 
+    /// Put `sig` in as the message's signature (in place of the one there, else at `at`), or take
+    /// it out (`None`), as one step. The caret stays where it was in the text around it.
+    pub fn put_signature(&mut self, sig: Option<&RichText>, at: usize) -> Result<(), ModelError> {
+        self.edit(false, |t, s| {
+            let before = t.len();
+            let caret = s.head.min(before);
+            // What is at or after this moves with the change; what is before it stays.
+            let pivot = t.signature_start().unwrap_or(at);
+            match sig {
+                Some(sig) => t.put_signature(sig, at)?,
+                None => t.remove_signature(),
+            }
+            let moved = |p: usize| {
+                if p < pivot {
+                    p
+                } else if t.len() >= before {
+                    p + (t.len() - before)
+                } else {
+                    p.saturating_sub(before - t.len()).max(pivot)
+                }
+            };
+            *s = Selection::caret(moved(caret).min(t.len()));
+            Ok(())
+        })?;
+        self.typing = None;
+        Ok(())
+    }
+
     /// Put `text` at `at` without moving what is selected (a signature, say), as one step.
     pub fn insert_at(&mut self, at: usize, text: &str, style: &Style) -> Result<(), ModelError> {
         self.edit(false, |t, s| {

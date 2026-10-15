@@ -330,8 +330,24 @@ pub struct Compose {
     pub importance: Importance,
     pub in_reply_to: String,
     pub references: Vec<String>,
+    /// The signature put in the body (its paragraphs are marked there): which one, how it lays
+    /// out its first picture, and the pictures it carries. `None` when there is none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<InsertedSignature>,
     /// Changed since it was opened or last saved.
     pub dirty: bool,
+}
+
+/// The signature in a message being written (R4.5): what went in, so that it can be told whether
+/// the owner has edited it, and the pictures it shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct InsertedSignature {
+    pub name: String,
+    pub layout: mailcraft_model::signature::Layout,
+    pub pictures: Vec<mailcraft_model::signature::Picture>,
+    /// Its text as it went in.
+    pub text: mailcraft_model::RichText,
 }
 
 /// Preferences the engine acts on (File › Options); the front end saves them between runs.

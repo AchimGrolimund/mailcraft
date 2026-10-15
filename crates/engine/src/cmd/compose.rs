@@ -1,11 +1,12 @@
 //! Writing mail: new messages, replies, forwards, drafts, sending.
 
-use mailcraft_model::rich::Style;
+use mailcraft_model::rich::RichText;
+use mailcraft_model::signature::Picture;
 use mailcraft_model::{AccountKind, Address, Attachment, Body, FolderKind, Id, Importance, Message, RichBody, Signature, format_list};
 use serde_json::{Value, json};
 
 use super::{bad, base64_decode, done, fail, needs_compose, needs_message, source};
-use crate::{BodyFormat, CmdError, CmdResult, CommandSpec, Compose, ComposeMode, Quote, Session, p};
+use crate::{BodyFormat, CmdError, CmdResult, CommandSpec, Compose, ComposeMode, InsertedSignature, Quote, Session, p};
 
 /// Largest single attachment and most attachments on one message.
 const MAX_ATTACHMENT: usize = 64 << 20;
@@ -52,18 +53,40 @@ fn compose_mut(s: &mut Session) -> Result<&mut Compose, CmdError> {
     s.compose.as_mut().ok_or_else(|| fail("no message is being written"))
 }
 
-/// The signature block for an account (`\n\n` and the signature's words; no `-- ` line, as in
-/// Outlook), or nothing: the signature `name` names, else the account's for new messages, or for
-/// replies and forwards when `reply`.
-// ponytail: plain words until R4.5.2 puts the signature in as rich text with its pictures.
-fn signature_block(s: &Session, account: Id, name: Option<&str>, reply: bool) -> String {
+/// The signature `name` names, else the account's for new messages, or for replies and forwards
+/// when `reply`; `None` when that is none, or one with nothing in it.
+fn chosen_signature(s: &Session, account: Id, name: Option<&str>, reply: bool) -> Option<Signature> {
     let name = name
         .map(str::to_string)
-        .or_else(|| s.mailbox.account(account).map(|a| if reply { a.reply_signature().to_string() } else { a.signature.clone() }));
-    match s.mailbox.signature(&name.unwrap_or_default()).map(Signature::plain) {
-        Some(words) if !words.trim().is_empty() => format!("\n\n{}", words.trim_end()),
-        _ => String::new(),
-    }
+        .or_else(|| s.mailbox.account(account).map(|a| if reply { a.reply_signature().to_string() } else { a.signature.clone() }))?;
+    s.mailbox.signature(&name).filter(|sig| !sig.plain().trim().is_empty() || !sig.pictures().is_empty()).cloned()
+}
+
+/// Put `sig` in the message as its signature (in place of the one there, else at `at`), or take
+/// it out; and remember what went in, to tell later whether the owner has edited it.
+fn put_signature(c: &mut Compose, sig: Option<&Signature>, at: usize) -> Result<(), CmdError> {
+    c.body.put_signature(sig.map(Signature::body), at).map_err(|e| fail(e.to_string()))?;
+    c.signature = match (sig, c.body.text().signature()) {
+        (Some(sig), Some(text)) => Some(InsertedSignature { name: sig.name.clone(), layout: sig.layout, pictures: sig.pictures().to_vec(), text }),
+        _ => None,
+    };
+    Ok(())
+}
+
+/// A message starting with `sig` at `at`: how it starts is not a step to undo.
+fn start_with(c: &mut Compose, sig: &Signature, at: usize) -> Result<(), CmdError> {
+    put_signature(c, Some(sig), at)?;
+    c.body = RichBody::new(c.body.text().clone());
+    Ok(())
+}
+
+/// Whether the signature in the message is still the one that went in.
+fn signature_unedited(c: &Compose) -> bool {
+    c.signature.as_ref().is_some_and(|inserted| c.body.text().signature().as_ref() == Some(&inserted.text))
+}
+
+fn is_response(mode: ComposeMode) -> bool {
+    matches!(mode, ComposeMode::Reply | ComposeMode::ReplyAll | ComposeMode::Forward)
 }
 
 fn new(s: &mut Session, v: &Value) -> CmdResult {
@@ -77,16 +100,22 @@ fn new(s: &mut Session, v: &Value) -> CmdResult {
     };
     let text = |key: &str, linked: String| p::str(v, key).map_or(linked, str::to_string);
     let body = text("body", link.body);
-    let c = Compose {
+    let sig = chosen_signature(s, account, None, false);
+    let mut c = Compose {
         mode: ComposeMode::New,
         account,
         to: text("to", link.to.join("; ")),
         cc: text("cc", link.cc.join("; ")),
         bcc: text("bcc", link.bcc.join("; ")),
         subject: text("subject", link.subject),
-        body: RichBody::from_plain(&format!("{body}{}", signature_block(s, account, None, false))),
+        // A blank line, then the signature.
+        body: RichBody::from_plain(&if sig.is_some() { format!("{body}\n") } else { body }),
         ..Default::default()
     };
+    if let Some(sig) = &sig {
+        let end = c.body.text().len();
+        start_with(&mut c, sig, end)?;
+    }
     s.compose = Some(c);
     s.view.module = crate::Module::Mail;
     Ok(json!({"composing": true}))
@@ -228,14 +257,17 @@ fn respond(s: &mut Session, v: &Value, mode: ComposeMode) -> CmdResult {
         _ => None,
     };
     let body = if quoting && quote.is_none() { quoted(s, &m) } else { String::new() };
-    let c = Compose {
+    let sig = chosen_signature(s, m.account, None, true);
+    // A line to write on, a blank one, then the signature above the original.
+    let body = if sig.is_some() { format!("\n{}", body.strip_prefix('\n').unwrap_or(&body)) } else { body };
+    let mut c = Compose {
         mode,
         source: Some(m.id),
         account: m.account,
         to: format_list(&to),
         cc: format_list(&cc),
         subject: prefixed(if mode == ComposeMode::Forward { "FW" } else { "RE" }, &m.subject),
-        body: RichBody::from_plain(&format!("{}{body}", signature_block(s, m.account, None, true))),
+        body: RichBody::from_plain(&body),
         // A reply is written the way the original was: HTML to HTML, plain text to plain text.
         format: if m.body.html.is_some() { BodyFormat::Html } else { BodyFormat::Plain },
         quote,
@@ -244,6 +276,9 @@ fn respond(s: &mut Session, v: &Value, mode: ComposeMode) -> CmdResult {
         references: if mode == ComposeMode::Forward { Vec::new() } else { references },
         ..Default::default()
     };
+    if let Some(sig) = &sig {
+        start_with(&mut c, sig, 1)?;
+    }
     s.compose = Some(c);
     Ok(json!({"composing": true, "mode": mode}))
 }
@@ -316,8 +351,18 @@ fn set(s: &mut Session, v: &Value) -> CmdResult {
         Some(i) => Some(Importance::parse(i).ok_or_else(|| bad("`importance` is low, normal or high"))?),
         None => None,
     };
+    // Sent from another account, the message takes that account's signature, unless the owner
+    // edited the one in it.
+    // ponytail: a message that started with no signature gets none; add one when owners ask.
+    let swap = match (account, s.compose.as_ref()) {
+        (Some(a), Some(c)) if a != c.account && signature_unedited(c) => Some(chosen_signature(s, a, None, is_response(c.mode))),
+        _ => None,
+    };
     let c = compose_mut(s)?;
     let before = c.clone();
+    if let Some(sig) = swap {
+        put_signature(c, sig.as_ref(), 0)?;
+    }
     for (key, field) in [("to", &mut c.to), ("cc", &mut c.cc), ("bcc", &mut c.bcc), ("subject", &mut c.subject)] {
         if let Some(text) = p::str(v, key) {
             *field = text.replace(['\r', '\n'], " ");
@@ -379,19 +424,13 @@ fn signature(s: &mut Session, v: &Value) -> CmdResult {
     {
         return Err(fail(format!("no signature named \"{name}\"")));
     }
-    let reply = s.compose.as_ref().is_some_and(|c| matches!(c.mode, ComposeMode::Reply | ComposeMode::ReplyAll | ComposeMode::Forward));
-    let block = signature_block(s, account, p::str(v, "name"), reply);
-    if block.is_empty() {
-        return Err(fail("this account has no signature; add one in File › Options"));
-    }
+    let reply = s.compose.as_ref().is_some_and(|c| is_response(c.mode));
+    let sig =
+        chosen_signature(s, account, p::str(v, "name"), reply).ok_or_else(|| fail("this account has no signature; add one in File › Options"))?;
     let c = compose_mut(s)?;
-    // Above the quoted original, at the end of what was typed.
-    let text = c.body.plain();
-    let at = match text.find("\n\n-----Original Message-----") {
-        Some(at) => text.get(..at).map_or(0, |t| t.chars().count()),
-        None => c.body.text().len(),
-    };
-    c.body.insert_at(at, &block, &Style::default()).map_err(|e| fail(e.to_string()))?;
+    // In place of the one there, else where the caret is.
+    let at = c.body.selection().head;
+    put_signature(c, Some(&sig), at)?;
     c.dirty = true;
     done()
 }
@@ -461,13 +500,13 @@ fn build(s: &Session, c: &Compose, strict: bool) -> Result<Message, CmdError> {
     }
     let now = s.now();
     let domain = account.email.rsplit_once('@').map_or("", |(_, d)| d);
+    let message_id = mailcraft_mime::new_message_id(
+        domain,
+        now,
+        s.rev().wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ c.body.text().len() as u64 ^ (c.subject.len() as u64) << 32,
+    );
     Ok(Message {
         account: account.id,
-        message_id: mailcraft_mime::new_message_id(
-            domain,
-            now,
-            s.rev().wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ c.body.text().len() as u64 ^ (c.subject.len() as u64) << 32,
-        ),
         in_reply_to: c.in_reply_to.clone(),
         references: c.references.clone(),
         from: account.address(),
@@ -477,29 +516,74 @@ fn build(s: &Session, c: &Compose, strict: bool) -> Result<Message, CmdError> {
         subject: c.subject.trim().to_string(),
         date: now,
         received: now,
-        body: body_of(c),
-        attachments: attachments_of(c),
+        body: body_of(c, &message_id),
+        attachments: attachments_of(c, &message_id),
         read: true,
         importance: c.importance,
+        message_id,
         ..Default::default()
     })
 }
 
 /// What is sent of the owner's text: HTML with a plain-text part, or plain text only.
 /// The original quoted below follows it, in both forms.
-fn body_of(c: &Compose) -> Body {
+fn body_of(c: &Compose, message_id: &str) -> Body {
     let text = c.body.text();
     let quote_text = c.quote.as_ref().map_or("", |q| q.text.as_str());
-    let plain = format!("{}{quote_text}", text.to_plain());
+    let quote_html = c.quote.as_ref().map(|q| q.html.as_str());
+    let Some((before, sig, after)) = sent_signature(c) else {
+        let plain = format!("{}{quote_text}", text.to_plain());
+        return match c.format {
+            BodyFormat::Html => Body { text: plain, html: Some(mailcraft_mime::rich::to_html_document(text, quote_html)) },
+            BodyFormat::Plain => Body { text: plain, html: None },
+        };
+    };
+    // The signature laid out as it was made, its pictures the message's own parts.
+    let parts = [before.as_ref().map(RichText::to_plain), Some(sig.plain()), after.as_ref().map(RichText::to_plain)];
+    let plain = format!("{}{quote_text}", parts.into_iter().flatten().collect::<Vec<_>>().join("\n"));
     match c.format {
-        BodyFormat::Html => Body { text: plain, html: Some(mailcraft_mime::rich::to_html_document(text, c.quote.as_ref().map(|q| q.html.as_str()))) },
+        BodyFormat::Html => {
+            let cid = |p: &Picture| signature_cid(p, message_id);
+            let html = [
+                before.as_ref().map(mailcraft_mime::rich::to_html),
+                Some(mailcraft_mime::rich::signature_html(&sig, &cid)),
+                after.as_ref().map(mailcraft_mime::rich::to_html),
+            ];
+            Body { text: plain, html: Some(mailcraft_mime::rich::document(&html.into_iter().flatten().collect::<String>(), quote_html)) }
+        }
         BodyFormat::Plain => Body { text: plain, html: None },
     }
 }
 
-/// What goes with the message: the attachments, and in HTML the pictures of the quoted original.
-fn attachments_of(c: &Compose) -> Vec<Attachment> {
+/// The text before the signature, the signature as it goes out (only the pictures its text
+/// still shows), and the text after it; `None` when the message has no signature.
+fn sent_signature(c: &Compose) -> Option<(Option<RichText>, Signature, Option<RichText>)> {
+    let inserted = c.signature.as_ref()?;
+    let (before, sig, after) = c.body.text().around_signature()?;
+    Some((before, Signature::assemble(&inserted.name, sig, &inserted.pictures, inserted.layout), after))
+}
+
+/// A signature picture's Content-ID: unique to the message, and naming nothing of the owner.
+fn signature_cid(p: &Picture, message_id: &str) -> String {
+    let local = message_id.split('@').next().unwrap_or("");
+    format!("sig-{}.{local}@mailcraft.invalid", p.id)
+}
+
+/// What goes with the message: the attachments, and in HTML the pictures of the signature and of
+/// the quoted original.
+fn attachments_of(c: &Compose, message_id: &str) -> Vec<Attachment> {
     let mut all = c.attachments.clone();
+    if c.format == BodyFormat::Html
+        && let Some((_, sig, _)) = sent_signature(c)
+    {
+        all.extend(sig.pictures().iter().map(|p| Attachment {
+            name: p.name.clone(),
+            mime: p.mime.clone(),
+            content_id: signature_cid(p, message_id),
+            inline: true,
+            data: p.data.clone(),
+        }));
+    }
     if c.format == BodyFormat::Html
         && let Some(q) = &c.quote
     {
