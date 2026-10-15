@@ -10,14 +10,14 @@ body:
 
         **Alpha** is now: the builds on the [Releases page](https://github.com/billsecond/mailcraft/releases), unsigned, and they can still get things wrong. What you do in MailCraft (moves, deletions, read marks) reaches your server. Keep Outlook or Outlook on the web to hand, and don't test on a mailbox you can't afford to have disturbed.
 
-        **Beta** is later: at least 5 testers, each on a Microsoft account, using MailCraft daily for 14 days on at least 2 devices, with signed builds. See [ROADMAP.md](https://github.com/billsecond/mailcraft/blob/main/ROADMAP.md).
+        **Beta** is later: at least 5 testers, each on a Microsoft account, using MailCraft on 14 working days (Monday to Friday) on at least 2 devices, with signed builds. See [ROADMAP.md](https://github.com/billsecond/mailcraft/blob/main/ROADMAP.md).
   - type: checkboxes
     id: phase
     attributes:
       label: When can you test?
       options:
         - label: Alpha, now
-        - label: Beta, when it starts (14 days of daily use)
+        - label: Beta, when it starts (14 working days, about three weeks)
   - type: checkboxes
     id: platforms
     attributes:
