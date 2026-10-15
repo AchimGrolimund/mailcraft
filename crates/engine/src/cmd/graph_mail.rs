@@ -52,7 +52,13 @@ pub fn graph_mail_request(s: &Session, account: Id) -> Result<GraphMailRequest, 
     if a.kind != AccountKind::Microsoft {
         return Err(fail(format!("{} isn't kept in step through Microsoft Graph", a.name)));
     }
-    Ok(GraphMailRequest { account, email: a.email.clone(), changes: folder_changes(&s.mailbox, account, MAX_FOLDER_CHANGES).0, background: false })
+    Ok(GraphMailRequest {
+        account,
+        email: a.email.clone(),
+        changes: folder_changes(&s.mailbox, account, MAX_FOLDER_CHANGES).0,
+        links: Vec::new(),
+        background: false,
+    })
 }
 
 /// How many changes made in `account` its server hasn't heard of yet ([`super::account::unpushed`]
@@ -224,7 +230,13 @@ fn change_done(mb: &mut Mailbox, account: Id, change: &FolderChange, outcome: &C
             if f.name == *name {
                 f.name = there.name.clone();
             }
-            f.server = Some(ServerFolder { id: there.id.clone(), name: there.name.clone(), parent: there.parent.clone(), delta: String::new() });
+            f.server = Some(ServerFolder {
+                id: there.id.clone(),
+                name: there.name.clone(),
+                parent: there.parent.clone(),
+                delta: String::new(),
+                caught_up: false,
+            });
             taken.pushed += 1;
             None
         }
@@ -294,7 +306,7 @@ fn take_listing(mb: &mut Mailbox, account: Id, listing: &FolderListing, taken: &
                     parent: parent_here,
                     name: name.clone(),
                     kind: there.kind,
-                    server: Some(ServerFolder { id: there.id.clone(), name, parent: there.parent.clone(), delta: String::new() }),
+                    server: Some(ServerFolder { id: there.id.clone(), name, parent: there.parent.clone(), delta: String::new(), caught_up: false }),
                     ..Default::default()
                 });
                 here.insert(there.id.clone(), id);
@@ -356,7 +368,13 @@ fn update(mb: &mut Mailbox, id: Id, there: &GraphFolder, name: &str, parent_here
     if f.kind == FolderKind::Custom && there.kind != FolderKind::Custom {
         f.kind = there.kind;
     }
-    f.server = Some(ServerFolder { id: there.id.clone(), name: name.to_string(), parent: there.parent.clone(), delta: last.delta });
+    f.server = Some(ServerFolder {
+        id: there.id.clone(),
+        name: name.to_string(),
+        parent: there.parent.clone(),
+        delta: last.delta,
+        caught_up: last.caught_up,
+    });
     *f != before
 }
 

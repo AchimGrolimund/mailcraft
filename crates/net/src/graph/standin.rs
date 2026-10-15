@@ -49,12 +49,18 @@
 //!   ([`Configuration::Denied`], [`State::folders_denied`]), entries for folders that are gone
 //!   or belong to another mailbox, entries that are no folders, and a document that is anything
 //!   at all ([`State::configuration_document`]).
+//! - **Messages.** A folder's message delta in pages, with next and delta links, `@removed`,
+//!   replays, forgotten and reset links, and a message's MIME (`$value`): [`messages`].
 //! - **Time.** [`State::stale_views`] calendar views after a change are answered as the calendar
 //!   was before it: an answer may be older than the last change. [`State::keeps_times`] makes it
 //!   say yes to a change of time and not make it, which no client should take for done.
 //!
 //! [`route`] has the calls of this crate that go to Graph go to a stand-in instead, on the
 //! thread that asks for it and until the guard is dropped.
+
+mod messages;
+
+pub use messages::{Mail, Message};
 
 use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -75,6 +81,8 @@ const MAIL_FOLDER_PROPERTIES: &[&str] =
 /// Largest request it reads, and how many entries a page of a list has when none is asked for.
 const MAX_REQUEST: usize = 4 * 1024 * 1024;
 const PAGE: usize = 10;
+/// Most requests kept for a test to look at.
+const MAX_KEPT: usize = 20_000;
 /// Most occurrences of one series in one answer.
 const MAX_OCCURRENCES: usize = 2_000;
 
@@ -300,6 +308,12 @@ pub struct State {
     pub broken_lists: Vec<String>,
     /// The prefixes the document writes its two namespaces with (`a` and `b` unless said).
     pub prefixes: (String, String),
+    /// The messages of every folder, and the rounds of their delta ([`messages`]).
+    pub mailbox: Mail,
+    /// The `Location` header of the answer being made, when it has one.
+    location: Option<String>,
+    /// The answer being made when it isn't JSON: its type and its body.
+    raw: Option<(String, String)>,
     before: Option<Vec<Stored>>,
     made: u64,
     clock: Timestamp,
@@ -856,13 +870,14 @@ impl State {
     /// it names any.
     fn folder_json(&self, folder: &MailFolder, select: Option<&[&str]>) -> Value {
         let children = self.folders.iter().filter(|other| other.parent == folder.id).count();
+        let (total, unread) = self.mailbox.counts(&folder.id);
         let mut all = json!({
             "id": folder.id,
             "displayName": folder.name,
             "parentFolderId": folder.parent,
             "childFolderCount": children,
-            "unreadItemCount": 0,
-            "totalItemCount": 0,
+            "unreadItemCount": unread,
+            "totalItemCount": total,
             "sizeInBytes": 0,
             "isHidden": folder.hidden,
         });
@@ -905,6 +920,7 @@ impl State {
                 self.folder_create(asked, &id)
             }
             ("POST", Some(named), ["move"]) => self.folder_move(asked, named),
+            ("GET", Some(named), ["messages", "delta"]) => self.message_delta(asked, named),
             (_, _, [] | ["childFolders"] | ["move"]) => Err(refuse(405, "MethodNotAllowed", "The method is not allowed on this resource.")),
             (_, _, [other, ..]) => Err(refuse(400, "BadRequest", format!("Resource not found for the segment '{other}'."))),
         }
@@ -1685,6 +1701,7 @@ impl State {
                 let group = json!({"id": "AAMkAGVmMDEzMTM4LTZmYWUtNDdkNC1hMDZiLTU1OGY5OTZhYmY4OABGAAAAAAAiQ8W967B7TKBjgx9rVEURBgAA-group=", "name": "My Calendars"});
                 self.page(asked, vec![group])
             }
+            ["messages", id, "$value"] if method == "GET" => self.message_value(id),
             ["contacts"] | ["outlook", "masterCategories"] if method == "GET" => self.page(asked, Vec::new()),
             ["mailboxSettings", "workingHours"] if method == "GET" => Ok((
                 200,
@@ -2107,8 +2124,14 @@ impl StandIn {
                     Err(refusal) => (refusal.0, Some(error_body(&refusal))),
                 };
                 asked.status = status;
+                // Only the latest requests are kept: a mailbox of 200,000 messages takes thousands.
+                if state.requests.len() >= MAX_KEPT {
+                    state.requests.drain(..MAX_KEPT / 2);
+                }
                 state.requests.push(asked);
                 let wait = state.retry_after.unwrap_or(1);
+                let location = state.location.take().map(|to| format!("Location: {to}\r\n")).unwrap_or_default();
+                let raw = state.raw.take();
                 drop(state);
                 let reason = match status {
                     200 => "OK",
@@ -2121,19 +2144,23 @@ impl StandIn {
                     404 => "Not Found",
                     405 => "Method Not Allowed",
                     409 => "Conflict",
+                    410 => "Gone",
                     429 => "Too Many Requests",
                     _ => "Other",
                 };
                 let retry = if status == 429 || status == 503 { format!("Retry-After: {wait}\r\n") } else { String::new() };
-                let answer = match body {
-                    Some(body) => {
+                let answer = match (raw, body) {
+                    (Some((kind, raw)), _) => {
+                        format!("HTTP/1.1 {status} {reason}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{raw}", raw.len())
+                    }
+                    (None, Some(body)) => {
                         let body = body.to_string();
                         format!(
-                            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json; odata.metadata=minimal\r\n{retry}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json; odata.metadata=minimal\r\n{retry}{location}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                             body.len()
                         )
                     }
-                    None => format!("HTTP/1.1 {status} {reason}\r\n{retry}Content-Length: 0\r\nConnection: close\r\n\r\n"),
+                    (None, None) => format!("HTTP/1.1 {status} {reason}\r\n{retry}Content-Length: 0\r\nConnection: close\r\n\r\n"),
                 };
                 let _ = stream.write_all(answer.as_bytes());
             }
