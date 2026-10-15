@@ -1,6 +1,6 @@
 # R3: Graph mail for Microsoft accounts: implementation plan
 
-> **Status:** proposed, with [the spec](../specs/r3-graph-mail.md) · **Written:** 2026-10-15 · **Change:** minor (S4 wording)
+> **Status:** proposed, with [the spec](../specs/r3-graph-mail.md) · **Written:** 2026-10-15 · **Change:** minor (R3.2 split in three)
 
 Refines step R3 of [the roadmap reset plan](roadmap-reset.md). Requirement numbers (S1–S36) are
 the spec's. Each task is one pull request, reviewed by a person (`needs-review`), with
@@ -27,17 +27,48 @@ nothing; a 429 pauses and resumes; a mailbox file from 0.2.1 opens.
 
 ## R3.2 Mail down (#13) (16–26 h)
 
+Three pull requests, in order. The sign-in part of the first version of this plan is gone: R3.1
+already asks Microsoft accounts for `Mail.ReadWrite`.
+
+### R3.2.1 Stand-in and model (4–6 h)
+
 | Part | What |
 |---|---|
-| Sign-in | The permissions of S2, asked again of accounts signed in before; admin consent list; `CLAUDE.md`, `AGENTS.md`, `PRIVACY.md` |
-| Delta | Per folder, newest first, headers and preview (S9); next-page and delta links stored after each page (S10); expired links listed afresh (S11); taken in by server id (S5) |
-| Fetching | MIME in the background newest first, at once on opening, before Reply, Forward and Save (S12); offline wording; search counts what isn't searched in full (S13) |
-| Progress | Per folder and overall; Cancel after the page in hand (S15) |
-| Stand-in | Message delta with pages, `@removed`, a replayed page, `410` and `syncStateNotFound`; `$value`; a generated 200,000-message mailbox |
+| Stand-in | Message delta per folder: pages (`odata.maxpagesize`), `@odata.nextLink` and `@odata.deltaLink`, newest first, `@removed`, a page served twice, `410 Gone` and `syncStateNotFound`, moves between folders; `$value` (MIME); a generated mailbox of 200,000 messages made as it is asked for, not held whole; the record of requests capped |
+| Model | Fetched as a field of the message (S12); a message's "gone from this folder" mark (S9); the per-account "Download messages in full" setting (S12), read leniently by older files |
+| Sync types | Graph message pages beside `GraphMailResult`: messages new and changed, `@removed`, the folder's next or delta link, counts for progress (S10, S15) |
 
-**Done when:** 200,000 messages from the stand-in, interrupted and resumed three times at random,
-arrive with nothing twice and nothing missing; the list is usable before the fetch ends; an
-expired link relists that folder and removes only what a complete listing lacks.
+**Done when:** the stand-in's delta, read straight, gives every message of the generated mailbox
+once across pages, replays and links; a mailbox file from before opens.
+
+### R3.2.2 Delta down, resumable (8–12 h)
+
+| Part | What |
+|---|---|
+| Job | The Graph job sends a piece per page, as IMAP's does (`sync_with` + `apply_sync_part`); a shared Cancel stops after the page in hand and stops the account's Graph work (S15) |
+| Delta | Newest page of every folder first, then each to its end; every folder on each run (S9); the next or delta link taken in with its page (S10); expired links listed afresh (S11); matched by server id (S5) |
+| Moves and changes | `@removed` marks, moves kept with what was fetched, removal only after every folder's delta ended in the run (S9); a change here is never overwritten (S9, ADR 0003) |
+| Progress | Status bar: folder with its count, folders done of all, Cancel (S15) |
+
+**Done when:** 200,000 messages from the stand-in, interrupted and resumed three times at random
+(Cancel, a dropped connection, a crash between page and save), arrive with nothing twice and
+nothing missing; the list is usable before the run ends; a message moved on the server keeps its
+fetched content; an expired link relists that folder and removes only what a complete listing
+lacks; a flag changed here survives a page that brings the old one.
+
+### R3.2.3 Fetching (4–8 h)
+
+| Part | What |
+|---|---|
+| Background | MIME newest first across the account, at most 2 requests at once, under the account's "Download messages in full" limit (S12, S14); a larger limit fetches the rest |
+| On demand | At once on opening, before Reply, Forward and Save, ahead of background work; offline wording (S12) |
+| Search | Counts what isn't searched in full (S13) |
+| Options | "Download messages in full" in the account's settings: Everything, up to 10, 25 or 50 MB (default 10) |
+| Progress | Fetched of all, and how many larger messages wait for opening (S15) |
+
+**Done when:** every message of the generated mailbox under the limit is fetched, newest first,
+and Cancel stops it; opening a large one fetches it at once; offline says it isn't here yet;
+search says how many weren't searched in full.
 
 ## R3.3 Changes up (#14) (14–22 h)
 
@@ -111,3 +142,4 @@ Total: about 76–122 hours before R3.9.
 |---|---|---|
 | 2026-10-15 | major | First version |
 | 2026-10-15 | minor | Graph client row: immutable ids on mail requests only (spec S4) |
+| 2026-10-15 | minor | R3.2 split into R3.2.1 (stand-in and model), R3.2.2 (delta down, resumable) and R3.2.3 (fetching), from the R3.2 decision session; sign-in row dropped (done in R3.1) |

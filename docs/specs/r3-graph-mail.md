@@ -1,6 +1,6 @@
 # R3: Graph mail for Microsoft accounts
 
-> **Status:** proposed · **Written:** 2026-10-15 · **Author:** Martin Ball, with Claude · **Change:** minor (S4: immutable ids for mail only) · **Target:** Microsoft Outlook (Microsoft 365, Outlook.com)
+> **Status:** proposed · **Written:** 2026-10-15 · **Author:** Martin Ball, with Claude · **Change:** minor (S9–S15: R3.2 decided in detail) · **Target:** Microsoft Outlook (Microsoft 365, Outlook.com)
 
 The words in this document have the meanings in [`CONTEXT.md`](../../CONTEXT.md). It details step
 R3 of [the roadmap reset](roadmap-reset.md); the decisions behind it are
@@ -79,23 +79,50 @@ up to 200,000 messages are usable within minutes of being added.
 ### Mail down (R3.2)
 
 9. Each folder is read by Graph's message delta, newest first (`$orderby=receivedDateTime desc`),
-   in pages, asking for the headers, the preview, read, flag, categories, importance, the folder
-   and the Message-ID: enough for the message list. Deletions arrive as `@removed`.
-10. After each page is taken in and saved, the folder's next-page link (or, at the end, its delta
-    link) is stored with the folder in the mailbox file. Cancel, quitting, a crash or going offline
-    carry on from there next time: nothing twice, nothing missed.
+   in pages of 100 (`Prefer: odata.maxpagesize=100`; pages, not `$batch`), asking for the
+   headers, the preview, read, flag, categories, importance, the folder and the Message-ID: enough
+   for the message list. Deletions arrive as `@removed`. A first run reads the newest page of
+   every folder first (the Inbox, then the well-known folders in Outlook's order, then the rest),
+   then each folder to its end in the same order, so every folder shows mail within minutes. Each
+   Send/Receive, by hand or on the timer, runs every folder's delta. All of an account's mail is
+   kept; there is no "mail to keep offline" window.
+   - A message the server moved arrives as `@removed` in one folder and as new in another, in
+     either order and possibly in different runs. `@removed` marks the message gone from that
+     folder and keeps it (marked so in the mailbox file); seen in another folder, it has moved
+     there with what was fetched of it. Only a message still gone from every folder once every
+     folder's delta has reached its end in a run is removed here.
+   - Where the owner changed a property here that the server has not been told of yet (R3.3
+     sends it), the server's value is taken only if the message's value here is still what the
+     server last said (ADR 0003); the last synced state is updated either way. Nothing changed
+     here is overwritten by coming down.
+10. Each page is taken in as it arrives (the message list fills while the run goes on), and the
+    folder's next-page link (or, at the end, its delta link) is stored with the folder in the same
+    step as the page's messages, so the mailbox file never holds one without the other. The
+    ordinary saving of the mailbox (at most every few seconds) writes them; a crash loses at most
+    the pages since the last save, which come down again and change nothing (S5). Cancel,
+    quitting, a crash or going offline carry on from the stored link next time: nothing twice,
+    nothing missed.
 11. A delta link the server no longer accepts (`410 Gone` or `syncStateNotFound`) means that folder
     is listed afresh; what the complete new listing doesn't have is then removed here.
 12. A message's whole content (its MIME, with attachments) is **fetched** in the background, newest
     first across the account, and at once when the owner opens it. Reply, Forward and saving a
     message fetch it first. Opening a message that isn't fetched while offline says it isn't on
-    this computer yet and will download when online.
+    this computer yet and will download when online. Whether a message is fetched is part of the
+    message, not a marker in its headers.
+    - Each Microsoft account has "Download messages in full": Everything, or up to 10, 25 or 50
+      MB (default up to 10 MB). A larger message is fetched only when opened, replied to,
+      forwarded or saved, and the progress line says how many wait for that. Choosing a larger
+      limit fetches the rest in the background; choosing a smaller one removes nothing already
+      fetched.
 13. Search covers headers and previews of every message, and the whole text of fetched ones; while
     the background fetch isn't finished, results say how many messages weren't searched in full.
 14. Microsoft allows 4 requests at once per mailbox. Background fetching uses at most 2; what the
     owner is waiting for (opening a message, sending, Send/Receive) goes first. A "busy" answer
     (429, 503 with `Retry-After`) pauses all Graph work for that account for as long as it asks.
-15. Progress is shown per folder and overall, and Cancel stops after the page in hand.
+15. Progress is shown in the status bar, as for IMAP: the folder being read with its count of
+    messages from the folder listing, how many folders of how many, and separately how many
+    messages are fetched of how many. Cancel stops after the page in hand, and stops all of the
+    account's Graph work, the background fetch included, until the next Send/Receive.
 
 ### Changes up (R3.3)
 
@@ -217,3 +244,4 @@ milestone after beta); importing into server folders.
 |---|---|---|
 | 2026-10-15 | major | First version, from a decision session with Martin Ball |
 | 2026-10-15 | minor | S4: immutable ids are asked for on mail requests only; calendar, contacts and Favorites keep ordinary ids (found in R3.1, #39) |
+| 2026-10-15 | minor | S9–S15 from the R3.2 decision session with Martin Ball: pages of 100, newest page of every folder first, every folder on each run, moves kept by server id, changes here never overwritten, pages saved with their links by the ordinary save, fetched as part of the message, "Download messages in full" per account (default up to 10 MB), progress in the status bar, Cancel stops all of the account's Graph work |
