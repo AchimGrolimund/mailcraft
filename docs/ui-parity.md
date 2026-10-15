@@ -1,6 +1,6 @@
 # Interface parity
 
-> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-15 · **Change:** minor (rich signatures with a logo, R4.5) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-15 · **Change:** minor (Copy Diagnostics in the title bar, D1) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
 
 How the window compares with the target's. The look is the Craft apps' own (WordCraft's design
 tokens, type rungs and ribbon widgets, with MailCraft's teal accent); the *arrangement* is the one
@@ -10,7 +10,7 @@ Outlook users know. No pixel of the target's artwork is used: every icon is draw
 
 | Part | State | Notes |
 |---|---|---|
-| Title bar | yes | Quick Access (Send/Receive, Undo, Redo), search box with scope, account avatar. macOS integrated title bar. No customisation |
+| Title bar | yes | Quick Access (Send/Receive, Undo, Redo), search box with scope, a Copy Diagnostics pill (D1), account avatar. macOS integrated title bar. No customisation |
 | Ribbon | yes | File, Home (changes with the module), Send / Receive, Folder, View, Help, and a Message tab while writing. Collapsible by double-click. No keytips (Alt), no customisation, no simplified ribbon |
 | Module bar | yes | Mail, Calendar, People, Tasks, with the Inbox's unread count. No Notes, no reordering |
 | Folder pane | yes | Favorites, account trees, collapse/expand, unread counts, context menu, resizable. For an account that signs in with Microsoft the Favorites are the folders Outlook shows there, in Outlook's order, read from the server (never written: they are changed in Outlook); one quiet line under the heading offers to connect them, or says why they can't be had, and File › Options switches back to the favourites kept here. They are read through Microsoft Graph, for a work or school account as for any other; when an administrator has to approve it first, the pane says so and offers what can be done (a message to copy for the administrator, the page that says what to do next). No drag and drop, no search folders, no groups; a favourite that is a person, a category or a group is not shown |
@@ -83,3 +83,4 @@ High-DPI is handled by egui; multi-window, system tray, notifications and badges
 | 2026-10-15 | minor | Exchange Web Services removed (R2): no choice of how Outlook's Favorites are read, in Add Account, File › Options or the folder pane |
 | 2026-10-15 | minor | The composer edits rich text as it will be sent (R4.2), and shows the original of a reply through the reading pane's renderer |
 | 2026-10-15 | minor | Rich signatures with a logo (R4.5): File › Signatures, font and colour in the composer, pictures drawn in the editor |
+| 2026-10-15 | minor | Copy Diagnostics in the title bar (D1): a pill beside the account picture runs Help › Copy Diagnostics |

@@ -1,6 +1,6 @@
 # Copy Diagnostics in the title bar
 
-> **Status:** proposed · **Written:** 2026-10-15 · **Author:** Martin Ball, with Claude · **Change:** major (first version) · **Target:** MailCraft's own (Outlook has no such button)
+> **Status:** done · **Written:** 2026-10-15 · **Author:** Martin Ball, with Claude · **Change:** major (first version) · **Target:** MailCraft's own (Outlook has no such button)
 
 The words in this document have the meanings in [`CONTEXT.md`](../../CONTEXT.md). From the R3.2
 decision session with Martin Ball on 2026-10-15. The work is in

@@ -1,6 +1,6 @@
 # Copy Diagnostics in the title bar: implementation plan
 
-> **Status:** proposed, with [the spec](../specs/copy-diagnostics-button.md) · **Written:** 2026-10-15 · **Change:** major (first version)
+> **Status:** done, with [the spec](../specs/copy-diagnostics-button.md) · **Written:** 2026-10-15 · **Change:** major (first version)
 
 One pull request (1–2 h), `cargo xtask ci` green; task id `D1` in the commit message. Requirement
 numbers are the spec's.
