@@ -325,6 +325,10 @@ fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     {
         let _ = app.run("ui.rememberSignIn", json!({"value": remember}));
     }
+    // Said in the status bar once; kept in sight here for as long as the session lasts.
+    if remember && let Some(trouble) = app.secrets_trouble {
+        ui.label(egui::RichText::new(trouble.notice()).color(t.text_dim));
+    }
     row(ui, tl!("Microsoft application ID"), |ui| {
         // What Microsoft knows this installation by when an account signs in on its page; an
         // identifier from an app registration, not a secret.

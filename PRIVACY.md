@@ -16,9 +16,11 @@ does not check for updates by itself.
   to, as with any mail program.
 - **Passwords and sign-in tokens** are kept in memory while the program runs. When you let the
   program remember a sign-in, the password or the refresh token goes to your operating system's
-  credential store (Windows Credential Manager, the macOS keychain) and nowhere else: not into
-  the mailbox file, the settings, a log or a command line. On Linux nothing is remembered yet:
-  you sign in each time the program starts.
+  credential store (Windows Credential Manager, the macOS keychain, or on Linux and FreeBSD the
+  desktop's Secret Service, such as GNOME Keyring or KWallet) and nowhere else: not into the
+  mailbox file, the settings, a log or a command line. Where no such store is running, or it
+  stays locked, nothing is remembered: you sign in each time the program starts, and the program
+  says why.
 - **Pictures you asked to download** are kept on your computer for up to 30 days so they are not
   asked for again; File › Options shows how many and clears them.
 

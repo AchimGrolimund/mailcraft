@@ -1,6 +1,6 @@
 # Releasing MailCraft
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-12 · **Change:** major (first local builds of the Windows and Linux packages; a release workflow of MailCraft's own; the Craft launcher's requirements) · **Status:** the Windows x64 and Linux x86_64 packages build and install from this tree; the GitHub workflow, signing, and the other platforms **have not run for MailCraft yet** (gap #18).
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-15 · **Change:** minor (Linux packages: the Secret Service for remembered sign-ins) · **Status:** the Windows x64 and Linux x86_64 packages build and install from this tree; the GitHub workflow, signing, and the other platforms **have not run for MailCraft yet** (gap #18).
 
 The canonical recipe is [craftrules `release/playbook.md`](https://github.com/storytold/craftrules/blob/main/release/playbook.md);
 this file has the MailCraft specifics. The scripts in `packaging/` are WordCraft's with MailCraft's
@@ -113,13 +113,15 @@ Not checked yet: the MSI installed for real (it needs an administrator; the work
 its runner); the x86 and arm64 Windows builds; aarch64 Linux; the Flatpak; macOS (and it has no
 DMG artwork yet: `packaging/macos/dmg/README.md`); FreeBSD (`packaging/freebsd/package.sh` has
 never run); signing; the release workflow on GitHub, which will need fixing on its first run. On
-macOS, `mailto:` links are not handed to the program yet (no `CFBundleURLTypes`). On Linux there
-is no credential store yet, so sign-ins are asked for again after a restart.
+macOS, `mailto:` links are not handed to the program yet (no `CFBundleURLTypes`). On Linux a
+sign-in remembered in the Secret Service across a restart is still to be seen on GNOME and KDE,
+and in the Flatpak (which is granted `org.freedesktop.secrets` for it).
 
 ## Revision history
 
 | Date | Change |
 |---|---|
+| 2026-10-15 | Linux packages: the Secret Service for remembered sign-ins (the Flatpak may talk to `org.freedesktop.secrets`; the .deb and .rpm suggest a keyring); what is still to be checked |
 | 2026-10-12 | First local builds of the Windows and Linux packages; installer identity, file types and `mailto:`, one window per mailbox, X11 dependency; what is and is not checked |
 | 2026-10-12 | A release workflow of MailCraft's own (tag-triggered, standard runners), FreeBSD script, release notes; what ArtCraft Launcher needs |
 | 2026-10-11 | First version |

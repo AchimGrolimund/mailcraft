@@ -597,6 +597,91 @@ fn the_system_remembers_passwords_and_sign_ins_only_when_wanted() {
     assert_eq!(kept("password:avery@mail.example"), None);
 }
 
+/// A system whose credential store can't be used (on Linux, no Secret Service running, or one
+/// that stays locked): the session goes on with what was typed, the next start asks again as on
+/// a system without a store, and the owner is told why once a session, not at every try.
+#[test]
+fn a_store_that_cant_be_used_is_said_once_and_the_next_start_asks() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex, mpsc};
+
+    use mailcraft_model::sync::{SyncRequest, SyncResult};
+
+    use crate::StoreTrouble;
+
+    /// Every question fails the way the store says; how often it was asked is counted.
+    #[derive(Clone, Default)]
+    struct Broken(Arc<Mutex<Option<StoreTrouble>>>, Arc<AtomicUsize>);
+    impl crate::SecretStore for Broken {
+        fn get(&self, _: &str) -> Option<String> {
+            self.1.fetch_add(1, Ordering::Relaxed);
+            *self.0.lock().unwrap() = Some(StoreTrouble::Unavailable);
+            None
+        }
+        fn set(&self, _: &str, _: &str) -> Result<(), String> {
+            self.1.fetch_add(1, Ordering::Relaxed);
+            *self.0.lock().unwrap() = Some(StoreTrouble::Unavailable);
+            Err("the system's credential store refused: no Secret Service".into())
+        }
+        fn delete(&self, _: &str) {}
+        fn take_trouble(&self) -> Option<StoreTrouble> {
+            self.0.lock().unwrap().take()
+        }
+    }
+    let store = Broken::default();
+    let synced: Arc<Mutex<Vec<String>>> = Default::default();
+    let start = |mailbox: mailcraft_model::Mailbox| {
+        let mut a = MailApp::new(Session::at(mailbox, NOW, 0), Services::default());
+        a.autosave = false;
+        let synced = synced.clone();
+        a.services.sync = Some(Box::new(move |req: SyncRequest| {
+            synced.lock().unwrap().push(req.password.clone());
+            let (tx, rx) = mpsc::channel();
+            tx.send(SyncResult { account: req.account.id, ..Default::default() }).unwrap();
+            rx
+        }));
+        a.services.secrets = Some(Box::new(store.clone()));
+        a
+    };
+
+    let mut a = start(mailcraft_engine::sample::mailbox(NOW, 0));
+    let plain =
+        a.execute("account.add", json!({"email": "avery@mail.example", "incoming": {"host": "imap.mail.example"}})).unwrap()["id"].as_u64().unwrap();
+    // Nothing has been asked of the store yet: nothing to say.
+    a.check_secret_store();
+    assert_eq!(a.secrets_trouble, None);
+
+    // The password works; keeping it fails, and the owner hears why.
+    a.execute("ui.sync", json!({"account": plain, "password": "pw-one"})).unwrap();
+    a.poll_sync();
+    assert!(store.1.load(Ordering::Relaxed) > 0, "the store was asked");
+    a.check_secret_store();
+    assert_eq!(a.secrets_trouble, Some(StoreTrouble::Unavailable));
+    let said = a.status_msg.as_ref().map(|(text, _)| text.clone()).unwrap_or_default();
+    assert_eq!(said, StoreTrouble::Unavailable.notice());
+    assert!(said.contains("asks again each time it starts"), "{said}");
+    assert!(!said.contains("pw-one"));
+
+    // The session carries on with the password typed, and the store failing again says nothing more.
+    a.status_msg = None;
+    a.execute("ui.sync", json!({"account": plain})).unwrap();
+    assert!(a.dialog.is_none());
+    a.poll_sync();
+    a.check_secret_store();
+    assert_eq!(synced.lock().unwrap().last().map(String::as_str), Some("pw-one"));
+    assert_ne!(a.status_msg.as_ref().map(|(text, _)| text.clone()), Some(said), "told once a session");
+
+    // The next start asks for the password, as on a system without a store, and tells again.
+    let mut b = start(a.session.mailbox.clone());
+    assert_eq!(b.execute("ui.sync", json!({"account": plain})).unwrap()["pending"], "password");
+    b.check_secret_store();
+    assert_eq!(b.secrets_trouble, Some(StoreTrouble::Unavailable));
+
+    // A locked store is told as such.
+    assert_ne!(StoreTrouble::Locked.notice(), StoreTrouble::Unavailable.notice());
+    assert!(StoreTrouble::Locked.notice().contains("locked"));
+}
+
 /// Send/Receive starts by itself (when the app starts, then every few minutes) for the accounts
 /// it need not ask anybody about, and never puts a password prompt or a sign-in page up unasked;
 /// asked for, it goes round every account.
