@@ -1109,6 +1109,11 @@ fn take_in(mb: &mut Mailbox, account: Id, on_server: &mut OnServer, delta: Folde
         }
     }
     let inbox = delta.kind == FolderKind::Inbox;
+    // Only mail that came to the owner counts as new: in the Inbox, or a folder of theirs a
+    // server's rule files it in, and everything of a folder's first download. What later turns
+    // up in Deleted Items, Junk, Sent and the rest was put there (a message deleted on a phone
+    // was "1 new message").
+    let arriving = matches!(delta.kind, FolderKind::Inbox | FolderKind::Custom) || old_seen == 0;
     for mut m in delta.new {
         let uid = m.uid;
         // Here already, or on its way out of that mailbox by a change still to be pushed.
@@ -1140,7 +1145,7 @@ fn take_in(mb: &mut Mailbox, account: Id, on_server: &mut OnServer, delta: Folde
                 on_server.leaving.insert((folder, uid));
             }
         }
-        counts.new += 1;
+        counts.new += usize::from(arriving);
     }
     if let Ok(f) = mb.folder_mut(folder) {
         f.uid_seen = if reset { delta.uid_seen } else { delta.uid_seen.max(old_seen) };
