@@ -20,6 +20,15 @@ const MAX_HISTORY: usize = 100;
 /// what it has searched (and says what it hasn't).
 const SEARCH_TIME: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Most bytes of bodies and attachments a session keeps in its messages after bringing them in
+/// ([`Session::load_where`]), beyond what the mailbox brought in when it opened: past it, what
+/// was used longest ago and is safely on disk goes back to being named only (128 MB).
+pub const LOADED_MAX: u64 = 128 << 20;
+
+/// Messages one load looks at to let go of their content ([`Session::evict`]).
+#[cfg(not(target_arch = "wasm32"))]
+const EVICT_TRIES: usize = 16;
+
 /// One part of a message whose bytes [`Session::content`] fetches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Part {
@@ -543,6 +552,11 @@ pub struct Session {
     pub unsearched: usize,
     /// How long one search spends bringing bodies into memory before it goes with what it has.
     pub search_time: std::time::Duration,
+    /// How many bytes brought into messages are kept there ([`LOADED_MAX`]).
+    pub loaded_budget: u64,
+    /// Messages content was brought into, the longest unused first, with the bytes each took.
+    resident: std::collections::VecDeque<(Id, u64)>,
+    resident_bytes: u64,
 }
 
 impl Session {
@@ -576,6 +590,9 @@ impl Session {
             loads: 0,
             unsearched: 0,
             search_time: SEARCH_TIME,
+            loaded_budget: LOADED_MAX,
+            resident: std::collections::VecDeque::new(),
+            resident_bytes: 0,
         };
         s.view.date = s.today();
         s.normalize();
@@ -833,9 +850,68 @@ impl Session {
             }
             kept.text_hash = mailcraft_model::text_hash(&copy.body.text);
         }
+        let brought = in_memory(&copy).saturating_sub(in_memory(m));
         self.mailbox.messages.insert(id, Arc::new(copy));
         self.loads += 1;
+        if loaded.is_ok() {
+            self.used(id, brought);
+        }
         loaded.map(|_| true)
+    }
+
+    /// Message `id` was just used, with `brought` more bytes in memory: it goes to the back of
+    /// the line, and what is past the budget at the front goes back to disk.
+    fn used(&mut self, id: Id, brought: u64) {
+        let mut bytes = brought;
+        if let Some(at) = self.resident.iter().position(|(r, _)| *r == id)
+            && let Some((_, before)) = self.resident.remove(at)
+        {
+            bytes = bytes.saturating_add(before);
+        }
+        if bytes == 0 {
+            return;
+        }
+        self.resident.push_back((id, bytes));
+        self.resident_bytes = self.resident_bytes.saturating_add(brought);
+        self.evict(id);
+    }
+
+    /// Let go of content brought into messages, the longest unused first, until what is kept is
+    /// within [`Session::loaded_budget`]. Only what the mailbox file names as it is, and so is
+    /// on disk, goes (`store::evictable`); a message shown or picked (or `keep`) stays, and so
+    /// does one that can't go yet (changed since the last save, or the file busy being written):
+    /// it keeps its place in the line and is tried again at a later load. A few tries a load.
+    fn evict(&mut self, keep: Id) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(path) = self.path.clone() else { return };
+            let mut tries = self.resident.len().min(EVICT_TRIES);
+            while self.resident_bytes > self.loaded_budget && tries > 0 {
+                tries -= 1;
+                let Some((id, bytes)) = self.resident.pop_front() else { break };
+                let Some(m) = self.mailbox.messages.get(&id) else {
+                    // Gone from the mailbox: nothing of it is kept here any more.
+                    self.resident_bytes = self.resident_bytes.saturating_sub(bytes);
+                    continue;
+                };
+                let lean = if id == keep || self.sel.messages.contains(&id) { None } else { crate::store::evictable(&path, id, m) };
+                match lean {
+                    Some(lean) => {
+                        self.mailbox.messages.insert(id, Arc::new(lean));
+                        self.resident_bytes = self.resident_bytes.saturating_sub(bytes);
+                        self.loads += 1;
+                    }
+                    None => self.resident.push_back((id, bytes)),
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = keep;
+    }
+
+    /// How many bytes brought into messages this session keeps there now.
+    pub fn resident_bytes(&self) -> u64 {
+        self.resident_bytes
     }
 
     /// Bring everything of message `id` into memory ([`Session::load_where`]).
@@ -983,6 +1059,8 @@ impl Session {
     /// Replace the mailbox (File › New, File › Open): history and selection start over.
     pub fn replace_mailbox(&mut self, mailbox: Mailbox) {
         self.mailbox = mailbox;
+        self.resident.clear();
+        self.resident_bytes = 0;
         self.history.clear();
         self.redo.clear();
         self.sel = Selection::default();
@@ -1167,6 +1245,12 @@ fn loaded_into(m: &mut Message, fetch: impl Fn(Part) -> Result<Arc<Vec<u8>>, Cmd
         }
     }
     Ok(())
+}
+
+/// How many bytes of a message's body and attachments are in memory.
+fn in_memory(m: &Message) -> u64 {
+    let body = m.body.text.len().saturating_add(m.body.html.as_ref().map_or(0, String::len));
+    m.attachments.iter().fold(body as u64, |n, a| n.saturating_add(a.data.len() as u64))
 }
 
 /// Bytes as the text they hold; what isn't UTF-8 is read as well as it can be.

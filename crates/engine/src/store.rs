@@ -37,14 +37,16 @@
 //!   it are read: [`Opened::notice`]); either way the file is kept aside as
 //!   `mailbox.mailcraft.damaged-<time>` before it is next written.
 //! - **What comes into memory** ([`fill`]): every message's headers, and the bodies of the newest
-//!   mail (by date) up to a budget, the smaller of [`MAX_CONTENT`] and a quarter of the machine's
-//!   memory ([`body_budget`]). Attachments, and the bodies of older mail, stay on disk and are
-//!   named on the message ([`mailcraft_model::Attachment::kept`], [`Message::kept`]); they are
-//!   read when something needs them ([`fetch`], behind `Session::content`): a message shown,
-//!   searched, answered, printed, exported or sent, a file opened or saved. What is fetched is
-//!   kept for a while in a cache bounded by bytes ([`CACHE_MAX`]). Each part not loaded is looked
-//!   for on disk when the mailbox opens (a stat, within a time cap), so that what is missing is
-//!   told apart from what is merely not loaded: the first is reported, the second only noted.
+//!   mail (by date) up to a budget, the smaller of [`MAX_CONTENT`] and a sixteenth of the
+//!   machine's memory ([`body_budget`]). Attachments, and the bodies of older mail, stay on disk
+//!   and are named on the message ([`mailcraft_model::Attachment::kept`], [`Message::kept`]);
+//!   they are read when something needs them ([`fetch`], behind `Session::content`): a message
+//!   shown, searched, answered, exported or sent, a file saved. What is fetched is kept for a
+//!   while in a cache bounded by bytes ([`CACHE_MAX`]); what a session brings into its messages
+//!   is let go of again, the longest unused first, past a budget of its own, when it is safely
+//!   on disk ([`evictable`]). Each part not loaded is looked for on disk when the mailbox opens
+//!   (a stat, within a time cap), so that what is missing is told apart from what is merely not
+//!   loaded: the first is reported, the second only noted.
 //!   Content that is missing or damaged never stops the mailbox from opening: the message keeps
 //!   everything else and says its text is unavailable, and what the mailbox file said about it
 //!   is written back unchanged, so content that turns up again (a folder copied late) is found
@@ -92,15 +94,16 @@ pub const INLINE_MAX: usize = 1024;
 /// Largest content file read.
 pub const MAX_BLOB: u64 = MAX_FILE;
 
-/// Most content one mailbox brings into memory when it opens (8 GB), whatever the machine has;
-/// the bodies beyond it stay on disk until they are wanted ([`body_budget`]).
-pub const MAX_CONTENT: u64 = 8 << 30;
+/// Most content one mailbox brings into memory when it opens (256 MB), whatever the machine has:
+/// a mailbox of 200,000 messages stays well under a gigabyte. The bodies beyond it stay on disk
+/// until they are wanted ([`body_budget`]).
+pub const MAX_CONTENT: u64 = 256 << 20;
 
-/// What the bodies get when the machine's memory can't be read (2 GB).
-pub const FALLBACK_BUDGET: u64 = 2 << 30;
+/// What the bodies get when the machine's memory can't be read (128 MB).
+pub const FALLBACK_BUDGET: u64 = 128 << 20;
 
-/// Most bytes of fetched content kept in memory for the next time they are wanted (512 MB).
-pub const CACHE_MAX: u64 = 512 << 20;
+/// Most bytes of fetched content kept in memory for the next time they are wanted (128 MB).
+pub const CACHE_MAX: u64 = 128 << 20;
 
 /// A fetched piece larger than this is handed over but not kept.
 const CACHE_ITEM_MAX: u64 = 64 << 20;
@@ -1213,7 +1216,7 @@ pub(crate) fn with_budget<T>(budget: u64, f: impl FnOnce() -> T) -> T {
     out
 }
 
-/// How many bytes of bodies a mailbox brings into memory when it opens: a quarter of the
+/// How many bytes of bodies a mailbox brings into memory when it opens: a sixteenth of the
 /// machine's memory, [`FALLBACK_BUDGET`] when that can't be read, and never more than
 /// [`MAX_CONTENT`]. The newest mail gets it; the rest is read when it is wanted.
 pub fn body_budget() -> u64 {
@@ -1224,7 +1227,7 @@ pub fn body_budget() -> u64 {
             return set;
         }
     }
-    physical_memory().map_or(FALLBACK_BUDGET, |m| m / 4).min(MAX_CONTENT)
+    physical_memory().map_or(FALLBACK_BUDGET, |m| m / 16).min(MAX_CONTENT)
 }
 
 /// What [`fill`] did with the content the mailbox file names.
@@ -1552,6 +1555,64 @@ pub fn load_all(path: &Path, mailbox: &mut Mailbox) -> Result<usize, String> {
         mailbox.messages.insert(id, Arc::new(m));
     }
     Ok(n)
+}
+
+/// Message `m` (`id` in the mailbox kept at `path`) without the content of it that is in memory
+/// and safely on disk: the parts the mailbox file names for it, as they are, which a sweep
+/// leaves alone. Each becomes named on the message again, to be read when it is next wanted.
+/// `None` when nothing of it can go (not saved yet, changed since, or the file is busy being
+/// written: the caller doesn't wait for the disk).
+pub fn evictable(path: &Path, id: Id, m: &Message) -> Option<Message> {
+    let shared = shared(path);
+    let mut st = match shared.state.try_lock() {
+        Ok(st) => st,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return None,
+    };
+    let st = &mut *st;
+    if !st.stamp.as_ref().is_some_and(|s| s.still(&resolve(path))) {
+        return None;
+    }
+    let parts = &st.disk.as_ref()?.messages.get(&id)?.parts;
+    let mut lean = Message::clone(m);
+    let mut kept = m.kept.as_deref().copied().unwrap_or_default();
+    let mut any = false;
+    if let Some(p) = parts.text
+        && !m.body.text.is_empty()
+        && m.body.text.len() as u64 == p.r.len
+        && Ref::of(m.body.text.as_bytes()) == p.r
+    {
+        lean.body.text = String::new();
+        kept.text = Some(p.r.to_model());
+        any = true;
+    }
+    if let (Some(p), Some(html)) = (parts.html, &m.body.html)
+        && html.len() as u64 == p.r.len
+        && Ref::of(html.as_bytes()) == p.r
+    {
+        lean.body.html = None;
+        kept.html = Some(p.r.to_model());
+        any = true;
+    }
+    for (a, p) in lean.attachments.iter_mut().zip(&parts.attachments) {
+        let Some(p) = p else { continue };
+        if a.data.is_empty() || a.data.len() as u64 != p.r.len {
+            continue;
+        }
+        let key = Arc::as_ptr(&a.data) as usize;
+        let known = st.hashes.get(&key).filter(|(of, _)| std::ptr::eq(of.as_ptr(), Arc::as_ptr(&a.data))).map(|(_, hash)| *hash);
+        if known.unwrap_or_else(|| Digest::of(&a.data)) == p.r.hash {
+            a.data = Arc::default();
+            a.kept = Some(p.r.to_model());
+            any = true;
+        }
+    }
+    if !any {
+        return None;
+    }
+    kept.text_hash = mailcraft_model::text_hash(&lean.body.text);
+    lean.kept = (!kept.is_empty()).then(|| Box::new(kept));
+    Some(lean)
 }
 
 /// Bytes as text, the way a body is read back: what isn't UTF-8 is read as well as it can be.

@@ -1464,6 +1464,58 @@ fn every_content_name_in_a_damaged_file_is_found_wherever_it_falls() {
     assert_eq!(found, names.iter().copied().collect::<HashSet<_>>());
 }
 
+#[test]
+fn what_a_session_brings_in_stays_within_its_budget_and_comes_back_when_wanted() {
+    // Whatever the machine, what a mailbox brings in when it opens is modest.
+    assert!(body_budget() <= MAX_CONTENT && MAX_CONTENT <= 256 << 20 && CACHE_MAX <= 128 << 20);
+    let tmp = Temp::new("evict");
+    let path = tmp.file();
+    let mut mb = mailbox(24);
+    save(&path, &mb).unwrap();
+    clear_cache();
+    let mut s = session_without_bodies(&path);
+    let kept: Vec<Id> = newest_first(&mb).into_iter().filter(|id| s.mailbox.message(*id).unwrap().body_is_kept()).collect();
+    assert!(kept.len() > 8);
+    // Room for about three bodies.
+    let largest = kept.iter().map(|id| body_outside(mb.message(*id).unwrap())).max().unwrap();
+    s.loaded_budget = largest * 3;
+    for id in &kept {
+        s.sel.messages = vec![*id];
+        assert_eq!(s.load_for_display(*id), Ok(true));
+        assert!(s.mailbox.message(*id).unwrap().body == mb.message(*id).unwrap().body);
+        assert!(s.resident_bytes() <= s.loaded_budget + largest * 2, "{} bytes kept", s.resident_bytes());
+    }
+    // The first ones went back to disk; the last one shown is in memory.
+    let in_memory = |s: &Session| kept.iter().filter(|id| !s.mailbox.message(**id).unwrap().body_is_kept()).count();
+    assert!(in_memory(&s) < kept.len() / 2, "{} of {} still in memory", in_memory(&s), kept.len());
+    assert!(!s.mailbox.message(*kept.last().unwrap()).unwrap().body_is_kept());
+    let first = kept[0];
+    assert!(s.mailbox.message(first).unwrap().body_is_kept() && s.needs_load_for_display(first));
+    // Wanted again, it comes back as it was.
+    s.sel.messages = vec![first];
+    assert_eq!(s.load_for_display(first), Ok(true));
+    assert!(s.mailbox.message(first).unwrap().body == mb.message(first).unwrap().body);
+
+    // A body changed since the last save is never let go of; the rest saves as it was.
+    let changed = kept[1];
+    s.sel.messages.clear();
+    s.load_message(changed).unwrap();
+    s.mailbox.message_mut(changed).unwrap().body.text.push_str("A line added here.\n");
+    let added = s.mailbox.message(changed).unwrap().body.text.clone();
+    for id in &kept[2..] {
+        s.load_for_display(*id).unwrap();
+    }
+    assert_eq!(s.mailbox.message(changed).unwrap().body.text, added);
+    let saved = save(&path, &s.mailbox).unwrap();
+    assert_eq!(saved.blobs, 1);
+    mb.message_mut(changed).unwrap().body.text = added;
+    clear_cache();
+    let back = whole(&path);
+    for id in &kept {
+        assert!(back.message(*id).unwrap() == mb.message(*id).unwrap(), "message {id}");
+    }
+}
+
 /// A session on the mailbox at `path` with none of its bodies in memory.
 fn session_without_bodies(path: &Path) -> Session {
     let opened = with_budget(1, || open(path).unwrap());
