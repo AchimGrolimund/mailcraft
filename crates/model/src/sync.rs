@@ -207,6 +207,50 @@ pub struct ServerMessage {
     pub size: u64,
 }
 
+/// The server's copy of a message that is **being moved** out of a Microsoft account
+/// ([`Message::moving_out`], R3 spec S19): the account and the copy's server id.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MovingOut {
+    pub account: Id,
+    pub id: String,
+}
+
+/// Whether two names are the same category's. Outlook's categories are matched by name and a
+/// mailbox can't have two whose names differ in case only, so neither can a message: names are
+/// compared without regard to case (in every script, not ASCII only).
+pub fn same_category(a: &str, b: &str) -> bool {
+    a == b || a.chars().flat_map(char::to_lowercase).eq(b.chars().flat_map(char::to_lowercase))
+}
+
+/// A message's categories after a run, when they were changed here and may have been changed on
+/// the server too (R3 spec S17, ADR 0003 as amended): what was added and what was taken away
+/// here since the last synced list (`synced`) is applied to the server's list as it is now, so
+/// that a category the server added meanwhile stays.
+///
+/// - Names are matched as [`same_category`] does; a name given twice counts once.
+/// - The server's order is kept, with what was added here after it in the order it has here.
+/// - A category on the server's list is written as the server writes it; one added here as it
+///   is written here.
+/// - Added on both sides: there once. Taken away on both sides: gone.
+pub fn merge_categories(synced: &[String], here: &[String], server: &[String]) -> Vec<String> {
+    let has = |list: &[String], name: &str| list.iter().any(|c| same_category(c, name));
+    let mut merged: Vec<String> = Vec::new();
+    for name in server {
+        let taken_away = has(synced, name) && !has(here, name);
+        if !taken_away && !has(&merged, name) {
+            merged.push(name.clone());
+        }
+    }
+    for name in here {
+        let added = !has(synced, name);
+        if added && !has(&merged, name) {
+            merged.push(name.clone());
+        }
+    }
+    merged
+}
+
 fn is_zero_u64(n: &u64) -> bool {
     *n == 0
 }
@@ -826,6 +870,87 @@ mod tests {
             MessagePage { folder: "F1".into(), removed: vec!["AAkB".into()], link: "https://x/d".into(), caught_up: true, ..Default::default() };
         let result = GraphMailResult { pages: vec![page], ..Default::default() };
         assert_eq!(serde_json::from_str::<GraphMailResult>(&serde_json::to_string(&result).unwrap()).unwrap(), result);
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn merged(synced: &[&str], here: &[&str], server: &[&str]) -> Vec<String> {
+        merge_categories(&names(synced), &names(here), &names(server))
+    }
+
+    /// R3.3 (S17): what was added and taken away here goes onto the server's list as it is now.
+    #[test]
+    fn categories_merge_what_changed_here_into_the_servers_list() {
+        // Nothing changed anywhere.
+        assert_eq!(merged(&["Red"], &["Red"], &["Red"]), ["Red"]);
+        // Added here; the server added another meanwhile: both stay, the server's first.
+        assert_eq!(merged(&["Red"], &["Red", "Blue"], &["Red", "Green"]), ["Red", "Green", "Blue"]);
+        // Taken away here, and the server added one: the server's addition stays.
+        assert_eq!(merged(&["Red", "Blue"], &["Blue"], &["Red", "Blue", "Green"]), ["Blue", "Green"]);
+        // Taken away on both sides.
+        assert_eq!(merged(&["Red", "Blue"], &["Blue"], &["Blue"]), ["Blue"]);
+        // Added on both sides: once.
+        assert_eq!(merged(&[], &["Blue"], &["Blue"]), ["Blue"]);
+        // Taken away on the server and kept here untouched: the server's way.
+        assert_eq!(merged(&["Red", "Blue"], &["Red", "Blue"], &["Blue"]), ["Blue"]);
+        // Taken away here, added again on the server... it was on the synced list, so it goes.
+        assert_eq!(merged(&["Red"], &[], &["Red"]), Vec::<String>::new());
+        // The server's order is kept, additions follow in the order they have here.
+        assert_eq!(merged(&["A"], &["C", "A", "B"], &["Z", "A", "Y"]), ["Z", "A", "Y", "C", "B"]);
+    }
+
+    #[test]
+    fn categories_are_matched_by_name_whatever_the_case_and_counted_once() {
+        assert!(same_category("Red", "red") && same_category("ÉTÉ", "été") && !same_category("Red", "Red "));
+        // Spelled differently here and there: the server's spelling, once.
+        assert_eq!(merged(&[], &["blue"], &["Blue"]), ["Blue"]);
+        // Taken away here under another spelling.
+        assert_eq!(merged(&["Red", "Blue"], &["BLUE"], &["red", "Blue"]), ["Blue"]);
+        // Duplicates in any list count once.
+        assert_eq!(merged(&["Red", "red"], &["Red", "Red", "Green", "green"], &["Red", "RED", "Blue"]), ["Red", "Blue", "Green"]);
+        assert_eq!(merged(&[], &[], &[]), Vec::<String>::new());
+    }
+
+    /// R3.3: the queue of copies and deletes for good, and a message being moved out of the
+    /// account, are kept in the mailbox file; a file from before opens as it was.
+    #[test]
+    fn changes_up_read_from_older_files_and_round_trip() {
+        let old: Message = serde_json::from_str(r#"{"id": 4, "subject": "Hi", "server": {"id": "AAkA", "folder": "F1"}}"#).unwrap();
+        assert!(old.moving_out.is_none() && !old.incomplete);
+        // Something else in its place (a later version's): the message still opens.
+        let odd: Message = serde_json::from_str(r#"{"id": 4, "movingOut": 7, "incomplete": true}"#).unwrap();
+        assert!(odd.moving_out.is_none() && odd.incomplete);
+
+        let mut m = old.clone();
+        m.moving_out = Some(MovingOut { account: 2, id: "AAkA".into() });
+        m.incomplete = true;
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains(r#""movingOut":{"account":2,"id":"AAkA"}"#) && json.contains(r#""incomplete":true"#), "{json}");
+        assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), m);
+        assert!(!serde_json::to_string(&old).unwrap().contains("movingOut"));
+
+        // A mailbox of 0.4.0 (folder deletes only, or no queue at all) opens as it was.
+        let before = r#"{"version": 1, "queued": [{"deleteFolder": {"account": 1, "id": "F9"}}]}"#;
+        let mb: crate::Mailbox = serde_json::from_str(before).unwrap();
+        assert_eq!(mb.queued, [crate::Queued::DeleteFolder { account: 1, id: "F9".into() }]);
+        let mb: crate::Mailbox = serde_json::from_str(r#"{"version": 1}"#).unwrap();
+        assert!(mb.queued.is_empty());
+        // A kind of change from a later version is left out; the rest is kept.
+        let later = r#"{"version": 1, "queued": [{"somethingNew": {"x": 1}}, {"deleteMessage": {"account": 1, "id": "AAkB"}}]}"#;
+        let mb: crate::Mailbox = serde_json::from_str(later).unwrap();
+        assert_eq!(mb.queued, [crate::Queued::DeleteMessage { account: 1, id: "AAkB".into() }]);
+
+        let mut mb = crate::Mailbox::default();
+        mb.queued = vec![
+            crate::Queued::CopyMessage { account: 1, id: "AAkA".into(), to: "F2".into(), copy: 12, marker: "mc-0f3a".into() },
+            crate::Queued::DeleteMessage { account: 1, id: "AAkB".into() },
+        ];
+        let json = serde_json::to_string(&mb).unwrap();
+        assert!(json.contains(r#"{"copyMessage":{"account":1,"id":"AAkA","to":"F2","copy":12,"marker":"mc-0f3a"}}"#), "{json}");
+        assert_eq!(serde_json::from_str::<crate::Mailbox>(&json).unwrap().queued, mb.queued);
+        assert!(mb.queued.iter().all(|q| q.account() == 1));
     }
 
     #[test]

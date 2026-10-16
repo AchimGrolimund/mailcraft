@@ -50,7 +50,10 @@
 //!   or belong to another mailbox, entries that are no folders, and a document that is anything
 //!   at all ([`State::configuration_document`]).
 //! - **Messages.** A folder's message delta in pages, with next and delta links, `@removed`,
-//!   replays, forgotten and reset links, and a message's MIME (`$value`): [`messages`].
+//!   replays, forgotten and reset links, and a message's MIME (`$value`): [`messages`]. Changes
+//!   of a message (read, flag, categories, importance, extended properties), move, copy and
+//!   delete, a folder's messages found by an extended property, and faults on demand per
+//!   message (404, 403, 400, 429, an answer lost): [`changes`].
 //! - **Time.** [`State::stale_views`] calendar views after a change are answered as the calendar
 //!   was before it: an answer may be older than the last change. [`State::keeps_times`] makes it
 //!   say yes to a change of time and not make it, which no client should take for done.
@@ -58,8 +61,10 @@
 //! [`route`] has the calls of this crate that go to Graph go to a stand-in instead, on the
 //! thread that asks for it and until the guard is dropped.
 
+mod changes;
 mod messages;
 
+pub use changes::Fault;
 pub use messages::{Mail, Message};
 
 use std::cell::RefCell;
@@ -314,6 +319,9 @@ pub struct State {
     location: Option<String>,
     /// The answer being made when it isn't JSON: its type and its body.
     raw: Option<(String, String)>,
+    /// The request was carried out and its answer is to be lost: the connection is closed
+    /// without a word ([`Fault::AnswerLost`]).
+    lose_answer: bool,
     before: Option<Vec<Stored>>,
     made: u64,
     clock: Timestamp,
@@ -921,6 +929,11 @@ impl State {
             }
             ("POST", Some(named), ["move"]) => self.folder_move(asked, named),
             ("GET", Some(named), ["messages", "delta"]) => self.message_delta(asked, named),
+            ("GET", Some(named), ["messages"]) => self.folder_messages(asked, named),
+            (_, Some(named), ["messages", id, action @ ..]) if action.len() <= 1 => {
+                self.mail_folder(named)?;
+                self.message_at(asked, method, id, action.first().copied())
+            }
             (_, _, [] | ["childFolders"] | ["move"]) => Err(refuse(405, "MethodNotAllowed", "The method is not allowed on this resource.")),
             (_, _, [other, ..]) => Err(refuse(400, "BadRequest", format!("Resource not found for the segment '{other}'."))),
         }
@@ -1702,6 +1715,8 @@ impl State {
                 self.page(asked, vec![group])
             }
             ["messages", id, "$value"] if method == "GET" => self.message_value(id),
+            ["messages", id] => self.message_at(asked, method, id, None),
+            ["messages", id, action] => self.message_at(asked, method, id, Some(action)),
             ["contacts"] | ["outlook", "masterCategories"] if method == "GET" => self.page(asked, Vec::new()),
             ["mailboxSettings", "workingHours"] if method == "GET" => Ok((
                 200,
@@ -2129,6 +2144,12 @@ impl StandIn {
                     state.requests.drain(..MAX_KEPT / 2);
                 }
                 state.requests.push(asked);
+                // Carried out, and the answer lost: the connection closes before a word of it.
+                if std::mem::take(&mut state.lose_answer) {
+                    state.location = None;
+                    state.raw = None;
+                    continue;
+                }
                 let wait = state.retry_after.unwrap_or(1);
                 let location = state.location.take().map(|to| format!("Location: {to}\r\n")).unwrap_or_default();
                 let raw = state.raw.take();

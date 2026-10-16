@@ -391,20 +391,33 @@ pub struct OAuth {
 
 /// A change made here to what a Microsoft account's server has that comparing with what the
 /// server last said can't show (ADR 0003): it waits here until a run has told the server. Each
-/// names what it is about by its server id. (R3.3 adds a copy and a delete for good of a
-/// message.)
+/// names what it is about by its server id. A file written before a kind was added opens with
+/// none of it; an entry of a kind this version doesn't know is left out ([`Mailbox::queued`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Queued {
     /// A folder was deleted for good here (from Deleted Items, or by emptying it): the server
     /// deletes it too, which keeps it recoverable for the server's retention period.
     DeleteFolder { account: Id, id: String },
+    /// A message the server has was copied here into another of the account's server folders
+    /// (R3 spec S16, S21). `id` is the source's server id, `to` the destination folder's;
+    /// `copy` is the copy made here, which takes the server's copy's id once the server has
+    /// made it (so that the copy coming down by delta isn't a second one). `marker` is the value,
+    /// used once, of MailCraft's invisible extended property the source is given before the
+    /// copy is asked for: a copy whose answer was lost is looked for by it in `to` before the
+    /// copy is asked for again.
+    #[serde(rename_all = "camelCase")]
+    CopyMessage { account: Id, id: String, to: String, copy: Id, marker: String },
+    /// A message was deleted for good here (Shift+Del, or emptying Deleted Items): the server
+    /// deletes it with Graph's delete, which keeps it recoverable for the server's retention
+    /// period (ADR 0003, R3 spec S19).
+    DeleteMessage { account: Id, id: String },
 }
 
 impl Queued {
     pub fn account(&self) -> Id {
         match self {
-            Queued::DeleteFolder { account, .. } => *account,
+            Queued::DeleteFolder { account, .. } | Queued::CopyMessage { account, .. } | Queued::DeleteMessage { account, .. } => *account,
         }
     }
 }

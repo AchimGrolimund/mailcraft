@@ -140,6 +140,8 @@ fn folder_changes(mb: &Mailbox, account: Id, limit: usize) -> (Vec<FolderChange>
     for queued in mb.queued.iter().filter(|q| q.account() == account) {
         match queued {
             Queued::DeleteFolder { id, .. } => note(&|| FolderChange::Delete { id: id.clone() }),
+            // Changes of messages: sent with the message changes (R3.3.2).
+            Queued::CopyMessage { .. } | Queued::DeleteMessage { .. } => {}
         }
     }
     (changes, count)
