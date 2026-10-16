@@ -126,6 +126,21 @@ pub fn show_message(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, place: Pla
             ui.label(egui::RichText::new(said).font(crate::theme::regular(12.0)).color(t.text_dim));
         });
     }
+    // Held in the Outbox (R3.4.2): what happened, and the owner's say-so to send it again.
+    if !m.held.is_empty() {
+        let t = Tokens::get(ui.ctx());
+        let id = m.id;
+        egui::Frame::NONE.fill(t.ribbon).inner_margin(egui::Margin { left: 20, right: 20, top: 6, bottom: 6 }).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(tl!("Held:")).font(crate::theme::regular(12.0)).strong().color(t.text));
+                ui.label(egui::RichText::new(m.held.as_str()).font(crate::theme::regular(12.0)).color(t.text_dim));
+                if ui.button(tl!("Send Again")).clicked() {
+                    let _ = app.run("mail.sendAgain", serde_json::json!({"id": id}));
+                }
+            });
+        });
+    }
     // The body gets the part of the pane that can be seen, whatever was laid out above it: a
     // header too wide for a narrow pane must not make the text run out of sight with it.
     let room = ui.available_rect_before_wrap().intersect(ui.clip_rect());

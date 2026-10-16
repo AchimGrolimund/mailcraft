@@ -1492,10 +1492,9 @@ impl MailApp {
             return Ok(json!({"pending": "signIn", "account": account}));
         }
         let mail = mailcraft_engine::cmd::graph_mail::graph_mail_request(&self.session, account).map_err(|e| e.to_string())?;
-        let outbox: Vec<mailcraft_model::Message> = match self.session.mailbox.folder_of_kind(account, mailcraft_model::FolderKind::Outbox) {
-            Some(folder) => self.session.mailbox.messages_in(folder).map(|m| m.as_ref().clone()).collect(),
-            None => Vec::new(),
-        };
+        // The Outbox goes with the mail run itself (R3.4.2): sent as drafts or with `sendMail`,
+        // and a message held there is not sent again by itself.
+        let outbox: Vec<mailcraft_model::Message> = Vec::new();
         // The calendar and the contacts as for any account that signs in with Microsoft: the
         // wide stretch every quarter of an hour, and what was changed in the calendar here.
         let now = now_ms();
@@ -1549,7 +1548,9 @@ impl MailApp {
     /// that the server hasn't been told.
     fn waiting_to_go(&self, account: Id) -> usize {
         let mb = &self.session.mailbox;
-        let outbox = mb.folder_of_kind(account, mailcraft_model::FolderKind::Outbox).map_or(0, |f| mb.count(f));
+        // (A held message waits for the owner, not for a run.)
+        let outbox =
+            mb.folder_of_kind(account, mailcraft_model::FolderKind::Outbox).map_or(0, |f| mb.messages_in(f).filter(|m| m.held.is_empty()).count());
         outbox + mailcraft_engine::cmd::account::unpushed(&self.session, account)
     }
 

@@ -199,10 +199,12 @@ fn update(mb: &mut Mailbox, account: Id, id: Id, folder: Id, server_folder: &str
 
 /// Every folder's delta reached its end: what is still gone from every folder is gone here too.
 pub fn sweep(mb: &mut Mailbox, account: Id, down: &mut Down) {
-    // But for a draft saved here that waits to go up: it is made on the server anew (S26).
+    // But for a draft saved here that waits to go up: it is made on the server anew (S26); and
+    // for what waits in the Outbox, or is held there (R3.4.2): it stays, for the owner to see.
+    let outbox = mb.folder_of_kind(account, mailcraft_model::FolderKind::Outbox);
     for m in mb.messages.values_mut() {
-        let waits =
-            m.account == account && m.draft && m.server_draft.as_ref().is_some_and(|d| d.pending) && m.server.as_ref().is_some_and(|s| s.gone);
+        let keeps = (m.draft && m.server_draft.as_ref().is_some_and(|d| d.pending)) || Some(m.folder) == outbox;
+        let waits = m.account == account && keeps && m.server.as_ref().is_some_and(|s| s.gone);
         if waits {
             let m = std::sync::Arc::make_mut(m);
             m.server = None;

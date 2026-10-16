@@ -1080,7 +1080,7 @@ impl Mailbox {
     }
 
     /// Whether `account` is kept in step through Microsoft Graph.
-    fn is_graph(&self, account: Id) -> bool {
+    pub fn is_graph(&self, account: Id) -> bool {
         self.account(account).is_some_and(|a| a.kind == AccountKind::Microsoft)
     }
 

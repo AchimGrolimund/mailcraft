@@ -489,13 +489,9 @@ fn low_importance(s: &mut Session, _: &Value) -> CmdResult {
     toggle_importance(s, Importance::Low)
 }
 
-/// The message as written so far. `strict`: every recipient must be a deliverable address.
-fn build(s: &Session, c: &Compose, strict: bool) -> Result<Message, CmdError> {
-    build_as(s, c, strict, None)
-}
-
-/// [`build`], under the Message-ID `message_id` when it is given (a draft saved again keeps its
-/// own, and so do the Content-IDs of its pictures).
+/// The message as written so far. `strict`: every recipient must be a deliverable address. Under
+/// the Message-ID `message_id` when it is given (a draft saved again keeps its own, and so do the
+/// Content-IDs of its pictures).
 fn build_as(s: &Session, c: &Compose, strict: bool, message_id: Option<&str>) -> Result<Message, CmdError> {
     let account = s.mailbox.account(c.account).or(s.mailbox.default_account()).ok_or_else(|| fail("add an account first (File › Add Account)"))?;
     let parse = |line: &str, what: &str| -> Result<Vec<Address>, CmdError> {
@@ -608,7 +604,17 @@ fn attachments_of(c: &Compose, message_id: &str) -> Vec<Attachment> {
 
 fn send(s: &mut Session, _: &Value) -> CmdResult {
     let c = s.compose.clone().ok_or_else(|| fail("no message is being written"))?;
-    let mut m = build(s, &c, true)?;
+    // A draft of a Microsoft account goes as the draft its server has (R3.4.2): the same
+    // Message-ID, marker and server id, brought up to date and sent there.
+    let saved = c.draft.and_then(|d| s.mailbox.message(d).cloned()).filter(|d| d.server_draft.is_some() && s.mailbox.is_graph(d.account));
+    let mut m = build_as(s, &c, true, saved.as_ref().map(|d| d.message_id.as_str()).filter(|id| !id.is_empty()))?;
+    if let Some(d) = saved.as_ref().filter(|d| d.account == m.account) {
+        (m.server, m.server_draft) = (d.server.clone(), d.server_draft.clone());
+        if let Some(sd) = m.server_draft.as_mut() {
+            (sd.pending, sd.saves) = (true, sd.saves.saturating_add(1));
+        }
+    }
+    let as_draft = m.server_draft.is_some();
     let account = s.mailbox.account(m.account).cloned().ok_or_else(|| fail("the account is gone"))?;
     // An account with a server queues the message for the next Send/Receive; a local one has
     // nowhere to send it, so it is filed as sent (and delivered to local accounts it names).
@@ -626,8 +632,9 @@ fn send(s: &mut Session, _: &Value) -> CmdResult {
         }
     }
     if let Some(d) = c.draft {
-        // The draft became this message.
-        let _ = s.mailbox.remove_message(d);
+        // The draft became this message: one the server has goes from there by being sent, not
+        // by being deleted.
+        let _ = if as_draft { s.mailbox.forget_message(d) } else { s.mailbox.remove_message(d) };
     }
     let mut delivered = 0;
     if !queued {

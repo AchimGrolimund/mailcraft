@@ -676,6 +676,9 @@ pub struct GraphMailRequest {
     /// (R3.4.1, S23–S25).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub drafts: Vec<DraftUp>,
+    /// What waits in the Outbox, sent after the drafts (R3.4.2).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sends: Vec<SendUp>,
 }
 
 /// Most changes of messages one Graph run is asked to make; more go over several runs.
@@ -944,6 +947,9 @@ pub struct GraphMailResult {
     /// What became of the drafts taken up (R3.4.1).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub drafts: Vec<DraftDone>,
+    /// What became of the messages sent (R3.4.2).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sent: Vec<SendDone>,
     /// Every folder of the mailbox, when it could be listed at all.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub listing: Option<FolderListing>,
@@ -980,6 +986,7 @@ impl GraphMailResult {
         self.changes.extend(piece.changes);
         self.messages.extend(piece.messages);
         self.drafts.extend(piece.drafts);
+        self.sent.extend(piece.sent);
         if piece.listing.is_some() {
             self.listing = piece.listing;
         }
