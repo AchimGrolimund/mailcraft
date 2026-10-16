@@ -133,6 +133,8 @@ pub fn show_message(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, place: Pla
         egui::Frame::NONE.fill(t.ribbon).inner_margin(egui::Margin { left: 20, right: 20, top: 6, bottom: 6 }).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
+                // The pane lays its header out without gaps; the words and the button need them.
+                ui.spacing_mut().item_spacing.x = 6.0;
                 ui.label(egui::RichText::new(tl!("Held:")).font(crate::theme::regular(12.0)).strong().color(t.text));
                 ui.label(egui::RichText::new(m.held.as_str()).font(crate::theme::regular(12.0)).color(t.text_dim));
                 if ui.button(tl!("Send Again")).clicked() {
