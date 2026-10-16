@@ -71,7 +71,7 @@ jobs:
           - { arch: x86, target: i686-pc-windows-msvc }
           - { arch: arm64, target: aarch64-pc-windows-msvc }
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
@@ -117,7 +117,7 @@ jobs:
           $p = Start-Process msiexec.exe -ArgumentList @('/x', $entry.PSChildName, '/qn', '/norestart') -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "uninstall failed ($($p.ExitCode))" }
           if (Test-Path (Join-Path $dir 'mailcraft.exe')) { throw 'uninstall left mailcraft.exe behind' }
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-windows-${{ matrix.arch }}
           path: dist/release/*
@@ -128,7 +128,7 @@ jobs:
     name: macOS universal
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
@@ -173,7 +173,7 @@ jobs:
           lipo -info "$app/Contents/MacOS/MailCraft"
           "$app/Contents/MacOS/MailCraft" --version
           hdiutil detach "$mnt"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-macos
           path: dist/release/*
@@ -191,7 +191,7 @@ jobs:
           - { arch: x86_64, runner: ubuntu-22.04, deb: amd64 }
           - { arch: aarch64, runner: ubuntu-22.04-arm, deb: arm64 }
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install system libraries and packaging tools
@@ -231,7 +231,7 @@ jobs:
           # Still running when the time was up (124) is what a window that started looks like.
           if [ "${code:-0}" != 124 ]; then cat "$RUNNER_TEMP/window.log"; echo "::error::the window did not stay up (exit ${code:-0})"; exit 1; fi
           sudo apt-get remove -y mailcraft
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-linux-${{ matrix.arch }}
           path: dist/release/*
@@ -249,10 +249,10 @@ jobs:
           - { arch: x86_64, runner: ubuntu-24.04 }
           - { arch: aarch64, runner: ubuntu-24.04-arm }
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-linux-${{ matrix.arch }}
           path: dist/linux
@@ -268,7 +268,7 @@ jobs:
           set -- dist/linux/mailcraft-*-linux-"$ARCH".tar.gz
           if [ ! -f "$1" ]; then echo "::error::no tar.gz for $ARCH in dist/linux"; exit 1; fi
           bash packaging/linux/flatpak-bundle.sh "$1"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-flatpak-${{ matrix.arch }}
           path: dist/release/*.flatpak
@@ -281,7 +281,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Build and package in a FreeBSD VM
@@ -304,7 +304,7 @@ jobs:
             export CARGO_TARGET_DIR=/var/tmp/mailcraft-target CARGO_BUILD_JOBS=4
             bash packaging/freebsd/package.sh
             rm -rf /var/tmp/mailcraft-target
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-freebsd-x86_64
           path: dist/release/*
@@ -315,7 +315,7 @@ jobs:
     name: Web (wasm)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
@@ -331,7 +331,7 @@ jobs:
           tool: trunk@0.21.14
       - name: Build and zip the web app
         run: bash packaging/web/package.sh
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-web
           path: dist/release/*
