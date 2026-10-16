@@ -140,8 +140,9 @@ pub(crate) struct Request<'a> {
     /// `GET`, `POST`, `PATCH`, `DELETE`.
     pub(crate) method: &'a str,
     pub(crate) headers: &'a [(&'a str, &'a str)],
-    /// Text (JSON, base64), with the `Content-Type` among the headers.
-    pub(crate) body: Option<&'a str>,
+    /// Text (JSON, base64) or bytes (a piece of an upload), with the `Content-Type` among the
+    /// headers.
+    pub(crate) body: Option<&'a [u8]>,
     /// How long connecting may take, and the answer. A large body is given more for going up.
     pub(crate) patience: Duration,
     /// Largest answer body taken (never more than [`MAX_LARGE_BODY`]).
@@ -270,7 +271,7 @@ pub(crate) fn post_form(url: &Url, fields: &[(&str, &str)], patience: Duration) 
 
 /// One request on a connection of its own, and no more of the answer than the usual.
 fn send(url: &Url, method: &str, headers: &[(&str, &str)], body: Option<&str>, patience: Duration) -> Result<Answer, NetError> {
-    let reply = request(url, &Request { method, headers, body, patience, max_body: MAX_BODY })?;
+    let reply = request(url, &Request { method, headers, body: body.map(str::as_bytes), patience, max_body: MAX_BODY })?;
     Ok(Answer { status: reply.status, body: reply.body })
 }
 
@@ -287,7 +288,7 @@ pub(crate) fn request(url: &Url, request: &Request<'_>) -> Result<Reply, NetErro
     let server = Server { host: url.host.clone(), port: url.port, security: if url.secure { Security::Tls } else { Security::None } };
     let (mut stream, _) = transport::open_within(&server, Service::Http, request.patience, request.patience)?;
     let started = Instant::now();
-    let body = request.body.unwrap_or("");
+    let body: &[u8] = request.body.unwrap_or_default();
     let allowance = Duration::from_secs(u64::try_from(body.len() / MIN_UPLOAD_RATE).unwrap_or(u64::MAX));
     let patience = request.patience.saturating_add(allowance);
     // The address was checked when it was read: nothing in it can end the line early.
@@ -305,12 +306,13 @@ pub(crate) fn request(url: &Url, request: &Request<'_>) -> Result<Reply, NetErro
     head.push_str("Connection: close\r\n\r\n");
     // A header or a body may carry secrets: nothing of the request is logged.
     if body.len() <= UPLOAD_CHUNK {
-        head.push_str(body);
-        write_all(&mut stream, head.as_bytes())?;
+        let mut all = head.into_bytes();
+        all.extend_from_slice(body);
+        write_all(&mut stream, &all)?;
     } else {
         write_all(&mut stream, head.as_bytes())?;
         // A server that takes its time over every piece is not waited on for ever.
-        for piece in body.as_bytes().chunks(UPLOAD_CHUNK) {
+        for piece in body.chunks(UPLOAD_CHUNK) {
             if started.elapsed() >= patience {
                 return Err(too_slow());
             }
@@ -840,8 +842,9 @@ mod tests {
         let server = FakeHttp::answering(json_answer("200 OK", &"y".repeat(3 * MAX_BODY)));
         let at = url(&server.url("/v1.0/me/sendMail?x=1"));
         let headers = [("Authorization", "Bearer tok\r\nen"), ("Content-Type", "text/plain"), ("Bad Name", "x"), ("", "y")];
-        let ask =
-            |method: &str, body: Option<&str>, max_body: usize| request(&at, &Request { method, headers: &headers, body, patience: SOON, max_body });
+        let ask = |method: &str, body: Option<&str>, max_body: usize| {
+            request(&at, &Request { method, headers: &headers, body: body.map(str::as_bytes), patience: SOON, max_body })
+        };
 
         let reply = ask("POST", Some("aGVsbG8="), 4 * MAX_BODY).unwrap();
         assert_eq!((reply.status, reply.body.len(), reply.retry_after), (200, 3 * MAX_BODY, None));

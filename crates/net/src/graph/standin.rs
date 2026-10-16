@@ -54,6 +54,10 @@
 //!   of a message (read, flag, categories, importance, extended properties), move, copy and
 //!   delete, a folder's messages found by an extended property, and faults on demand per
 //!   message (404, 403, 400, 429, an answer lost): [`changes`].
+//! - **Drafts and attachments.** Drafts made from JSON or MIME, answers and forwards made with
+//!   create-reply, create-reply-all and create-forward, a draft's subject, body and recipients
+//!   changed in place, attachments added, listed and deleted, large ones through upload
+//!   sessions, and answers lost on demand ([`State::lose_next`]): [`drafts`].
 //! - **Time.** [`State::stale_views`] calendar views after a change are answered as the calendar
 //!   was before it: an answer may be older than the last change. [`State::keeps_times`] makes it
 //!   say yes to a change of time and not make it, which no client should take for done.
@@ -62,9 +66,11 @@
 //! thread that asks for it and until the guard is dropped.
 
 mod changes;
+mod drafts;
 mod messages;
 
 pub use changes::Fault;
+pub use drafts::Attached;
 pub use messages::{Mail, Message};
 
 use std::cell::RefCell;
@@ -84,7 +90,7 @@ pub const CONFIGURATION_CANARY: &str = "not-for-anybody-7c1e";
 const MAIL_FOLDER_PROPERTIES: &[&str] =
     &["id", "displayName", "parentFolderId", "childFolderCount", "unreadItemCount", "totalItemCount", "sizeInBytes", "isHidden"];
 /// Largest request it reads, and how many entries a page of a list has when none is asked for.
-const MAX_REQUEST: usize = 4 * 1024 * 1024;
+const MAX_REQUEST: usize = 5 * 1024 * 1024;
 const PAGE: usize = 10;
 /// Most requests kept for a test to look at.
 const MAX_KEPT: usize = 20_000;
@@ -234,6 +240,8 @@ pub struct Asked {
     /// Names in lower case.
     pub headers: Vec<(String, String)>,
     pub body: String,
+    /// The body as it came, byte for byte (the piece of an upload). Not kept with the requests.
+    pub bytes: Vec<u8>,
     pub status: u16,
 }
 
@@ -315,6 +323,9 @@ pub struct State {
     pub prefixes: (String, String),
     /// The messages of every folder, and the rounds of their delta ([`messages`]).
     pub mailbox: Mail,
+    /// Requests to carry out and then lose the answer to, one each: a method and an address,
+    /// `*` for any one piece of it (`POST /v1.0/me/messages`, `PUT /upload/*`).
+    pub lose_next: Vec<String>,
     /// The `Location` header of the answer being made, when it has one.
     location: Option<String>,
     /// The answer being made when it isn't JSON: its type and its body.
@@ -1651,6 +1662,23 @@ impl State {
 
     /// Answer one request.
     fn answer(&mut self, asked: &Asked) -> Result<Answer, Refusal> {
+        let answer = self.answer_of(asked);
+        if answer.is_ok()
+            && let Some(at) = self.lose_next.iter().position(|pattern| drafts::aims_at(pattern, &asked.method, &asked.path))
+        {
+            self.lose_next.remove(at);
+            self.lose_answer = true;
+        }
+        answer
+    }
+
+    fn answer_of(&mut self, asked: &Asked) -> Result<Answer, Refusal> {
+        // An upload's own address: its token is its permission (no Authorization).
+        if let [first, token] = asked.path.as_slice()
+            && first == "upload"
+        {
+            return self.upload_piece(asked, token);
+        }
         if asked.header("authorization") != format!("Bearer {}", self.token) {
             return Err(refuse(401, "InvalidAuthenticationToken", "Access token validation failure."));
         }
@@ -1666,7 +1694,11 @@ impl State {
             };
             return Err(refuse(status, code, "The stand-in was told to say so."));
         }
-        if !asked.body.is_empty() && !asked.header("content-type").to_ascii_lowercase().starts_with("application/json") {
+        // A message is also made, or sent, from its MIME in base64.
+        let mime = asked.method == "POST"
+            && matches!(asked.path.as_slice(), [v, me, what] if v == "v1.0" && me == "me" && (what == "messages" || what == "sendMail"))
+            && asked.header("content-type").to_ascii_lowercase().starts_with("text/plain");
+        if !mime && !asked.body.is_empty() && !asked.header("content-type").to_ascii_lowercase().starts_with("application/json") {
             return Err(refuse(415, "RequestBodyRead", "A body is JSON, and says so in its Content-Type."));
         }
         let path: Vec<&str> = asked.path.iter().map(String::as_str).collect();
@@ -1714,7 +1746,14 @@ impl State {
                 let group = json!({"id": "AAMkAGVmMDEzMTM4LTZmYWUtNDdkNC1hMDZiLTU1OGY5OTZhYmY4OABGAAAAAAAiQ8W967B7TKBjgx9rVEURBgAA-group=", "name": "My Calendars"});
                 self.page(asked, vec![group])
             }
+            ["messages"] if method == "POST" => self.create_message(asked),
             ["messages", id, "$value"] if method == "GET" => self.message_value(id),
+            ["messages", id, action @ ("createReply" | "createReplyAll" | "createForward")] if method == "POST" => {
+                self.create_answer(asked, id, action)
+            }
+            ["messages", id, "attachments"] => self.attachments_at(asked, method, id, None),
+            ["messages", id, "attachments", "createUploadSession"] if method == "POST" => self.upload_session(asked, id),
+            ["messages", id, "attachments", attachment] => self.attachments_at(asked, method, id, Some(attachment)),
             ["messages", id] => self.message_at(asked, method, id, None),
             ["messages", id, action] => self.message_at(asked, method, id, Some(action)),
             ["contacts"] | ["outlook", "masterCategories"] if method == "GET" => self.page(asked, Vec::new()),
@@ -2050,6 +2089,7 @@ fn parse_target(method: &str, target: &str, headers: Vec<(String, String)>, body
         query: crate::http::pairs(query),
         headers,
         body,
+        bytes: Vec::new(),
         status: 0,
     }
 }
@@ -2076,7 +2116,9 @@ fn read_request(stream: &TcpStream) -> Option<Asked> {
     }
     let mut body = vec![0u8; length];
     reader.read_exact(&mut body).ok()?;
-    Some(parse_target(&method, &target, headers, String::from_utf8_lossy(&body).into_owned()))
+    let mut asked = parse_target(&method, &target, headers, String::from_utf8_lossy(&body).into_owned());
+    asked.bytes = body;
+    Some(asked)
 }
 
 /// A stand-in for Graph's calendar on a loopback port, with the calendar it keeps.
@@ -2139,6 +2181,7 @@ impl StandIn {
                     Err(refusal) => (refusal.0, Some(error_body(&refusal))),
                 };
                 asked.status = status;
+                asked.bytes = Vec::new();
                 // Only the latest requests are kept: a mailbox of 200,000 messages takes thousands.
                 if state.requests.len() >= MAX_KEPT {
                     state.requests.drain(..MAX_KEPT / 2);
@@ -2181,7 +2224,7 @@ impl StandIn {
                             body.len()
                         )
                     }
-                    (None, None) => format!("HTTP/1.1 {status} {reason}\r\n{retry}Content-Length: 0\r\nConnection: close\r\n\r\n"),
+                    (None, None) => format!("HTTP/1.1 {status} {reason}\r\n{retry}{location}Content-Length: 0\r\nConnection: close\r\n\r\n"),
                 };
                 let _ = stream.write_all(answer.as_bytes());
             }

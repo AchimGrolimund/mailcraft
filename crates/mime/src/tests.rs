@@ -469,6 +469,7 @@ fn message() -> impl Strategy<Value = Message> {
             unfetched: false,
             moving_out: None,
             incomplete: false,
+            server_draft: None,
         },
     )
 }

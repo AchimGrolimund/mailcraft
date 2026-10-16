@@ -432,7 +432,36 @@ impl<'a> Graph<'a> {
         } else {
             headers.extend_from_slice(more);
         }
-        http::request(url, &Request { method, headers: &headers, body, patience, max_body }).map_err(|e| e.without(self.token))
+        http::request(url, &Request { method, headers: &headers, body: body.map(str::as_bytes), patience, max_body })
+            .map_err(|e| e.without(self.token))
+    }
+
+    /// `PUT` a piece of a large attachment to the address an upload session gave (R3.4.1): through
+    /// the mailbox's gate, and with no `Authorization`, as the address is its own permission (and
+    /// the token goes to Graph alone). A piece is asked again only when the server said it was
+    /// busy: one whose answer was lost may have been taken, and the next run starts the upload
+    /// afresh, looking first whether the attachment is there.
+    fn upload(&self, url: &Url, range: &str, piece: &[u8]) -> Result<Reply, NetError> {
+        let headers = [("Content-Type", "application/octet-stream"), ("Content-Range", range)];
+        let ask = || http::request(url, &Request { method: "PUT", headers: &headers, body: Some(piece), patience: SEND_TIMEOUT, max_body: MAX_PAGE });
+        let Some(pace) = &self.pace else { return ask() };
+        let mut tries = 0u32;
+        loop {
+            tries = tries.saturating_add(1);
+            let permit = pace.gate.enter(pace.priority, pace.retry.longest_wait)?;
+            let asked = ask();
+            drop(permit);
+            match asked {
+                Ok(reply) if matches!(reply.status, 429 | 503) => {
+                    let wait = pace.retry.wait_before(tries.saturating_add(1), wait_of(reply.retry_after.as_deref(), mailcraft_time::now()));
+                    pace.gate.pause(wait);
+                    if tries >= pace.retry.tries || wait > pace.retry.longest_wait {
+                        return Ok(reply);
+                    }
+                }
+                other => return other,
+            }
+        }
     }
 
     /// The error for an answer that isn't the one hoped for. `sent` is what went to Graph besides

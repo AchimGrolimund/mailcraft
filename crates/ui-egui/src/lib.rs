@@ -770,6 +770,8 @@ pub struct MailApp {
     /// What a server refuses keeps waiting, and must not start a run every few seconds.
     push_seen: std::collections::HashMap<Id, (usize, f64)>,
     last_autosave: f64,
+    /// When the draft being written was last saved by itself (ms; 0: not since it was opened).
+    draft_saved_at: f64,
     saved_rev: u64,
     /// The egui context, once the first frame has run (background work wakes the UI with it).
     pub(crate) ctx: Option<egui::Context>,
@@ -861,6 +863,7 @@ impl MailApp {
             push_only_next: Default::default(),
             push_seen: Default::default(),
             last_autosave: 0.0,
+            draft_saved_at: 0.0,
             saved_rev,
             ctx: None,
             file_dialog: None,
@@ -2094,6 +2097,7 @@ impl MailApp {
         let _ = files::poll(self);
         files::drain_inbox(self);
         self.autosave_tick(ctx);
+        self.draft_autosave_tick(ctx);
         self.collect_screenshots(ctx);
         self.issue_screenshots(ctx);
         let waiting = self.sync_rx.is_some() || self.graph_rx.is_some() || self.signing_in.is_some() || self.approving();
@@ -2141,6 +2145,33 @@ impl MailApp {
     /// Save a moment after the last change: to the mailbox file on the desktop (through the
     /// host's background saver when it has one, so the window never waits for the disk), to the
     /// host's storage in the browser. A failure shows in the status bar and is tried again later.
+    /// A draft of a Microsoft account that is being written is saved every five minutes while
+    /// it has changes, and so goes up to its server with the next Send/Receive (R3.4.1).
+    fn draft_autosave_tick(&mut self, ctx: &egui::Context) {
+        const EVERY_MS: f64 = 5.0 * 60_000.0;
+        let Some(c) = &self.session.compose else {
+            self.draft_saved_at = 0.0;
+            return;
+        };
+        let graph = self.session.mailbox.account(c.account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft);
+        if !graph || !c.dirty {
+            return;
+        }
+        let now = now_ms();
+        if self.draft_saved_at == 0.0 {
+            self.draft_saved_at = now;
+        }
+        let waited = now - self.draft_saved_at;
+        if waited >= EVERY_MS {
+            self.draft_saved_at = now;
+            if let Err(e) = self.run("compose.saveDraft", json!({})) {
+                log::info!("the draft couldn't be saved by itself: {e}");
+            }
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis((EVERY_MS - waited).max(1_000.0) as u64));
+        }
+    }
+
     fn autosave_tick(&mut self, ctx: &egui::Context) {
         self.collect_saves();
         if !self.autosave || self.session.rev() == self.saved_rev {

@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::{Account, Address, FlagStatus, FolderKind, Id, Importance, Message};
 use mailcraft_time::Timestamp;
 
+mod drafts;
+pub use drafts::*;
+
 /// A folder as the mailbox knows it, for the server side to continue from.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -213,6 +216,10 @@ pub struct ServerMessage {
     pub flag_due: Option<Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
     pub flag_completed: Option<Timestamp>,
+    /// The server's change key of it as last seen: for a draft, what tells an edit made elsewhere
+    /// from the server's copy of one made here (R3.4.1, S26). Empty when not known.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub change_key: String,
 }
 
 /// The server's copy of a message that is **being moved** out of a Microsoft account
@@ -665,6 +672,10 @@ pub struct GraphMailRequest {
     /// (R3 spec S16).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<MessageChange>,
+    /// The drafts saved here that the server hasn't all of, after the changes of messages
+    /// (R3.4.1, S23–S25).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub drafts: Vec<DraftUp>,
 }
 
 /// Most changes of messages one Graph run is asked to make; more go over several runs.
@@ -828,6 +839,9 @@ pub struct GraphMessage {
     pub preview: String,
     #[serde(skip_serializing_if = "is_false")]
     pub has_attachments: bool,
+    /// It is a draft (Graph's `isDraft`).
+    #[serde(skip_serializing_if = "is_false")]
+    pub draft: bool,
 }
 
 /// One page of a folder's message delta, taken in whole with the link that goes on from it, so
@@ -927,6 +941,9 @@ pub struct GraphMailResult {
     /// What became of the changes of messages sent (R3.3).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<MessageChangeDone>,
+    /// What became of the drafts taken up (R3.4.1).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub drafts: Vec<DraftDone>,
     /// Every folder of the mailbox, when it could be listed at all.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub listing: Option<FolderListing>,
@@ -962,6 +979,7 @@ impl GraphMailResult {
     pub fn absorb(&mut self, piece: GraphMailResult) {
         self.changes.extend(piece.changes);
         self.messages.extend(piece.messages);
+        self.drafts.extend(piece.drafts);
         if piece.listing.is_some() {
             self.listing = piece.listing;
         }

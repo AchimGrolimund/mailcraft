@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 
 use mailcraft_model::sync::{
     ChangeOutcome, FolderChange, FolderListing, GraphFetchRequest, GraphFetchResult, GraphFolder, GraphLink, GraphMailRequest, GraphMailResult,
-    MAX_FOLDER_CHANGES, MAX_MESSAGE_CHANGES, MessageOutcome,
+    MAX_DRAFTS, MAX_FOLDER_CHANGES, MAX_MESSAGE_CHANGES, MessageOutcome,
 };
 use mailcraft_model::{AccountKind, Folder, FolderKind, Id, Mailbox, Queued, ServerFolder, clean_name};
 use serde_json::{Value, json};
@@ -71,6 +71,7 @@ pub fn graph_mail_request(s: &Session, account: Id) -> Result<GraphMailRequest, 
         links: links(&s.mailbox, account),
         background: false,
         messages: graph_up::message_changes(s, account, MAX_MESSAGE_CHANGES).0,
+        drafts: super::graph_drafts::draft_changes(s, account, MAX_DRAFTS).0,
     })
 }
 
@@ -88,7 +89,7 @@ fn links(mb: &Mailbox, account: Id) -> Vec<GraphLink> {
 /// How many changes made in `account` its server hasn't heard of yet ([`super::account::unpushed`]
 /// for an account kept in step through Graph).
 pub fn unpushed(s: &Session, account: Id) -> usize {
-    folder_changes(&s.mailbox, account, 0).1 + graph_up::message_changes(s, account, 0).1
+    folder_changes(&s.mailbox, account, 0).1 + graph_up::message_changes(s, account, 0).1 + super::graph_drafts::pending(&s.mailbox, account)
 }
 
 /// The server id of the folder a folder of `account` lies in, as the server would have it:
@@ -262,7 +263,15 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
             }
         }
     }
-    let refused = refusals.lines();
+    let mut refused = refusals.lines();
+    // The drafts (R3.4.1).
+    for done in &result.drafts {
+        if super::graph_drafts::draft_done(&mut s.mailbox, account, done, &mut refused) {
+            taken.updated += 1;
+            // A draft's server id is new or gone: where each message is, is looked at afresh.
+            s.graph_index = Default::default();
+        }
+    }
     errors.extend(refused.iter().cloned());
     s.graph_said.extend(refused);
     if let Some(listing) = &result.listing {
