@@ -1,6 +1,6 @@
 # Threat model
 
-> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-15 · **Change:** major (first version) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-16 · **Change:** minor (pinned build tools, build provenance) · **Target:** Microsoft Outlook (Microsoft 365)
 
 What MailCraft protects, from whom, and how, with the code that does it. Rules for working in the
 code are in [`CLAUDE.md`](../CLAUDE.md) and [`AGENTS.md`](../AGENTS.md); how to report a
@@ -115,6 +115,11 @@ A malicious or vulnerable dependency, GitHub Action or build step.
   unless a job needs more; the release passes its signing secrets by name, not `inherit`.
   [zizmor](https://docs.zizmor.sh/) checks the workflows on every change to them, and
   [OpenSSF Scorecard](https://scorecard.dev/) scores the repository weekly.
+- **Build tools:** the shared workflows are pinned to full commit SHAs too, and every tool the
+  release downloads by URL (nfpm, appimagetool and the AppImage runtime, the Trusted Signing
+  client, rustup-init, wasm-opt) is an exact version checked against a recorded sha256 before
+  use; trunk runs offline. Every release file gets a build provenance attestation
+  (`gh attestation verify <file> -R UCS-Care-Group/mailcraft`).
 - Pure-Rust TLS (rustls), and no handwritten JavaScript.
 
 ## Out of scope and known limits
@@ -136,4 +141,5 @@ A malicious or vulnerable dependency, GitHub Action or build step.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | Pinned build tools with checksums; build provenance for release files |
 | 2026-10-15 | major | First version: assets, adversaries, mechanisms with their files, known limits |

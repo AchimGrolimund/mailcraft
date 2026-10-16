@@ -296,7 +296,12 @@ jobs:
           mem: 12288
           prepare: |
             pkg install -y bash git curl pkgconf cmake python3 libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader fontconfig freetype2
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+            # rustup-init 1.29.1, pinned and checked before it runs:
+            # https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-unknown-freebsd/rustup-init
+            curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/rustup-init https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-unknown-freebsd/rustup-init
+            [ "$(sha256 -q /tmp/rustup-init)" = af29791be32fd2f926865a983edc97f452078e6d1b4a6037d12ca2f8e67ffa3d ] || { echo "rustup-init does not match its pinned sha256"; exit 1; }
+            chmod +x /tmp/rustup-init
+            /tmp/rustup-init -y --profile minimal --default-toolchain stable
           run: |
             set -e
             . "$HOME/.cargo/env"
@@ -325,11 +330,27 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: package-web
-      # A pinned trunk release (prebuilt); trunk fetches the matching wasm-bindgen itself.
+      # Pinned trunk and wasm-bindgen releases (prebuilt, checked by install-action against its
+      # own checksums). wasm-bindgen must be the version in Cargo.lock: trunk runs offline below,
+      # so a mismatch fails the build instead of trunk downloading one.
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
-          tool: trunk@0.21.14
+          tool: trunk@0.21.14,wasm-bindgen@0.2.129
+      # wasm-opt from binaryen version_123 (the one trunk 0.21.14 asks for), pinned and checked:
+      # https://github.com/WebAssembly/binaryen/releases/tag/version_123
+      - name: Install wasm-opt
+        run: |
+          url=https://github.com/WebAssembly/binaryen/releases/download/version_123/binaryen-version_123-x86_64-linux.tar.gz
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/binaryen.tar.gz" "$url"
+          echo "e959f2170af4c20c552e9de3a0253704d6a9d2766e8fdb88e4d6ac4bae9388fe  $RUNNER_TEMP/binaryen.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/binaryen.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/binaryen-version_123/bin" >>"$GITHUB_PATH"
+      - name: Fetch the crates
+        run: cargo fetch --locked
+      # Offline: trunk uses the tools installed above and downloads nothing itself.
       - name: Build and zip the web app
+        env:
+          TRUNK_OFFLINE: "true"
         run: bash packaging/web/package.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
