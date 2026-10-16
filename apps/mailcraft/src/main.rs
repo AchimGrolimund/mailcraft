@@ -37,6 +37,7 @@ mod graph_mail_flow;
 mod graphics;
 mod logging;
 mod picture_cache;
+mod quit;
 mod secrets;
 mod single_instance;
 
@@ -84,13 +85,9 @@ impl eframe::App for App {
         if let Some(pos) = ctx.input(|i| take_rescue(&mut self.1, i.viewport())) {
             ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
         }
-        // The window's close button: a message being written asks first (`MailApp::close_requested`).
-        if ctx.input(|i| i.viewport().close_requested()) && !self.0.close_requested() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        }
-        if self.0.quit_requested {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
+        // Leaving (the close button, Quit, the Dock): a message being written asks first, then
+        // the platform's own way out (`quit`). Last in `logic`, which runs while minimized too.
+        quit::on_frame(ctx, &mut self.0);
     }
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.0.raw_input_hook(raw);
@@ -1049,6 +1046,12 @@ fn main() -> eframe::Result {
             }
             if let Some(guard) = &guard {
                 guard.wake(&cc.egui_ctx);
+            }
+            // macOS: an app menu whose Quit (⌘Q) asks the window to close, so a message being
+            // written is asked about first (winit's own quits without asking). Here, after winit
+            // has built its menu. Elsewhere it does nothing.
+            if let Err(e) = craft_quit::install_app_menu(&cc.egui_ctx, "MailCraft") {
+                log::warn!("the app menu couldn't be set up, so Quit won't ask about unsaved work: {e}");
             }
             Ok(Box::new(App(
                 app,
