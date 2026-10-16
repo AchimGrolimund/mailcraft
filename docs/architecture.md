@@ -83,10 +83,10 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
   (`cmd/remote.rs`, `Origin`). Mail itself still goes over IMAP.
 - **A Microsoft account kept in step through Graph alone (R3, behind a switch for testing).**
   With `MAILCRAFT_GRAPH_MAIL=1` (`Session::graph_mail`) a Microsoft account is
-  `AccountKind::Microsoft`: no mail servers, never IMAP or SMTP ([ADR 0002](adr/0002-graph-mail-for-microsoft-accounts.md)).
+  `AccountKind::Microsoft`: no mail servers, never IMAP or SMTP (ADR 0002).
   Its folders and messages are known by server ids, beside what the server last said of them
   (`ServerFolder` on `Folder::server`, `ServerMessage` on `Message::server`;
-  [ADR 0003](adr/0003-server-ids-and-changes-from-the-last-synced-state.md)); a change made here is
+  ADR 0003); a change made here is
   the difference between the two, and only what comparing can't show waits in
   `Mailbox::queued` (a folder deleted for good). The request and answer are Graph's own, beside
   the IMAP ones (`GraphMailRequest`, `FolderChange`, `GraphMailResult`, `FolderListing` in

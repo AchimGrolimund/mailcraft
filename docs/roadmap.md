@@ -7,8 +7,8 @@ Forward-looking plan. The summary is [`ROADMAP.md`](../ROADMAP.md); the ranked w
 
 ## Current focus
 
-**Superseded on 2026-10-14** by the roadmap reset: [`specs/roadmap-reset.md`](specs/roadmap-reset.md)
-and [`plans/roadmap-reset.md`](plans/roadmap-reset.md). This page is folded into `ROADMAP.md` in
+**Superseded on 2026-10-14** by the roadmap reset
+(issue #2). This page is folded into `ROADMAP.md` in
 step R8.3. What follows is the focus as it was written on 2026-10-11, kept for the record: two-way
 sync, Microsoft sign-in and the first release have landed since.
 

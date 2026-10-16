@@ -3,14 +3,13 @@
 > **Status:** current · **Written:** 2026-10-15 · **Last updated:** 2026-10-15 · **Change:** minor (cargo-deny in `cargo xtask ci`)
 
 Thank you for wanting to help. MailCraft holds people's mail, so the way work comes in matters as
-much as the work. The words here have the meanings in [`CONTEXT.md`](CONTEXT.md).
+much as the work.
 
 ## Before you build anything
 
 1. **Read [AGENTS.md](AGENTS.md).** It is for people as much as for agents: never crash, mail is
    private and hostile, no vendor assets, clean room. None of it is negotiable.
-2. **Read the plan.** Work to beta follows [the roadmap reset](docs/specs/roadmap-reset.md), its
-   [plan](docs/plans/roadmap-reset.md) and the decisions in [`docs/adr/`](docs/adr/), tracked in
+2. **Read the plan.** Work to beta follows the roadmap reset, tracked in
    [#2](https://github.com/UCS-Care-Group/mailcraft/issues/2). Work that goes against an accepted
    decision won't be merged, however good it is; propose a change to the decision first.
 3. **Claim an issue.** Every task in the plan is an issue labelled with its step (`R3`, `R4`, …).

@@ -2,7 +2,7 @@
 
 > **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-15 · **Change:** minor (gap 2 and rough edges: behind the switch for testing, a Microsoft account's folders kept in step through Microsoft Graph, R3.1; gap 4: sign-ins remembered on Linux and FreeBSD through the Secret Service; Exchange Web Services removed: one way of reading Outlook's Favorites; gap 7: the compose body is rich text underneath and goes out as HTML; the rich-text editor, R4.2) · **Target:** Microsoft Outlook (Microsoft 365)
 
-Since 2026-10-14 the order of the work is [`docs/plans/roadmap-reset.md`](plans/roadmap-reset.md);
+Since 2026-10-14 the order of the work is the roadmap reset;
 this list stays the record of what falls short. The work list. One entry per shortfall, ranked by how much it stops an Outlook user from switching
 (**B** = blocks beta). Each says what's missing, the evidence, who it hurts, a rough estimate of
 focused work, and which parity document tracks it. Pick from the top, check open PRs first, and
