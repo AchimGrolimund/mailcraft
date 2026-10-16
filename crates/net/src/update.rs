@@ -5,7 +5,7 @@
 //! and an `Accept` header: no account, address, mailbox detail, identifier or version of this
 //! program goes with it. Nothing is downloaded or installed.
 //!
-//! The answer is as hostile as any server's: at most 64 KB, ten seconds, no redirects. Its
+//! The answer is as hostile as any server's: at most 512 KB, ten seconds, no redirects. Its
 //! `tag_name` is read strictly as a version; a pre-release is passed over unless the one asking
 //! runs a pre-release; its `html_url` is taken only when it is this repository's page for that
 //! tag (else the page is made from the tag); and of its notes only whether they name a
@@ -26,8 +26,9 @@ pub const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const API: &str = "https://api.github.com";
 /// How long connecting may take, and so may the answer: ten seconds together at most.
 const PATIENCE: Duration = Duration::from_secs(5);
-/// Most bytes of the answer read.
-const MAX_ANSWER: usize = 64 * 1024;
+/// Most bytes of the answer read. GitHub's answer lists every package of the release and its
+/// notes: 0.4.2's was 44 KB, so this leaves room to grow.
+const MAX_ANSWER: usize = 512 * 1024;
 /// Longest owner or repository name taken from the build.
 const MAX_NAME: usize = 100;
 
