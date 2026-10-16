@@ -1,6 +1,6 @@
 # Contributing to MailCraft
 
-> **Status:** current · **Written:** 2026-10-15 · **Last updated:** 2026-10-15 · **Change:** minor (cargo-deny in `cargo xtask ci`)
+> **Status:** current · **Written:** 2026-10-15 · **Last updated:** 2026-10-16 · **Change:** minor (review of sync, store, sign-in and secrets stated as it is done)
 
 Thank you for wanting to help. MailCraft holds people's mail, so the way work comes in matters as
 much as the work.
@@ -29,8 +29,9 @@ Issues labelled `post-beta` are parked: they aren't open to claims until beta is
 - **Every crash fix and every data-loss fix comes with a regression test.**
 - **Tests never touch a real mailbox.** Use the fake servers in `crates/net/src/fake.rs` and the
   Graph stand-ins, with `example.org` addresses.
-- **Sync, the store, sign-in and secrets** (the paths in [`CODEOWNERS`](.github/CODEOWNERS)) are
-  reviewed by a maintainer line by line. Expect questions.
+- **Changes to sync, the store, sign-in and secrets** (the paths in
+  [`CODEOWNERS`](.github/CODEOWNERS), which asks a maintainer for review) are read by a maintainer
+  before they land. Expect questions.
 
 ## Decisions that are the owners', not a contributor's
 
@@ -38,7 +39,7 @@ Ask in an issue first, and don't put any of these into a pull request until the 
 
 - a new permission asked of Microsoft or any other provider;
 - anything added to the HTML presentation whitelist (`crates/html/src/style.rs`);
-- a change to `CLAUDE.md`, `AGENTS.md`, `PRIVACY.md`, `TERMS.md`, an ADR or the spec;
+- a change to `AGENTS.md` (which `CLAUDE.md` points to), `PRIVACY.md`, `TERMS.md` or an accepted design decision;
 - a new crate, a new dependency with a licence other than MIT, Apache-2.0, BSD or ISC, or a new
   asset;
 - anything that sends something off the computer that isn't sent today.
@@ -55,3 +56,4 @@ Found something wrong? Use the
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-15 | major | First version: claim before you build, one issue per pull request, decisions kept for the owners, tester sign-up |
+| 2026-10-16 | minor | Changes to sync, the store, sign-in and secrets are read by a maintainer before they land (no promise of enforced code-owner review); `CLAUDE.md` is a link to `AGENTS.md` |

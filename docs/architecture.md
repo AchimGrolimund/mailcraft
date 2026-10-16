@@ -1,6 +1,6 @@
 # MailCraft architecture
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-16 · **Change:** minor (R3.7: the switch from IMAP to Graph, no switch for testing; quitting on macOS through craft-quit, the first crate from craft-libs, for the apps alone; cargo-deny, pinned actions, zizmor, Scorecard, the threat model; R3.1: a Microsoft account kept in step through Graph behind a switch for testing, server ids, `graph::pace`; the Secret Service on Linux and FreeBSD behind `Services::secrets`; `StoreTrouble`; Exchange Web Services removed: the Favorites of Outlook are read through Microsoft Graph alone, and there is no choice of a way) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-16 · **Change:** minor (no citations of private decision records; R3.7: the switch from IMAP to Graph, no switch for testing; quitting on macOS through craft-quit, the first crate from craft-libs, for the apps alone; cargo-deny, pinned actions, zizmor, Scorecard, the threat model; R3.1: a Microsoft account kept in step through Graph behind a switch for testing, server ids, `graph::pace`; the Secret Service on Linux and FreeBSD behind `Services::secrets`; `StoreTrouble`; Exchange Web Services removed: the Favorites of Outlook are read through Microsoft Graph alone, and there is no choice of a way) · **Target:** Microsoft Outlook (Microsoft 365)
 
 How MailCraft is built today. Rules for working in the code are in [`AGENTS.md`](../AGENTS.md). The
 shape — layers, "everything is a command", the swappable egui front end, the control channel, MCP,
@@ -84,7 +84,7 @@ code, taken from git pinned to one commit) is for the apps alone.
   contacts (`crates/net/src/graph.rs`); the engine merges them as server-kept, read-only items
   (`cmd/remote.rs`, `Origin`). Mail itself still goes over IMAP.
 - **A Microsoft account kept in step through Graph alone (R3).**
-  A Microsoft account is `AccountKind::Microsoft`: no mail servers, never IMAP or SMTP (ADR 0002).
+  A Microsoft account is `AccountKind::Microsoft`: no mail servers, never IMAP or SMTP.
   One that was kept in step by IMAP switches when its owner says so (R3.7,
   `cmd/graph_switch.rs`, the page in `ui-egui/src/graph_switch.rs`): what waits for the IMAP
   server goes first, the mailbox is backed up beside its file, the server's mail is dropped and
@@ -92,7 +92,7 @@ code, taken from git pinned to one commit) is for the apps alone.
   Graph's first complete listing, so that they keep their ids.
   Its folders and messages are known by server ids, beside what the server last said of them
   (`ServerFolder` on `Folder::server`, `ServerMessage` on `Message::server`;
-  ADR 0003); a change made here is
+  the server id stays the same when the item moves); a change made here is
   the difference between the two, and only what comparing can't show waits in
   `Mailbox::queued` (a folder deleted for good). The request and answer are Graph's own, beside
   the IMAP ones (`GraphMailRequest`, `FolderChange`, `GraphMailResult`, `FolderListing` in
@@ -186,4 +186,5 @@ code, taken from git pinned to one commit) is for the apps alone.
 | 2026-10-15 | minor | Exchange Web Services removed (R2): Graph is the one way of reading the Favorites; a mailbox that chose the other opens and says so once |
 | 2026-10-16 | minor | Quitting on macOS through `craft-quit` (craft-libs, a git dependency pinned by `rev`), for the apps alone (`cargo xtask layers`); Rust 1.95 |
 | 2026-10-15 | minor | R3.1: `AccountKind::Microsoft` behind the switch for testing; server ids (`ServerFolder`, `ServerMessage`, `Mailbox::queued`); Graph's own sync types; `graph::mail` and `graph::pace` in `net`; `cmd/graph_mail.rs` in the engine |
+| 2026-10-16 | patch | The Graph-only account described without citing private decision records |
 | 2026-10-16 | minor | R3.7: the switch from IMAP to Graph (`cmd/graph_switch.rs`, `Account::graph_switch`, `Folder::awaiting_listing`); the switch for testing is gone |

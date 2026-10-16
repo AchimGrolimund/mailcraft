@@ -1,6 +1,6 @@
 # Releasing MailCraft
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-16 · **Change:** minor (pinned build tools, build provenance; signing in the protected `release` environment; draft releases) · **Status:** the Windows x64 and Linux x86_64 packages build and install from this tree; the GitHub workflow, signing, and the other platforms **have not run for MailCraft yet** (gap #18).
+> **Last reviewed:** 2026-10-16 · **Last updated:** 2026-10-16 · **Change:** minor (the status as it is: releases published by the workflows; no riscv64 build; pinned build tools, build provenance; signing in the protected `release` environment; draft releases) · **Status:** releases v0.1.0 to v0.4.2 were built and published by `release.yml` and `package.yml` on GitHub's runners, for every platform in the table below; none is signed yet (gap #18).
 
 The canonical recipe is [craftrules `release/playbook.md`](https://github.com/storytold/craftrules/blob/main/release/playbook.md);
 this file has the MailCraft specifics. The scripts in `packaging/` are WordCraft's with MailCraft's
@@ -25,9 +25,8 @@ WordCraft does.
 |---|---|---|
 | macOS | universal `MailCraft.app` in a `.dmg`, universal CLI zip | Developer ID + notarization (`APPLE_*` secrets) |
 | Windows | x64, x86 and arm64 `.msi` + portable `.zip` | Azure Trusted Signing (`AZURE_*` secrets) or a certificate (`WINDOWS_CERTIFICATE*`) |
-| Linux | x86_64 and aarch64 `.AppImage` (+ `.zsync` for AppImageUpdate), `.flatpak` bundle, `.deb`, `.rpm`, `.tar.gz`; Flathub manifest | checksums |
-| Linux riscv64 | `.tar.gz` (cross-compiled on `ubuntu-24.04`, glibc >= 2.39; CLI smoke-tested under QEMU) | checksums |
-| FreeBSD | x86_64 `.tar.gz` | checksums |
+| Linux | x86_64 and aarch64 `.AppImage` (+ `.zsync` for AppImageUpdate), `.flatpak` bundle, `.deb`, `.rpm`, `.tar.gz` | checksums |
+| FreeBSD | x86_64 `.tar.gz` (built in a FreeBSD VM; on a tag always, on a dry run only when asked for) | checksums |
 | Web | `mailcraft-web-<version>.zip` (static site: `index.html`, wasm, glue) | none |
 
 3. The run makes ONE **draft** GitHub release, `MailCraft v<version>` on that tag, with every file
@@ -43,8 +42,8 @@ Signing secrets (`APPLE_*`, `WINDOWS_CERTIFICATE*` and `AZURE_*`) are secrets of
 environment, not of the repository. That environment accepts version tags (`v*`) only and waits
 for a maintainer's approval; the Windows and macOS jobs that sign, and the job that makes the
 draft, run in it, and only for a pushed version tag. Without the secrets the builds are unsigned
-(ad-hoc on macOS) and the scripts say so, so forks still build. The riscv64 Linux build is not
-made here yet.
+(ad-hoc on macOS) and the scripts say so, so forks still build. None is set yet, so every
+release so far is unsigned. There is no riscv64 Linux build, and no Flathub manifest is published.
 
 Every file of a release also gets a build provenance attestation (`actions/attest-build-provenance`):
 a signed statement, kept by GitHub outside the release, of the workflow run and commit that made
@@ -72,7 +71,7 @@ MailCraft, and where each part stands:
 
 | Needs | State |
 |---|---|
-| One release per version with Craft file names and `SHA256SUMS.txt` | The workflow above produces it; no release has been published yet |
+| One release per version with Craft file names and `SHA256SUMS.txt` | The workflow above produces it; seven have been published, v0.1.0 to v0.4.1 |
 | An icon in the Craft style: an engraved animal in black ink and cream on one flat app colour, in the rounded tile (`rx` 112 of 512, the figure clipped 6 units in) | `cargo xtask icon` builds every size from `assets/app-icon/source/mailcraft-art.png` once the artwork is there; until then the icon is the drawn placeholder |
 | A row in the launcher's catalog (`crates/core/src/catalog.rs` in `storytold/craft-launcher`): id, name, tagline, what it is like, colours, `owner/repo`; for an app outside the organisation also its own reverse-DNS id and publisher (the "community apps" group) | A pull request on that repository, after the first release; the 128 px icon goes with it |
 
@@ -130,10 +129,13 @@ Checked on 2026-10-12, on a Windows 11 machine and an Ubuntu 22.04 WSL distribut
   the window needs `libxkbcommon-x11`, which the packages did not ask for; the desktop entry
   could not receive a `mailto:` link (`%F`) and named two main categories.
 
-Not checked yet: the MSI installed for real (it needs an administrator; the workflow does it on
-its runner); the x86 and arm64 Windows builds; aarch64 Linux; the Flatpak; macOS (and it has no
-DMG artwork yet: `packaging/macos/dmg/README.md`); FreeBSD (`packaging/freebsd/package.sh` has
-never run); signing; the release workflow on GitHub, which will need fixing on its first run. On
+Since then, on GitHub's runners with every release: the x64 MSI is installed, checked and
+uninstalled, the x86_64 and aarch64 `.deb` installed, started and removed, and the `.dmg` checked;
+the x86 and arm64 Windows builds, the Flatpak bundles and the FreeBSD tarball are built.
+
+Not checked yet: the x86 and arm64 Windows installers, the Flatpak and the FreeBSD tarball
+installed and run on a machine of their own; macOS on a real Mac (and it has no DMG artwork yet:
+`packaging/macos/dmg/README.md`); signing. On
 macOS, `mailto:` links are not handed to the program yet (no `CFBundleURLTypes`). On Linux a
 sign-in remembered in the Secret Service across a restart is still to be seen on GNOME and KDE,
 and in the Flatpak (which is granted `org.freedesktop.secrets` for it).
@@ -142,6 +144,7 @@ and in the Flatpak (which is granted `org.freedesktop.secrets` for it).
 
 | Date | Change |
 |---|---|
+| 2026-10-16 | Status as it is: v0.1.0 to v0.4.1 published by `release.yml` and `package.yml`, unsigned; riscv64 and the Flathub manifest out of the table (neither is built); what the runners check on every release |
 | 2026-10-16 | Signing secrets in the protected `release` environment, used only for a pushed version tag; dry runs unsigned with no secrets; the workflow makes a draft that a maintainer publishes |
 | 2026-10-16 | Pinned build tools (version and sha256) and build provenance for every release file |
 | 2026-10-15 | Linux packages: the Secret Service for remembered sign-ins (the Flatpak may talk to `org.freedesktop.secrets`; the .deb and .rpm suggest a keyring); what is still to be checked |
