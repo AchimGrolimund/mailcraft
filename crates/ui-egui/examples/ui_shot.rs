@@ -19,7 +19,8 @@
 //! one with `{"host": {"signIn": …, "adminConsent": …}}` on any line (`Host`): from that line
 //! on, a sign-in ends the way `signIn` says (`"waits"`: the owner is still in the browser;
 //! `"approval"`, `"declined"`, `"timedOut"`, `"noBrowser"`, `"signedIn"`, or any other text as
-//! Microsoft's own words), and an administrator's approval the way `adminConsent` says
+//! Microsoft's own words; `"signedInAs": "address"` has it sign in as that address rather than
+//! the one asked for, as an owner who picks another account on Microsoft's page does), and an administrator's approval the way `adminConsent` says
 //! (`"waits"`, `"approved"`, `"notAdministrator"`, `"declined"`, `"timedOut"`, `"noBrowser"`).
 //! One that is waiting when the line comes is answered by it. With a stand-in host, every
 //! address at a company's own domain is one whose mail Microsoft 365 takes. Nobody is signed
@@ -43,6 +44,8 @@ const NOW: i64 = 1_791_993_600;
 #[derive(Default)]
 struct Host {
     sign_in: String,
+    /// Who a sign-in signs in as; empty: the address it was asked for.
+    signed_in_as: String,
     admin_consent: String,
     /// The sign-ins and approvals that wait for the script to say how they end, each with the
     /// address it was for.
@@ -60,7 +63,7 @@ impl Host {
                 refresh: "stand-in-refresh".into(),
                 expires_at: mailcraft_time::now() + 3_600,
                 name: "Noor Haddad".into(),
-                email: email.to_string(),
+                email: if self.signed_in_as.is_empty() { email.to_string() } else { self.signed_in_as.clone() },
                 tenant: "3a1c5e7b-9d2f-4a6c-8e0b-1d3f5a7c9e2b".into(),
             }),
             "approval" => Err(NEEDS_APPROVAL.into()),
@@ -86,6 +89,9 @@ impl Host {
 
     /// Take in what a line of the script says, and answer what was waiting for it.
     fn told(&mut self, said: &serde_json::Value) {
+        if let Some(who) = said.get("signedInAs").and_then(|v| v.as_str()) {
+            self.signed_in_as = who.to_string();
+        }
         if let Some(how) = said.get("signIn").and_then(|v| v.as_str()) {
             self.sign_in = how.to_string();
         }

@@ -1378,11 +1378,34 @@ impl MailApp {
 
     /// Account setup: the account exists now; keep what signing in brought back for it.
     pub(crate) fn adopt_tokens(&mut self, account: Id, tokens: Tokens) {
+        if self.signed_in_as_other(account, &tokens) {
+            return;
+        }
         if let Some(address) = self.session.mailbox.account(account).map(|a| a.email.clone()) {
             self.remember("refresh", &address, &tokens.refresh);
         }
         self.note_directory(account, &tokens.tenant);
         self.tokens.insert(account, tokens);
+    }
+
+    /// Whether tokens that came back for `account`, an account that exists, are somebody
+    /// else's: the provider named who signed in, and that is neither the account's address nor
+    /// its user name (#103). They are then not to be used or remembered, and the owner is told
+    /// who to sign in as. Tokens that name nobody are the account's, as they always were.
+    pub(crate) fn signed_in_as_other(&mut self, account: Id, tokens: &Tokens) -> bool {
+        let Some(a) = self.session.mailbox.account(account) else { return false };
+        if !tokens.someone_else(&a.email, &a.username) {
+            return false;
+        }
+        let who = tokens.email.trim();
+        // (Said on screen; never written to the log, which names nobody.)
+        let said = i18n::fmt(
+            tl!("You signed in as {signedIn}, but this account is {account}. Sign in again as {account}."),
+            &[("signedIn", &forms::kit::shown(who, 120)), ("account", &forms::kit::shown(a.email.trim(), 120))],
+        );
+        self.session.sync_status.clear();
+        self.status(said);
+        true
     }
 
     /// Account setup: the password that was just shown to work, for this session's Send/Receive
@@ -1717,7 +1740,9 @@ impl MailApp {
         if result.token_refused {
             self.graph_tokens.remove(&account);
         }
-        if let Some(tokens) = result.tokens {
+        if let Some(tokens) = result.tokens
+            && !self.signed_in_as_other(account, &tokens)
+        {
             self.note_directory(account, &tokens.tenant);
             // The newest refresh token is the account's, for mail and Graph alike.
             if !tokens.refresh.is_empty() {
@@ -1821,20 +1846,18 @@ impl MailApp {
             return;
         }
         let address = self.session.mailbox.account(account).map(|a| a.email.clone()).unwrap_or_default();
-        // Which kind of Microsoft account it is, as the sign-in says ([`favorites_sync`]).
-        if let Ok(tokens) = &answer
-            && (tokens.email.is_empty() || tokens.email.trim().eq_ignore_ascii_case(address.trim()))
-        {
+        // The owner picks who signs in on the page: it has to be this account. Somebody else's
+        // tokens are neither used nor remembered, mail's or Graph's (#103).
+        if let Ok(tokens) = &answer {
+            if self.signed_in_as_other(account, tokens) {
+                return;
+            }
+            // Which kind of Microsoft account it is, as the sign-in says ([`favorites_sync`]).
             self.note_directory(account, &tokens.tenant);
         }
         if for_graph {
             // "Connect calendar and contacts": the token is Graph's; the next run uses it.
             match answer {
-                // The owner picks who signs in on the page: it has to be this account.
-                Ok(tokens) if !tokens.email.is_empty() && !tokens.email.trim().eq_ignore_ascii_case(address.trim()) => {
-                    self.session.sync_status.clear();
-                    self.status(format!("{} {} {} {address}", tl!("You signed in as"), tokens.email, tl!("but this account is")));
-                }
                 Ok(tokens) => {
                     if !tokens.refresh.is_empty() {
                         self.remember("refresh", &address, &tokens.refresh);

@@ -100,7 +100,8 @@ fn work_account(host: impl FnOnce(&mut MailApp)) -> Harness<'static, MailApp> {
 
 /// Who signed in, as an organisation's directory names them.
 fn signed_in_at_work() -> SignedIn {
-    SignedIn { tenant: ORGANISATION.into(), ..signed_in("Noor Haddad") }
+    // (Who signed in is left unsaid: these are taken for whichever account asked, #103.)
+    SignedIn { tenant: ORGANISATION.into(), email: String::new(), ..signed_in("Noor Haddad") }
 }
 
 /// Press one of the things to do: it is known by what it is called, with or without the
