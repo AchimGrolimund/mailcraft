@@ -5,7 +5,7 @@
 //! past what it has (S10). Everything is matched by server id (S5): a page that comes twice
 //! changes nothing.
 //!
-//! - **A new message** comes as its headers and preview, not **fetched** (`CONTEXT.md`).
+//! - **A new message** comes as its headers and preview, not **fetched**.
 //! - **A message the server has changed** takes the server's read, flag, categories and
 //!   importance, but for a property changed here since the server last said (ADR 0003): that
 //!   goes up with R3.3, and nothing changed here is overwritten by coming down.

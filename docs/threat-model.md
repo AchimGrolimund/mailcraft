@@ -127,7 +127,7 @@ A malicious or vulnerable dependency, GitHub Action or build step.
 - **The mailbox isn't encrypted at rest.** It relies on the operating system's disk encryption
   (BitLocker, FileVault, LUKS, GELI).
 - **Unsigned builds.** The Windows and macOS builds aren't code-signed until signing and publisher
-  verification are done (B10, [the plan](plans/roadmap-reset.md) R8.1); check a download against
+  verification are done (B10, roadmap reset step R8.1); check a download against
   the release's checksums.
 - **The web build** runs in the browser's sandbox and inherits the browser's security; it has no
   connection to mail servers of its own.

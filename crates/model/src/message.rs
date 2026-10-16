@@ -163,7 +163,7 @@ pub struct Message {
     /// `synced` are IMAP's and stay as they are.
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "crate::sync::lenient")]
     pub server: Option<ServerMessage>,
-    /// Only its headers and a preview are here: it is not **fetched** yet (`CONTEXT.md`). Every
+    /// Only its headers and a preview are here: it is not **fetched** yet. Every
     /// message of a file from before this was kept is whole.
     #[serde(skip_serializing_if = "is_false")]
     pub unfetched: bool,
