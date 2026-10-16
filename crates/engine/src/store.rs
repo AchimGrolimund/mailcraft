@@ -2702,6 +2702,9 @@ struct Jobs {
     /// Since when (for [`BackgroundSave::progress`]).
     since: Option<Instant>,
     sweeps: Vec<PathBuf>,
+    /// The content folder being swept, and since when: the file is busy meanwhile (a sweep holds
+    /// its state from start to end), which [`BackgroundSave::progress`] says.
+    sweeping: Option<Instant>,
     reports: Vec<SaveReport>,
     closed: bool,
 }
@@ -2746,20 +2749,32 @@ impl BackgroundSave for Saver {
 
     fn submit(&self, path: &Path, mailbox: &Mailbox, rev: u64) {
         self.follow(path);
-        let mut jobs = lock(&self.queue.jobs);
         // The same state again (the window asks until it hears back) is already on its way, and
         // isn't copied again: a copy of a large mailbox is a few milliseconds of the window's.
-        if jobs.closed || jobs.writing.as_ref().is_some_and(|(p, r)| p == path && *r == rev) {
+        let on_its_way = |jobs: &Jobs| {
+            jobs.closed
+                || jobs.writing.as_ref().is_some_and(|(p, r)| p == path && *r == rev)
+                || jobs.waiting.iter().any(|j| j.path == path && j.rev == rev)
+        };
+        if on_its_way(&lock(&self.queue.jobs)) {
+            return;
+        }
+        // The copy is made without the lock, which the thread takes between two saves and the
+        // window to see how far one has got: neither waits for it.
+        let copy = mailbox.clone();
+        let mut jobs = lock(&self.queue.jobs);
+        // Looked at again: the thread may have taken this state, or the queue closed, meanwhile.
+        if on_its_way(&jobs) {
+            drop(jobs);
             return;
         }
         let replaced = match jobs.waiting.iter_mut().find(|j| j.path == path) {
-            Some(job) if job.rev == rev => return,
             Some(job) => {
                 (job.rev, job.seq) = (rev, next_seq());
-                Some(std::mem::replace(&mut job.mailbox, mailbox.clone()))
+                Some(std::mem::replace(&mut job.mailbox, copy))
             }
             None => {
-                jobs.waiting.push(Job { path: path.to_path_buf(), mailbox: mailbox.clone(), rev, seq: next_seq() });
+                jobs.waiting.push(Job { path: path.to_path_buf(), mailbox: copy, rev, seq: next_seq() });
                 None
             }
         };
@@ -2776,7 +2791,18 @@ impl BackgroundSave for Saver {
     fn progress(&self) -> Option<SaveProgress> {
         let jobs = lock(&self.queue.jobs);
         let Some((path, _)) = &jobs.writing else {
-            return (!jobs.waiting.is_empty()).then(SaveProgress::default);
+            if !jobs.waiting.is_empty() {
+                return Some(SaveProgress::default());
+            }
+            // A sweep holds the file as a save does (and one due is about to): busy too, or
+            // whatever waits for the saver (File › Open) would find the file taken.
+            let millis = jobs.sweeping.map_or(0, |at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX));
+            return (jobs.sweeping.is_some() || !jobs.sweeps.is_empty()).then_some(SaveProgress {
+                stage: SaveStage::Sweeping,
+                done: 0,
+                total: 0,
+                millis,
+            });
         };
         let (stage, done, total) = shared(path).progress.get();
         let millis = jobs.since.map_or(0, |at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX));
@@ -2824,6 +2850,7 @@ impl Queue {
                         return;
                     }
                     if let Some(path) = jobs.sweeps.pop() {
+                        jobs.sweeping = Some(Instant::now());
                         break Work::Sweep(path);
                     }
                     jobs = self.work.wait(jobs).unwrap_or_else(|e| e.into_inner());
@@ -2846,14 +2873,20 @@ impl Queue {
                     drop(jobs);
                     (self.notify)();
                 }
-                Work::Sweep(path) => match std::panic::catch_unwind(|| sweep(&path, GRACE)) {
-                    Ok(Ok(swept)) if swept.removed > 0 => {
-                        log::info!("{}: removed {} content file(s) nothing names any more ({} bytes)", path.display(), swept.removed, swept.bytes)
+                Work::Sweep(path) => {
+                    match std::panic::catch_unwind(|| sweep(&path, GRACE)) {
+                        Ok(Ok(swept)) if swept.removed > 0 => {
+                            log::info!("{}: removed {} content file(s) nothing names any more ({} bytes)", path.display(), swept.removed, swept.bytes)
+                        }
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => log::warn!("sweeping the mailbox's content folder failed: {e}"),
+                        Err(_) => log::error!("sweeping the mailbox's content folder stopped unexpectedly"),
                     }
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => log::warn!("sweeping the mailbox's content folder failed: {e}"),
-                    Err(_) => log::error!("sweeping the mailbox's content folder stopped unexpectedly"),
-                },
+                    lock(&self.jobs).sweeping = None;
+                    // Whoever waits for the file to be free (the window, to open another mailbox)
+                    // looks again.
+                    (self.notify)();
+                }
             }
         }
     }

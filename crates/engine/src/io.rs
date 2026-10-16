@@ -145,7 +145,7 @@ pub trait BackgroundSave {
     /// What became of the states handed in, since this was last asked.
     fn reports(&self) -> Vec<SaveReport>;
     /// How far the writing has got, for the window to show: `None` when nothing handed in is
-    /// waiting or being written.
+    /// waiting or being written, and the file isn't busy otherwise ([`SaveStage::Sweeping`]).
     fn progress(&self) -> Option<SaveProgress> {
         None
     }
@@ -176,6 +176,10 @@ pub enum SaveStage {
     Messages,
     /// Writing the bodies and attachments that aren't on disk yet, one file each.
     Content,
+    /// Nothing of the mailbox is being written, but its file is busy: the content files it no
+    /// longer names are being looked for and removed (or are about to be). Whatever replaces the
+    /// mailbox waits for this too, so as not to find the file taken.
+    Sweeping,
 }
 
 /// Where a host gets the content of a mailbox that isn't in memory: the attachments, and the
