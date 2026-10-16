@@ -162,11 +162,15 @@ fn a_move_out_of_the_account_waits_for_the_whole_message_and_the_save() {
 #[test]
 fn nothing_comes_into_a_microsoft_account_from_elsewhere_and_an_unfetched_message_isnt_copied_out() {
     let (mut s, account, m, kept) = setup();
-    let local = s.mailbox.add_message(Message { folder: kept, subject: "Here only".into(), ..Default::default() }).unwrap();
+    let local = s.mailbox.add_message(Message { folder: kept, subject: "Here only".into(), draft: true, ..Default::default() }).unwrap();
+    let received = s.mailbox.add_message(Message { folder: kept, subject: "Received".into(), ..Default::default() }).unwrap();
     let inbox = s.mailbox.folder_of_kind(account, FolderKind::Inbox).unwrap();
     for command in ["mail.move", "mail.copy"] {
         let refused = s.run(command, &json!({"ids": [local], "folder": inbox})).unwrap_err();
         assert!(refused.to_string().contains(mailcraft_model::INTO_GRAPH), "{refused}");
+        // Received mail in a local folder never goes (S30).
+        let refused = s.run(command, &json!({"ids": [received], "folder": inbox})).unwrap_err();
+        assert_eq!(refused.to_string(), mailcraft_model::STAYS_LOCAL);
     }
     s.mailbox.message_mut(m).unwrap().unfetched = true;
     let refused = s.run("mail.copy", &json!({"ids": [m], "folder": kept})).unwrap_err();
@@ -176,6 +180,61 @@ fn nothing_comes_into_a_microsoft_account_from_elsewhere_and_an_unfetched_messag
     let copy = s.run("mail.copy", &json!({"ids": [m], "folder": kept})).unwrap()["copies"][0].as_u64().unwrap();
     let c = s.mailbox.message(copy).unwrap();
     assert!(c.server.is_none() && c.moving_out.is_none() && s.mailbox.queued.is_empty());
+}
+
+/// R3 spec S30: mail imported for a Microsoft account goes to a local folder, and stays there.
+#[test]
+fn mail_imported_for_a_microsoft_account_goes_to_a_local_folder_and_stays_there() {
+    let (mut s, account, m, _) = setup();
+    let inbox = s.mailbox.folder_of_kind(account, FolderKind::Inbox).unwrap();
+    let drafts = s.mailbox.folder_of_kind(account, FolderKind::Drafts).unwrap();
+    let eml = s.run("file.exportMessage", &json!({"id": m})).unwrap();
+    s.run("folder.select", &json!({"id": inbox})).unwrap();
+    let before = s.mailbox.accounts.len();
+    let r = s.run("file.import", &json!({"name": "in.eml", "data": eml["data"]})).unwrap();
+    let local = r["folder"].as_u64().unwrap();
+    let f = s.mailbox.folder(local).unwrap().clone();
+    assert_eq!((f.name.as_str(), r["local"].as_bool(), s.mailbox.accounts.len()), (mailcraft_model::IMPORTED, Some(true), before));
+    assert_eq!(s.mailbox.account(f.account).unwrap().kind, mailcraft_model::AccountKind::Local);
+    // It is shown where it went, and nothing of it goes up.
+    assert_eq!(s.view.folder, local);
+    let imported = r["ids"][0].as_u64().unwrap();
+    assert!(s.mailbox.message(imported).unwrap().server.is_none() && changes(&s, account).is_empty());
+    // Again into the same folder; into Drafts, the local Drafts, as drafts.
+    let again = s.run("file.import", &json!({"name": "in.eml", "data": eml["data"], "folder": inbox})).unwrap();
+    assert_eq!(again["folder"].as_u64(), Some(local));
+    let draft = s.run("file.import", &json!({"name": "in.eml", "data": eml["data"], "folder": drafts})).unwrap();
+    let local_drafts = s.mailbox.folder(draft["folder"].as_u64().unwrap()).unwrap();
+    assert_eq!((local_drafts.account, local_drafts.kind), (f.account, FolderKind::Drafts));
+    assert!(s.mailbox.message(draft["ids"][0].as_u64().unwrap()).unwrap().draft);
+    // Moving it into the account is refused with the reason, and changes nothing.
+    for command in ["mail.move", "mail.copy"] {
+        let refused = s.run(command, &json!({"ids": [imported], "folder": inbox})).unwrap_err();
+        assert_eq!(refused.to_string(), mailcraft_model::STAYS_LOCAL);
+        assert_eq!(s.mailbox.message(imported).unwrap().folder, local);
+    }
+    // Mail imported into another account's folder lands there, as before.
+    let kept = s.mailbox.folders.iter().find(|f| f.name == "Kept").unwrap().id;
+    let there = s.run("file.import", &json!({"name": "in.eml", "data": eml["data"], "folder": kept})).unwrap();
+    assert_eq!((there["folder"].as_u64(), there["local"].as_bool()), (Some(kept), Some(false)));
+}
+
+/// With no local account, importing for a Microsoft account makes one.
+#[test]
+fn importing_for_a_microsoft_account_without_a_local_account_makes_one() {
+    let mut s = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
+    s.graph_mail = true;
+    let account = s.run("account.add", &json!({"email": "owner@example.org", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
+    assert!(s.mailbox.accounts.iter().all(|a| a.kind == mailcraft_model::AccountKind::Microsoft));
+    let inbox = s.mailbox.folder_of_kind(account, FolderKind::Inbox).unwrap();
+    let mbox = "From a@example.org Thu Jan 14 08:00:00 2027\nFrom: a@example.org\nSubject: One\n\nHi\n\nFrom b@example.org Thu Jan 14 09:00:00 2027\nFrom: b@example.org\nSubject: Two\n\nHi\n";
+    let data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, mbox);
+    let r = s.run("file.import", &json!({"name": "all.mbox", "data": data, "folder": inbox})).unwrap();
+    assert_eq!(r["messages"], 2);
+    let f = s.mailbox.folder(r["folder"].as_u64().unwrap()).unwrap();
+    let a = s.mailbox.account(f.account).unwrap();
+    assert_eq!((a.kind, a.name.as_str(), f.name.as_str()), (mailcraft_model::AccountKind::Local, "On this computer", mailcraft_model::IMPORTED));
+    assert_eq!(s.mailbox.messages_in(inbox).count(), 0);
 }
 
 fn result(account: Id, messages: Vec<MessageChangeDone>) -> GraphMailResult {

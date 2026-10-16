@@ -1569,3 +1569,24 @@ fn copy_diagnostics_takes_the_hosts_report_or_says_what_it_can() {
     a.services.diagnostics = Some(Box::new(|| "the host's report".into()));
     assert_eq!(a.execute("ui.copyDiagnostics", json!({})).unwrap()["text"], "the host's report");
 }
+
+/// R3 spec S30: mail imported for a Microsoft account goes to a local folder, and moving it into
+/// the account's folders is refused, with the reason in the status bar.
+#[test]
+fn imported_mail_for_a_microsoft_account_stays_in_a_local_folder_and_says_why() {
+    let mut a = app();
+    a.session.graph_mail = true;
+    let account = a.run("account.add", json!({"email": "owner@example.org", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
+    let inbox = a.session.mailbox.folder_of_kind(account, mailcraft_model::FolderKind::Inbox).unwrap();
+    let id = first_message(&mut a);
+    let eml = a.execute("file.exportMessage", json!({"id": id})).unwrap();
+    let r = a.run("file.import", json!({"name": "in.eml", "data": eml["data"], "folder": inbox})).unwrap();
+    let said = a.status_msg.as_ref().map(|(text, _)| text.clone()).unwrap_or_default();
+    assert_eq!(said, "Imported 1 message into a local folder: Microsoft doesn't let a mail program put received mail into your mailbox");
+    let imported = r["ids"][0].as_u64().unwrap();
+    assert_ne!(a.session.mailbox.message(imported).unwrap().folder, inbox);
+    assert!(a.run("mail.move", json!({"ids": [imported], "folder": inbox})).is_err());
+    let said = a.status_msg.as_ref().map(|(text, _)| text.clone()).unwrap_or_default();
+    assert_eq!(said, "Microsoft doesn't let a mail program put received mail into your mailbox; it stays in a local folder.");
+    assert_ne!(a.session.mailbox.message(imported).unwrap().folder, inbox);
+}

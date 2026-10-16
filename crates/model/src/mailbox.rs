@@ -594,6 +594,13 @@ impl Default for Mailbox {
 /// Why nothing from elsewhere goes into a Microsoft account's folders yet (R3 spec S19).
 pub const INTO_GRAPH: &str = "Mail can't be moved or copied into a Microsoft account from another account or a local folder yet: this version can't put a message on Microsoft's server";
 
+/// Why received mail in a local folder (imported mail, say) doesn't go into a Microsoft
+/// account's folders (R3 spec S30): what Graph makes there is always a draft.
+pub const STAYS_LOCAL: &str = "Microsoft doesn't let a mail program put received mail into your mailbox; it stays in a local folder.";
+
+/// The local folder that mail imported for a Microsoft account goes to (R3 spec S30).
+pub const IMPORTED: &str = "Imported";
+
 fn not_found(what: &'static str, id: Id) -> ModelError {
     ModelError::NotFound(what, id)
 }
@@ -1100,7 +1107,7 @@ impl Mailbox {
             return Ok(false);
         }
         if self.is_graph(to_account) {
-            let Some(out) = m.moving_out.clone().filter(|out| out.account == to_account) else { return Err(invalid(INTO_GRAPH)) };
+            let Some(out) = m.moving_out.clone().filter(|out| out.account == to_account) else { return Err(invalid(self.refusal_into_graph(m))) };
             // Where the server has it isn't known here: the next run moves it where it is now.
             let server = crate::sync::ServerMessage {
                 id: out.id,
@@ -1129,6 +1136,32 @@ impl Mailbox {
         Ok(true)
     }
 
+    /// Why `m` can't go into a Microsoft account from elsewhere: received mail in a local folder
+    /// never can (S30); anything else not yet (S19).
+    fn refusal_into_graph(&self, m: &Message) -> &'static str {
+        let local = self.account(m.account).is_some_and(|a| a.kind == AccountKind::Local);
+        if local && !m.draft { STAYS_LOCAL } else { INTO_GRAPH }
+    }
+
+    /// Where mail imported for a Microsoft account goes, as Graph can't put received mail on
+    /// its server (R3 spec S30): the folder [`IMPORTED`] at the top of the first local account
+    /// (that account's Drafts, for `drafts`), made when it isn't there yet; and the local
+    /// account itself ("On this computer") when the mailbox has none.
+    pub fn imported_folder(&mut self, drafts: bool) -> Result<Id, ModelError> {
+        let local = match self.accounts.iter().find(|a| a.kind == AccountKind::Local) {
+            Some(a) => a.id,
+            None => self.add_account(Account { name: "On this computer".into(), ..Default::default() }),
+        };
+        if drafts && let Some(folder) = self.folder_of_kind(local, FolderKind::Drafts) {
+            return Ok(folder);
+        }
+        let there = self.folders.iter().find(|f| f.account == local && f.parent.is_none() && f.name.eq_ignore_ascii_case(IMPORTED));
+        match there {
+            Some(f) => Ok(f.id),
+            None => self.add_folder(local, None, IMPORTED),
+        }
+    }
+
     /// Copy a message into `folder`; returns the copy's id. The copy is not on a server.
     pub fn copy_message(&mut self, id: Id, folder: Id) -> Result<Id, ModelError> {
         self.copy_message_marked(id, folder, 0)
@@ -1145,7 +1178,7 @@ impl Mailbox {
         let m = self.message(id).ok_or(not_found("message", id))?;
         let from_account = m.account;
         if from_account != to_account && self.is_graph(to_account) {
-            return Err(invalid(INTO_GRAPH));
+            return Err(invalid(self.refusal_into_graph(m)));
         }
         if from_account != to_account && self.is_graph(from_account) && m.unfetched {
             let subject: String = m.subject.chars().filter(|c| !c.is_control()).take(80).collect();
