@@ -152,17 +152,6 @@ fn log_dir() -> Option<PathBuf> {
     Some(prefs_path()?.parent()?.join("logs"))
 }
 
-/// The switch for testing Microsoft accounts kept in step through Microsoft Graph (R3 spec S35):
-/// `MAILCRAFT_GRAPH_MAIL=1`. Off, Add Account makes them as it always did (on IMAP), and nothing
-/// else is any different.
-fn graph_mail_switch() -> bool {
-    let on = std::env::var("MAILCRAFT_GRAPH_MAIL").is_ok_and(|value| value.trim() == "1");
-    if on {
-        log::info!("Microsoft accounts may be kept in step through Microsoft Graph (MAILCRAFT_GRAPH_MAIL=1, for testing)");
-    }
-    on
-}
-
 /// Runs without preferences (`MAILCRAFT_NO_PREFS`, agents' test runs) neither read nor write them,
 /// and keep their mailbox in memory only.
 fn prefs_enabled() -> bool {
@@ -1009,7 +998,6 @@ fn main() -> eframe::Result {
             let (mailbox, path, unavailable) = first_mailbox(sample, mailbox_path);
             let (file_dialog, dialogs) = file_dialogs::hook(&cc.egui_ctx);
             let mut session = Session::new(mailbox);
-            session.graph_mail = graph_mail_switch();
             let kept = path.is_some();
             session.path = path;
             // A run that keeps its mailbox and its settings keeps downloaded pictures too.
@@ -1031,6 +1019,9 @@ fn main() -> eframe::Result {
             }
             // An ordinary start on a mailbox nobody has set up yet begins with adding an account.
             app.offer_setup = kept && !sample;
+            // A Microsoft account still on IMAP is offered the switch to Graph (R3.7): only for a
+            // mailbox kept in a file, which is where the copy from before the switch goes.
+            app.offer_graph_switch = kept && !sample;
             load_prefs(&mut app);
             app.ui.window = restored;
             app.integrated_titlebar = cfg!(target_os = "macos");

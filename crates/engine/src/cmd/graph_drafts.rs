@@ -211,7 +211,6 @@ mod tests {
     #[test]
     fn a_draft_saved_again_keeps_its_server_id_and_waits_to_go_up() {
         let mut s = Session::at(Mailbox::with_local_account("", ""), 1_800_000_000, 0);
-        s.graph_mail = true;
         let account = s.run("account.add", &json!({"email": "avery@mail.example", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
         s.run("mail.new", &json!({"account": account, "to": "kit@example.org", "subject": "One"})).unwrap();
         let draft = s.run("compose.saveDraft", &json!({})).unwrap()["draft"].as_u64().unwrap();

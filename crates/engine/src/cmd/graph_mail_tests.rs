@@ -9,11 +9,9 @@ use super::*;
 
 const ACCOUNT_EMAIL: &str = "owner@example.org";
 
-/// A session with one Microsoft account kept in step through Graph, as the switch for testing
-/// allows; its id.
+/// A session with one Microsoft account kept in step through Graph; its id.
 fn session() -> (Session, Id) {
     let mut s = Session::empty();
-    s.graph_mail = true;
     let added = s.run("account.add", &json!({"email": ACCOUNT_EMAIL, "kind": "microsoft"})).unwrap();
     let account = added["id"].as_u64().unwrap();
     (s, account)
@@ -54,11 +52,9 @@ fn by_server<'s>(s: &'s Session, account: Id, id: &str) -> &'s Folder {
 }
 
 #[test]
-fn an_account_kept_in_step_through_graph_is_made_only_behind_the_switch() {
+fn an_account_kept_in_step_through_graph_is_made_when_asked_for() {
     let mut s = Session::empty();
-    let refused = s.run("account.add", &json!({"email": ACCOUNT_EMAIL, "kind": "microsoft"})).unwrap_err();
-    assert!(refused.to_string().contains("MAILCRAFT_GRAPH_MAIL=1"), "{refused}");
-    // Without the switch an account is what it always was.
+    // An account that names its mail servers is what it always was.
     let imap = s
         .run(
             "account.add",

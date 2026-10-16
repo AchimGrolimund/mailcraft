@@ -35,8 +35,7 @@ fn a_send_receive_keeps_the_folders_in_step_through_graph_and_never_imap() {
         state.add_folder("Sales/Marketing", Some(&inbox));
     }
     let _route = server.route();
-    let mut session = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
-    session.graph_mail = true;
+    let session = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
     let mut app = MailApp::new(session, Services::default());
     (app.autosave, app.auto_sync) = (false, false);
     // The host's own Graph job, with the test in the token endpoint's place.

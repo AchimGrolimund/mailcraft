@@ -326,7 +326,7 @@ fn microsoft_endpoints() {
     // A request for tokens names one resource: neither asks for a scope of the other's.
     assert!(!common.scope.contains("graph.microsoft.com") && !graph.scope.contains("outlook.office.com"));
     // Reading and changing mail through Graph is asked for only for an account kept in step that
-    // way (R3, behind the switch for testing): never by a sign-in to mail, nor by Graph's own.
+    // way (R3): never by a sign-in to mail, nor by Graph's own.
     let mail = Endpoints::for_resource(&oauth(), Resource::GraphMail);
     assert_eq!(mail.scope, format!("{GRAPH_SCOPES_BEFORE} https://graph.microsoft.com/Mail.ReadWrite offline_access openid profile email"));
     assert_eq!((mail.authorize.as_str(), mail.consent.as_str()), (common.authorize.as_str(), graph.consent.as_str()));

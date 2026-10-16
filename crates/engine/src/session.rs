@@ -508,11 +508,6 @@ pub struct Session {
     pub clock: Clock,
     /// What the last synchronisation reported, for the status bar.
     pub sync_status: String,
-    /// Microsoft accounts may be kept in step through Microsoft Graph (R3): the switch for
-    /// testing, which a host turns on when `MAILCRAFT_GRAPH_MAIL=1` (R3 spec S35). Off, nothing
-    /// makes such an account (`account.add` with `"kind": "microsoft"` is refused); the ones a
-    /// mailbox has stay what they are. Never saved.
-    pub graph_mail: bool,
     /// Messages kept in step through Graph, by server id: kept between the pages of a run.
     pub(crate) graph_index: crate::cmd::graph_down::ServerIndex,
     /// Messages being moved out of a Microsoft account that were whole in the mailbox file when
@@ -551,7 +546,6 @@ impl Session {
             dirty: false,
             clock,
             sync_status: String::new(),
-            graph_mail: false,
             graph_index: Default::default(),
             saved_whole: Default::default(),
             graph_said: Vec::new(),

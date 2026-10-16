@@ -29,7 +29,6 @@ impl Rig {
     fn new(address: &str) -> Rig {
         let server = StandIn::start().unwrap();
         let mut s = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
-        s.graph_mail = true;
         let account = s.run("account.add", &json!({"email": address, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
         let mut rig = Rig { server, s, account };
         // The folders first, so that a draft has a Drafts that is the server's.

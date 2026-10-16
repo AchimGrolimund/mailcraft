@@ -30,7 +30,7 @@ pub use calendar::{
 };
 pub use contact::{Contact, Labeled, PostalAddress};
 pub use mailbox::{
-    Account, AccountKind, Category, Directory, DownloadInFull, Folder, FolderKind, IMPORTED, INTO_GRAPH, Mailbox, OAuth, OAuthProvider, Pending,
+    Account, AccountKind, Category, Directory, DownloadInFull, Folder, FolderKind, GraphSwitch, IMPORTED, INTO_GRAPH, Mailbox, OAuth, OAuthProvider, Pending,
     Queued, STAYS_LOCAL, Security, Server, ServerFavorites, ServerFolder,
 };
 pub use mailcraft_time as time;
