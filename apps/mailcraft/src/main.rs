@@ -162,12 +162,32 @@ fn load_prefs(app: &mut MailApp) {
     if !prefs_enabled() {
         return;
     }
-    if let Some(p) = prefs_path()
-        && let Ok(bytes) = std::fs::read(&p)
-        && let Ok(ui) = serde_json::from_slice::<UiState>(&bytes)
-    {
+    if let Some(ui) = prefs_path().and_then(|p| read_prefs(&p)) {
         app.apply_prefs(ui);
     }
+}
+
+/// The preferences in `path`. A file that can't be read as them (damaged, or written by a version
+/// that keeps them otherwise) is moved aside to `ui.json.damaged`, so the next save doesn't
+/// overwrite what the owner had set and it can still be looked at.
+fn read_prefs(path: &std::path::Path) -> Option<UiState> {
+    let bytes = std::fs::read(path).ok()?;
+    let ui = serde_json::from_slice::<UiState>(&bytes);
+    if ui.is_err() {
+        let mut aside = path.as_os_str().to_os_string();
+        aside.push(".damaged");
+        let _ = std::fs::rename(path, aside);
+    }
+    ui.ok()
+}
+
+/// Write the preferences so that a crash leaves the old file or the whole new one, readable by
+/// its owner only.
+fn write_prefs(path: &std::path::Path, ui: &UiState) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    mailcraft_engine::store::write_atomic(path, &serde_json::to_vec_pretty(ui).map_err(std::io::Error::other)?)
 }
 
 /// The saved window geometry, read before the window opens (`load_prefs` runs after).
@@ -175,8 +195,7 @@ fn saved_window() -> Option<WindowGeometry> {
     if !prefs_enabled() {
         return None;
     }
-    let bytes = std::fs::read(prefs_path()?).ok()?;
-    serde_json::from_slice::<UiState>(&bytes).ok()?.window?.sanitized()
+    read_prefs(&prefs_path()?)?.window?.sanitized()
 }
 
 fn save_prefs(app: &MailApp) {
@@ -184,12 +203,7 @@ fn save_prefs(app: &MailApp) {
         return;
     }
     if let Some(p) = prefs_path() {
-        if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(bytes) = serde_json::to_vec_pretty(&app.prefs()) {
-            let _ = std::fs::write(&p, bytes);
-        }
+        let _ = write_prefs(&p, &app.prefs());
     }
 }
 
@@ -1055,4 +1069,28 @@ fn main() -> eframe::Result {
             )))
         }),
     )
+}
+
+#[cfg(test)]
+mod prefs_tests {
+    use super::*;
+
+    #[test]
+    fn prefs_written_whole_and_a_damaged_file_kept_aside() {
+        let dir = std::env::temp_dir().join(format!("mailcraft-prefs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("ui.json");
+        let ui = UiState::default();
+        write_prefs(&path, &ui).unwrap();
+        let back = read_prefs(&path).unwrap();
+        assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&ui).unwrap());
+        // Nothing left beside it but the file itself.
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+
+        std::fs::write(&path, b"{\"theme\": ").unwrap();
+        assert!(read_prefs(&path).is_none());
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(dir.join("ui.json.damaged")).unwrap(), b"{\"theme\": ");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
