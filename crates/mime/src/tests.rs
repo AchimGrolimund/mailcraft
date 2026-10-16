@@ -470,6 +470,7 @@ fn message() -> impl Strategy<Value = Message> {
             moving_out: None,
             incomplete: false,
             server_draft: None,
+            held: String::new(),
         },
     )
 }

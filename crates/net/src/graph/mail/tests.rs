@@ -20,6 +20,7 @@ fn request(changes: Vec<FolderChange>) -> GraphMailRequest {
         background: false,
         links: Vec::new(),
         drafts: Vec::new(),
+        sends: Vec::new(),
         messages: Vec::new(),
     }
 }

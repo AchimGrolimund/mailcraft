@@ -597,6 +597,19 @@ fn is_address(email: &str) -> bool {
 
 /// [`send`] through Graph at `base`.
 fn send_at(base: &str, token: &str, message: &Message, options: &SendOptions) -> Result<(), NetError> {
+    let body = mime_body_with(message, options)?;
+    let graph = Graph::at(base, token)?;
+    let reply = graph.ask(&graph.url(SEND_MAIL), "POST", &[("Content-Type", "text/plain")], Some(&body), SEND_TIMEOUT, http::MAX_BODY)?;
+    if reply.status == 202 { Ok(()) } else { Err(graph.refusal(Doing::Sending, &reply, &body)) }
+}
+
+/// What `sendMail` is handed for `message`: its MIME, with its Bcc, in base64, after the checks
+/// every message goes through (someone to send it to, every address one).
+fn mime_body(message: &Message) -> Result<String, NetError> {
+    mime_body_with(message, &SendOptions::default())
+}
+
+fn mime_body_with(message: &Message, options: &SendOptions) -> Result<String, NetError> {
     // Leaving someone out silently would be worse than not sending.
     let mut anyone = false;
     for address in message.recipients() {
@@ -613,7 +626,6 @@ fn send_at(base: &str, token: &str, message: &Message, options: &SendOptions) ->
     if !anyone {
         return Err(NetError::Config("the message has no recipients".into()));
     }
-    let graph = Graph::at(base, token)?;
     // A message that was never dated is dated now, as it is for SMTP.
     let message = if message.date == 0 { Cow::Owned(Message { date: mailcraft_time::now(), ..message.clone() }) } else { Cow::Borrowed(message) };
     let offset_minutes = options.offset_minutes.unwrap_or_else(|| mailcraft_time::local_offset_minutes(message.date));
@@ -622,10 +634,7 @@ fn send_at(base: &str, token: &str, message: &Message, options: &SendOptions) ->
     if mime.len() > MAX_MESSAGE {
         return Err(NetError::Config("the message is too large to send through Microsoft Graph".into()));
     }
-    let body = STANDARD.encode(&mime);
-    drop(mime);
-    let reply = graph.ask(&graph.url(SEND_MAIL), "POST", &[("Content-Type", "text/plain")], Some(&body), SEND_TIMEOUT, http::MAX_BODY)?;
-    if reply.status == 202 { Ok(()) } else { Err(graph.refusal(Doing::Sending, &reply, &body)) }
+    Ok(STANDARD.encode(&mime))
 }
 
 /// [`events`] from Graph at `base`.

@@ -100,7 +100,7 @@ fn piece(id: &str) -> Option<String> {
     id_of(id).map(|id| http::encode(&id))
 }
 
-fn one(graph: &Graph<'_>, d: &DraftUp, done: &mut DraftDone) -> Result<(), NetError> {
+pub(super) fn one(graph: &Graph<'_>, d: &DraftUp, done: &mut DraftDone) -> Result<(), NetError> {
     if !marker_ok(&d.marker) {
         done.refused = Some(400);
         return Ok(());

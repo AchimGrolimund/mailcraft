@@ -181,6 +181,10 @@ pub struct Message {
     /// of it, and whether it waits to go up (R3.4.1). `None` for every other message.
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "crate::sync::lenient")]
     pub server_draft: Option<crate::sync::ServerDraft>,
+    /// For a message of a Microsoft account's Outbox that is **held** (R3.4.2): what happened and
+    /// what to check. It isn't sent again until the owner says so. Empty for every other message.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub held: String,
 }
 
 fn is_false(b: &bool) -> bool {

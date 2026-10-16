@@ -277,3 +277,43 @@ pub struct DraftDone {
     #[serde(skip_serializing_if = "is_false")]
     pub conflict: bool,
 }
+
+/// Most messages one Graph run sends; more go with the next.
+pub const MAX_SENDS: usize = 100;
+
+/// A message of the Outbox to send (R3.4.2, S27): as the draft the server has (brought up to date
+/// first) when it was saved as one, else with `sendMail` as MIME.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SendUp {
+    pub message: Id,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub draft: Option<DraftUp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime: Option<Box<Message>>,
+}
+
+/// What became of a message sent.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SendOutcome {
+    /// Not tried, or not taken (the server busy, the draft not whole there yet): next run.
+    #[default]
+    Waits,
+    /// It went: the server files it in Sent Items.
+    Sent,
+    /// **Held** (S28): `lost` when it isn't known whether it went (the answer was lost); else the
+    /// server refused it, and `why` says so in plain words. Not sent again by itself.
+    #[serde(rename_all = "camelCase")]
+    Held { lost: bool, why: String },
+}
+
+/// A message sent and what became of it, with what became of its draft on the way.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SendDone {
+    pub message: Id,
+    pub outcome: SendOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub draft: Option<DraftDone>,
+}

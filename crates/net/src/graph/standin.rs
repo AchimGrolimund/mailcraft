@@ -68,10 +68,12 @@
 mod changes;
 mod drafts;
 mod messages;
+mod send;
 
 pub use changes::Fault;
 pub use drafts::Attached;
 pub use messages::{Mail, Message};
+pub use send::Sent;
 
 use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -326,6 +328,8 @@ pub struct State {
     /// Requests to carry out and then lose the answer to, one each: a method and an address,
     /// `*` for any one piece of it (`POST /v1.0/me/messages`, `PUT /upload/*`).
     pub lose_next: Vec<String>,
+    /// What it sent, in order ([`send`]).
+    pub sent: Vec<Sent>,
     /// The `Location` header of the answer being made, when it has one.
     location: Option<String>,
     /// The answer being made when it isn't JSON: its type and its body.
@@ -1747,6 +1751,8 @@ impl State {
                 self.page(asked, vec![group])
             }
             ["messages"] if method == "POST" => self.create_message(asked),
+            ["sendMail"] if method == "POST" => self.send_mail(asked),
+            ["messages", id, "send"] if method == "POST" => self.send_draft(asked, id),
             ["messages", id, "$value"] if method == "GET" => self.message_value(id),
             ["messages", id, action @ ("createReply" | "createReplyAll" | "createForward")] if method == "POST" => {
                 self.create_answer(asked, id, action)

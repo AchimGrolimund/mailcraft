@@ -297,7 +297,8 @@ const SAFE: &[&str] = &[
     "ui.findInvitation",
 ];
 
-const SEND: &[&str] = &["compose.send", "calendar.propose", "calendar.forward", "ui.downloadPictures", "ui.retryPictures", "ui.joinMeeting"];
+const SEND: &[&str] =
+    &["compose.send", "mail.sendAgain", "calendar.propose", "calendar.forward", "ui.downloadPictures", "ui.retryPictures", "ui.joinMeeting"];
 
 const DELETE: &[&str] = &[
     "mail.deletePermanently",

@@ -72,6 +72,7 @@ pub fn graph_mail_request(s: &Session, account: Id) -> Result<GraphMailRequest, 
         background: false,
         messages: graph_up::message_changes(s, account, MAX_MESSAGE_CHANGES).0,
         drafts: super::graph_drafts::draft_changes(s, account, MAX_DRAFTS).0,
+        sends: super::graph_send::sends(&s.mailbox, account),
     })
 }
 
@@ -269,6 +270,13 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
         if super::graph_drafts::draft_done(&mut s.mailbox, account, done, &mut refused) {
             taken.updated += 1;
             // A draft's server id is new or gone: where each message is, is looked at afresh.
+            s.graph_index = Default::default();
+        }
+    }
+    // What was sent (R3.4.2): gone from the Outbox, or held there with what happened.
+    for done in &result.sent {
+        if super::graph_send::send_done(&mut s.mailbox, account, done, &mut refused) {
+            taken.updated += 1;
             s.graph_index = Default::default();
         }
     }

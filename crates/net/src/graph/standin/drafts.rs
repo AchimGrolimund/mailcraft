@@ -241,6 +241,12 @@ impl State {
 
     /// A new draft in Drafts, as the owner's: its id.
     fn new_draft(&mut self, how: impl FnOnce(&mut Message)) -> String {
+        let m = self.draft_of(how);
+        self.mailbox.put(m)
+    }
+
+    /// A draft in Drafts, as the owner's, not yet the stand-in's.
+    fn draft_of(&mut self, how: impl FnOnce(&mut Message)) -> Message {
         let drafts = self.well_known("drafts");
         let internet_id = self.new_internet_id();
         let mut m = Message {
@@ -255,18 +261,27 @@ impl State {
             ..Default::default()
         };
         how(&mut m);
-        self.mailbox.put(m)
+        m
     }
 
     /// `POST /me/messages`: a draft from JSON or from MIME.
     pub(super) fn create_message(&mut self, asked: &Asked) -> Result<Answer, Refusal> {
         let look = State::look_of(asked, false)?;
         let mime = asked.header("content-type").to_ascii_lowercase().starts_with("text/plain");
-        let id = if mime { self.create_from_mime(asked)? } else { self.create_from_json(&asked.json())? };
+        let m = if mime {
+            let raw = STANDARD
+                .decode(asked.body.trim().as_bytes())
+                .map_err(|_| refuse(400, "ErrorMimeContentInvalidBase64String", "The MIME content is not valid base64."))?;
+            self.message_of_mime(&String::from_utf8_lossy(&raw))?
+        } else {
+            self.message_of_json(&asked.json())?
+        };
+        let id = self.mailbox.put(m);
         Ok((201, Some(self.message_json(&id, &look))))
     }
 
-    fn create_from_json(&mut self, body: &Value) -> Result<String, Refusal> {
+    /// A new draft as a message is written in JSON, not yet the stand-in's.
+    pub(super) fn message_of_json(&mut self, body: &Value) -> Result<Message, Refusal> {
         let map = body.as_object().ok_or_else(|| bad("A message is a JSON object."))?;
         let mut written = Written::default();
         let (mut importance, mut categories, mut extended, mut headers) = (None, None, Vec::new(), Vec::new());
@@ -291,7 +306,7 @@ impl State {
                 }
             }
         }
-        Ok(self.new_draft(|m| {
+        Ok(self.draft_of(|m| {
             written.apply(m);
             if let Some(importance) = importance {
                 m.importance = importance;
@@ -302,10 +317,9 @@ impl State {
         }))
     }
 
-    fn create_from_mime(&mut self, asked: &Asked) -> Result<String, Refusal> {
+    /// A new draft made of its MIME, not yet the stand-in's.
+    pub(super) fn message_of_mime(&mut self, text: &str) -> Result<Message, Refusal> {
         let wrong = || refuse(400, "ErrorMimeContentInvalidBase64String", "The MIME content is not valid base64.");
-        let raw = STANDARD.decode(asked.body.trim().as_bytes()).map_err(|_| wrong())?;
-        let text = String::from_utf8_lossy(&raw).into_owned();
         let (head, body) = text.split_once("\r\n\r\n").or_else(|| text.split_once("\n\n")).ok_or_else(wrong)?;
         let field = |name: &str| {
             head.lines().find_map(|line| {
@@ -322,7 +336,7 @@ impl State {
         let (subject, to, cc, bcc) = (field("Subject").unwrap_or_default(), list("To"), list("Cc"), list("Bcc"));
         let (in_reply_to, internet_id) = (field("In-Reply-To").unwrap_or_default(), field("Message-ID"));
         let body = body.trim_end().to_string();
-        Ok(self.new_draft(|m| {
+        Ok(self.draft_of(|m| {
             m.subject = subject;
             (m.to, m.cc, m.bcc) = (to, cc, bcc);
             m.preview = preview_of(&body, html);

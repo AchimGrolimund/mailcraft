@@ -39,7 +39,9 @@ pub fn message_changes(s: &Session, account: Id, limit: usize) -> (Vec<MessageCh
     };
     let today = s.zone().instant(DateTime::at_midnight(s.today()));
     let now = s.now();
-    for m in mb.messages.values().filter(|m| m.account == account) {
+    // What waits in the Outbox is sent, not moved (R3.4.2).
+    let outbox = mb.folder_of_kind(account, FolderKind::Outbox);
+    for m in mb.messages.values().filter(|m| m.account == account && Some(m.folder) != outbox) {
         let Some(server) = m.server.as_ref().filter(|server| !server.gone && !server.id.is_empty()) else { continue };
         if let Some(update) = update_of(m, server, today, now) {
             note(&|| update.clone());

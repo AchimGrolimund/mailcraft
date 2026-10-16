@@ -195,6 +195,17 @@ pub(crate) fn sync_folders_with(base: &str, token: &str, request: &GraphMailRequ
             return out;
         }
     }
+    // Then what waits in the Outbox (R3.4.2): never asked twice by itself.
+    if let Err(e) = send::sends(&graph, &request.sends, &mut out.sent) {
+        log::info!("graph sending: sending stopped; the rest waits for the next run");
+        if let NetError::Busy { retry_after, .. } = &e {
+            out.busy_for = Some(retry_after.unwrap_or(0).max(gate.paused_for().map_or(0, |left| u32::try_from(left.as_secs()).unwrap_or(u32::MAX))));
+        }
+        out.errors.push(format!("Couldn't send through Microsoft: {e}"));
+        if e.is_refused_sign_in() || matches!(e, NetError::Busy { .. }) {
+            return out;
+        }
+    }
     match listing(&graph, &known) {
         Ok(listing) => {
             log::debug!("graph folders: {} listed, complete: {}", listing.folders.len(), listing.complete);
@@ -493,6 +504,7 @@ fn child_named(graph: &Graph<'_>, known: &Known, parent: &str, name: &str) -> Re
 mod down;
 mod drafts;
 mod fetch;
+mod send;
 mod up;
 
 pub use fetch::fetch_messages;
