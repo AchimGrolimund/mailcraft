@@ -19,6 +19,11 @@ on:
         type: boolean
         required: false
         default: true
+      sign:
+        description: "Sign the Windows and macOS builds, in the protected `release` environment (pushed version tags only)"
+        type: boolean
+        required: false
+        default: false
     secrets:
       APPLE_CERTIFICATE:
         required: false
@@ -70,7 +75,16 @@ jobs:
           - { arch: x64, target: x86_64-pc-windows-msvc }
           - { arch: x86, target: i686-pc-windows-msvc }
           - { arch: arm64, target: aarch64-pc-windows-msvc }
+    # Signing runs in the protected `release` environment, which holds the signing secrets and
+    # accepts version tags only; an unsigned build names no environment and gets no secrets.
+    environment: ${{ inputs.sign && 'release' || '' }}
     steps:
+      - name: Signing only for a pushed version tag
+        if: inputs.sign && !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+        shell: bash
+        run: |
+          echo "::error::signing was asked for on $GITHUB_REF ($GITHUB_EVENT_NAME); only a pushed version tag is signed"
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -86,7 +100,12 @@ jobs:
         run: |
           dotnet tool install --global wix --version $env:WIX_VERSION
           wix extension add -g "WixToolset.UI.wixext/$env:WIX_VERSION" "WixToolset.Util.wixext/$env:WIX_VERSION"
+      - name: Build and package, unsigned (MSI and portable zip)
+        if: ${{ !inputs.sign }}
+        shell: pwsh
+        run: ./packaging/windows/package.ps1 -Arch ${{ matrix.arch }}
       - name: Build, sign and package (MSI and portable zip)
+        if: inputs.sign
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
@@ -127,7 +146,14 @@ jobs:
   macos:
     name: macOS universal
     runs-on: macos-latest
+    # As for Windows: signing secrets only in the `release` environment, for a version tag.
+    environment: ${{ inputs.sign && 'release' || '' }}
     steps:
+      - name: Signing only for a pushed version tag
+        if: inputs.sign && !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+        run: |
+          echo "::error::signing was asked for on $GITHUB_REF ($GITHUB_EVENT_NAME); only a pushed version tag is signed"
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -139,15 +165,21 @@ jobs:
         with:
           key: package-macos-universal
       # With the signing secrets set, the app is signed with the Developer ID and notarized;
-      # without them it is ad-hoc signed and the script says so.
+      # without them (an unsigned build, or none in the environment) it is ad-hoc signed and the
+      # script says so.
       - name: Import the signing certificate
+        if: inputs.sign
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
           if [ -n "${APPLE_CERTIFICATE:-}" ]; then bash packaging/macos/import-cert.sh; else echo "no signing certificate: ad-hoc signing"; fi
+      - name: Build and package, ad-hoc signed (.app in a .dmg, CLI zip)
+        if: ${{ !inputs.sign }}
+        run: bash packaging/macos/package.sh --arch universal
       - name: Build, sign and package (.app in a .dmg, CLI zip)
+        if: inputs.sign
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}

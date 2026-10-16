@@ -1,12 +1,16 @@
 name: Release
 
-# A pushed version tag vX.Y.Z builds every platform (package.yml) and publishes ONE GitHub
-# release, "MailCraft vX.Y.Z" on that tag, holding all the files plus SHA256SUMS.txt (`sha256sum`
-# format): the layout of the Craft apps' releases, so ArtCraft Launcher and anything else that
-# reads those releases finds MailCraft's files by the same names. See docs/releasing.md.
+# A pushed version tag vX.Y.Z builds and signs every platform (package.yml) and makes ONE draft
+# GitHub release, "MailCraft vX.Y.Z" on that tag, holding all the files plus SHA256SUMS.txt
+# (`sha256sum` format): the layout of the Craft apps' releases, so ArtCraft Launcher and anything
+# else that reads those releases finds MailCraft's files by the same names. A maintainer reviews
+# the draft and publishes it by hand. See docs/releasing.md.
 #
-# Run by hand (workflow_dispatch) it builds everything and keeps the files as workflow artifacts
-# without publishing: a dry run, on any branch.
+# The signing and publishing jobs run in the protected `release` environment, which holds the
+# signing secrets and is limited to version tags; only a pushed tag reaches them.
+#
+# Run by hand (workflow_dispatch) it builds everything unsigned and keeps the files as workflow
+# artifacts: a dry run, on any branch, that is given no secrets and publishes nothing.
 #
 # This workflow is self-contained on purpose. The Craft apps inside the storytold organisation
 # call a shared one (storytold/craft-common-actions) that needs that organisation's runners and
@@ -53,15 +57,29 @@ jobs:
           case "$VERSION" in *-*) pre=true ;; *) pre=false ;; esac
           { echo "version=$VERSION"; echo "prerelease=$pre"; } >>"$GITHUB_OUTPUT"
 
-  package:
-    name: Package
+  # A run by hand: unsigned, no secrets, nothing published.
+  dry-run:
+    name: Package (dry run, unsigned)
     needs: [version]
+    if: github.event_name == 'workflow_dispatch'
     # zizmor's self-repository audit wants GitHub's new `$/` form; kept as `./` until a release has
     # been cut with it, since this path runs on a tag alone.
     uses: ./.github/workflows/package.yml # zizmor: ignore[self-repository]
     with:
-      freebsd: ${{ github.ref_type == 'tag' || inputs.freebsd == true }}
-    # Only the signing secrets package.yml declares, by name.
+      freebsd: ${{ inputs.freebsd == true }}
+      sign: false
+
+  # A pushed version tag: signed, in the `release` environment (package.yml's signing jobs).
+  package:
+    name: Package
+    needs: [version]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/package.yml # zizmor: ignore[self-repository]
+    with:
+      freebsd: true
+      sign: true
+    # Only the signing secrets package.yml declares, by name. They live in the `release`
+    # environment; the jobs that sign name that environment, and only there do they have values.
     secrets:
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -79,11 +97,12 @@ jobs:
       AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}
 
   publish:
-    name: Publish the release
+    name: Make the draft release
     needs: [version, package]
-    # Tags only; a run by hand stops at the artifacts.
-    if: "!cancelled() && needs.package.result == 'success' && github.ref_type == 'tag'"
+    # Pushed tags only; a run by hand stops at the artifacts.
+    if: "!cancelled() && needs.package.result == 'success' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
     runs-on: ubuntu-24.04
+    environment: release
     permissions:
       contents: write
       # Build provenance: a signed attestation of which workflow run, at which commit, made
@@ -108,7 +127,9 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: artifacts/*
-      - name: Create the release, or replace the files of the one a re-run made
+      # Always a draft: a maintainer checks it and publishes it by hand. A re-run replaces the files
+      # of the draft; a release that is already published is never changed here.
+      - name: Create the draft release, or replace the files of the draft a re-run made
         working-directory: artifacts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -123,16 +144,20 @@ jobs:
           # The notes name the repository they are published in (a fork's point at the fork).
           sed "s|GITHUB_REPOSITORY|$GITHUB_REPOSITORY|g" "$GITHUB_WORKSPACE/packaging/release-notes.md" >"$RUNNER_TEMP/notes.md"
           if gh release view "$tag" >/dev/null 2>&1; then
+            if [ "$(gh release view "$tag" --json isDraft --jq .isDraft)" != "true" ]; then
+              echo "::error::release $tag is already published; the workflow only makes and refreshes drafts"
+              exit 1
+            fi
             gh release view "$tag" --json assets --jq '.assets[].name' | while read -r asset; do
               gh release delete-asset "$tag" "$asset" --yes
             done
             gh release upload "$tag" --clobber -- *
           else
-            gh release create "$tag" --title "$title" --target "$GITHUB_SHA" \
+            gh release create "$tag" --draft --title "$title" --target "$GITHUB_SHA" \
               --notes-file "$RUNNER_TEMP/notes.md" "${pre[@]}" -- *
           fi
           {
-            echo "Release **$title** at \`${GITHUB_SHA::9}\`:"
+            echo "Draft release **$title** at \`${GITHUB_SHA::9}\`: check it, then publish it by hand."
             echo
             sed 's/^/    /' SHA256SUMS.txt
           } >>"$GITHUB_STEP_SUMMARY"
