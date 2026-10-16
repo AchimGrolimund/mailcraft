@@ -565,13 +565,18 @@ fn nothing_is_moved_or_copied_into_a_microsoft_account_from_elsewhere() {
     rig.run();
     let local = rig.s.mailbox.add_account(mailcraft_model::Account { name: "On this computer".into(), ..Default::default() });
     let kept = rig.s.mailbox.add_folder(local, None, "Kept").unwrap();
-    let m = rig.s.mailbox.add_message(mailcraft_model::Message { folder: kept, subject: "Local".into(), ..Default::default() }).unwrap();
+    let m = rig.s.mailbox.add_message(mailcraft_model::Message { folder: kept, subject: "Local".into(), draft: true, ..Default::default() }).unwrap();
+    let received = rig.s.mailbox.add_message(mailcraft_model::Message { folder: kept, subject: "Received".into(), ..Default::default() }).unwrap();
     let inbox = rig.folder(FolderKind::Inbox);
     for command in ["mail.move", "mail.copy"] {
         let refused = rig.s.run(command, &json!({"ids": [m], "folder": inbox})).unwrap_err().to_string();
         assert!(refused.contains("can't put a message on Microsoft's server"), "{refused}");
+        // Received mail in a local folder never goes into a Microsoft account (R3.6).
+        let refused = rig.s.run(command, &json!({"ids": [received], "folder": inbox})).unwrap_err().to_string();
+        assert_eq!(refused, mailcraft_model::STAYS_LOCAL);
     }
     assert_eq!(rig.s.mailbox.message(m).unwrap().folder, kept);
+    assert_eq!(rig.s.mailbox.message(received).unwrap().folder, kept);
 }
 
 /// Graph's delete past the recoverable items is used nowhere (R3 spec S19). The name is spelled in

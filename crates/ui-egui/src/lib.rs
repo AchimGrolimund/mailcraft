@@ -970,6 +970,8 @@ impl MailApp {
             self.ran = (self.ran.0.wrapping_add(1), id.to_string(), r.clone());
         }
         match &r {
+            // (The engine's refusal of received mail for a Microsoft account, in the interface's language.)
+            Err(e) if e == mailcraft_model::STAYS_LOCAL => self.status(tl!(mailcraft_model::STAYS_LOCAL)),
             Err(e) => self.status(e.clone()),
             Ok(v) => {
                 if let Some(msg) = feedback(id, v).or_else(|| self.stays_here_note(id, v)) {
@@ -2465,7 +2467,15 @@ fn feedback(id: &str, v: &Value) -> Option<String> {
                     parts.push(plural(c, tl!(one), tl!(many)));
                 }
             }
-            (!parts.is_empty()).then(|| i18n::fmt(tl!("Imported {what}"), &[("what", &parts.join(", "))]))
+            let what = parts.join(", ");
+            // Mail meant for a Microsoft account went to a local folder (R3 spec S30).
+            if v.get("local").and_then(Value::as_bool) == Some(true) {
+                return Some(i18n::fmt(
+                    tl!("Imported {what} into a local folder: Microsoft doesn't let a mail program put received mail into your mailbox"),
+                    &[("what", &what)],
+                ));
+            }
+            (!parts.is_empty()).then(|| i18n::fmt(tl!("Imported {what}"), &[("what", &what)]))
         }
         "people.fromMessage" if v.get("existing").and_then(Value::as_bool) == Some(true) => Some(tl!("Already in your contacts").to_string()),
         "folder.empty" => n("removed").map(|c| plural(c, tl!("message removed"), tl!("messages removed"))),
