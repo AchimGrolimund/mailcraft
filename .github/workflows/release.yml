@@ -86,6 +86,10 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      # Build provenance: a signed attestation of which workflow run, at which commit, made
+      # each file (`gh attestation verify <file> -R <owner>/<repo>`).
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -100,6 +104,10 @@ jobs:
         run: |
           rm -f SHA256SUMS.txt
           sha256sum -- * | tee SHA256SUMS.txt
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: artifacts/*
       - name: Create the release, or replace the files of the one a re-run made
         working-directory: artifacts
         env:

@@ -1,6 +1,6 @@
 # Releasing MailCraft
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-15 · **Change:** minor (Linux packages: the Secret Service for remembered sign-ins) · **Status:** the Windows x64 and Linux x86_64 packages build and install from this tree; the GitHub workflow, signing, and the other platforms **have not run for MailCraft yet** (gap #18).
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-16 · **Change:** minor (pinned build tools, build provenance) · **Status:** the Windows x64 and Linux x86_64 packages build and install from this tree; the GitHub workflow, signing, and the other platforms **have not run for MailCraft yet** (gap #18).
 
 The canonical recipe is [craftrules `release/playbook.md`](https://github.com/storytold/craftrules/blob/main/release/playbook.md);
 this file has the MailCraft specifics. The scripts in `packaging/` are WordCraft's with MailCraft's
@@ -38,6 +38,20 @@ WordCraft does.
 Signing secrets (`APPLE_*`, `WINDOWS_CERTIFICATE*` or `AZURE_*`) are repository secrets; without
 them the builds are unsigned (ad-hoc on macOS) and the scripts say so, so forks still build. The
 riscv64 Linux build is not made here yet.
+
+Every file of a release also gets a build provenance attestation (`actions/attest-build-provenance`):
+a signed statement, kept by GitHub outside the release, of the workflow run and commit that made
+it. Check a download with `gh attestation verify <file> -R UCS-Care-Group/mailcraft`.
+
+What the build fetches is pinned: every action by full commit SHA (Dependabot moves them, a week
+after their release), the shared workflows of `storytold/craft-common-actions` by full commit SHA
+(moved by hand), and every tool downloaded by URL by exact version and
+sha256, checked before it is used: nfpm (`package.yml`), appimagetool and the AppImage runtime
+(`packaging/linux/package.sh`), the Trusted Signing client (`packaging/windows/sign.ps1`),
+rustup-init on FreeBSD and wasm-opt (`package.yml`). trunk and wasm-bindgen come pinned through
+`taiki-e/install-action`, and trunk runs offline so it downloads nothing itself; the
+wasm-bindgen version in `package.yml` follows the one in `Cargo.lock`. To move a tool, change
+its version and its sha256 together, taken from the file itself.
 
 Dry run: `gh workflow run release.yml --ref <branch>` builds everything on any branch and keeps
 the files as workflow artifacts without publishing anything (FreeBSD only when asked for: it is
@@ -121,6 +135,7 @@ and in the Flatpak (which is granted `org.freedesktop.secrets` for it).
 
 | Date | Change |
 |---|---|
+| 2026-10-16 | Pinned build tools (version and sha256) and build provenance for every release file |
 | 2026-10-15 | Linux packages: the Secret Service for remembered sign-ins (the Flatpak may talk to `org.freedesktop.secrets`; the .deb and .rpm suggest a keyring); what is still to be checked |
 | 2026-10-12 | First local builds of the Windows and Linux packages; installer identity, file types and `mailto:`, one window per mailbox, X11 dependency; what is and is not checked |
 | 2026-10-12 | A release workflow of MailCraft's own (tag-triggered, standard runners), FreeBSD script, release notes; what ArtCraft Launcher needs |
