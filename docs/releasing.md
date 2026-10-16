@@ -1,6 +1,6 @@
 # Releasing MailCraft
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-16 · **Change:** minor (pinned build tools, build provenance) · **Status:** the Windows x64 and Linux x86_64 packages build and install from this tree; the GitHub workflow, signing, and the other platforms **have not run for MailCraft yet** (gap #18).
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-16 · **Change:** minor (pinned build tools, build provenance; signing in the protected `release` environment; draft releases) · **Status:** the Windows x64 and Linux x86_64 packages build and install from this tree; the GitHub workflow, signing, and the other platforms **have not run for MailCraft yet** (gap #18).
 
 The canonical recipe is [craftrules `release/playbook.md`](https://github.com/storytold/craftrules/blob/main/release/playbook.md);
 this file has the MailCraft specifics. The scripts in `packaging/` are WordCraft's with MailCraft's
@@ -30,14 +30,21 @@ WordCraft does.
 | FreeBSD | x86_64 `.tar.gz` | checksums |
 | Web | `mailcraft-web-<version>.zip` (static site: `index.html`, wasm, glue) | none |
 
-3. The run publishes ONE GitHub release, `MailCraft v<version>` on that tag, with every file and a
-   `SHA256SUMS.txt` (`sha256sum` format; `packaging/release-notes.md` is its text). Running the
-   same tag again replaces the files of that release. A version with a suffix (`0.2.0-rc.1`) is
-   published as a pre-release.
+3. The run makes ONE **draft** GitHub release, `MailCraft v<version>` on that tag, with every file
+   and a `SHA256SUMS.txt` (`sha256sum` format; `packaging/release-notes.md` is its text). Running
+   the same tag again replaces the files of that draft; a release that is already published is
+   never changed by the workflow (the run fails instead). A version with a suffix
+   (`0.2.0-rc.1`) is marked as a pre-release.
+4. A maintainer checks the draft (files, names, checksums, notes) and publishes it by hand:
+   Releases › the draft › Edit › Publish release, or `gh release edit v0.2.0 --draft=false`.
+   Nothing is public until then.
 
-Signing secrets (`APPLE_*`, `WINDOWS_CERTIFICATE*` or `AZURE_*`) are repository secrets; without
-them the builds are unsigned (ad-hoc on macOS) and the scripts say so, so forks still build. The
-riscv64 Linux build is not made here yet.
+Signing secrets (`APPLE_*`, `WINDOWS_CERTIFICATE*` and `AZURE_*`) are secrets of the `release`
+environment, not of the repository. That environment accepts version tags (`v*`) only and waits
+for a maintainer's approval; the Windows and macOS jobs that sign, and the job that makes the
+draft, run in it, and only for a pushed version tag. Without the secrets the builds are unsigned
+(ad-hoc on macOS) and the scripts say so, so forks still build. The riscv64 Linux build is not
+made here yet.
 
 Every file of a release also gets a build provenance attestation (`actions/attest-build-provenance`):
 a signed statement, kept by GitHub outside the release, of the workflow run and commit that made
@@ -53,9 +60,9 @@ rustup-init on FreeBSD and wasm-opt (`package.yml`). trunk and wasm-bindgen come
 wasm-bindgen version in `package.yml` follows the one in `Cargo.lock`. To move a tool, change
 its version and its sha256 together, taken from the file itself.
 
-Dry run: `gh workflow run release.yml --ref <branch>` builds everything on any branch and keeps
-the files as workflow artifacts without publishing anything (FreeBSD only when asked for: it is
-slow).
+Dry run: `gh workflow run release.yml --ref <branch>` builds everything on any branch, unsigned,
+and keeps the files as workflow artifacts (FreeBSD only when asked for: it is slow). A dry run
+names no environment, is given no secrets and publishes nothing.
 
 ## ArtCraft Launcher
 
@@ -135,6 +142,7 @@ and in the Flatpak (which is granted `org.freedesktop.secrets` for it).
 
 | Date | Change |
 |---|---|
+| 2026-10-16 | Signing secrets in the protected `release` environment, used only for a pushed version tag; dry runs unsigned with no secrets; the workflow makes a draft that a maintainer publishes |
 | 2026-10-16 | Pinned build tools (version and sha256) and build provenance for every release file |
 | 2026-10-15 | Linux packages: the Secret Service for remembered sign-ins (the Flatpak may talk to `org.freedesktop.secrets`; the .deb and .rpm suggest a keyring); what is still to be checked |
 | 2026-10-12 | First local builds of the Windows and Linux packages; installer identity, file types and `mailto:`, one window per mailbox, X11 dependency; what is and is not checked |
