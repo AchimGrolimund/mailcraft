@@ -2351,6 +2351,12 @@ mod tests {
         lookups(&mut a, Some(Ok(vec![MICROSOFT_MX])));
         sign_ins(&mut a, Some(Ok(signed_in_as("admin@example.org"))));
         let synced = syncs(&mut a);
+        let jobs: Log<Option<mailcraft_model::sync::GraphMailRequest>> = Default::default();
+        let log = jobs.clone();
+        a.services.graph = Some(Box::new(move |req: crate::GraphRequest| {
+            log.lock().unwrap().push(req.mail.clone());
+            mpsc::channel().1
+        }));
         let mut h = open(a, json!({"displayName": "Noor Haddad"}));
         connect(&mut h, "noor@example.org");
         h.run_steps(4);
@@ -2369,7 +2375,9 @@ mod tests {
         assert_eq!((account.display_name.as_str(), account.username.as_str()), ("Ada Admin", "admin@example.org"));
         assert!(!h.state().session.mailbox.accounts.iter().any(|a| a.email == "noor@example.org"));
         assert_eq!(h.state().tokens.get(&account.id).map(|t| t.access.as_str()), Some("tok-1"));
-        assert_eq!(synced.lock().unwrap().len(), 1);
+        // Its first run is through Graph (R3): nothing by IMAP.
+        assert!(synced.lock().unwrap().is_empty());
+        assert_eq!(jobs.lock().unwrap().iter().filter_map(|mail| mail.as_ref().map(|m| m.account)).collect::<Vec<_>>(), [account.id]);
     }
 
     /// (#103) A sign-in that doesn't say who signed in is taken as the address typed, as before.
