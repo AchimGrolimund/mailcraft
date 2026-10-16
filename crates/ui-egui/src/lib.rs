@@ -1425,7 +1425,10 @@ impl MailApp {
             // one the host renews it or the owner signs in, and this runs again after.
             let kept = self.tokens.get(&account).map(|t| t.refresh.clone()).filter(|r| !r.is_empty());
             let refresh = kept.or_else(|| self.remembered("refresh", &address)).unwrap_or_default();
-            match self.tokens.get(&account).filter(|t| t.fresh(mailcraft_time::now())).map(|t| t.access.clone()) {
+            // Good for the whole run: Microsoft ends an IMAP session the moment its token runs
+            // out, folders still to go. ponytail: ten minutes covers a run; a longer first
+            // download still meets the end, and the next run renews.
+            match self.tokens.get(&account).filter(|t| t.fresh(mailcraft_time::now() + 600)).map(|t| t.access.clone()) {
                 Some(access) => request.access_token = access,
                 None => {
                     self.begin_sign_in(account, oauth, &address, refresh, quiet, false)?;
@@ -1993,7 +1996,8 @@ impl MailApp {
             let downloading = !piece.folders.is_empty();
             let refused = piece.errors.iter().any(|e| {
                 let e = e.to_lowercase();
-                e.contains("sign-in") || e.contains("sign in")
+                // Microsoft's word for a token that ran out during the run.
+                e.contains("sign-in") || e.contains("sign in") || e.contains("accesstokenexpired")
             });
             self.sync_refused |= refused;
             self.note_sync_problems(account, &piece.errors, false);
