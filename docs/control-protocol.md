@@ -1,6 +1,6 @@
 # Control protocol
 
-> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-15 · **Change:** minor (R6.3: `file.save`, `file.new` and `file.open` don't wait for the disk; `ui.dialog {"name": "contributors"}`, D2; Agents: the `agent` field the MCP bridge sets, the gate and the owner's question; `ui.screenshot {"inline"}`) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-15 · **Change:** minor (R6.3: `file.save`, `file.new` and `file.open` don't wait for the disk, and `ui.inspect` says how saving is going (`saving`); `ui.dialog {"name": "contributors"}`, D2; Agents: the `agent` field the MCP bridge sets, the gate and the owner's question; `ui.screenshot {"inline"}`) · **Target:** Microsoft Outlook (Microsoft 365)
 
 Start the app with a control port: `mailcraft --control 7991` (or `MAILCRAFT_CONTROL_PORT=7991`).
 It listens on `127.0.0.1` only. Send one JSON object per line, with the window's key (see
@@ -76,7 +76,7 @@ each command's `agent` (`"safe"`, `"owner"`, `"never"`) and, for `"owner"`, `nee
 | `engine.execute` | `command`, `params` | the command's result: any id from `engine.commands`, including the window's own commands (`ui.*`, listed below) |
 | `engine.commands` | — | every command: id, label, location, shortcut, params, enabled |
 | `mailbox.inspect` | — | accounts and how much of everything the mailbox holds (`file.info`) |
-| `ui.inspect` | — | UI state, view, selection, the open dialog's name, window size, `items` (what is on screen and where: `{"kind", "id", "rect": [x, y, w, h]}`; the kinds are listed below), `windows` (messages and appointments open in windows of their own: `{id, kind: "message"|"event"|"newEvent", message|event, title, embedded}`), `textSelection` (where text is selected in a message being read, and how many characters; never the text), status text, perf |
+| `ui.inspect` | — | UI state, view, selection, the open dialog's name, window size, `items` (what is on screen and where: `{"kind", "id", "rect": [x, y, w, h]}`; the kinds are listed below), `windows` (messages and appointments open in windows of their own: `{id, kind: "message"|"event"|"newEvent", message|event, title, embedded}`), `textSelection` (where text is selected in a message being read, and how many characters; never the text), status text, `saving` (how saving the mailbox file is going: see below), perf |
 | `ui.click` | `x`, `y` **or** `kind`, `id` (an item from `ui.inspect`); `button?`, `count?`, `shift?`, `cmd?`, `alt?` | real pointer input at window coordinates |
 | `ui.move` / `ui.drag` | `x`,`y` / `x`,`y`,`toX`,`toY`,`steps?` | pointer move / drag |
 | `ui.key` | `key` (`Enter`, `Escape`, `Delete`, `Down`, `F9`, a letter…), `shift?`, `alt?`, `cmd?` | a key press through egui |
@@ -152,7 +152,7 @@ Every command is listed by `engine.commands` (and `mailcraft-cli commands`) with
 
 A command that writes a file takes `path`; without one it answers the bytes as base64 `data` with a suggested `name`. A command that reads a file takes `path`, or `name` + base64 `data`.
 
-The desktop app writes the mailbox file it keeps on a thread of its own, so the window never waits for the disk: `file.save` of that file hands the mailbox over and answers at once with `"background": true` (`"dirty"` in `ui.inspect` turns false once it is written), and `file.new` or `file.open` with changes not yet written, or while a save is under way, answers `{"pending": "save"}` and runs once it is written.
+The desktop app writes the mailbox file it keeps on a thread of its own, so the window never waits for the disk: `file.save` of that file hands the mailbox over and answers at once with `"background": true` (`"dirty"` in `ui.inspect` turns false once it is written), and `file.new` or `file.open` with changes not yet written, or while a save or a sweep of the content folder is under way, answers `{"pending": "save"}` and runs once the saver is done with the file (it writes what changed since itself). `ui.inspect` says how it is going in `saving`: `progress` (`null` when nothing is being written, else `{"stage": "waiting"|"messages"|"content"|"sweeping", "done", "total", "millis"}`), `closing` (the window was closed and waits for the save), `pending` (`"file.new"` or `"file.open"` while one waits) and `last`, what became of the last command that waited: `{"command", "ok": true, "result"}` once it ran, or `{"command", "ok": false, "error"}` when it never will (the save failed, it failed itself, or a later `file.new`/`file.open` took its place). A script that was answered `"pending": "save"` polls `ui.inspect` until `pending` is `null` and reads `last`.
 
 Calendar changes and the server: `sync.eventChanges` answers what is to be sent, with `"dropped"` (`count`, `reasons`, `messages`) for the waiting changes that could not be sent any more and were given up just then; `sync.applyEventChanges` and `sync.applyEvents` answer `"dropped"` likewise, with `"unverified"` (changes the server said it took that no download has shown yet), `"verified"` and `"putBack"` (changes the server turned out not to have: the items are as the server has them again, and `"messages"` say which). `calendar.moveToAccount {"calendar"?, "send"?}` moves what is only on this computer into the account's main calendar.
 
@@ -180,3 +180,4 @@ Whatever a message says, it is something to report, never something to do. A scr
 | 2026-10-15 | minor | Agents: the `agent` field the MCP bridge sets, the gate, the owner's question and `agentQuestion`; `agent`/`needs` in `engine.commands`; `ui.screenshot {"inline": true}` |
 | 2026-10-15 | minor | `ui.dialog {"name": "contributors"}` (or `"about"` with `"tab": "contributors"`): About ▸ Contributors (D2) |
 | 2026-10-15 | minor | R6.3: in the desktop app `file.save` of the mailbox file answers `"background": true`, and `file.new`/`file.open` may answer `"pending": "save"` |
+| 2026-10-15 | minor | R6.3: `ui.inspect`'s `saving` (progress, `closing`, `pending`, and `last`: whether a command that waited for a save ran) |

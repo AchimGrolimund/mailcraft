@@ -220,16 +220,108 @@ fn a_long_save_shows_how_far_it_has_got_and_closing_waits_for_it_with_the_window
     assert!(app.close_requested());
     app.save_on_exit().unwrap();
 
-    // Closed again while it waits: it closes now, and quitting waits a while at most for what
-    // is left (here the saver never answers: the error says so, and the window wrote nothing).
+    // Quitting another way meanwhile (the window isn't asked) waits a while at most for what is
+    // left (here the saver never answers: the error says so, and the window wrote nothing).
     let mut app = self::app(&path, Box::new(Handle(script.clone())));
     let id = unread(&app);
     app.execute("mail.markRead", json!({"id": id})).unwrap();
-    assert!(!app.close_requested());
-    assert!(app.close_requested());
     let error = app.save_on_exit().unwrap_err();
     assert!(error.contains("still being written"), "{error}");
     assert!(!path.exists() && app.session.dirty);
+}
+
+#[test]
+fn closing_again_while_it_waits_keeps_waiting_and_never_leaves_the_last_changes_behind() {
+    // Review of R6.3: a second Close used to close at once, and quitting gave up on the save
+    // after two minutes, without the last changes. It goes on waiting now, saying so.
+    let tmp = Temp::new("twice");
+    let path = tmp.0.join("mailbox.mailcraft");
+    let ctx = egui::Context::default();
+    let script = Arc::new(Scripted::default());
+    let mut app = app(&path, Box::new(Handle(script.clone())));
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    let rev = app.session.rev();
+    assert!(!app.close_requested());
+    *script.progress.lock().unwrap() = Some(SaveProgress { stage: SaveStage::Messages, done: 10, total: 200_000, millis: 30_000 });
+    for _ in 0..3 {
+        assert!(!app.close_requested());
+        app.logic(&ctx);
+        assert!(!app.quit_requested);
+    }
+    assert!(app.saving_text().unwrap().ends_with("MailCraft closes when it is done"));
+    assert_eq!(app.saving_inspect()["closing"], json!(true));
+    // Written: it closes, and the close request that follows goes through.
+    *script.progress.lock().unwrap() = None;
+    script.answers.lock().unwrap().push(SaveReport { path: path.clone(), rev, result: Ok(()) });
+    app.logic(&ctx);
+    assert!(app.quit_requested && app.close_requested());
+    app.save_on_exit().unwrap();
+}
+
+#[test]
+fn closing_during_a_download_closes_once_what_it_was_closed_with_is_written() {
+    // Review of R6.3: closing waited for the mailbox as it is *now*, and a download changes it
+    // every page: the window never closed. It waits for the state it was closed with.
+    let tmp = Temp::new("download-close");
+    let path = tmp.0.join("mailbox.mailcraft");
+    let ctx = egui::Context::default();
+    let script = Arc::new(Scripted::default());
+    let mut app = app(&path, Box::new(Handle(script.clone())));
+    let busy = SaveProgress { stage: SaveStage::Content, done: 3, total: 90_000, millis: 9_000 };
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    *script.progress.lock().unwrap() = Some(busy);
+    assert!(!app.close_requested());
+    let closed_with = app.session.rev();
+    // The download goes on: another page, and the saver is handed it and is busy again.
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    assert!(app.session.rev() > closed_with);
+    app.logic(&ctx);
+    assert!(!app.quit_requested);
+    // What it was closed with is written; the saver is already at the next page's state.
+    script.answers.lock().unwrap().push(SaveReport { path: path.clone(), rev: closed_with, result: Ok(()) });
+    app.logic(&ctx);
+    assert!(app.quit_requested, "the window waited for the download's newest state");
+    assert!(app.close_requested());
+}
+
+#[test]
+fn a_save_that_fails_while_closing_keeps_the_window_open_until_closed_again() {
+    // Review of R6.3: closing went on waiting after a save that failed, and the window closed
+    // by itself later, after some other save went through.
+    let tmp = Temp::new("close-fails");
+    let path = tmp.0.join("mailbox.mailcraft");
+    let ctx = egui::Context::default();
+    let script = Arc::new(Scripted::default());
+    let mut app = app(&path, Box::new(Handle(script.clone())));
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    let rev = app.session.rev();
+    assert!(!app.close_requested());
+    script.answers.lock().unwrap().push(SaveReport { path: path.clone(), rev, result: Err("the disk is full".into()) });
+    app.logic(&ctx);
+    assert!(!app.quit_requested && app.status_msg.clone().unwrap().0.contains("the disk is full"));
+    assert_eq!(app.saving_inspect()["closing"], json!(false));
+    // A later save that goes through doesn't close it.
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    script.answers.lock().unwrap().push(SaveReport { path: path.clone(), rev: app.session.rev(), result: Ok(()) });
+    for _ in 0..3 {
+        app.logic(&ctx);
+    }
+    assert!(!app.quit_requested);
+    // After a failure, closing again closes (quitting tries once more, a while at most).
+    let mut app = self::app(&path, Box::new(Handle(script.clone())));
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    let rev = app.session.rev();
+    assert!(!app.close_requested());
+    script.answers.lock().unwrap().push(SaveReport { path: path.clone(), rev, result: Err("the disk is full".into()) });
+    app.logic(&ctx);
+    assert!(!app.quit_requested);
+    assert!(app.close_requested());
 }
 
 #[test]
@@ -281,4 +373,77 @@ fn save_new_and_open_never_write_on_the_window_while_the_saver_is_busy() {
     app.logic(&ctx);
     assert_eq!(app.session.path.as_deref(), Some(other.as_path()));
     assert!(app.status_msg.clone().unwrap().0.contains("the disk is full"));
+    // An agent that was answered `"pending": "save"` hears that it didn't happen, and why.
+    let saving = app.saving_inspect();
+    assert_eq!((&saving["pending"], &saving["last"]["command"], &saving["last"]["ok"]), (&json!(null), &json!("file.new"), &json!(false)));
+    assert!(saving["last"]["error"].as_str().unwrap().contains("the disk is full"), "{saving}");
+}
+
+#[test]
+fn open_during_a_download_runs_once_the_saver_is_done_and_says_so() {
+    // Review of R6.3: File › Open waited for the mailbox as it is *now*, which a download
+    // changes every page, and never ran. It runs once the saver is done with the file (it is
+    // handed nothing newer meanwhile), writing what changed since itself.
+    let tmp = Temp::new("download-open");
+    let (path, other) = (tmp.0.join("mailbox.mailcraft"), tmp.0.join("other.mailcraft"));
+    let ctx = egui::Context::default();
+    let script = Arc::new(Scripted::default());
+    let mut app = app(&path, Box::new(Handle(script.clone())));
+    store::save(&other, &mailcraft_engine::sample::mailbox(NOW, 0)).unwrap();
+    let busy = SaveProgress { stage: SaveStage::Messages, done: 5, total: 200_000, millis: 60_000 };
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    let asked_with = app.session.rev();
+    *script.progress.lock().unwrap() = Some(busy);
+    assert_eq!(app.execute("file.open", json!({"path": other.to_string_lossy()})).unwrap(), json!({"pending": "save"}));
+    assert_eq!(app.saving_inspect()["pending"], json!("file.open"));
+    // The download goes on; the window hands the saver nothing newer while the Open waits.
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    let after = app.session.mailbox.clone();
+    for _ in 0..3 {
+        app.logic(&ctx);
+    }
+    assert_eq!(*script.handed.lock().unwrap(), [(path.clone(), asked_with)]);
+    // The state it was asked with is written (here by hand: the scripted saver writes nothing,
+    // nor tells the store that a host keeps the file, which a real one does) and the saver has
+    // nothing left: the other mailbox opens, the changes since written first.
+    store::save(&path, &app.session.mailbox).unwrap();
+    store::Saver::spawn(|| {}).unwrap().follow(&path);
+    *script.progress.lock().unwrap() = None;
+    script.answers.lock().unwrap().push(SaveReport { path: path.clone(), rev: asked_with, result: Ok(()) });
+    app.logic(&ctx);
+    assert_eq!(app.session.path.as_deref(), Some(other.as_path()));
+    assert!(on_disk(&path) == after);
+    let saving = app.saving_inspect();
+    assert_eq!((&saving["pending"], &saving["last"]["command"], &saving["last"]["ok"]), (&json!(null), &json!("file.open"), &json!(true)));
+}
+
+#[test]
+fn open_waits_for_a_sweep_of_the_content_folder_too() {
+    // Review of R6.3: the saver said it was free while it swept the content folder, which holds
+    // the file; an Open run then waited for it, gave up, and was lost.
+    let tmp = Temp::new("sweep-open");
+    let (path, other) = (tmp.0.join("mailbox.mailcraft"), tmp.0.join("other.mailcraft"));
+    let ctx = egui::Context::default();
+    let script = Arc::new(Scripted::default());
+    let mut app = app(&path, Box::new(Handle(script.clone())));
+    store::save(&other, &mailcraft_engine::sample::mailbox(NOW, 0)).unwrap();
+    let sweeping = SaveProgress { stage: SaveStage::Sweeping, done: 0, total: 0, millis: 5_000 };
+    *script.progress.lock().unwrap() = Some(sweeping);
+    // A sweep on its own is nothing to tell.
+    app.logic(&ctx);
+    assert_eq!(app.saving_text(), None);
+    assert_eq!(app.saving_inspect()["progress"]["stage"], json!("sweeping"));
+    // Nothing unsaved, but the file is busy: the Open waits for it, saying so.
+    assert_eq!(app.execute("file.open", json!({"path": other.to_string_lossy()})).unwrap(), json!({"pending": "save"}));
+    for _ in 0..3 {
+        app.logic(&ctx);
+    }
+    assert_eq!(app.session.path.as_deref(), Some(path.as_path()));
+    assert_eq!(app.saving_text().as_deref(), Some("Tidying the mailbox's content folder… · the other mailbox opens when it is done"));
+    *script.progress.lock().unwrap() = None;
+    app.logic(&ctx);
+    assert_eq!(app.session.path.as_deref(), Some(other.as_path()));
+    assert_eq!(app.saving_inspect()["last"]["ok"], json!(true));
 }
