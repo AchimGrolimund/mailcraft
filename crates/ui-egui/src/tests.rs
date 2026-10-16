@@ -406,6 +406,8 @@ fn send_receive_signs_in_first_for_an_account_without_a_password() {
     let synced: Arc<Mutex<Vec<(String, String)>>> = Default::default();
     let asked: Arc<Mutex<Vec<(String, String)>>> = Default::default();
     let refuse = Arc::new(AtomicBool::new(false));
+    // An error the next Send/Receive ends with, once.
+    let error: Arc<Mutex<Option<String>>> = Default::default();
     // What the next sign-in answers; `None` leaves the owner in the browser.
     let answer: Arc<Mutex<Option<Answer>>> = Default::default();
     let waiting: Arc<Mutex<Vec<(mpsc::Sender<Answer>, Arc<AtomicBool>)>>> = Default::default();
@@ -413,10 +415,11 @@ fn send_receive_signs_in_first_for_an_account_without_a_password() {
         |access: &str| Ok(Tokens { access: access.into(), refresh: "ref-1".into(), expires_at: mailcraft_time::now() + 3600, ..Default::default() });
 
     let mut a = app();
-    let (synced2, refuse2) = (synced.clone(), refuse.clone());
+    let (synced2, refuse2, error2) = (synced.clone(), refuse.clone(), error.clone());
     a.services.sync = Some(Box::new(move |req: SyncRequest| {
         synced2.lock().unwrap().push((req.access_token.clone(), req.password.clone()));
-        let errors = if refuse2.load(Ordering::Relaxed) { vec!["The server refused the sign-in".to_string()] } else { Vec::new() };
+        let mut errors = if refuse2.load(Ordering::Relaxed) { vec!["The server refused the sign-in".to_string()] } else { Vec::new() };
+        errors.extend(error2.lock().unwrap().take());
         let (tx, rx) = mpsc::channel();
         tx.send(SyncResult { account: req.account.id, errors, ..Default::default() }).unwrap();
         rx
@@ -464,6 +467,24 @@ fn send_receive_signs_in_first_for_an_account_without_a_password() {
     a.poll_sync();
     assert_eq!(asked.lock().unwrap().last().unwrap().1, "ref-1");
     assert_eq!(synced.lock().unwrap().last().unwrap().0, "tok-2");
+
+    // A token that runs out before a run could be over is renewed first, not taken along.
+    a.tokens.get_mut(&id).unwrap().expires_at = mailcraft_time::now() + 300;
+    *answer.lock().unwrap() = Some(good("tok-3"));
+    assert_eq!(a.execute("ui.sync", json!({"account": id})).unwrap()["pending"], "signIn");
+    a.poll_sign_in();
+    a.poll_sync();
+    assert_eq!(synced.lock().unwrap().last().unwrap().0, "tok-3");
+
+    // Microsoft ends the session when the token runs out during the run: the next run renews it.
+    *error.lock().unwrap() = Some("Couldn't open \"Inbox\": the server ended the session: Session invalidated - AccessTokenExpired".into());
+    a.execute("ui.sync", json!({"account": id})).unwrap();
+    a.poll_sync();
+    *answer.lock().unwrap() = Some(good("tok-4"));
+    assert_eq!(a.execute("ui.sync", json!({"account": id})).unwrap()["pending"], "signIn");
+    a.poll_sign_in();
+    a.poll_sync();
+    assert_eq!(synced.lock().unwrap().last().unwrap().0, "tok-4");
 
     // A sign-in that fails says so. What was kept to renew with stays (the trouble may have been
     // the network); the host decides when the provider has refused it for good.
