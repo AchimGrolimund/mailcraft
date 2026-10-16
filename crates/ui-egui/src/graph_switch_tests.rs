@@ -112,6 +112,44 @@ fn a_page_closed_without_an_answer_comes_back_the_next_time() {
 }
 
 #[test]
+fn switch_without_them_switches_at_once_and_says_what_is_in_the_backup() {
+    let (mut app, account, dir) = app("without");
+    // A flag changed here that the IMAP server, which can't be reached, hasn't been told.
+    let inbox = app.session.mailbox.folder_of_kind(account, FolderKind::Inbox).unwrap();
+    let f = app.session.mailbox.folder_mut(inbox).unwrap();
+    (f.remote, f.uid_validity) = ("INBOX".into(), 41);
+    let message = Message {
+        folder: inbox,
+        subject: "Figures".into(),
+        uid: 7,
+        synced: Some(mailcraft_model::sync::RemoteFlags { uid: 7, ..Default::default() }),
+        ..Default::default()
+    };
+    let message = app.session.mailbox.add_message(message).unwrap();
+    app.session.mailbox.message_mut(message).unwrap().flag = mailcraft_model::FlagStatus::Flagged;
+    app.session.mailbox.account_mut(account).unwrap().graph_switch = GraphSwitch::Switching;
+    app.services.sync = Some(Box::new(|req: SyncRequest| {
+        let (tx, rx) = mpsc::channel();
+        tx.send(SyncResult { account: req.account.id, errors: vec!["Couldn't connect to outlook.office365.com".into()], ..Default::default() })
+            .unwrap();
+        rx
+    }));
+    let mut h = window(app);
+    h.state_mut().execute("ui.sync", json!({"account": account})).unwrap();
+    h.run_steps(6);
+    assert_eq!(page(&h), Some("graphSwitch"));
+    assert!(says(&h, "1 change waiting for the IMAP server won't reach it; it stays in the backup copy."));
+    click(&mut h, "Switch without Them");
+    assert_eq!(page(&h), None);
+    assert_eq!(h.state().session.mailbox.account(account).unwrap().kind, AccountKind::Microsoft);
+    let backup = dir.join("mailbox (backup 2026-10-14).mailcraft");
+    let kept = mailcraft_engine::io::open_path(&backup).unwrap();
+    assert_eq!(kept.message(message).map(|m| m.flag), Some(mailcraft_model::FlagStatus::Flagged));
+    assert!(status(&h).contains("1 change that didn't reach the IMAP server is in the copy"), "{}", status(&h));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn switch_sends_what_waits_first_waits_while_offline_and_then_switches() {
     let (mut app, account, dir) = app("switch");
     // Something waits for the IMAP server: a message in the Outbox.
@@ -137,7 +175,6 @@ fn switch_sends_what_waits_first_waits_while_offline_and_then_switches() {
     let mut h = window(app);
     assert_eq!(page(&h), Some("graphSwitch"));
     click(&mut h, "Switch");
-    assert_eq!(page(&h), None);
     // The Send/Receive went first, and couldn't reach the server: the switch waits.
     h.run_steps(6);
     assert_eq!(*runs.lock().unwrap(), 1);
@@ -145,6 +182,14 @@ fn switch_sends_what_waits_first_waits_while_offline_and_then_switches() {
     assert_eq!((a.kind, a.graph_switch), (AccountKind::Imap, GraphSwitch::Switching));
     assert!(status(&h).contains("waits until MailCraft can reach the server"), "{}", status(&h));
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "no backup yet");
+    // And it offers to switch without what waits (the Outbox goes through Graph: nothing is left).
+    assert_eq!(page(&h), Some("graphSwitch"));
+    for line in super::waiting_wording("owner@contoso.example", 0) {
+        assert!(says(&h, &line), "{line}");
+    }
+    click(&mut h, "Keep Waiting");
+    assert_eq!(page(&h), None);
+    assert_eq!(h.state().session.mailbox.account(account).unwrap().graph_switch, GraphSwitch::Switching);
     // Online again: the next Send/Receive sends it, and the switch goes ahead by itself.
     offline.store(false, Ordering::Relaxed);
     h.state_mut().execute("ui.sync", json!({"account": account})).unwrap();

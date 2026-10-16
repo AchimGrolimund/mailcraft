@@ -527,7 +527,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "ui.switchToGraph",
         "Switch to Microsoft Graph",
         "File › Info",
-        r#"{"account"?: number, "answer": "switch"|"later"} — the page's answer: switch goes ahead once nothing waits for the IMAP server (a Send/Receive first, when something does), with a copy of the mailbox kept beside it; later keeps the account on IMAP"#,
+        r#"{"account"?: number, "answer": "switch"|"switchWithout"|"later"} — the page's answer: switch goes ahead once nothing waits for the IMAP server (a Send/Receive first, when something does), with a copy of the mailbox kept beside it; switchWithout goes ahead at once, leaving what waits for the IMAP server in that copy; later keeps the account on IMAP"#,
     ),
     (
         "ui.connectMicrosoft",
@@ -777,6 +777,8 @@ pub struct MailApp {
     /// Accounts switching to Microsoft Graph for which the switch was tried since their last
     /// Send/Receive ([`graph_switch`]).
     graph_switch_tried: std::collections::HashSet<Id>,
+    /// Accounts whose waiting switch was offered "Switch without Them" in this run.
+    graph_switch_waiting_shown: std::collections::HashSet<Id>,
     /// Send/Receive by itself when the app starts and every few minutes (on by default; how often
     /// is the owner's `syncMinutes` option).
     pub auto_sync: bool,
@@ -882,6 +884,7 @@ impl MailApp {
             offer_graph_switch: false,
             graph_switch_shown: Default::default(),
             graph_switch_tried: Default::default(),
+            graph_switch_waiting_shown: Default::default(),
             auto_sync: true,
             last_auto_sync: 0.0,
             sync_queue: Default::default(),

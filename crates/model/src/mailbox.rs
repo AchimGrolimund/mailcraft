@@ -1185,15 +1185,20 @@ impl Mailbox {
         if local && !m.draft { STAYS_LOCAL } else { INTO_GRAPH }
     }
 
+    /// The first local account, made ("On this computer") when the mailbox has none.
+    pub fn local_account(&mut self) -> Id {
+        match self.accounts.iter().find(|a| a.kind == AccountKind::Local) {
+            Some(a) => a.id,
+            None => self.add_account(Account { name: "On this computer".into(), ..Default::default() }),
+        }
+    }
+
     /// Where mail imported for a Microsoft account goes, as Graph can't put received mail on
     /// its server (R3 spec S30): the folder [`IMPORTED`] at the top of the first local account
     /// (that account's Drafts, for `drafts`), made when it isn't there yet; and the local
     /// account itself ("On this computer") when the mailbox has none.
     pub fn imported_folder(&mut self, drafts: bool) -> Result<Id, ModelError> {
-        let local = match self.accounts.iter().find(|a| a.kind == AccountKind::Local) {
-            Some(a) => a.id,
-            None => self.add_account(Account { name: "On this computer".into(), ..Default::default() }),
-        };
+        let local = self.local_account();
         if drafts && let Some(folder) = self.folder_of_kind(local, FolderKind::Drafts) {
             return Ok(folder);
         }

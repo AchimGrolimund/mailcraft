@@ -17,7 +17,6 @@ const NOW: i64 = 1_800_000_000;
 /// the local folder.
 fn setup() -> (Session, Id, Id, Id) {
     let mut s = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
-    s.graph_mail = true;
     let account = s.run("account.add", &json!({"email": "owner@example.org", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     let kinds = [FolderKind::Inbox, FolderKind::Archive, FolderKind::Deleted, FolderKind::Drafts, FolderKind::Outbox];
     for (n, kind) in kinds.into_iter().enumerate() {

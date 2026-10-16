@@ -38,7 +38,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("account.graphSwitch", "Switch to Microsoft Graph", "File › Info", graph_switch)
             .pure()
             .params(
-                r#"{"account"?: number (default: the first Microsoft account still on IMAP), "answer": "switch"|"later"} — for a Microsoft account kept in step by IMAP. later: it stays on IMAP. switch: once nothing waits for the IMAP server (else answers how much does, and a Send/Receive goes first), backs the mailbox file up beside itself with the date in its name, and makes the account one kept in step through Microsoft Graph; its mail comes down afresh, what is only on this computer stays"#,
+                r#"{"account"?: number (default: the first Microsoft account still on IMAP), "answer": "switch"|"switchWithout"|"later"} — for a Microsoft account kept in step by IMAP. later: it stays on IMAP. switch: once nothing waits for the IMAP server (else answers how much does, and a Send/Receive goes first); switchWithout: at once, leaving what waits for the IMAP server in the backup (answers how many changes as `leftBehind`). Either backs the mailbox file up beside itself with the date in its name, and makes the account one kept in step through Microsoft Graph; its mail comes down afresh, what is only on this computer stays"#,
             )
             .when(has_imap_microsoft),
     ]
@@ -71,10 +71,13 @@ fn graph_switch(s: &mut Session, v: &Value) -> CmdResult {
     if !a.on_imap_with_microsoft() {
         return Err(fail(format!("{} isn't a Microsoft account kept in step by IMAP", a.name)));
     }
-    let answer = match p::str(v, "answer").map(|a| a.trim().to_ascii_lowercase()) {
-        Some(a) if a == "switch" => GraphSwitch::Switching,
-        Some(a) if a == "later" => GraphSwitch::Later,
-        _ => return Err(bad("`answer` is switch or later")),
+    // `switchWithout`: the owner chose to switch without what still waits for an IMAP server
+    // that can't be reached (it is in the backup).
+    let (answer, without) = match p::str(v, "answer").map(|a| a.trim().to_ascii_lowercase()) {
+        Some(a) if a == "switch" => (GraphSwitch::Switching, false),
+        Some(a) if a == "switchwithout" => (GraphSwitch::Switching, true),
+        Some(a) if a == "later" => (GraphSwitch::Later, false),
+        _ => return Err(bad("`answer` is switch, switchWithout or later")),
     };
     if s.mailbox.account(account).map(|a| a.graph_switch) != Some(answer) {
         s.mailbox.account_mut(account)?.graph_switch = answer;
@@ -84,9 +87,12 @@ fn graph_switch(s: &mut Session, v: &Value) -> CmdResult {
         return Ok(json!({"account": account, "switched": false, "later": true}));
     }
     let waiting = waiting(s, account);
-    if waiting > 0 {
+    if waiting > 0 && !without {
         return Ok(json!({"account": account, "switched": false, "waiting": waiting}));
     }
+    // What won't reach the IMAP server now: the changes not pushed. (The Outbox stays, and is sent
+    // through Graph.) All of it is in the backup, which is written first.
+    let left_behind = left_behind(s, account);
     let backup = back_up(s, account)?;
     let done = switch(s, account)?;
     Ok(json!({
@@ -97,7 +103,14 @@ fn graph_switch(s: &mut Session, v: &Value) -> CmdResult {
         "drafts": done.drafts,
         "kept": done.kept,
         "keptIn": done.kept_in,
+        "leftBehind": left_behind,
     }))
+}
+
+/// How many changes made in `account` would never reach its IMAP server if it switched now
+/// (flags, moves and deletions not pushed); the Outbox isn't among them, it goes through Graph.
+pub fn left_behind(s: &Session, account: Id) -> usize {
+    super::account::unpushed(s, account)
 }
 
 /// Write the whole mailbox, as it is now, as one file beside the mailbox file, with today's date
@@ -276,10 +289,7 @@ struct Kept {
 /// The local folder `Kept from <address>` at the top of the first account on this computer (one
 /// called "On this computer" is made when the mailbox has none), made for the switch.
 fn kept_folder(mb: &mut Mailbox, of: &Account) -> Result<Kept, CmdError> {
-    let local = match mb.accounts.iter().find(|a| a.kind == AccountKind::Local) {
-        Some(local) => local.id,
-        None => mb.add_account(Account { name: "On this computer".into(), kind: AccountKind::Local, ..Default::default() }),
-    };
+    let local = mb.local_account();
     let base = clean_name(&format!("Kept from {}", if of.email.trim().is_empty() { of.name.as_str() } else { of.email.trim() }))
         .unwrap_or_else(|| "Kept from the switch".into());
     // (A slash parts names of a folder on this computer; an address has none, a name may.)

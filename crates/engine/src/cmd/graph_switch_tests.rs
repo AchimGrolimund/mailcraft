@@ -155,6 +155,27 @@ fn switching_waits_while_anything_waits_for_the_imap_server() {
 }
 
 #[test]
+fn switch_without_them_leaves_what_waits_in_the_backup() {
+    let (mut s, ids) = mailbox();
+    let dir = scratch("without");
+    s.path = Some(dir.join("mailbox.mailcraft"));
+    // A flag and a deletion the IMAP server can't be told (it is turned off, say).
+    s.mailbox.message_mut(ids.on_server).unwrap().flag = FlagStatus::None;
+    s.mailbox.pending.push(Pending::Delete { account: ids.account, from: "INBOX".into(), uid: 4, message_id: String::new() });
+    assert_eq!(answer(&mut s, ids.account, "switch").unwrap()["waiting"], json!(2));
+    let before = s.mailbox.clone();
+    let said = answer(&mut s, ids.account, "switchWithout").unwrap();
+    assert_eq!((said["switched"].clone(), said["leftBehind"].clone()), (json!(true), json!(2)));
+    // They are in the backup, as they were.
+    let backup = crate::io::open_path(&dir.join("mailbox (backup 2027-01-15).mailcraft")).unwrap();
+    assert_eq!(backup.message(ids.on_server).map(|m| m.flag), Some(FlagStatus::None));
+    assert_eq!(backup.pending, before.pending);
+    assert_eq!(s.mailbox.account(ids.account).unwrap().kind, AccountKind::Microsoft);
+    assert!(s.mailbox.pending.iter().all(|p| p.account() != ids.account));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_mailbox_that_isnt_in_a_file_isnt_switched() {
     let (mut s, ids) = mailbox();
     let before = s.mailbox.clone();
@@ -210,7 +231,9 @@ fn switching_backs_up_first_and_keeps_what_only_is_here() {
     assert!(graph_mail_request(&s, ids.account).unwrap().changes.is_empty());
     assert_eq!(s.view.folder, ids.projects);
     // Nothing goes back to before: what was before is the backup.
-    assert!(s.run("edit.undo", &json!({})).is_err() || s.mailbox.account(ids.account).unwrap().kind == AccountKind::Microsoft);
+    assert!(!s.can_undo());
+    let _ = s.run("edit.undo", &json!({}));
+    assert_eq!(s.mailbox.account(ids.account).unwrap().kind, AccountKind::Microsoft);
     // Switched again the next day (after going back to the backup), the copy has a name of its own.
     let next = backup_path(&path, "2027-01-15").unwrap();
     assert_eq!(next, dir.join("mailbox (backup 2027-01-15, 2).mailcraft"));

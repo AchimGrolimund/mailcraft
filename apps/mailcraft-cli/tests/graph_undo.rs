@@ -35,7 +35,6 @@ impl Rig {
             }
         }
         let mut s = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
-        s.graph_mail = true;
         let account = s.run("account.add", &json!({"email": address, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
         let mut rig = Rig { server, s, account };
         rig.run();

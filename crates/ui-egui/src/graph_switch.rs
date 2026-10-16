@@ -62,8 +62,34 @@ pub(crate) fn wording(account: &str) -> Vec<String> {
     ]
 }
 
+/// What the page says to an owner whose switch waits because the IMAP server can't be reached
+/// with what waits for it: `n` changes would be left behind.
+pub(crate) fn waiting_wording(account: &str, n: usize) -> Vec<String> {
+    let left = if n == 0 {
+        tl!("No changes are left behind: only mail in the Outbox is waiting.").to_string()
+    } else if n == 1 {
+        tl!("1 change waiting for the IMAP server won't reach it; it stays in the backup copy.").to_string()
+    } else {
+        fmt(tl!("{n} changes waiting for the IMAP server won't reach it; they stay in the backup copy."), &[("n", &n.to_string())])
+    };
+    vec![
+        fmt(tl!("{account} is switching to Microsoft Graph, but MailCraft can't reach its IMAP server to send what is waiting there first."), &[("account", account)]),
+        tl!("Keep waiting, and the switch goes ahead by itself once MailCraft can reach the server. Or switch without them, if the server can't be reached any more (for example, your organisation has turned IMAP off):").to_string(),
+        left,
+        tl!("A copy of your whole mailbox is saved next to it first, as always. Mail in the Outbox isn't left behind: it is sent through Microsoft Graph.").to_string(),
+    ]
+}
+
+/// Whether `account`'s switch is waiting for its IMAP server.
+fn switch_waits(app: &MailApp, account: Id) -> bool {
+    app.session.mailbox.account(account).is_some_and(|a| a.on_imap_with_microsoft() && a.graph_switch == GraphSwitch::Switching)
+}
+
 /// Draw the page for `account`. `true` when it is done with (answered, or closed).
 pub(crate) fn show(app: &mut MailApp, ctx: &egui::Context, account: Id) -> bool {
+    if switch_waits(app, account) {
+        return show_waiting(app, ctx, account);
+    }
     let whose = address(app, account);
     let mut answer: Option<&str> = None;
     let open = window(ctx, tl!("Switch to Microsoft Graph"), 520.0, |ui| {
@@ -102,6 +128,40 @@ pub(crate) fn show(app: &mut MailApp, ctx: &egui::Context, account: Id) -> bool 
         return true;
     }
     !open
+}
+
+/// The page for a switch that waits: Keep Waiting, or Switch without Them.
+fn show_waiting(app: &mut MailApp, ctx: &egui::Context, account: Id) -> bool {
+    let whose = address(app, account);
+    let n = mailcraft_engine::cmd::graph_switch::left_behind(&app.session, account);
+    let mut answer: Option<&str> = None;
+    let open = window(ctx, tl!("Switch to Microsoft Graph"), 520.0, |ui| {
+        for line in waiting_wording(&whose, n) {
+            ui.add(egui::Label::new(line.as_str()).wrap());
+        }
+        ui.add_space(6.0);
+        button_row(ui, |ui| {
+            // Waiting is what loses nothing: it is the button that stands out.
+            let wait = primary_button(ui, tl!("Keep Waiting"), true);
+            wait.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("Keep Waiting")));
+            if wait.clicked() {
+                answer = Some("wait");
+            }
+            if ui.add(egui::Button::new(tl!("Switch without Them")).min_size(vec2(72.0, 26.0))).clicked() {
+                answer = Some("switchWithout");
+            }
+        });
+    });
+    match answer {
+        Some("switchWithout") => {
+            if let Err(e) = app.switch_to_graph(account, "switchWithout") {
+                app.status(e);
+            }
+            true
+        }
+        Some(_) => true,
+        None => !open,
+    }
 }
 
 impl MailApp {
@@ -153,6 +213,10 @@ impl MailApp {
         if !ok {
             let whose = address(self, account);
             self.status(fmt(tl!("The switch of {account} to Microsoft Graph waits until MailCraft can reach the server."), &[("account", &whose)]));
+            // Once a run of the program, the owner is offered to switch without what waits.
+            if self.offer_graph_switch && self.dialog.is_none() && self.graph_switch_waiting_shown.insert(account) {
+                self.dialog = Some(Dialog::GraphSwitch { account });
+            }
         }
     }
 
@@ -180,6 +244,7 @@ impl MailApp {
             return Ok(said);
         }
         let backup = said.get("backup").and_then(Value::as_str).unwrap_or_default().to_string();
+        let left = said.get("leftBehind").and_then(Value::as_u64).unwrap_or(0);
         // The account's first run through Graph: its folders, then its mail, afresh.
         let started = self.start_sync(&json!({"account": account}));
         self.status(fmt(
@@ -188,6 +253,18 @@ impl MailApp {
             ),
             &[("account", &whose), ("backup", &backup)],
         ));
+        if answer == "switchWithout" && left > 0 {
+            let said = if left == 1 {
+                tl!(
+                    "{account} now uses Microsoft Graph, and its mail is downloading again. 1 change that didn't reach the IMAP server is in the copy of your mailbox from before the switch: {backup}."
+                )
+            } else {
+                tl!(
+                    "{account} now uses Microsoft Graph, and its mail is downloading again. {n} changes that didn't reach the IMAP server are in the copy of your mailbox from before the switch: {backup}."
+                )
+            };
+            self.status(fmt(said, &[("account", &whose), ("n", &left.to_string()), ("backup", &backup)]));
+        }
         if let Err(e) = started {
             log::warn!("the first Send/Receive after the switch didn't start: {e}");
         }
@@ -213,8 +290,8 @@ pub(crate) fn ui_command(app: &mut MailApp, id: &str, p: &Value) -> Option<Resul
             json!({"account": account})
         }),
         "ui.switchToGraph" => match (account, p.get("answer").and_then(Value::as_str)) {
-            (Ok(account), Some(answer @ ("switch" | "later"))) => app.switch_to_graph(account, answer),
-            (Ok(_), _) => Err("`answer` is switch or later".to_string()),
+            (Ok(account), Some(answer @ ("switch" | "switchWithout" | "later"))) => app.switch_to_graph(account, answer),
+            (Ok(_), _) => Err("`answer` is switch, switchWithout or later".to_string()),
             (Err(e), _) => Err(e),
         },
         _ => return None,
