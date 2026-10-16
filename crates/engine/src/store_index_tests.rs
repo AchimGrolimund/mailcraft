@@ -280,61 +280,324 @@ fn a_retired_favorites_choice_in_this_form_is_written_away_at_the_next_save() {
     assert!(save(&path, &again.mailbox).unwrap().unchanged);
 }
 
+/// Where each record of a format-3 file begins, its bytes and its kind.
+fn records(bytes: &[u8]) -> Vec<(usize, usize, u8)> {
+    let mut out = Vec::new();
+    let mut at = index::HEADER_LEN as usize;
+    while at + 5 <= bytes.len() {
+        let len = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+        let size = index::FRAME as usize + len;
+        out.push((at, size, bytes[at + 4]));
+        at += size;
+    }
+    out
+}
+
+/// The bytes of `bytes` with the one at `at` changed.
+fn flipped(bytes: &[u8], at: usize) -> Vec<u8> {
+    let mut out = bytes.to_vec();
+    out[at] ^= 0x40;
+    out
+}
+
 #[test]
-fn a_damaged_save_in_the_middle_costs_that_save_only_and_never_stops_the_sweep() {
+fn a_damaged_save_stops_the_reading_there_so_no_later_save_says_mail_is_here_that_isnt() {
     let tmp = Temp::new("damaged-middle");
     let path = tmp.file();
     let mut mb = mailbox(20);
+    let inbox = mb.inbox().unwrap();
+    mb.folder_mut(inbox).unwrap().uid_seen = 100;
+    save(&path, &mb).unwrap();
+    let before = mb.clone();
+    let at_n = fs::metadata(&path).unwrap().len() as usize;
+    // Save N brings new mail: a message, and the Inbox read up to 110.
+    let fresh = mb.add_message(Message { folder: inbox, subject: "New mail".into(), ..Default::default() }).unwrap();
+    mb.folder_mut(inbox).unwrap().uid_seen = 110;
+    assert!(!save(&path, &mb).unwrap().compacted);
+    let at_n1 = fs::metadata(&path).unwrap().len() as usize;
+    // Save N+1 only makes a folder a favourite: its rest record says 110 too.
+    let sent = mb.folders.iter().find(|f| f.id != inbox).unwrap().id;
+    mb.folder_mut(sent).unwrap().favorite = true;
+    assert!(!save(&path, &mb).unwrap().compacted);
+    let good = fs::read(&path).unwrap();
+
+    // One byte of the new message's record in save N changes on the disk.
+    let (put_at, _, kind) = records(&good).into_iter().find(|(at, _, _)| *at == at_n).unwrap();
+    assert_eq!(kind, 2);
+    let bytes = flipped(&good, put_at + 30);
+    fs::write(&path, &bytes).unwrap();
+    let opened = open(&path).unwrap();
+    // The reading stops at save N: the mailbox is as before it, the Inbox read up to 100, so the
+    // new mail is fetched again; save N+1 is left out with it, and both are said.
+    assert!(opened.mailbox == before, "the mailbox is the one before the damaged save");
+    assert!(opened.mailbox.message(fresh).is_none());
+    assert_eq!(opened.mailbox.folder(inbox).unwrap().uid_seen, 100);
+    assert_eq!((opened.lost_saves, opened.lost_records, opened.unfinished), (2, 0, (bytes.len() - at_n) as u64));
+    let notice = opened.notice().unwrap();
+    assert!(notice.contains("2 saves are") && notice.contains("damaged"), "{notice}");
+    let mut s = crate::Session::empty();
+    let said = s.run("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+    assert_eq!((said["lostSaves"].as_u64(), said["unfinished"].as_u64()), (Some(2), Some((bytes.len() - at_n) as u64)));
+    assert_eq!(said["notice"].as_str(), Some(notice.as_str()));
+    // The next save writes the file whole and keeps the damaged one aside, as it was.
+    let mut edited = open(&path).unwrap().mailbox;
+    let first = *edited.messages.keys().next().unwrap();
+    edited.message_mut(first).unwrap().read = true;
+    assert!(save(&path, &edited).unwrap().compacted);
+    assert_eq!(fs::read(&kept(&path, "damaged-")[0]).unwrap(), bytes);
+    let back = open(&path).unwrap();
+    assert!(back.notice().is_none() && back.mailbox == edited);
+    assert!(at_n1 > at_n);
+}
+
+#[test]
+fn a_damaged_commit_counts_every_save_it_costs() {
+    let tmp = Temp::new("damaged-commit");
+    let path = tmp.file();
+    let mut mb = mailbox(10);
     save(&path, &mb).unwrap();
     let ids: Vec<Id> = mb.messages.keys().copied().collect();
-    let mut ends = Vec::new();
+    let mut ends = vec![fs::metadata(&path).unwrap().len() as usize];
     for id in &ids[..3] {
         mb.message_mut(*id).unwrap().read = true;
         assert!(!save(&path, &mb).unwrap().compacted);
         ends.push(fs::metadata(&path).unwrap().len() as usize);
     }
-    // A byte of the second of those saves changes on the disk.
-    let mut bytes = fs::read(&path).unwrap();
-    bytes[ends[0] + 30] ^= 0x40;
+    let good = fs::read(&path).unwrap();
+    let lost = |bytes: &[u8]| {
+        let replayed = index::replay(bytes, bytes.len() as u64).unwrap();
+        (replayed.lost_saves, replayed.good_len as usize)
+    };
+    let commit_of = |end: usize| records(&good).into_iter().find(|(at, size, _)| at + size == end).unwrap();
+    // The first of three saves damaged in a record of its own, or in its commit (whose count
+    // then seems to close the save after it): three saves lost either way, read up to the first.
+    assert_eq!(lost(&flipped(&good, ends[0] + 30)), (3, ends[0]));
+    let (commit, size, kind) = commit_of(ends[1]);
+    assert_eq!((kind, size), (4, 25));
+    assert_eq!(lost(&flipped(&good, commit + 8)), (3, ends[0]));
+    assert_eq!(lost(&flipped(&good, commit + 20)), (3, ends[0]));
+    // The second's commit: two.
+    let (commit, _, _) = commit_of(ends[2]);
+    assert_eq!(lost(&flipped(&good, commit + 20)), (2, ends[1]));
+    // The last save's commit: one.
+    let (commit, _, _) = commit_of(ends[3]);
+    assert_eq!(lost(&flipped(&good, commit + 20)), (1, ends[2]));
+    // A save cut short after a damaged one isn't counted: it was never finished.
+    let mut torn = flipped(&good, ends[1] + 30);
+    torn.truncate(ends[3] - 3);
+    assert_eq!(lost(&torn), (1, ends[1]));
+}
+
+#[test]
+fn a_damaged_item_of_the_first_save_costs_that_item_and_the_mail_is_fetched_again() {
+    let tmp = Temp::new("damaged-base");
+    let path = tmp.file();
+    let mut mb = full_mailbox(12);
+    let inbox = mb.inbox().unwrap();
+    {
+        let f = mb.folder_mut(inbox).unwrap();
+        f.uid_seen = 300;
+        f.server = Some(mailcraft_model::ServerFolder {
+            id: "in".into(),
+            name: "Inbox".into(),
+            delta: "https://graph.example/delta?token=1".into(),
+            caught_up: true,
+            ..Default::default()
+        });
+    }
+    assert!(save(&path, &mb).unwrap().compacted);
+    let good = fs::read(&path).unwrap();
+    let recs = records(&good);
+    // One message's record in the first (and only) save.
+    let (put_at, _, _) = recs.iter().copied().filter(|r| r.2 == 2).nth(3).unwrap();
+    let id = u64::from_le_bytes(good[put_at + 6..put_at + 14].try_into().unwrap());
+    let bytes = flipped(&good, put_at + 40);
     fs::write(&path, &bytes).unwrap();
     let opened = open(&path).unwrap();
-    // That save is left out, and said; the one after it is read.
+    // Everything else is read; the folders' marks are forgotten, so the message comes again.
     let mut expect = mb.clone();
-    expect.message_mut(ids[1]).unwrap().read = false;
-    assert!(opened.mailbox == expect);
-    assert_eq!((opened.lost_saves, opened.unfinished), (1, (ends[1] - ends[0]) as u64));
+    expect.messages.remove(&id);
+    for f in &mut expect.folders {
+        f.uid_seen = 0;
+        if let Some(server) = &mut f.server {
+            server.delta.clear();
+            server.caught_up = false;
+        }
+    }
+    assert!(opened.mailbox == expect, "the rest of the mailbox is read");
+    assert_eq!((opened.lost_records, opened.lost_saves), (1, 0));
+    assert!(opened.unfinished > 0);
     let notice = opened.notice().unwrap();
-    assert!(notice.contains("damaged") && notice.contains("1 of the saves"), "{notice}");
-    assert!(matches!(tail_of(&path), Tail::Bytes(_)));
-    // `file.open` says so, for the window and the CLI to show.
+    assert!(notice.contains("1 item") && notice.contains("fetched again") && !notice.contains("no save"), "{notice}");
     let mut s = crate::Session::empty();
-    let said = s.run("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
-    assert_eq!((said["lostSaves"].as_u64(), said["unfinished"].as_u64()), (Some(1), Some((ends[1] - ends[0]) as u64)));
-    assert_eq!(said["notice"].as_str(), Some(notice.as_str()));
-    // The next save writes the file whole and keeps the damaged one aside, as it was.
-    expect.message_mut(ids[5]).unwrap().read = true;
-    let mut edited = opened.mailbox.clone();
-    edited.message_mut(ids[5]).unwrap().read = true;
+    assert_eq!(s.run("file.open", &json!({"path": path.to_string_lossy()})).unwrap()["lostRecords"].as_u64(), Some(1));
+    // The next save writes it whole and keeps the damaged file aside.
+    let mut edited = open(&path).unwrap().mailbox;
+    edited.message_mut(*edited.messages.keys().next().unwrap()).unwrap().read = true;
     assert!(save(&path, &edited).unwrap().compacted);
     assert_eq!(fs::read(&kept(&path, "damaged-")[0]).unwrap(), bytes);
-    assert!(open(&path).unwrap().notice().is_none());
+    assert!(open(&path).unwrap().mailbox == edited);
 
-    // While it is kept, the sweep still takes what nothing names, and leaves what it names.
-    let gone = first_with(&expect, |m| m.attachments.iter().any(|a| a.data.len() > INLINE_MAX));
-    let gone_file = blob_file(&path, &expect.message(gone).unwrap().attachments[0].data);
-    let mut later = expect.clone();
-    later.remove_message(gone).unwrap();
-    let inbox = later.inbox().unwrap();
-    let mut fresh = Message { folder: inbox, subject: "Here and gone".into(), ..Default::default() };
-    fresh.attachments.push(Attachment::new("new.bin", "application/octet-stream", noise(99, 9_000)));
-    let fresh = later.add_message(fresh).unwrap();
-    save(&path, &later).unwrap();
-    let fresh_file = blob_file(&path, &later.message(fresh).unwrap().attachments[0].data);
-    later.remove_message(fresh).unwrap();
-    save(&path, &later).unwrap();
-    let swept = sweep(&path, Duration::ZERO).unwrap();
-    assert!(swept.removed >= 1 && !fresh_file.exists() && gone_file.exists(), "{swept:?}");
-    assert!(open(&path).unwrap().mailbox == later);
+    // Its commit damaged, the first save is still read whole, with later saves after it.
+    fs::write(&path, &good).unwrap();
+    let mut later = open(&path).unwrap().mailbox;
+    later.message_mut(id).unwrap().subject = "Later".into();
+    assert!(!save(&path, &later).unwrap().compacted);
+    let two = fs::read(&path).unwrap();
+    let (commit, _, kind) = records(&two).into_iter().find(|(at, size, _)| at + size == good.len()).unwrap();
+    assert_eq!(kind, 4);
+    for damaged in [flipped(&good, commit + 20), flipped(&two, commit + 20)] {
+        let replayed = index::replay(&damaged[..], damaged.len() as u64).unwrap();
+        assert_eq!(replayed.items.len(), mb.messages.len() + 18);
+        assert!(replayed.lost_records == 1 && matches!(replayed.tail, Tail::Bytes(_)));
+    }
+    fs::write(&path, flipped(&two, commit + 20)).unwrap();
+    assert_eq!(open(&path).unwrap().mailbox.message(id).unwrap().subject, "Later");
+
+    // Its rest record damaged, there is no mailbox: that is said, not "no save was finished".
+    let (rest_at, _, kind) = recs[0];
+    assert_eq!(kind, 1);
+    fs::write(&path, flipped(&good, rest_at + 40)).unwrap();
+    let error = open(&path).unwrap_err();
+    assert!(error.contains("damaged") && !error.contains("no save"), "{error}");
+    // A record that loses the way, too; the file cut short in its first save is that.
+    fs::write(&path, flipped(&good, put_at + 4)).unwrap();
+    let error = open(&path).unwrap_err();
+    assert!(error.contains("damaged where it begins"), "{error}");
+    fs::write(&path, &good[..put_at + 7]).unwrap();
+    let error = open(&path).unwrap_err();
+    assert!(error.contains("no save in it was finished"), "{error}");
+}
+
+#[test]
+fn a_file_of_a_newer_form_is_said_to_be_from_a_newer_mailcraft() {
+    let tmp = Temp::new("newer");
+    let path = tmp.file();
+    save(&path, &mailbox(3)).unwrap();
+    let good = fs::read(&path).unwrap();
+    // This form with a higher number, and another form of ours altogether.
+    let higher = [&good[..16], &[4, 0, 0, 0][..], &good[20..]].concat();
+    for (bytes, says) in [(higher, "newer MailCraft (format 4)"), (b"MailCraft journal\n\x05\0\0\0".to_vec(), "newer MailCraft")] {
+        fs::write(&path, &bytes).unwrap();
+        let error = open(&path).unwrap_err();
+        assert!(error.contains(says), "{error}");
+        assert!(crate::io::read_mailbox(&bytes).is_err());
+        assert!(sweep(&path, Duration::ZERO).is_err());
+    }
+    assert!(crate::io::read_mailbox(b"MailCraft journal\n").unwrap_err().contains("newer MailCraft"));
+    // JSON that isn't ours still isn't.
+    fs::write(&path, b"{\"hello\": 1, \"version\": \"x\"}").unwrap();
+    assert!(open(&path).unwrap_err().contains("isn't a MailCraft mailbox"));
+}
+
+#[test]
+fn files_kept_aside_keep_what_they_name_and_only_the_newest_damaged_ones_stay() {
+    // A file of an earlier form kept aside keeps its content from the sweep, as a damaged one does.
+    let tmp = Temp::new("kept-format");
+    let path = tmp.file();
+    let mb = mailbox(12);
+    save_v2(&path, &mb);
+    let mut changed = open(&path).unwrap().mailbox;
+    let gone = first_with(&changed, |m| m.attachments.iter().any(|a| a.data.len() > INLINE_MAX));
+    let gone_file = blob_file(&path, &changed.message(gone).unwrap().attachments[0].data);
+    changed.remove_message(gone).unwrap();
+    assert!(save(&path, &changed).unwrap().compacted);
+    assert_eq!(kept(&path, "format2").len(), 1);
+    for (file, _) in files(&blob_dir(&path)) {
+        age(&file, Duration::from_secs(86_400));
+    }
+    assert_eq!(sweep(&path, GRACE).unwrap().removed, 0);
+    assert!(gone_file.exists());
+    fs::remove_file(&kept(&path, "format2")[0]).unwrap();
+    assert!(sweep(&path, GRACE).unwrap().removed > 0 && !gone_file.exists());
+
+    // Damaged files kept aside: the newest five stay; the other kinds aren't touched.
+    let tmp = Temp::new("kept-prune");
+    let path = tmp.file();
+    let mut mb = mailbox(4);
+    save(&path, &mb).unwrap();
+    for name in ["damaged-100", "damaged-300", "damaged-200-2", "damaged-200", "damaged-50", "damaged-x", "changed-10", "format1"] {
+        fs::write(tmp.0.join(format!("mailbox.mailcraft.{name}")), name).unwrap();
+    }
+    let mut bytes = fs::read(&path).unwrap();
+    bytes.extend_from_slice(b"not a save");
+    fs::write(&path, &bytes).unwrap();
+    open(&path).unwrap();
+    let first = *mb.messages.keys().next().unwrap();
+    mb.message_mut(first).unwrap().read = true;
+    assert!(save(&path, &mb).unwrap().compacted);
+    let mut left: Vec<String> =
+        kept(&path, "").iter().map(|p| p.file_name().unwrap().to_str().unwrap().trim_start_matches("mailbox.mailcraft.").to_string()).collect();
+    left.retain(|n| n != "blobs");
+    left.sort();
+    assert_eq!(left.len(), 7, "{left:?}");
+    assert!(left.contains(&"changed-10".to_string()) && left.contains(&"format1".to_string()));
+    for gone in ["damaged-x", "damaged-50"] {
+        assert!(!left.contains(&gone.to_string()), "{left:?}");
+    }
+    for stays in ["damaged-100", "damaged-200", "damaged-200-2", "damaged-300"] {
+        assert!(left.contains(&stays.to_string()), "{left:?}");
+    }
+    // The one kept now is among them, with the bytes it had.
+    assert!(kept(&path, "damaged-").iter().any(|p| fs::read(p).unwrap() == bytes));
+}
+
+#[test]
+fn a_file_another_writer_changed_is_kept_aside_before_it_is_written_over() {
+    let tmp = Temp::new("other-writer");
+    let path = tmp.file();
+    let mut mb = mailbox(6);
+    save(&path, &mb).unwrap();
+    // Another program writes the file meanwhile.
+    let other = tmp.0.join("other.mailcraft");
+    save(&other, &mailbox(2)).unwrap();
+    let theirs = fs::read(&other).unwrap();
+    fs::write(&path, &theirs).unwrap();
+    let first = *mb.messages.keys().next().unwrap();
+    mb.message_mut(first).unwrap().read = true;
+    assert!(save(&path, &mb).unwrap().compacted);
+    let aside = kept(&path, "changed-");
+    assert_eq!(aside.len(), 1);
+    assert_eq!(fs::read(&aside[0]).unwrap(), theirs);
+    assert!(open(&path).unwrap().mailbox == mb);
+    // From then on the file is this program's again: saves append, and nothing more is kept.
+    mb.message_mut(first).unwrap().read = false;
+    assert!(!save(&path, &mb).unwrap().compacted);
+    assert_eq!(kept(&path, "changed-").len(), 1);
+}
+
+#[test]
+fn what_was_worked_out_of_attachments_gone_from_memory_is_let_go() {
+    let tmp = Temp::new("hashes");
+    let path = tmp.file();
+    let mut mb = mailbox(16);
+    save(&path, &mb).unwrap();
+    let mut changed = mb.clone();
+    for m in changed.messages.values_mut() {
+        let seed = m.id;
+        Arc::make_mut(m).attachments.push(Attachment::new("more.bin", "application/octet-stream", noise(seed, 3_000)));
+    }
+    save(&path, &changed).unwrap();
+    let held = lock(&shared(&path).state).hashes.len();
+    assert!(held >= 16, "{held}");
+    // Those attachments gone from every copy in memory, a save lets go of what was known of them.
+    drop(changed);
+    mb.message_mut(*mb.messages.keys().next().unwrap()).unwrap().read = true;
+    save(&path, &mb).unwrap();
+    let now = lock(&shared(&path).state).hashes.len();
+    let alive = mb.messages.values().flat_map(|m| &m.attachments).count();
+    assert!(now <= alive && now < held, "{now} of {held}, {alive} attachments in memory");
+}
+
+#[test]
+fn a_file_with_more_records_than_can_be_held_is_refused() {
+    let tmp = Temp::new("too-many");
+    let path = tmp.file();
+    save(&path, &full_mailbox(30)).unwrap();
+    let bytes = fs::read(&path).unwrap();
+    assert!(index::replay_capped(&bytes[..], bytes.len() as u64, 1_000).is_ok());
+    let error = index::replay_capped(&bytes[..], bytes.len() as u64, 20).err().unwrap();
+    assert!(error.contains("more records"), "{error}");
 }
 
 #[test]

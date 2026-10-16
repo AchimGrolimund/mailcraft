@@ -18,6 +18,14 @@ pub const MAILBOX_EXT: &str = "mailcraft";
 /// records beside a folder of content (`crate::store`). One self-contained file is JSON.
 pub const INDEX_MAGIC: &[u8; 16] = b"MailCraft index\n";
 
+/// How every mailbox file that isn't JSON begins, whatever its form: format 3's
+/// [`INDEX_MAGIC`], and whatever a newer MailCraft writes. A file that begins so but isn't a form
+/// this program reads was written by a newer one, and is said to be.
+pub const FAMILY: &[u8] = b"MailCraft ";
+
+/// What the owner is told about a mailbox file of a form a newer MailCraft writes.
+pub const NEWER: &str = "this mailbox was written by a newer MailCraft";
+
 /// The message for a mailbox file that keeps its content in a folder beside it, read without it.
 const KEPT_BESIDE: &str = "this mailbox file keeps its messages' content in a folder beside it; open it where it is kept, or save it as one file first (File › Open & Export › Save Mailbox As)";
 
@@ -90,6 +98,9 @@ impl Format {
 pub fn read_mailbox(bytes: &[u8]) -> Result<Mailbox, String> {
     if bytes.starts_with(INDEX_MAGIC) {
         return Err(KEPT_BESIDE.into());
+    }
+    if bytes.starts_with(FAMILY) {
+        return Err(NEWER.into());
     }
     let mut mb: Mailbox = serde_json::from_slice(bytes).map_err(|e| format!("this isn't a MailCraft mailbox ({e})"))?;
     match mb.version {

@@ -2413,7 +2413,7 @@ fn feedback(id: &str, v: &Value) -> Option<String> {
         // A mailbox whose content folder lost something still opens; say how much is missing. A
         // mailbox file damaged part of the way opens as far as it can be read: that is said first.
         "file.open" => {
-            let damaged = ["lostSaves", "unfinished"].into_iter().any(|k| n(k).is_some_and(|c| c > 0));
+            let damaged = ["lostSaves", "unfinished", "lostRecords"].into_iter().any(|k| n(k).is_some_and(|c| c > 0));
             let lost = if damaged {
                 Some(damaged_mailbox_notice())
             } else {

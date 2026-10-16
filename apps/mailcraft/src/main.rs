@@ -892,7 +892,7 @@ fn first_mailbox(sample: bool, chosen: Option<PathBuf>) -> (Mailbox, Option<Path
             if let Some(notice) = opened.notice() {
                 log::warn!("{}: {notice}", path.display());
             }
-            let damaged = opened.lost_saves > 0 || opened.unfinished > 0;
+            let damaged = opened.lost_saves > 0 || opened.unfinished > 0 || opened.lost_records > 0;
             (opened.mailbox, Some(path), opened.unavailable, damaged)
         }
         Err(e) => {

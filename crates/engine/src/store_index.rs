@@ -26,9 +26,17 @@
 //!
 //! Everything read is hostile: lengths are checked against the file and capped, and what follows
 //! the last commit (a crash's half save, or damage) is reported, never taken. A record whose
-//! checksum doesn't match costs the save it is part of, not the saves after it: when its length
-//! still leads to the next record, the reading goes on from there, that one save is left out
-//! (and reported), and every later save is read. Damage that loses the way ends the reading.
+//! checksum doesn't match in a later save ends the reading there: every save after the first is
+//! a change to the one before it, and a change left out could leave a later one saying what
+//! isn't so (a folder's mark of how far its mail was fetched, written only when it moves, says
+//! mail is here that the damaged save brought). The saves from there on are counted and reported,
+//! and the file is kept aside before it is written again. In the first save, which nothing else
+//! stands in for, a damaged record whose length still leads to the next one costs only its item:
+//! the rest of the mailbox is read, and the items lost are reported (the host then fetches the
+//! mail again: `crate::store`).
+//!
+//! A file that begins `MailCraft ` but not as this form does, or has a higher format number, was
+//! written by a newer MailCraft and is said to be.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -228,10 +236,13 @@ pub struct Replayed {
     /// Where the last commit ends.
     pub good_len: u64,
     pub tail: Tail,
-    /// Saves left out because a record of theirs is damaged, and their bytes (counted in `tail`,
-    /// which is then [`Tail::Bytes`]: the file is kept aside before it is written again).
+    /// Finished saves left out: the first one with a damaged record, and every one after it
+    /// (their bytes are in `tail`, which is then [`Tail::Bytes`]: the file is kept aside before
+    /// it is written again).
     pub lost_saves: u32,
-    pub lost_bytes: u64,
+    /// Damaged records of the first save (the whole mailbox) left out: items it is missing.
+    /// Then `tail` is [`Tail::Bytes`] too.
+    pub lost_records: u32,
 }
 
 enum Op {
@@ -346,34 +357,54 @@ fn next(r: &mut impl Read, left: u64) -> std::io::Result<Result<(Rec, u64), Stop
     Ok(Ok((Rec::Op(op), size)))
 }
 
+/// Most records a file is read with: one save's, and the items the mailbox has (a mailbox of
+/// four million messages is well inside it). A file with more is refused, not read until memory
+/// runs out.
+pub const MAX_RECORDS: usize = 20_000_000;
+
+/// Whether the bytes of a file's beginning say it was written by a MailCraft, in any form that
+/// isn't JSON: this one, or one a newer MailCraft writes, which begins the same way.
+pub fn is_ours(head: &[u8]) -> bool {
+    head.starts_with(crate::io::FAMILY)
+}
+
 /// Read a format-3 file of `file_len` bytes up to its last commit. An error is a file that
 /// isn't one, is from a newer program, or couldn't be read at all; damage after the first commit
 /// is a [`Tail`], not an error.
-pub fn replay(mut r: impl Read, file_len: u64) -> Result<Replayed, String> {
+pub fn replay(r: impl Read, file_len: u64) -> Result<Replayed, String> {
+    replay_capped(r, file_len, MAX_RECORDS)
+}
+
+/// [`replay`], with at most `max_records` records held at once.
+pub fn replay_capped(mut r: impl Read, file_len: u64, max_records: usize) -> Result<Replayed, String> {
     let mut head = [0u8; HEADER_LEN as usize];
-    if fill(&mut r, &mut head).map_err(|e| e.to_string())? < head.len() || head.get(..MAGIC.len()) != Some(&MAGIC[..]) {
-        return Err("this isn't a MailCraft mailbox".into());
+    let got = fill(&mut r, &mut head).map_err(|e| e.to_string())?;
+    let head = head.get(..got).unwrap_or(&[]);
+    if !head.starts_with(&MAGIC[..]) {
+        // Another form of ours (a newer program's) is said to be that, not something else.
+        return Err(if is_ours(head) { "this mailbox was written by a newer MailCraft".into() } else { "this isn't a MailCraft mailbox".into() });
     }
-    let version = head.get(16..20).and_then(|b| b.try_into().ok()).map_or(0, u32::from_le_bytes);
-    if version > VERSION {
+    let version = head.get(16..20).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes);
+    if let Some(version) = version.filter(|v| *v > VERSION) {
         return Err(format!("this mailbox was written by a newer MailCraft (format {version})"));
     }
-    if version != VERSION || head.get(20..24) != Some(&[0u8; 4][..]) {
+    if version != Some(VERSION) || head.get(20..24) != Some(&[0u8; 4][..]) {
         return Err("this mailbox file is damaged (its header)".into());
     }
-    let mut out = Replayed { rest: None, items: HashMap::new(), good_len: HEADER_LEN, tail: Tail::Clean, lost_saves: 0, lost_bytes: 0 };
+    let too_many = || TOO_MANY.to_string();
+    let no_memory = || NO_MEMORY.to_string();
+    let mut out = Replayed { rest: None, items: HashMap::new(), good_len: HEADER_LEN, tail: Tail::Clean, lost_saves: 0, lost_records: 0 };
     let mut at = HEADER_LEN;
     let mut pending: Vec<Op> = Vec::new();
-    // Where the save being read began, and whether a record of it is damaged.
-    let mut group_at = HEADER_LEN;
-    let mut damaged = false;
-    // Bytes of saves left out since the last one read (which a tail from there counts already).
-    let mut lost_since = 0u64;
+    // Damaged records of the first save, and their bytes: the rest of it is kept (salvaged).
+    let (mut salvaged, mut salvaged_bytes) = (0u64, 0u64);
+    // A record of the first save isn't one (as against: the file ends inside it).
+    let mut base_bad = false;
     let mut r = r.take(file_len.saturating_sub(HEADER_LEN));
     loop {
         let left = file_len.saturating_sub(at);
         if left == 0 {
-            if !pending.is_empty() || damaged {
+            if !pending.is_empty() || salvaged > 0 {
                 out.tail = Tail::Bytes(file_len.saturating_sub(out.good_len));
             }
             break;
@@ -381,55 +412,54 @@ pub fn replay(mut r: impl Read, file_len: u64) -> Result<Replayed, String> {
         match next(&mut r, left).map_err(|e| e.to_string())? {
             Ok((Rec::Commit(count), size)) => {
                 at = at.saturating_add(size);
-                if damaged {
-                    // A save with a damaged record is left out whole; the next one is read.
-                    pending.clear();
-                    damaged = false;
-                    out.lost_saves = out.lost_saves.saturating_add(1);
-                    out.lost_bytes = out.lost_bytes.saturating_add(at.saturating_sub(group_at));
-                    lost_since = lost_since.saturating_add(at.saturating_sub(group_at));
-                    group_at = at;
-                    continue;
-                }
-                if count != pending.len() as u64 {
-                    // A commit that doesn't close what came before it isn't one.
+                let seen = (pending.len() as u64).saturating_add(salvaged);
+                // A commit that doesn't close what came before it isn't one. In a first save with
+                // damaged records, the first good commit closes it (and, when its own commit was
+                // the damage, the save after it too: the records are taken in their order).
+                let closes = if salvaged > 0 { count > 0 && count <= seen } else { count == seen };
+                if !closes {
                     out.tail = Tail::Bytes(file_len.saturating_sub(out.good_len));
                     break;
                 }
-                for op in pending.drain(..) {
-                    match op {
-                        Op::Rest(json, fp) => out.rest = Some((json, fp)),
-                        Op::Put(key, item) => {
-                            out.items.insert(key, item);
-                        }
-                        Op::Delete(key) => {
-                            out.items.remove(&key);
-                        }
-                    }
-                }
+                take_in(&mut out, &mut pending, max_records)?;
                 out.good_len = at;
-                group_at = at;
-                lost_since = 0;
+                out.lost_records = u32::try_from(salvaged).unwrap_or(u32::MAX);
+                salvaged = 0;
             }
             Ok((Rec::Op(op), size)) => {
                 at = at.saturating_add(size);
+                if pending.len() >= max_records {
+                    return Err(too_many());
+                }
+                pending.try_reserve(1).map_err(|_| no_memory())?;
                 pending.push(op);
             }
-            // Past the first save (the whole mailbox, which nothing can stand in for), a damaged
-            // record whose length leads on is passed over with the save it is part of.
-            Err(Stop::Bad { framed: Some(size), .. }) if out.good_len > HEADER_LEN => {
+            // In the first save (the whole mailbox, which nothing else stands in for), a damaged
+            // record whose length leads on costs that item, not the mailbox.
+            Err(Stop::Bad { framed: Some(size), .. }) if out.good_len == HEADER_LEN => {
                 at = at.saturating_add(size);
-                pending.clear();
-                damaged = true;
+                salvaged = salvaged.saturating_add(1);
+                salvaged_bytes = salvaged_bytes.saturating_add(size);
+            }
+            // After it, every save is a change to the one before: a save that can't be read is
+            // where the reading stops, for what the saves after it changed may count on it (a
+            // folder's mark of how far its mail was fetched, which comes back only in full). They
+            // are counted, not read, and the file is kept aside before it is written again.
+            Err(Stop::Bad { framed: Some(_), .. }) => {
+                let left = file_len.saturating_sub(at);
+                out.lost_saves = count_lost(&mut r, left, (pending.len() as u64).saturating_add(1)).map_err(|e| e.to_string())?;
+                out.tail = Tail::Bytes(file_len.saturating_sub(out.good_len));
+                break;
             }
             Err(stop) => {
                 let zero = match stop {
                     Stop::Short => false,
                     Stop::Bad { zero, .. } => zero,
                 };
+                base_bad = matches!(stop, Stop::Bad { .. }) && out.good_len == HEADER_LEN;
                 // Records closed by no commit count for nothing either way; zeros from there to
                 // the end are no save at all.
-                out.tail = if pending.is_empty() && zero && zeros(&mut r).map_err(|e| e.to_string())? {
+                out.tail = if pending.is_empty() && salvaged == 0 && zero && zeros(&mut r).map_err(|e| e.to_string())? {
                     Tail::Zeros
                 } else {
                     Tail::Bytes(file_len.saturating_sub(out.good_len))
@@ -438,15 +468,107 @@ pub fn replay(mut r: impl Read, file_len: u64) -> Result<Replayed, String> {
             }
         }
     }
-    if out.good_len == HEADER_LEN {
-        return Err("this mailbox file is damaged (no save in it was finished)".into());
+    // A first save with damaged records that no good commit closed: its own commit may be the
+    // damage. The file was renamed into place only once all of it was written, so what it has
+    // of the mailbox is taken, as far as it could be read; whatever of a later save came with it
+    // counts for as little as the items lost (the host fetches the mail again).
+    if out.good_len == HEADER_LEN && salvaged > 0 && pending.iter().any(|op| matches!(op, Op::Rest(..))) {
+        take_in(&mut out, &mut pending, max_records)?;
+        out.lost_records = u32::try_from(salvaged).unwrap_or(u32::MAX);
+        out.good_len = at.min(file_len);
+        out.tail = Tail::Bytes(file_len.saturating_sub(out.good_len).max(salvaged_bytes).max(1));
     }
-    // Saves left out are damage too: the file is kept aside before it is written again.
-    if out.lost_bytes > 0 {
-        out.tail = Tail::Bytes(match out.tail {
-            Tail::Bytes(n) => n.saturating_add(out.lost_bytes.saturating_sub(lost_since)),
-            Tail::Clean | Tail::Zeros => out.lost_bytes,
+    if out.good_len == HEADER_LEN {
+        return Err(if base_bad || salvaged > 0 {
+            "this mailbox file is damaged where it begins, and the mailbox couldn't be read from it".into()
+        } else {
+            "this mailbox file is damaged (no save in it was finished)".into()
         });
     }
+    // Damaged items of the first save are damage too: the file is kept aside before it is
+    // written again.
+    if out.lost_records > 0 && !matches!(out.tail, Tail::Bytes(_)) {
+        out.tail = Tail::Bytes(salvaged_bytes.max(1));
+    }
     Ok(out)
+}
+
+const TOO_MANY: &str = "this mailbox file holds more records than can be opened";
+const NO_MEMORY: &str = "not enough memory to open the mailbox";
+
+/// Take in the records of a save that is read, in their order.
+fn take_in(out: &mut Replayed, pending: &mut Vec<Op>, max_records: usize) -> Result<(), String> {
+    for op in pending.drain(..) {
+        match op {
+            Op::Rest(json, fp) => out.rest = Some((json, fp)),
+            Op::Put(key, item) => {
+                if !out.items.contains_key(&key) {
+                    if out.items.len() >= max_records {
+                        return Err(TOO_MANY.into());
+                    }
+                    out.items.try_reserve(1).map_err(|_| NO_MEMORY.to_string())?;
+                }
+                out.items.insert(key, item);
+            }
+            Op::Delete(key) => {
+                out.items.remove(&key);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// How many saves follow, `left` bytes before the end, after a damaged record that came
+/// `since` records after the last save read (itself included): the save it is part of, and every
+/// finished save after it. Only the frames are followed; what isn't a commit is passed over
+/// unread.
+fn count_lost(r: &mut impl Read, mut left: u64, mut since: u64) -> std::io::Result<u32> {
+    let mut lost = 0u32;
+    // A record since the last good commit was damaged (maybe a commit).
+    let mut damaged_since = true;
+    loop {
+        let mut head = [0u8; 5];
+        if left < FRAME || fill(r, &mut head)? < head.len() {
+            break;
+        }
+        let [a, b, c, d, kind] = head;
+        let len = u32::from_le_bytes([a, b, c, d]);
+        if len > MAX_RECORD || !matches!(kind, REST | PUT | DELETE | COMMIT) {
+            break;
+        }
+        let size = FRAME + u64::from(len);
+        if size > left {
+            break;
+        }
+        left -= size;
+        if kind == COMMIT && len == 4 {
+            let mut body = [0u8; 20];
+            if fill(r, &mut body)? < body.len() {
+                break;
+            }
+            let (count, sum) = body.split_at(4);
+            if checksum([a, b, c, d], kind, &[count]) == sum {
+                let count = count.try_into().map(u32::from_le_bytes).unwrap_or(0);
+                // More records than this commit closes: the save before it lost its commit.
+                if since > u64::from(count) && damaged_since {
+                    lost = lost.saturating_add(1);
+                }
+                lost = lost.saturating_add(1);
+                (since, damaged_since) = (0, false);
+                continue;
+            }
+            damaged_since = true;
+        } else {
+            let rest = size - 5;
+            if std::io::copy(&mut r.by_ref().take(rest), &mut std::io::sink())? < rest {
+                break;
+            }
+        }
+        since = since.saturating_add(1);
+    }
+    // A save whose commit was the damage, at the end.
+    if since > 0 && damaged_since {
+        lost = lost.saturating_add(1);
+    }
+    Ok(lost)
 }

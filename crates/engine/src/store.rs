@@ -801,8 +801,13 @@ pub struct Opened {
     /// damage), or of saves left out because a record of theirs is damaged. They are not read;
     /// the file is kept aside before it is next written.
     pub unfinished: u64,
-    /// Saves left out because a record of theirs is damaged (the saves after them are read).
+    /// Finished saves left out: the first one with a damaged record, and every one after it
+    /// (each is a change to the one before).
     pub lost_saves: u32,
+    /// Items of the file's first save (the whole mailbox) that are damaged and were left out.
+    /// Every folder's mark of how far its mail was fetched is then forgotten, so that the mail
+    /// that is missing comes again from its server.
+    pub lost_records: u32,
 }
 
 impl Opened {
@@ -810,12 +815,19 @@ impl Opened {
     /// read: for the host to show (a status line, the CLI's output), not only to log.
     pub fn notice(&self) -> Option<String> {
         let mut said = Vec::new();
+        let plural = |n: u32, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
+        if self.lost_records > 0 {
+            said.push(format!(
+                "{} of the mailbox file damaged and left out; mail missing from it is fetched again from its server at the next Send/Receive",
+                plural(self.lost_records, "item (a message, contact, event or task) is", "items (messages, contacts, events or tasks) are")
+            ));
+        }
         if self.lost_saves > 0 {
             said.push(format!(
-                "{} of the saves in the mailbox file are damaged and were left out, so the changes they made are missing",
-                self.lost_saves
+                "{} of the mailbox file damaged, or after a damaged one, and left out, so the changes they made are missing",
+                plural(self.lost_saves, "save is", "saves are")
             ));
-        } else if self.unfinished > 0 {
+        } else if self.unfinished > 0 && self.lost_records == 0 {
             said.push(format!("the last {} bytes of the mailbox file aren't a finished save and were left out", self.unfinished));
         }
         if !said.is_empty() {
@@ -839,22 +851,31 @@ impl std::fmt::Debug for Opened {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Opened {{ messages: {}, split: {}, unavailable: {}, unfinished: {}, lost_saves: {} }}",
+            "Opened {{ messages: {}, split: {}, unavailable: {}, unfinished: {}, lost_saves: {}, lost_records: {} }}",
             self.mailbox.messages.len(),
             self.split,
             self.unavailable,
             self.unfinished,
-            self.lost_saves
+            self.lost_saves,
+            self.lost_records
         )
     }
 }
 
-/// Whether the file at `path` begins as a mailbox file in this form does.
+/// Whether the file at `path` begins as a mailbox file in this form does. A file that begins as
+/// one of a form a newer MailCraft writes is an error that says so.
 fn is_index(file: &Path) -> Result<bool, String> {
     let mut head = [0u8; 16];
     let mut f = fs::File::open(file).map_err(|e| e.to_string())?;
     let got = index::fill(&mut f, &mut head).map_err(|e| e.to_string())?;
-    Ok(got == head.len() && &head == crate::io::INDEX_MAGIC)
+    let head = head.get(..got).unwrap_or(&[]);
+    if head == crate::io::INDEX_MAGIC {
+        return Ok(true);
+    }
+    if index::is_ours(head) {
+        return Err(crate::io::NEWER.into());
+    }
+    Ok(false)
 }
 
 /// Open the mailbox file at `path`, in any of its forms. Whatever the file and its content
@@ -895,7 +916,7 @@ pub fn open(path: &Path) -> Result<Opened, String> {
     st.stamp = Stamp::of(&file, bytes.len() as u64);
     st.loaded = loaded_unless_retired(&mailbox);
     st.legacy = Some(version.max(1));
-    Ok(Opened { mailbox, split, unavailable, unfinished: 0, lost_saves: 0 })
+    Ok(Opened { mailbox, split, unavailable, unfinished: 0, lost_saves: 0, lost_records: 0 })
 }
 
 /// One item of a mailbox file in this form, read.
@@ -1005,7 +1026,14 @@ fn open_index(st: &mut State, file: &Path, len: u64) -> Result<Opened, String> {
         log::warn!("{show}: {unavailable} bodies or attachments are missing from {} or damaged", dir.display());
     }
     if replayed.lost_saves > 0 {
-        log::warn!("{show}: {} saves in it are damaged and were left out; the saves after them were read", replayed.lost_saves);
+        log::warn!("{show}: {} saves in it are damaged or come after a damaged one, and were left out", replayed.lost_saves);
+    }
+    if replayed.lost_records > 0 {
+        log::warn!(
+            "{show}: {} items of its first save are damaged and were left out; every folder's mail is to be fetched again",
+            replayed.lost_records
+        );
+        forget_how_far_fetched(&mut mailbox);
     }
     let unfinished = match replayed.tail {
         Tail::Bytes(n) => {
@@ -1053,7 +1081,21 @@ fn open_index(st: &mut State, file: &Path, len: u64) -> Result<Opened, String> {
     st.stamp = Stamp::of(file, len);
     st.disk = Some(disk);
     st.loaded = loaded_unless_retired(&mailbox);
-    Ok(Opened { mailbox, split: true, unavailable, unfinished, lost_saves: replayed.lost_saves })
+    Ok(Opened { mailbox, split: true, unavailable, unfinished, lost_saves: replayed.lost_saves, lost_records: replayed.lost_records })
+}
+
+/// Make every folder's mail be fetched again from its server, as for a folder never fetched:
+/// for a mailbox missing messages it can't tell, which would otherwise never come back (a
+/// folder's mark says they are here). What is here already isn't fetched twice: IMAP fetches only
+/// UIDs it doesn't have, and Graph lists the folder afresh and knows its messages by server id.
+fn forget_how_far_fetched(mailbox: &mut Mailbox) {
+    for folder in &mut mailbox.folders {
+        folder.uid_seen = 0;
+        if let Some(server) = &mut folder.server {
+            server.delta.clear();
+            server.caught_up = false;
+        }
+    }
 }
 
 /// What a mailbox file wants for one part of a message.
@@ -1645,9 +1687,17 @@ fn keep_aside(path: &Path, what: &str) -> std::io::Result<PathBuf> {
 }
 
 fn write_index(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Saved, String> {
+    let saved = write_index_once(st, path, mailbox);
+    // What was worked out of attachments no longer in memory is no use to anybody.
+    st.hashes.retain(|_, (of, _)| of.strong_count() > 0);
+    saved
+}
+
+fn write_index_once(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Saved, String> {
     // Somebody else wrote the file since: what it names now is theirs to say, and what it named
-    // before may be swept any time.
+    // before may be swept any time. What they wrote is kept aside before it is written over.
     let ours = st.stamp.as_ref().is_some_and(|s| s.still(path));
+    let changed = st.stamp.is_some() && !ours && path.exists();
     if !ours {
         st.live.clear();
         st.stamp = None;
@@ -1659,8 +1709,14 @@ fn write_index(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Saved, 
     }
     st.loaded = None;
     let prior = st.disk.take();
-    let damaged = matches!(prior, Some(Disk { tail: Tail::Bytes(_), .. }));
-    let Some(mut d) = prior.filter(Disk::appendable) else { return compact(st, path, mailbox, damaged) };
+    let keep = if changed {
+        Some(Keep::Changed)
+    } else if matches!(prior, Some(Disk { tail: Tail::Bytes(_), .. })) {
+        Some(Keep::Damaged)
+    } else {
+        st.legacy.map(Keep::Legacy)
+    };
+    let Some(mut d) = prior.filter(Disk::appendable) else { return compact(st, path, mailbox, keep) };
     let mut delta = match delta(st, mailbox, &d) {
         Ok(delta) => delta,
         Err(e) => {
@@ -1685,7 +1741,7 @@ fn write_index(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Saved, 
     // When what was appended outgrows what the file says, it is written whole instead.
     d.len = d.len.saturating_add(group.len() as u64);
     if d.outgrown() {
-        return compact(st, path, mailbox, false).map(|whole| Saved {
+        return compact(st, path, mailbox, None).map(|whole| Saved {
             blobs: saved.blobs + whole.blobs,
             blob_bytes: saved.blob_bytes + whole.blob_bytes,
             ..whole
@@ -1702,17 +1758,46 @@ fn write_index(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Saved, 
     Ok(saved)
 }
 
+/// Why the mailbox file is kept aside before it is written whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Keep {
+    /// Part of it wasn't read (a save cut short, or damage): `<file>.damaged-<seconds>`.
+    Damaged,
+    /// Another program (or another copy of this one) wrote it since it was read here:
+    /// `<file>.changed-<seconds>`.
+    Changed,
+    /// It is in an earlier form, which this one takes the place of: `<file>.format<n>`.
+    Legacy(u32),
+}
+
+impl Keep {
+    /// The end of the name it is kept under, and whether nothing may be written unless it is.
+    fn name(self) -> (String, bool) {
+        let secs = || SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        match self {
+            Keep::Damaged => (format!("{DAMAGED}{}", secs()), true),
+            Keep::Changed => (format!("{CHANGED}{}", secs()), true),
+            Keep::Legacy(version) => (format!("{FORMAT}{version}"), false),
+        }
+    }
+}
+
+/// How the names of files kept aside go on from the mailbox file's own (`<file>.<this>…`).
+const DAMAGED: &str = "damaged-";
+const CHANGED: &str = "changed-";
+const FORMAT: &str = "format";
+
+/// Damaged or changed mailbox files kept aside beside one, of each kind: when another is kept,
+/// the oldest beyond these go (and with them what only they named, at the next sweep).
+const KEEP_ASIDE: usize = 5;
+
 /// Write the mailbox file at `path` whole: the rest of the mailbox and every item, closed by one
 /// commit, to a temporary file renamed over once the content it names is on disk. A file that
-/// ends in what isn't a finished save (`damaged`) is kept aside first, unread bytes and all, or
-/// nothing is written; so is a file of an earlier form, the first time this form takes its place.
-fn compact(st: &mut State, path: &Path, mailbox: &Mailbox, damaged: bool) -> Result<Saved, String> {
-    let keep = if damaged {
-        let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        Some((format!("damaged-{secs}"), true))
-    } else {
-        st.legacy.map(|version| (format!("format{version}"), false))
-    };
+/// ends in what isn't a finished save, or that somebody else wrote, is kept aside first, unread
+/// bytes and all, or nothing is written; so is a file of an earlier form, the first time this
+/// form takes its place ([`Keep`]).
+fn compact(st: &mut State, path: &Path, mailbox: &Mailbox, keep: Option<Keep>) -> Result<Saved, String> {
+    let keep = keep.map(|k| (k, k.name()));
     let rest = rest_json(mailbox)?;
     let mut out = AtomicFile::create(path).map_err(io_error)?;
     out.write_all(&index::header()).map_err(io_error)?;
@@ -1745,9 +1830,19 @@ fn compact(st: &mut State, path: &Path, mailbox: &Mailbox, damaged: bool) -> Res
     let mut saved = Saved::default();
     write_content(path, &wanted, &mut saved)?;
     drop(wanted);
-    if let Some((what, needed)) = keep {
+    if let Some((kind, (what, needed))) = keep {
         match keep_aside(path, &what) {
-            Ok(aside) => log::info!("the mailbox file as it was is kept as {}", aside.display()),
+            Ok(aside) => {
+                log::info!("the mailbox file as it was is kept as {}", aside.display());
+                let family = match kind {
+                    Keep::Damaged => Some(DAMAGED),
+                    Keep::Changed => Some(CHANGED),
+                    Keep::Legacy(_) => None,
+                };
+                if let Some(family) = family {
+                    prune_kept_aside(path, family, KEEP_ASIDE);
+                }
+            }
             Err(e) if needed => return Err(format!("the mailbox file couldn't be kept aside before it is written again ({e})")),
             Err(e) => log::warn!("the mailbox file as it was couldn't be kept aside ({e})"),
         }
@@ -1827,9 +1922,54 @@ fn named_by(path: &Path) -> Result<Option<HashSet<Digest>>, String> {
     Ok(Some(head.blobs.values().flat_map(WireParts::hashes).collect()))
 }
 
-/// Damaged mailbox files kept aside beside one, most looked into by a sweep; with more, nothing
-/// is swept.
-const MAX_DAMAGED: usize = 64;
+/// Mailbox files kept aside beside one, most looked into by a sweep; with more, nothing is
+/// swept.
+const MAX_KEPT_ASIDE: usize = 64;
+
+/// The files kept aside beside the mailbox file `file` whose names go on from its own with one of
+/// `families` ([`DAMAGED`], [`CHANGED`], [`FORMAT`]), at most [`MAX_ENTRIES`] looked at.
+fn kept_aside(file: &Path, families: &[&str]) -> Vec<PathBuf> {
+    let (Some(parent), Some(stem)) = (file.parent(), file.file_name().and_then(|n| n.to_str())) else { return Vec::new() };
+    let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
+    let prefixes: Vec<String> = families.iter().map(|f| format!("{stem}.{f}")).collect();
+    fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .take(MAX_ENTRIES)
+        .filter(|e| e.file_name().to_str().is_some_and(|n| prefixes.iter().any(|p| n.starts_with(p.as_str()))))
+        .map(|e| e.path())
+        .collect()
+}
+
+/// When a file kept aside was, by its name (`<prefix><seconds>`, or `-<n>` after it when that
+/// was taken), for ordering: unknown is oldest.
+fn kept_when(path: &Path, prefix: &str) -> (u64, u32) {
+    let after = path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix(prefix)).unwrap_or("");
+    let (secs, n) = after.split_once('-').unwrap_or((after, "1"));
+    (secs.parse().unwrap_or(0), n.parse().unwrap_or(0))
+}
+
+/// Remove the oldest files of one family kept aside beside `file` beyond the newest `keep`. Only
+/// files of that family are touched; one that can't be removed stays.
+fn prune_kept_aside(file: &Path, family: &str, keep: usize) {
+    let mut all = kept_aside(file, &[family]);
+    if all.len() <= keep {
+        return;
+    }
+    let prefix = format!("{}.{family}", file.file_name().and_then(|n| n.to_str()).unwrap_or(""));
+    all.sort_by_key(|p| kept_when(p, &prefix));
+    let extra = all.len().saturating_sub(keep);
+    for old in all.into_iter().take(extra) {
+        // Only a plain file of ours: a link or a folder by that name is somebody else's.
+        if fs::symlink_metadata(&old).is_ok_and(|m| m.is_file()) {
+            match fs::remove_file(&old) {
+                Ok(()) => log::info!("{} was kept aside the longest and is removed", old.display()),
+                Err(e) => log::warn!("{} couldn't be removed ({e})", old.display()),
+            }
+        }
+    }
+}
 
 /// Every content name that appears anywhere in the bytes `r` gives (a `"`, 64 lowercase hex
 /// digits, a `"`), damaged or not, read in pieces: what a damaged file may name.
@@ -1858,26 +1998,17 @@ fn names_in(mut r: impl std::io::Read, into: &mut HashSet<Digest>) -> std::io::R
     }
 }
 
-/// What the damaged mailbox files kept aside beside `file` name, by the look of every byte of
-/// them: they may name content the mailbox no longer does, which someone may want back. `None`
-/// when one of them can't be read through (or there are too many): then nothing is swept.
-fn named_by_damaged(file: &Path) -> Option<HashSet<Digest>> {
-    let (Some(parent), Some(stem)) = (file.parent(), file.file_name().and_then(|n| n.to_str())) else { return Some(HashSet::new()) };
-    let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
-    let prefix = format!("{stem}.damaged-");
-    let damaged: Vec<PathBuf> = fs::read_dir(parent)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .take(MAX_ENTRIES)
-        .filter(|e| e.file_name().to_str().is_some_and(|n| n.starts_with(&prefix)))
-        .map(|e| e.path())
-        .collect();
-    if damaged.len() > MAX_DAMAGED {
+/// What the mailbox files kept aside beside `file` name (damaged, changed by somebody else, or of
+/// an earlier form), by the look of every byte of them: they may name content the mailbox no
+/// longer does, which someone may want back, or an older MailCraft may open. `None` when one of
+/// them can't be read through (or there are too many): then nothing is swept.
+fn named_by_kept_aside(file: &Path) -> Option<HashSet<Digest>> {
+    let kept = kept_aside(file, &[DAMAGED, CHANGED, FORMAT]);
+    if kept.len() > MAX_KEPT_ASIDE {
         return None;
     }
     let mut named = HashSet::new();
-    for path in damaged {
+    for path in kept {
         let (f, len) = open_plain(&path)?;
         if len > MAX_INDEX {
             return None;
@@ -1897,9 +2028,9 @@ pub fn sweep(path: &Path, grace: Duration) -> Result<Swept, String> {
     st.swept = Some(Instant::now());
     let file = resolve(path);
     let dir = blob_dir(&file);
-    // What a damaged file kept aside names may be wanted back: it stays.
-    let Some(kept_aside) = named_by_damaged(&file) else {
-        log::info!("{}: not sweeping its content folder: a damaged mailbox file kept beside it couldn't be read through", path.display());
+    // What a file kept aside names may be wanted back: it stays.
+    let Some(kept_aside) = named_by_kept_aside(&file) else {
+        log::info!("{}: not sweeping its content folder: a mailbox file kept beside it couldn't be read through", path.display());
         return Ok(Swept::default());
     };
     // The file as this program last read or wrote it names what it knows; otherwise it is read.

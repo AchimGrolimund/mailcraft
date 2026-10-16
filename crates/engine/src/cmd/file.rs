@@ -65,6 +65,8 @@ struct Left {
     /// Saves left out because a record of theirs is damaged, and the bytes of the file not read.
     lost_saves: u32,
     unfinished: u64,
+    /// Items of the mailbox file's first save that are damaged and were left out.
+    lost_records: u32,
     /// All of it in a sentence for the owner (`store::Opened::notice`).
     notice: Option<String>,
 }
@@ -81,8 +83,13 @@ fn read(v: &Value) -> Result<(Mailbox, Left), crate::CmdError> {
                 return Err(fail(format!("{path} isn't a mailbox; bring it in with File › Import")));
             }
             let opened = crate::store::open(std::path::Path::new(path)).map_err(fail)?;
-            let left =
-                Left { unavailable: opened.unavailable, lost_saves: opened.lost_saves, unfinished: opened.unfinished, notice: opened.notice() };
+            let left = Left {
+                unavailable: opened.unavailable,
+                lost_saves: opened.lost_saves,
+                unfinished: opened.unfinished,
+                lost_records: opened.lost_records,
+                notice: opened.notice(),
+            };
             return Ok((opened.mailbox, left));
         }
     }
@@ -119,6 +126,7 @@ fn open(s: &mut Session, v: &Value) -> CmdResult {
         // What of the file was damaged and left out, and what to tell the owner about it.
         "lostSaves": left.lost_saves,
         "unfinished": left.unfinished,
+        "lostRecords": left.lost_records,
         "notice": left.notice,
     }))
 }
