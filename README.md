@@ -40,7 +40,7 @@ The pictures are of the sample mailbox (`--sample`): invented people and invente
 
 | | |
 |---|---|
-| **Desktop** | macOS (universal), Windows (x64, arm64), Linux (x86_64, aarch64, riscv64), FreeBSD (x86_64) |
+| **Desktop** | macOS (universal), Windows (x64, x86, arm64), Linux (x86_64, aarch64), FreeBSD (x86_64) |
 | **Web** | any modern browser, through WebAssembly (WebGPU, or WebGL2 where that is missing) |
 
 The browser build is the same app with three differences that a browser imposes: it can't open connections to mail servers (bring mail in with File › Import, or use the desktop app), the mailbox lives in the browser's storage, and saving means downloading.
