@@ -18,6 +18,7 @@ pub mod graph_down;
 pub mod graph_drafts;
 pub mod graph_mail;
 pub mod graph_send;
+pub mod graph_switch;
 pub mod graph_up;
 pub mod mail;
 pub mod people;
@@ -61,6 +62,7 @@ pub fn registry() -> Registry {
     v.extend(account::specs());
     v.extend(signature::specs());
     v.extend(graph_mail::specs());
+    v.extend(graph_switch::specs());
     v.extend(graph_send::specs());
     v.extend(remote::specs());
     Registry::new(v)

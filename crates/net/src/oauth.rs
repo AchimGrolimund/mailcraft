@@ -106,7 +106,7 @@ const MICROSOFT_GRAPH: &str =
 const MICROSOFT_GRAPH_EXTRAS: &str = "https://graph.microsoft.com/MailboxSettings.Read";
 /// What keeping a Microsoft account's folders and mail in step through Graph takes (R3): reading
 /// and changing them. Asked for only for an account that is kept in step that way
-/// ([`Resource::GraphMail`]), which only the switch for testing makes until R3.2.
+/// ([`Resource::GraphMail`]).
 const MICROSOFT_GRAPH_MAIL: &str = "https://graph.microsoft.com/Mail.ReadWrite";
 /// And what showing the Favorites of Outlook takes on top of that, when the owner wants them:
 /// reading the mailbox's configuration items (of which one holds the list) and reading folders
@@ -175,9 +175,7 @@ pub enum Resource {
     /// and the contacts.
     Graph,
     /// Microsoft Graph with the folders and mail of a Microsoft account read and written through
-    /// it (`Mail.ReadWrite`, R3): only for an account kept in step through Graph, which is made
-    /// only behind the switch for testing (`MAILCRAFT_GRAPH_MAIL=1`) until the owners agree to
-    /// the permission for everybody (R3.2).
+    /// it (`Mail.ReadWrite`, R3): only for an account kept in step through Graph.
     GraphMail,
 }
 

@@ -16,7 +16,6 @@ const NOW: i64 = 1_800_000_000;
 /// account, the message and the local account's folder.
 fn setup() -> (Session, Id, Id, Id) {
     let mut s = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
-    s.graph_mail = true;
     let account = s.run("account.add", &json!({"email": "owner@example.org", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     for (kind, id) in [(FolderKind::Inbox, "F-in"), (FolderKind::Archive, "F-ar"), (FolderKind::Deleted, "F-de")] {
         let folder = match s.mailbox.folder_of_kind(account, kind) {
@@ -223,7 +222,6 @@ fn mail_imported_for_a_microsoft_account_goes_to_a_local_folder_and_stays_there(
 #[test]
 fn importing_for_a_microsoft_account_without_a_local_account_makes_one() {
     let mut s = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
-    s.graph_mail = true;
     let account = s.run("account.add", &json!({"email": "owner@example.org", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     assert!(s.mailbox.accounts.iter().all(|a| a.kind == mailcraft_model::AccountKind::Microsoft));
     let inbox = s.mailbox.folder_of_kind(account, FolderKind::Inbox).unwrap();

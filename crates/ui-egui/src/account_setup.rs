@@ -963,9 +963,9 @@ impl AccountSetup {
         };
         let added = match self.add_command(&tokens.name) {
             Some((command, mut params)) => {
-                // With the switch for testing on, a Microsoft account is kept in step through
-                // Microsoft Graph, without mail servers (R3, MAILCRAFT_GRAPH_MAIL=1).
-                if app.session.graph_mail && self.oauth.as_ref().is_some_and(|o| o.provider == mailcraft_model::OAuthProvider::Microsoft) {
+                // A Microsoft account is kept in step through Microsoft Graph, without mail servers
+                // (R3), unless the owner asked for mail only (that is IMAP's, until R3.8).
+                if !self.mail_only && self.oauth.as_ref().is_some_and(|o| o.provider == mailcraft_model::OAuthProvider::Microsoft) {
                     params["kind"] = json!("microsoft");
                 }
                 app.execute(command, params)
@@ -2131,6 +2131,12 @@ mod tests {
         let asked = lookups(&mut a, Some(Ok(vec![MICROSOFT_MX])));
         let signed = sign_ins(&mut a, Some(Ok(signed_in("Noor Haddad"))));
         let synced = syncs(&mut a);
+        let jobs: Log<Option<mailcraft_model::sync::GraphMailRequest>> = Default::default();
+        let log = jobs.clone();
+        a.services.graph = Some(Box::new(move |req: crate::GraphRequest| {
+            log.lock().unwrap().push(req.mail.clone());
+            mpsc::channel().1
+        }));
         let mut h = open(a, json!({}));
         connect(&mut h, "Noor@Example.org");
         h.run_steps(4);
@@ -2141,8 +2147,8 @@ mod tests {
             let signed = signed.lock().unwrap();
             assert_eq!((signed.len(), signed[0].0.as_str(), signed[0].1.as_str()), (1, "Noor@Example.org", APP_ID));
         }
-        // The account is the only one (the nameless mailbox made way), with Microsoft's servers
-        // and the name Microsoft knows the owner by.
+        // The account is the only one (the nameless mailbox made way), kept in step through
+        // Microsoft Graph (R3), with the name Microsoft knows the owner by.
         let s = &h.state().session;
         assert_eq!(s.mailbox.accounts.len(), 1);
         let account = &s.mailbox.accounts[0];
@@ -2152,28 +2158,23 @@ mod tests {
         );
         assert_eq!(
             (account.kind, account.oauth.as_ref().map(|o| (o.provider, o.client_id.as_str()))),
-            (AccountKind::Imap, Some((OAuthProvider::Microsoft, "")))
+            (AccountKind::Microsoft, Some((OAuthProvider::Microsoft, "")))
         );
-        assert_eq!(account.incoming, Some(Server { host: "outlook.office365.com".into(), port: 993, security: Security::Tls }));
-        assert_eq!(account.outgoing, Some(Server { host: "smtp.office365.com".into(), port: 587, security: Security::StartTls }));
-        // The first download started, with the token and no password.
-        {
-            let synced = synced.lock().unwrap();
-            assert_eq!(synced.len(), 1);
-            assert_eq!((synced[0].0.id, synced[0].1.as_str(), synced[0].2.as_str()), (account.id, "tok-1", ""));
-        }
-        assert!(h.state().syncing() && !h.state().signing_in());
+        assert_eq!((account.incoming.as_ref(), account.outgoing.as_ref()), (None, None));
+        // The first download started, through Graph: no IMAP, and no password.
+        assert!(synced.lock().unwrap().is_empty());
+        assert_eq!(jobs.lock().unwrap().iter().filter_map(|mail| mail.as_ref().map(|m| m.account)).collect::<Vec<_>>(), [account.id]);
+        assert!(!h.state().signing_in());
         assert!(says(&h, "Noor@Example.org is set up") && says(&h, "Your mail is downloading now"));
         click(&mut h, "Done");
         assert_eq!(page(&h), None);
     }
 
-    /// (R3.1) With the switch for testing on, the same account is kept in step through Microsoft
-    /// Graph: signed in for Graph with its mail, no mail servers, and its first run a Graph job.
+    /// (R3.1) A Microsoft account is kept in step through Microsoft Graph: signed in for Graph
+    /// with its mail, no mail servers, and its first run a Graph job.
     #[test]
-    fn behind_the_switch_a_microsoft_account_is_kept_in_step_through_graph() {
+    fn a_microsoft_account_is_kept_in_step_through_graph() {
         let mut a = app(false);
-        a.session.graph_mail = true;
         a.services.microsoft_client_id = APP_ID.into();
         lookups(&mut a, Some(Ok(vec![MICROSOFT_MX])));
         let asked: Log<(bool, bool)> = Default::default();
@@ -2593,7 +2594,8 @@ mod tests {
         {
             let (mut h, signed, synced) = signed_in_to(tenant);
             assert_eq!((page(&h), directory(&h)), (Some(Page::Done), kind), "{tenant}");
-            assert_eq!((addresses(&h), signed.lock().unwrap().len(), synced.lock().unwrap().len()), (vec!["noor@example.org".to_string()], 1, 1));
+            // (Its first run is through Graph, R3: nothing by IMAP.)
+            assert_eq!((addresses(&h), signed.lock().unwrap().len(), synced.lock().unwrap().len()), (vec!["noor@example.org".to_string()], 1, 0));
             for never in ["Show Outlook's Favorites?", "Exchange Web Services", "Not now"] {
                 assert!(!says(&h, never), "{tenant}: {never}");
             }

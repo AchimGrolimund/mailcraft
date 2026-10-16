@@ -314,6 +314,7 @@ const ACCOUNTS: &[&str] = &[
     "account.add",
     "account.edit",
     "account.remove",
+    "account.graphSwitch",
     "calendar.moveToAccount",
     "ui.connectMicrosoft",
     "ui.connectFavorites",
@@ -322,6 +323,8 @@ const ACCOUNTS: &[&str] = &[
     "ui.signInAgain",
     "ui.microsoftClientId",
     "ui.rememberSignIn",
+    "ui.graphSwitch",
+    "ui.switchToGraph",
 ];
 
 const MAILBOX: &[&str] = &["file.new", "file.open", "file.save", "file.saveAs"];
@@ -587,6 +590,16 @@ pub fn describe(s: &Session, id: &str, params: &Value) -> String {
             format!("{} ({label}) and write to the people invited", event_title(s, params))
         }
         "account.add" => format!("add the account {}", clip(st("email"), 80)),
+        "account.graphSwitch" | "ui.switchToGraph" => {
+            let a = p::id(params, "account").and_then(|a| s.mailbox.account(a)).map(|a| clip(&a.email, 80)).unwrap_or_default();
+            match st("answer") {
+                "later" => format!("keep the account {a} on IMAP for now"),
+                "switchWithout" => format!(
+                    "switch the account {a} to Microsoft Graph now, leaving the changes that wait for its IMAP server in the copy of the mailbox kept beside it"
+                ),
+                _ => format!("switch the account {a} to Microsoft Graph (its mail is downloaded again; a copy of the mailbox is kept beside it)"),
+            }
+        }
         "account.edit" | "account.remove" => {
             let a = p::id(params, "id").and_then(|a| s.mailbox.account(a)).map(|a| clip(&a.email, 80)).unwrap_or_default();
             format!("{} {a}", if id == "account.edit" { "change the account" } else { "remove the account" })

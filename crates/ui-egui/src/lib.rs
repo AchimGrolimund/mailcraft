@@ -29,6 +29,7 @@ pub mod favorites_sync;
 pub mod files;
 pub mod forms;
 pub mod graph_fetch;
+mod graph_switch;
 pub mod i18n;
 pub mod icons;
 pub mod keys;
@@ -261,7 +262,7 @@ pub struct SignInRequest {
     /// [`favorites_sync::REFUSED_FOR_ACCOUNT`].
     pub favorites: bool,
     /// With `graph`: ask also for reading and changing mail (`Mail.ReadWrite`), for an account kept
-    /// in step through Microsoft Graph (R3, behind the switch for testing).
+    /// in step through Microsoft Graph (R3).
     pub mail_write: bool,
 }
 
@@ -517,6 +518,18 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
     ),
     ("ui.cancelSync", "Cancel Send/Receive", "Send / Receive", "{}"),
     (
+        "ui.graphSwitch",
+        "Switch to Microsoft Graph",
+        "File › Info",
+        r#"{"account"?: number} — the page that offers a Microsoft account kept in step by IMAP the switch to Microsoft Graph"#,
+    ),
+    (
+        "ui.switchToGraph",
+        "Switch to Microsoft Graph",
+        "File › Info",
+        r#"{"account"?: number, "answer": "switch"|"switchWithout"|"later"} — the page's answer: switch goes ahead once nothing waits for the IMAP server (a Send/Receive first, when something does), with a copy of the mailbox kept beside it; switchWithout goes ahead at once, leaving what waits for the IMAP server in that copy; later keeps the account on IMAP"#,
+    ),
+    (
         "ui.connectMicrosoft",
         "Connect Calendar and Contacts",
         "File › Info",
@@ -754,6 +767,18 @@ pub struct MailApp {
     /// Open account setup when the app starts on a mailbox nobody has set up yet (the host turns
     /// this on for an ordinary start; not for the sample or a mailbox named on the command line).
     pub offer_setup: bool,
+    /// Offer each Microsoft account still on IMAP the switch to Microsoft Graph, on its page, by
+    /// itself ([`graph_switch`]): the desktop app does, for a mailbox kept in a file. Off, the
+    /// page opens only when asked for (`ui.graphSwitch`).
+    pub offer_graph_switch: bool,
+    /// Microsoft accounts on IMAP whose page offering the switch to Microsoft Graph was shown
+    /// in this run (closed without an answer, it is shown again in the next one).
+    graph_switch_shown: std::collections::HashSet<Id>,
+    /// Accounts switching to Microsoft Graph for which the switch was tried since their last
+    /// Send/Receive ([`graph_switch`]).
+    graph_switch_tried: std::collections::HashSet<Id>,
+    /// Accounts whose waiting switch was offered "Switch without Them" in this run.
+    graph_switch_waiting_shown: std::collections::HashSet<Id>,
     /// Send/Receive by itself when the app starts and every few minutes (on by default; how often
     /// is the owner's `syncMinutes` option).
     pub auto_sync: bool,
@@ -856,6 +881,10 @@ impl MailApp {
             quit_requested: false,
             autosave: true,
             offer_setup: false,
+            offer_graph_switch: false,
+            graph_switch_shown: Default::default(),
+            graph_switch_tried: Default::default(),
+            graph_switch_waiting_shown: Default::default(),
             auto_sync: true,
             last_auto_sync: 0.0,
             sync_queue: Default::default(),
@@ -1229,7 +1258,8 @@ impl MailApp {
                     .or_else(|| calendar_view::ui_command(self, id, p))
                     .or_else(|| meeting_dialogs::ui_command(self, id, p))
                     .or_else(|| favorites_sync::ui_command(self, id, p))
-                    .or_else(|| approval::ui_command(self, id, p));
+                    .or_else(|| approval::ui_command(self, id, p))
+                    .or_else(|| graph_switch::ui_command(self, id, p));
             }
         })
     }
@@ -1321,8 +1351,7 @@ impl MailApp {
             favorites,
             // An account kept in step through Graph needs its mail read and changed there too.
             mail_write: graph
-                && (self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft)
-                    || (account == 0 && self.session.graph_mail)),
+                && (account == 0 || self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft)),
         };
         let rx = sign_in(request);
         self.signing_in = Some(SigningIn { graph, favorites, quiet, account, rx, cancel });
@@ -1335,9 +1364,10 @@ impl MailApp {
     pub(crate) fn begin_setup_sign_in(&mut self, oauth: mailcraft_model::OAuth, email: &str, mail_only: bool) -> Result<(), String> {
         self.setup_sign_in = None;
         self.mail_only_next = mail_only;
-        // With the switch for testing on, a Microsoft account is kept in step through Graph (R3):
-        // its sign-in is for Graph, with its mail, rather than for IMAP and SMTP.
-        let graph = self.session.graph_mail && oauth.provider == mailcraft_model::OAuthProvider::Microsoft && !mail_only;
+        // A Microsoft account is kept in step through Graph (R3): its sign-in is for Graph, with
+        // its mail, rather than for IMAP and SMTP. (Unless the owner asked for mail only: that
+        // is IMAP's until IMAP is turned off for Microsoft accounts.)
+        let graph = oauth.provider == mailcraft_model::OAuthProvider::Microsoft && !mail_only;
         self.begin_sign_in(0, oauth, email, String::new(), false, graph)
     }
 
@@ -1472,10 +1502,10 @@ impl MailApp {
         Ok(json!({"started": true, "account": account}))
     }
 
-    /// A Send/Receive of an account kept in step through Microsoft Graph (R3, behind the switch
-    /// for testing): one Graph job sends the Outbox, makes the folder changes made here, lists
-    /// the folders and, when they are due, brings the calendar and the contacts; no IMAP, no
-    /// SMTP. Its token is always renewed for the job, with `Mail.ReadWrite`.
+    /// A Send/Receive of an account kept in step through Microsoft Graph (R3): one Graph job
+    /// sends the Outbox, makes the folder changes made here, lists the folders and, when they are
+    /// due, brings the calendar and the contacts; no IMAP, no SMTP. Its token is always renewed
+    /// for the job, with `Mail.ReadWrite`.
     fn start_graph_mail(&mut self, account: Id, quiet: bool) -> Result<Value, String> {
         if self.services.graph.is_none() {
             return Err(tl!("This build can't connect to Microsoft").to_string());
@@ -2011,6 +2041,7 @@ impl MailApp {
             }
             self.status(totals.summary());
             self.push_seen.insert(account, (self.waiting_to_go(account), now_ms()));
+            self.graph_switch_after_sync(account, totals.errors.is_empty() && !totals.stopped);
             return;
         }
     }
@@ -2097,6 +2128,7 @@ impl MailApp {
         if std::mem::take(&mut self.offer_setup) && self.dialog.is_none() && self.needs_setup() {
             self.dialog = dialogs::Dialog::open("account", self, &json!({}));
         }
+        self.tick_graph_switch();
         let _ = files::poll(self);
         files::drain_inbox(self);
         self.autosave_tick(ctx);

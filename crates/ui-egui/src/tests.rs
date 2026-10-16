@@ -1575,7 +1575,6 @@ fn copy_diagnostics_takes_the_hosts_report_or_says_what_it_can() {
 #[test]
 fn imported_mail_for_a_microsoft_account_stays_in_a_local_folder_and_says_why() {
     let mut a = app();
-    a.session.graph_mail = true;
     let account = a.run("account.add", json!({"email": "owner@example.org", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     let inbox = a.session.mailbox.folder_of_kind(account, mailcraft_model::FolderKind::Inbox).unwrap();
     let id = first_message(&mut a);

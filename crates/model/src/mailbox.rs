@@ -92,6 +92,13 @@ pub struct Folder {
     /// other account). A file written before this was kept has none.
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "crate::sync::lenient")]
     pub server: Option<ServerFolder>,
+    /// A folder of a Microsoft account that was on its IMAP server before the account switched
+    /// to Microsoft Graph (R3.7): it is the server's folder of its kind, or of its name in the
+    /// same place, in Graph's first complete listing, and takes that folder's server id there
+    /// (so what is kept of it here, its favourite mark and the rules that file into it, stays).
+    /// It is never made on the server: one that complete listing doesn't have goes.
+    #[serde(skip_serializing_if = "is_false", deserialize_with = "crate::sync::lenient_or_default")]
+    pub awaiting_listing: bool,
 }
 
 /// A folder as a Microsoft account's server knows it (ADR 0003): its server id, which stays the
@@ -179,9 +186,8 @@ pub enum AccountKind {
     Imap,
     /// A Microsoft account (Outlook.com, Microsoft 365) whose folders and mail are kept in step
     /// through Microsoft Graph alone, never by IMAP or SMTP (ADR 0002). It has no server
-    /// settings and signs in with Microsoft ([`Account::oauth`]). Until R3 is whole one is made
-    /// only behind a switch for testing (`MAILCRAFT_GRAPH_MAIL=1`, R3 spec S35): without it
-    /// every account is what it was.
+    /// settings and signs in with Microsoft ([`Account::oauth`]). One that was kept in step by
+    /// IMAP becomes one when its owner switches it ([`GraphSwitch`]).
     Microsoft,
 }
 
@@ -231,6 +237,30 @@ pub struct Account {
     /// For a Microsoft account: which messages are fetched in the background (R3 spec S12).
     #[serde(skip_serializing_if = "DownloadInFull::is_default", deserialize_with = "crate::sync::lenient_or_default")]
     pub download_in_full: DownloadInFull,
+    /// For a Microsoft account still kept in step by IMAP: what its owner said to switching it
+    /// to Microsoft Graph (R3.7). Nothing for every other account.
+    #[serde(skip_serializing_if = "GraphSwitch::is_default", deserialize_with = "crate::sync::lenient_or_default")]
+    pub graph_switch: GraphSwitch,
+}
+
+/// What the owner of a Microsoft account kept in step by IMAP said to switching it to Microsoft
+/// Graph (R3.7). Asked once; a file that says anything else is read as not asked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GraphSwitch {
+    /// Not asked yet.
+    #[default]
+    NotAsked,
+    /// Later: the account stays on IMAP until IMAP is turned off for Microsoft accounts.
+    Later,
+    /// Switch: once what waits for the IMAP server has reached it, the account switches.
+    Switching,
+}
+
+impl GraphSwitch {
+    pub fn is_default(&self) -> bool {
+        *self == GraphSwitch::NotAsked
+    }
 }
 
 /// Which messages of a Microsoft account are **fetched** in the background ("Download messages in
@@ -337,6 +367,12 @@ impl Account {
     pub fn login(&self) -> &str {
         let user = self.username.trim();
         if user.is_empty() { self.email.trim() } else { user }
+    }
+
+    /// A Microsoft account (it signs in with Microsoft) that is still kept in step by IMAP and
+    /// SMTP: one that can switch to Microsoft Graph (R3.7).
+    pub fn on_imap_with_microsoft(&self) -> bool {
+        self.kind == AccountKind::Imap && self.oauth.as_ref().is_some_and(|o| o.provider == OAuthProvider::Microsoft)
     }
 }
 
@@ -1149,15 +1185,20 @@ impl Mailbox {
         if local && !m.draft { STAYS_LOCAL } else { INTO_GRAPH }
     }
 
+    /// The first local account, made ("On this computer") when the mailbox has none.
+    pub fn local_account(&mut self) -> Id {
+        match self.accounts.iter().find(|a| a.kind == AccountKind::Local) {
+            Some(a) => a.id,
+            None => self.add_account(Account { name: "On this computer".into(), ..Default::default() }),
+        }
+    }
+
     /// Where mail imported for a Microsoft account goes, as Graph can't put received mail on
     /// its server (R3 spec S30): the folder [`IMPORTED`] at the top of the first local account
     /// (that account's Drafts, for `drafts`), made when it isn't there yet; and the local
     /// account itself ("On this computer") when the mailbox has none.
     pub fn imported_folder(&mut self, drafts: bool) -> Result<Id, ModelError> {
-        let local = match self.accounts.iter().find(|a| a.kind == AccountKind::Local) {
-            Some(a) => a.id,
-            None => self.add_account(Account { name: "On this computer".into(), ..Default::default() }),
-        };
+        let local = self.local_account();
         if drafts && let Some(folder) = self.folder_of_kind(local, FolderKind::Drafts) {
             return Ok(folder);
         }

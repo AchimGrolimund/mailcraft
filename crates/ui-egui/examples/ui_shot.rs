@@ -167,12 +167,10 @@ fn main() {
     } else {
         mailcraft_engine::sample::mailbox(NOW, offset)
     };
-    let mut session = match zone {
+    let session = match zone {
         Some(zone) => Session::in_zone(mailbox, NOW, zone),
         None => Session::at(mailbox, NOW, 0),
     };
-    // The switch for testing Microsoft accounts through Graph, as the app reads it (R3).
-    session.graph_mail = std::env::var("MAILCRAFT_GRAPH_MAIL").is_ok_and(|v| v == "1");
     // A stand-in for the host's part in signing in, when a line of the script speaks to one.
     let host: Arc<Mutex<Host>> = Default::default();
     let stood_in = lines.iter().any(|l| l.get("host").is_some());

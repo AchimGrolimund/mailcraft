@@ -118,8 +118,9 @@ fn folder_changes(mb: &Mailbox, account: Id, limit: usize) -> (Vec<FolderChange>
     folders.sort_by_cached_key(|f| (depth(f), f.id));
     for f in folders {
         match &f.server {
-            // The special folders are the server's: they are found in its listing, never made.
-            None if f.kind != FolderKind::Custom => {}
+            // The special folders are the server's: they are found in its listing, never made;
+            // so is a folder that was on the account's IMAP server before it switched (R3.7).
+            None if f.kind != FolderKind::Custom || f.awaiting_listing => {}
             None => {
                 let parent = mb.folder(f.parent.unwrap_or(0)).filter(|p| p.account == account);
                 let (server_parent, local_parent) = match parent {
@@ -470,6 +471,7 @@ fn take_listing(mb: &mut Mailbox, account: Id, listing: &FolderListing, taken: &
             .collect();
         taken.removed += gone.len();
         mb.remove_folders(&gone);
+        taken.removed += super::graph_switch::sweep_unlisted(mb, account);
     }
 }
 
@@ -513,6 +515,8 @@ fn update(mb: &mut Mailbox, id: Id, there: &GraphFolder, name: &str, parent_here
     if f.kind == FolderKind::Custom && there.kind != FolderKind::Custom {
         f.kind = there.kind;
     }
+    // Found: the server's folder from now on (R3.7).
+    f.awaiting_listing = false;
     f.server = Some(ServerFolder {
         id: there.id.clone(),
         name: name.to_string(),

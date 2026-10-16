@@ -59,7 +59,6 @@ fn open(path: &str) -> Result<Session, String> {
         eprintln!("warning: {path}: {} bodies or attachments are missing from its content folder, or damaged", opened.unavailable);
     }
     let mut s = Session::new(opened.mailbox);
-    s.graph_mail = graph_mail_switch();
     s.path = Some(path.into());
     Ok(s)
 }
@@ -189,12 +188,6 @@ fn write_stdout(write: impl FnOnce(&mut std::io::StdoutLock<'static>) -> std::io
     write(&mut out)?;
     out.flush()?;
     Ok(())
-}
-
-/// The switch for testing Microsoft accounts kept in step through Microsoft Graph (R3 spec S35):
-/// `MAILCRAFT_GRAPH_MAIL=1`.
-fn graph_mail_switch() -> bool {
-    std::env::var("MAILCRAFT_GRAPH_MAIL").is_ok_and(|value| value.trim() == "1")
 }
 
 /// `sync` for an account kept in step through Microsoft Graph: the folder changes made here go
@@ -357,7 +350,6 @@ fn run(args: &[String]) -> Result<(), Failure> {
                 (None, true) => sample(),
                 (None, false) => Session::new(Mailbox::with_local_account("", "")),
             };
-            s.graph_mail = graph_mail_switch();
             let print = rest.iter().any(|a| a == "--print");
             let mut i = 0;
             while let Some(a) = rest.get(i) {
@@ -397,7 +389,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
                     .map(|a| a.id)
                     .ok_or("sync: no account in this mailbox is connected to a mail server")?,
             };
-            // An account kept in step through Microsoft Graph (R3, behind MAILCRAFT_GRAPH_MAIL=1):
+            // An account kept in step through Microsoft Graph (R3):
             // its folders, through Graph alone.
             if s.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft) {
                 return sync_graph(&mut s, account, path);
