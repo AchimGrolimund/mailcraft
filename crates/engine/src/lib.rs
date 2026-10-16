@@ -15,6 +15,7 @@ pub mod sample;
 mod session;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;
+mod undo;
 
 use std::collections::HashMap;
 

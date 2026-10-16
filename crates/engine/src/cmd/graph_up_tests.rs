@@ -242,7 +242,7 @@ fn result(account: Id, messages: Vec<MessageChangeDone>) -> GraphMailResult {
 }
 
 #[test]
-fn what_was_made_is_the_last_synced_state_and_the_undo_history_goes() {
+fn what_was_made_is_the_last_synced_state_and_undo_is_another_change() {
     let (mut s, account, m, _) = setup();
     s.run("mail.markRead", &json!({"ids": [m]})).unwrap();
     s.run("mail.categorize", &json!({"ids": [m], "category": "Blue category"})).unwrap();
@@ -258,12 +258,16 @@ fn what_was_made_is_the_last_synced_state_and_the_undo_history_goes() {
     assert!(server.read && here.read);
     assert_eq!((&here.categories, &server.categories), (&merged, &merged));
     assert_eq!(changes(&s, account), []);
-    // As for IMAP: once a change is on the server, undoing it here would leave the two apart.
-    assert!(!s.can_undo());
-    // An answer that changes nothing keeps the history.
-    s.run("mail.markUnread", &json!({"ids": [m]})).unwrap();
-    apply_graph_mail(&mut s, result(account, Vec::new())).unwrap();
+    // The history stays (R3.5): undoing is another change. Blue goes off again, and Green, which
+    // the server added meanwhile, stays; read stays as the server has it.
     assert!(s.can_undo());
+    s.run("edit.undo", &json!({})).unwrap();
+    let here = s.mailbox.message(m).unwrap();
+    assert_eq!(here.categories, ["Red category", "Green category"]);
+    assert!(here.read);
+    let all = changes(&s, account);
+    let [MessageChange::Update { read: None, categories: Some(up), .. }] = all.as_slice() else { panic!("{all:?}") };
+    assert_eq!((&up.synced, &up.here), (&merged, &here.categories));
 }
 
 #[test]

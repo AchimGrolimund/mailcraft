@@ -205,8 +205,8 @@ fn what_is_changed_here_goes_up_as_the_difference_from_the_server() {
     assert_eq!(s.mailbox.folder(under).unwrap().parent, Some(made));
     assert_eq!(s.mailbox.folder(sales).unwrap().parent, None);
     assert_ne!(s.mailbox.folder(sales).unwrap().parent, Some(inbox));
-    // Undo can't take back what the server has now (until R3.5): the history went.
-    assert!(s.run("edit.undo", &json!({})).is_err());
+    // The history stays (R3.5): undoing is another change, sent with the next run.
+    assert!(s.can_undo());
 
     // Deleted for good from Deleted Items: the server deletes it too, from the queue.
     s.run("folder.delete", &json!({"id": ab})).unwrap();

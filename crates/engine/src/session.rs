@@ -483,6 +483,9 @@ pub struct Clock {
 struct Undo {
     label: &'static str,
     mailbox: Mailbox,
+    /// What the step did to the Microsoft accounts' mail, for keeping them in step when it is
+    /// undone ([`crate::undo`]).
+    touched: crate::undo::Touched,
     sel: Selection,
     folder: Id,
 }
@@ -522,6 +525,8 @@ pub struct Session {
     pub agent: Option<Vec<crate::agent::Class>>,
     history: Vec<Undo>,
     redo: Vec<Undo>,
+    /// What the last undo or redo couldn't do there (a delete for good, a message sent).
+    undo_said: Vec<String>,
     rev: u64,
     list_cache: Option<(String, Arc<Vec<Row>>)>,
 }
@@ -553,6 +558,7 @@ impl Session {
             agent: None,
             history: Vec::new(),
             redo: Vec::new(),
+            undo_said: Vec::new(),
             rev: 0,
             list_cache: None,
         };
@@ -773,7 +779,7 @@ impl Session {
     // ---- undo ----
 
     fn snapshot(&self, label: &'static str) -> Undo {
-        Undo { label, mailbox: self.mailbox.clone(), sel: self.sel.clone(), folder: self.view.folder }
+        Undo { label, mailbox: self.mailbox.clone(), touched: Default::default(), sel: self.sel.clone(), folder: self.view.folder }
     }
 
     pub fn can_undo(&self) -> bool {
@@ -801,13 +807,23 @@ impl Session {
         self.redo.clear();
     }
 
+    /// What the last undo or redo couldn't do, in words (empty when it did everything).
+    pub fn undo_said(&self) -> &[String] {
+        &self.undo_said
+    }
+
+    /// Go to the mailbox of `u`. A Microsoft account's mail stays in step with its server: what
+    /// the server last said is kept, so the next run sends the reverse ([`crate::undo`]).
     fn swap(&mut self, u: Undo) -> Undo {
-        let cur = Undo {
-            label: u.label,
-            mailbox: std::mem::replace(&mut self.mailbox, u.mailbox),
-            sel: std::mem::replace(&mut self.sel, u.sel),
-            folder: self.view.folder,
-        };
+        let now = std::mem::take(&mut self.mailbox);
+        let (back, said) = crate::undo::keep_in_step(u.mailbox, &u.touched, &now);
+        // Undone, the step is to be done again from here: what that does is the way back.
+        let touched = crate::undo::touched(&now, &back);
+        self.mailbox = back;
+        self.undo_said = said;
+        // Where each message is, is looked at afresh.
+        self.graph_index = Default::default();
+        let cur = Undo { label: u.label, mailbox: now, touched, sel: std::mem::replace(&mut self.sel, u.sel), folder: self.view.folder };
         self.view.folder = u.folder;
         self.rev += 1;
         self.dirty = true;
@@ -880,6 +896,8 @@ impl Session {
                     self.rev += 1;
                     if history {
                         self.dirty = true;
+                        let mut before = before;
+                        before.touched = crate::undo::touched(&before.mailbox, &self.mailbox);
                         self.history.push(before);
                         if self.history.len() > MAX_HISTORY {
                             self.history.remove(0);

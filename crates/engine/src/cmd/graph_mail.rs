@@ -230,8 +230,8 @@ struct Taken {
 
 /// Take in what a Graph run brought back: what became of the changes sent, then the listing.
 /// Not an undo step: the server is the source of truth, but for what was changed here and hasn't
-/// reached it yet. When a change reached the server the undo history is forgotten (undoing it
-/// here would leave the server as it is; R3.5 makes undo another change).
+/// reached it yet. The undo history stays: undoing a change that reached the server is another
+/// change, which the next run sends (R3.5, [`crate::undo`]).
 pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
     let account = result.account;
     let a = s.mailbox.account(account).ok_or_else(|| fail(format!("no account with id {account}")))?;
@@ -297,9 +297,6 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
     }
     if taken != Taken::default() || down != Down::default() || !result.pages.is_empty() {
         s.mailbox_changed();
-    }
-    if taken.pushed > 0 {
-        s.forget_history();
     }
     // The view stays on a folder that is there.
     if s.mailbox.folder(s.view.folder).is_none() {
