@@ -391,7 +391,8 @@ pub enum FavoritesRefusal {
 /// What an administrator of an organisation is asked to approve, once for everybody in it:
 /// everything this program asks an owner for, so that one approval covers what is asked later
 /// too. That is what a sign-in's page asks for (IMAP, SMTP, a refresh token and who signs in;
-/// Microsoft Graph's sending, calendar, contacts and mailbox settings) and what reading the
+/// Microsoft Graph's sending, calendar, contacts, mailbox settings and, for an account kept in step
+/// through Graph, its mail) and what reading the
 /// Favorites of Outlook through Graph takes.
 ///
 /// A sign-in asks for no more than is here: a page that asked for one permission an
@@ -399,7 +400,7 @@ pub enum FavoritesRefusal {
 fn admin_scope() -> String {
     let who: Vec<&str> = SIGN_IN_SCOPE.split(' ').collect();
     let mail = MICROSOFT_SCOPE.split(' ').filter(|scope| !who.contains(scope));
-    let all = mail.chain([MICROSOFT_GRAPH, MICROSOFT_GRAPH_EXTRAS, MICROSOFT_GRAPH_FAVORITES, SIGN_IN_SCOPE]);
+    let all = mail.chain([MICROSOFT_GRAPH, MICROSOFT_GRAPH_EXTRAS, MICROSOFT_GRAPH_MAIL, MICROSOFT_GRAPH_FAVORITES, SIGN_IN_SCOPE]);
     all.collect::<Vec<_>>().join(" ")
 }
 

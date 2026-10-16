@@ -410,8 +410,16 @@ pub enum Queued {
     CopyMessage { account: Id, id: String, to: String, copy: Id, marker: String },
     /// A message was deleted for good here (Shift+Del, or emptying Deleted Items): the server
     /// deletes it with Graph's delete, which keeps it recoverable for the server's retention
-    /// period (ADR 0003, R3 spec S19).
-    DeleteMessage { account: Id, id: String },
+    /// period (ADR 0003, R3 spec S19). `kept` is the message as it was here, kept until the
+    /// server has answered: one the server refuses to delete is put back from it, with all that
+    /// was fetched of it (S20). An entry without one (from an earlier version, or for a copy the
+    /// server made of a message gone here) is put back from what the server says of it.
+    DeleteMessage {
+        account: Id,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kept: Option<Box<Message>>,
+    },
 }
 
 impl Queued {
@@ -1169,16 +1177,17 @@ impl Mailbox {
         let Some(m) = self.message(id) else { return };
         let mut deletes = Vec::new();
         if let Some(server) = m.server.as_ref().filter(|s| !s.gone && self.is_graph(m.account)) {
-            deletes.push(Queued::DeleteMessage { account: m.account, id: server.id.clone() });
+            deletes.push(Queued::DeleteMessage { account: m.account, id: server.id.clone(), kept: Some(Box::new(m.clone())) });
         }
         if let Some(out) = &m.moving_out {
-            deletes.push(Queued::DeleteMessage { account: out.account, id: out.id.clone() });
+            deletes.push(Queued::DeleteMessage { account: out.account, id: out.id.clone(), kept: Some(Box::new(m.clone())) });
         }
         if !self.queued.is_empty() {
             self.queued.retain(|q| !matches!(q, Queued::CopyMessage { copy, .. } if *copy == id));
         }
         for delete in deletes {
-            if !self.queued.contains(&delete) {
+            let Queued::DeleteMessage { account, id, .. } = &delete else { continue };
+            if !self.queued.iter().any(|q| matches!(q, Queued::DeleteMessage { account: a, id: i, .. } if a == account && i == id)) {
                 self.queued.push(delete);
             }
         }

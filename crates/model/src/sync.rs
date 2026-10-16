@@ -792,6 +792,10 @@ pub enum MessageOutcome {
 pub struct MessageChangeDone {
     pub change: MessageChange,
     pub outcome: MessageOutcome,
+    /// For a delete for good the server refused: the message as the server has it, read after
+    /// the refusal, by which it is put back here (S20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub there: Option<Box<GraphMessage>>,
 }
 
 /// Where a folder's message delta goes on from.
@@ -1083,12 +1087,12 @@ mod tests {
         // A kind of change from a later version is left out; the rest is kept.
         let later = r#"{"version": 1, "queued": [{"somethingNew": {"x": 1}}, {"deleteMessage": {"account": 1, "id": "AAkB"}}]}"#;
         let mb: crate::Mailbox = serde_json::from_str(later).unwrap();
-        assert_eq!(mb.queued, [crate::Queued::DeleteMessage { account: 1, id: "AAkB".into() }]);
+        assert_eq!(mb.queued, [crate::Queued::DeleteMessage { account: 1, id: "AAkB".into(), kept: None }]);
 
         let mut mb = crate::Mailbox::default();
         mb.queued = vec![
             crate::Queued::CopyMessage { account: 1, id: "AAkA".into(), to: "F2".into(), copy: 12, marker: "mc-0f3a".into() },
-            crate::Queued::DeleteMessage { account: 1, id: "AAkB".into() },
+            crate::Queued::DeleteMessage { account: 1, id: "AAkB".into(), kept: None },
         ];
         let json = serde_json::to_string(&mb).unwrap();
         assert!(json.contains(r#"{"copyMessage":{"account":1,"id":"AAkA","to":"F2","copy":12,"marker":"mc-0f3a"}}"#), "{json}");
