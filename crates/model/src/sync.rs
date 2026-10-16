@@ -147,6 +147,15 @@ impl Tokens {
     pub fn fresh(&self, now: i64) -> bool {
         !self.access.is_empty() && self.expires_at.saturating_sub(60) > now
     }
+
+    /// Whether these are somebody else's than the account's whose address is `email` and whose
+    /// user name is `username` (either may be empty): the provider named who signed in, and it
+    /// is neither, whatever the case. Tokens that name nobody are taken to be the account's.
+    pub fn someone_else(&self, email: &str, username: &str) -> bool {
+        let who = self.email.trim();
+        let is = |name: &str| !name.trim().is_empty() && name.trim().eq_ignore_ascii_case(who);
+        !who.is_empty() && !is(email) && !is(username)
+    }
 }
 
 impl std::fmt::Debug for Tokens {
@@ -1148,6 +1157,11 @@ mod tests {
         let shown = format!("{tokens:?}");
         assert!(!shown.contains("tok-en-123") && !shown.contains("re-fresh-456"));
         assert!(tokens.fresh(900) && !tokens.fresh(950) && !Tokens::default().fresh(0));
+        // (#103) Who signed in, against the account.
+        let ada = Tokens { email: " Ada@Example.org ".into(), ..Default::default() };
+        assert!(!ada.someone_else("ada@example.org", "") && !ada.someone_else("ada.alias@example.org", "ADA@example.org"));
+        assert!(ada.someone_else("admin@example.org", "") && ada.someone_else("admin@example.org", "admin@example.org"));
+        assert!(ada.someone_else("", "") && !Tokens::default().someone_else("admin@example.org", ""));
     }
 
     #[test]

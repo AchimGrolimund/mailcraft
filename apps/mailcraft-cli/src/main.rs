@@ -190,6 +190,10 @@ fn write_stdout(write: impl FnOnce(&mut std::io::StdoutLock<'static>) -> std::io
     Ok(())
 }
 
+/// What `sync` says when the owner signed in on the provider's page as somebody other than the
+/// account (#103): nothing of that sign-in is used. (It names nobody: this is printed.)
+const SOMEONE_ELSE: &str = "sync: you signed in as somebody other than this account; sign in again with the account's own address";
+
 /// `sync` for an account kept in step through Microsoft Graph: the folder changes made here go
 /// up and the folders are listed. The token for Graph is taken from `MAILCRAFT_ACCESS_TOKEN`, or
 /// the owner signs in on Microsoft's page (for Graph, with `Mail.ReadWrite`).
@@ -206,7 +210,12 @@ fn sync_graph(s: &mut Session, account: mailcraft_model::Id, path: &str) -> Resu
             let open = |url: &str| eprintln!("sync: open this page in a browser to sign in:\n{url}");
             let cancel = std::sync::atomic::AtomicBool::new(false);
             let resource = mailcraft_net::oauth::Resource::GraphMail;
-            mailcraft_net::oauth::sign_in_for(&oauth, &request.email, &open, &cancel, resource).map_err(|e| format!("sync: {e}"))?.access
+            let tokens = mailcraft_net::oauth::sign_in_for(&oauth, &request.email, &open, &cancel, resource).map_err(|e| format!("sync: {e}"))?;
+            let username = s.mailbox.account(account).map(|a| a.username.clone()).unwrap_or_default();
+            if tokens.someone_else(&request.email, &username) {
+                return Err(SOMEONE_ELSE.to_string().into());
+            }
+            tokens.access
         }
     };
     let result = mailcraft_net::graph::sync_folders(&token, &request);
@@ -416,7 +425,12 @@ fn run(args: &[String]) -> Result<(), Failure> {
                                 )
                             };
                             let cancel = std::sync::atomic::AtomicBool::new(false);
-                            mailcraft_net::oauth::sign_in(&oauth, &request.account.email, &open, &cancel).map_err(|e| format!("sync: {e}"))?.access
+                            let tokens =
+                                mailcraft_net::oauth::sign_in(&oauth, &request.account.email, &open, &cancel).map_err(|e| format!("sync: {e}"))?;
+                            if tokens.someone_else(&request.account.email, &request.account.username) {
+                                return Err(SOMEONE_ELSE.to_string().into());
+                            }
+                            tokens.access
                         }
                     };
                 }
