@@ -24,6 +24,9 @@ eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "
 egui = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
+# Quitting the platform's own way: on macOS `-[NSApplication terminate:]` and an app menu whose
+# Quit asks first; elsewhere it does nothing (`quit.rs`).
+craft-quit = { workspace = true }
 
 [dev-dependencies]
 # The tests run the whole way of a calendar change, and of reading Outlook's Favorites, against
