@@ -13,7 +13,15 @@ use crate::graph::standin::{StandIn, TOKEN};
 const QUICK: Retry = Retry { tries: 4, first_wait: Duration::from_millis(5), longest_wait: Duration::from_secs(60) };
 
 fn request(changes: Vec<FolderChange>) -> GraphMailRequest {
-    GraphMailRequest { account: 3, email: "owner@example.org".into(), changes, background: false, links: Vec::new(), messages: Vec::new() }
+    GraphMailRequest {
+        account: 3,
+        email: "owner@example.org".into(),
+        changes,
+        background: false,
+        links: Vec::new(),
+        drafts: Vec::new(),
+        messages: Vec::new(),
+    }
 }
 
 fn run(server: &StandIn, changes: Vec<FolderChange>) -> GraphMailResult {

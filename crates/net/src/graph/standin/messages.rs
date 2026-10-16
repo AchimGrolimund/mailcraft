@@ -48,6 +48,11 @@ pub(super) const PROPERTIES: &[&str] = &[
     "parentFolderId",
     "internetMessageId",
     "hasAttachments",
+    "isDraft",
+    "changeKey",
+    "conversationId",
+    "bccRecipients",
+    "body",
 ];
 /// Most messages a page holds, whatever is asked for.
 const MAX_PAGE: usize = 1_000;
@@ -85,6 +90,21 @@ pub struct Message {
     pub size: u64,
     /// Its single-value extended properties: their ids as they were written, and their values.
     pub extended: Vec<(String, String)>,
+    /// It is a draft (`isDraft`): its subject, body and recipients may be changed ([`super::drafts`]).
+    pub draft: bool,
+    pub cc: Vec<String>,
+    pub bcc: Vec<String>,
+    /// Its body, and whether that is HTML (else text). Empty: the preview is its text.
+    pub body: String,
+    pub html: bool,
+    /// The conversation it is part of (`conversationId`); empty: one of its own.
+    pub conversation: String,
+    /// The message it answers (`In-Reply-To`), with the angle brackets.
+    pub in_reply_to: String,
+    /// Its `internetMessageHeaders`, as they were written when it was made.
+    pub headers: Vec<(String, String)>,
+    /// Its attachments.
+    pub attachments: Vec<super::drafts::Attached>,
     /// When it last changed, in the stand-in's count of changes.
     pub(super) changed: u64,
 }
@@ -110,8 +130,14 @@ impl Message {
             "importance": self.importance,
             "parentFolderId": self.folder,
             "internetMessageId": self.internet_id,
-            "hasAttachments": false,
+            "hasAttachments": self.attachments.iter().any(|a| !a.inline),
+            "isDraft": self.draft,
+            "changeKey": self.change_key(),
+            "conversationId": self.conversation_id(),
+            "bccRecipients": self.bcc.iter().map(|to| address(to)).collect::<Vec<_>>(),
+            "body": {"contentType": if self.html { "html" } else { "text" }, "content": self.text()},
         });
+        all["ccRecipients"] = json!(self.cc.iter().map(|to| address(to)).collect::<Vec<_>>());
         if let (Some(select), Some(map)) = (select, all.as_object_mut()) {
             map.retain(|name, _| name == "id" || select.iter().any(|s| s == name));
         }
@@ -134,10 +160,32 @@ impl Message {
         flag
     }
 
+    /// Its change key: a new one with every change of it.
+    pub fn change_key(&self) -> String {
+        format!("CQAAABYAAAD{:010}", self.changed)
+    }
+
+    /// The conversation it is part of.
+    pub fn conversation_id(&self) -> String {
+        if self.conversation.is_empty() {
+            format!("AAQkAD-c-{}", self.id.get(self.id.len().saturating_sub(16)..).unwrap_or(""))
+        } else {
+            self.conversation.clone()
+        }
+    }
+
+    /// Its body's text: what it was written with, else its preview.
+    pub fn text(&self) -> String {
+        if self.body.is_empty() { self.preview.clone() } else { self.body.clone() }
+    }
+
     /// Its MIME: what it was given, or a plain message made of its headers and preview.
     pub(super) fn mime(&self) -> String {
         if let Some(mime) = &self.mime {
             return mime.clone();
+        }
+        if self.draft || !self.attachments.is_empty() {
+            return super::drafts::mime_of(self);
         }
         let date = mailcraft_time::DateTime::from_timestamp(self.received, 0);
         format!(
@@ -222,6 +270,8 @@ pub struct Mail {
     pub resets: usize,
     /// Most messages a page of delta holds, whatever is asked for; 0 for as asked.
     pub page_cap: usize,
+    /// Uploads of large attachments under way, by the token of their address ([`super::drafts`]).
+    pub(super) uploads: HashMap<String, super::drafts::Upload>,
 }
 
 impl Mail {
@@ -262,6 +312,16 @@ impl Mail {
             ..Default::default()
         };
         self.messages.insert(id.clone(), message);
+        id
+    }
+
+    /// `m` as a new message, under a new immutable id: that id.
+    pub(super) fn put(&mut self, mut m: Message) -> String {
+        let (id, _) = self.new_id();
+        m.id = id.clone();
+        m.changed = self.change();
+        self.gone.remove(&(m.folder.clone(), id.clone()));
+        self.messages.insert(id.clone(), m);
         id
     }
 

@@ -84,6 +84,8 @@ struct Change {
     categories: Option<Vec<String>>,
     importance: Option<String>,
     extended: Vec<(String, String)>,
+    /// A draft's own parts: its subject, body and recipients.
+    written: super::drafts::Written,
 }
 
 /// What a change says of a flag: its status, and each date it names (`Some(None)` takes it away).
@@ -96,7 +98,7 @@ struct FlagChange {
 }
 
 /// How a message is to be written in an answer.
-struct Look {
+pub(super) struct Look {
     immutable: bool,
     select: Option<Vec<String>>,
     /// The extended property asked for with `$expand`, by its id.
@@ -213,18 +215,12 @@ impl Change {
                     change.categories = Some(names.ok_or_else(|| bad("'categories' is a list of names."))?);
                 }
                 "flag" => change.flag = Some(FlagChange::of(value)?),
-                "singleValueExtendedProperties" => {
-                    let list = value.as_array().ok_or_else(|| bad("'singleValueExtendedProperties' is a list."))?;
-                    for property in list {
-                        let id = property.get("id").and_then(Value::as_str).filter(|id| property_id_ok(id));
-                        let value = property.get("value").and_then(Value::as_str).filter(|value| value.len() <= MAX_PROPERTY);
-                        let (Some(id), Some(value)) = (id, value) else {
-                            return Err(bad("An extended property has an id as the reference writes them and a value that is text."));
-                        };
-                        change.extended.push((id.to_string(), value.to_string()));
-                    }
+                "singleValueExtendedProperties" => change.extended = extended_of(value)?,
+                other if change.written.take(other, value)? => {}
+                "internetMessageHeaders" => {
+                    return Err(bad("A message's internetMessageHeaders are written when it is made, and never after."));
                 }
-                other if super::messages::PROPERTIES.contains(&other) || other == "body" || other == "toRecipients" => {
+                other if super::messages::PROPERTIES.contains(&other) => {
                     return Err(bad(format!("The property '{other}' is not one this stand-in takes in a change of a message.")));
                 }
                 other => {
@@ -234,6 +230,21 @@ impl Change {
         }
         Ok(change)
     }
+}
+
+/// `singleValueExtendedProperties` as a change or a new message writes them: each id and value.
+pub(super) fn extended_of(value: &Value) -> Result<Vec<(String, String)>, Refusal> {
+    let list = value.as_array().ok_or_else(|| bad("'singleValueExtendedProperties' is a list."))?;
+    let mut out = Vec::new();
+    for property in list {
+        let id = property.get("id").and_then(Value::as_str).filter(|id| property_id_ok(id));
+        let value = property.get("value").and_then(Value::as_str).filter(|value| value.len() <= MAX_PROPERTY);
+        let (Some(id), Some(value)) = (id, value) else {
+            return Err(bad("An extended property has an id as the reference writes them and a value that is text."));
+        };
+        out.push((id.to_string(), value.to_string()));
+    }
+    Ok(out)
 }
 
 impl FlagChange {
@@ -269,7 +280,7 @@ impl FlagChange {
 
 impl State {
     /// A message id as an address names it, as the immutable id the stand-in keeps it by.
-    fn message_id(id: &str) -> Result<String, Refusal> {
+    pub(super) fn message_id(id: &str) -> Result<String, Refusal> {
         if id.len() < 20 || id.chars().any(|c| !(c.is_ascii_alphanumeric() || "-_=".contains(c))) {
             return Err(refuse(400, "ErrorInvalidIdMalformed", "Id is malformed."));
         }
@@ -278,7 +289,7 @@ impl State {
 
     /// The fault a change of `id` is to meet, if any: the refusal, or `Ok` to go on (with the
     /// answer to be lost when that is the fault).
-    fn fault(&mut self, id: &str) -> Result<(), Refusal> {
+    pub(super) fn fault(&mut self, id: &str) -> Result<(), Refusal> {
         let Some(fault) = self.mailbox.faults.get(id).copied() else { return Ok(()) };
         match fault {
             Fault::Gone => Err(not_found()),
@@ -301,7 +312,7 @@ impl State {
         }
     }
 
-    fn look_of(asked: &Asked, list: bool) -> Result<Look, Refusal> {
+    pub(super) fn look_of(asked: &Asked, list: bool) -> Result<Look, Refusal> {
         let allowed: &[&str] = if list { &["$select", "$top", "$skip", "$expand", "$filter"] } else { &["$select", "$expand"] };
         if let Some((other, _)) = asked.query.iter().find(|(name, _)| !allowed.contains(&name.as_str())) {
             return Err(bad(format!("The query parameter '{other}' is not one this stand-in answers here.")));
@@ -318,7 +329,7 @@ impl State {
         Ok(Look { immutable, select, expand })
     }
 
-    fn message_json(&self, id: &str, look: &Look) -> Value {
+    pub(super) fn message_json(&self, id: &str, look: &Look) -> Value {
         let Some(message) = self.mailbox.messages.get(id) else { return Value::Null };
         let mut json = message.json(look.immutable, look.select.as_deref(), false);
         if let Some(asked) = &look.expand {
@@ -352,9 +363,13 @@ impl State {
                 if !self.mailbox.messages.contains_key(&id) {
                     return Err(not_found());
                 }
+                if change.written.any() && !self.mailbox.messages.get(&id).is_some_and(|m| m.draft) {
+                    return Err(bad("Only a draft's subject, body and recipients can be changed."));
+                }
                 self.fault(&id)?;
                 let now = self.clock;
                 self.mailbox.update(&id, |m| {
+                    change.written.apply(m);
                     if let Some(read) = change.read {
                         m.read = read;
                     }

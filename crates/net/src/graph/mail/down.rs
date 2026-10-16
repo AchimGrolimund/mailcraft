@@ -35,7 +35,7 @@ use crate::NetError;
 use crate::http::{self, Url};
 
 /// What is asked for of each message: what the message list needs (R3 spec S9).
-pub(super) const FIELDS: &str = "receivedDateTime,sentDateTime,subject,from,toRecipients,ccRecipients,bodyPreview,isRead,flag,categories,importance,parentFolderId,internetMessageId,hasAttachments";
+pub(super) const FIELDS: &str = "receivedDateTime,sentDateTime,subject,from,toRecipients,ccRecipients,bodyPreview,isRead,flag,categories,importance,parentFolderId,internetMessageId,hasAttachments,isDraft,changeKey";
 /// A message's size on the server (`PidTagMessageSize`), which Graph gives only as an extended
 /// property: what "Download messages in full" is held against.
 pub(super) const SIZE: &str = "singleValueExtendedProperties($filter=id eq 'Integer 0x0E08')";
@@ -338,6 +338,11 @@ fn entry_of(value: &Value, folder: &str) -> Option<Entry> {
         flag_start: flag_date(value, "startDateTime"),
         flag_due: flag_date(value, "dueDateTime"),
         flag_completed: flag_date(value, "completedDateTime"),
+        // Visible ASCII, as Graph writes a change key; anything else is none.
+        change_key: Some(text(value, "changeKey"))
+            .filter(|key| key.len() <= 512 && key.bytes().all(|b| b.is_ascii_graphic()))
+            .map(str::to_string)
+            .unwrap_or_default(),
     };
     Some(Entry::Message(Box::new(GraphMessage {
         server,
@@ -350,5 +355,6 @@ fn entry_of(value: &Value, folder: &str) -> Option<Entry> {
         received,
         preview: capped(value, "bodyPreview", MAX_PREVIEW),
         has_attachments: value.get("hasAttachments").and_then(Value::as_bool).unwrap_or(false),
+        draft: value.get("isDraft").and_then(Value::as_bool).unwrap_or(false),
     })))
 }

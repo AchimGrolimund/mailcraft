@@ -15,6 +15,7 @@ pub mod format;
 #[cfg(test)]
 mod format_tests;
 pub mod graph_down;
+pub mod graph_drafts;
 pub mod graph_mail;
 pub mod graph_up;
 pub mod mail;

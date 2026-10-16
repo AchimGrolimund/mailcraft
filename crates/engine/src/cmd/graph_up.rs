@@ -114,7 +114,8 @@ fn update_of(m: &Message, server: &ServerMessage, today: Timestamp, now: Timesta
     });
     let categories =
         (!same_categories(&m.categories, &server.categories)).then(|| CategoriesUp { synced: server.categories.clone(), here: m.categories.clone() });
-    let importance = (m.importance != server.importance).then_some(m.importance);
+    // (A draft's importance goes up with the draft: R3.4.1.)
+    let importance = (m.server_draft.is_none() && m.importance != server.importance).then_some(m.importance);
     if read.is_none() && flag.is_none() && categories.is_none() && importance.is_none() {
         return None;
     }
