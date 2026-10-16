@@ -1,6 +1,6 @@
 # Interface parity
 
-> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-15 · **Change:** minor (Copy Diagnostics in the title bar, D1) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-15 · **Change:** minor (About ▸ Contributors, D2; Copy Diagnostics in the title bar, D1) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
 
 How the window compares with the target's. The look is the Craft apps' own (WordCraft's design
 tokens, type rungs and ribbon widgets, with MailCraft's teal accent); the *arrangement* is the one
@@ -22,7 +22,7 @@ Outlook users know. No pixel of the target's artwork is used: every icon is draw
 | Tasks | yes | Filters, quick add, grouped list with check boxes, details pane. No To-Do bar, no table view |
 | Backstage (File) | yes | Info (accounts, mailbox, rules, categories), Open & Export, Options (general, mail, calendar), Signatures (the list, the composer's editor with Insert/Paste Picture and a picture's width, description and layout, Create from details, a preview as recipients see it and in plain text, each account's two defaults), About. No print, no automatic replies, no add-ins |
 | Status bar | yes | Counts, messages from the last action, Send/Receive status, reading-pane switch. No zoom slider, no connection indicator |
-| Dialogs | partial | Search Commands, New/Rename Folder, Go to Date, Sign In, unsaved-message prompt, About, and forms for appointments, contacts, tasks, accounts, categories and rules. The target has many more (Advanced Find, Rules Wizard, Options panes, permissions…) |
+| Dialogs | partial | Search Commands, New/Rename Folder, Go to Date, Sign In, unsaved-message prompt, About (with a Contributors tab), and forms for appointments, contacts, tasks, accounts, categories and rules. The target has many more (Advanced Find, Rules Wizard, Options panes, permissions…) |
 | Add Account | yes | From the address alone: whose servers it uses, then a password that is tried before the account is added, or Microsoft's sign-in page in the browser. While the browser has the sign-in, the page says so ("Microsoft's sign-in page is open in your browser"), in what order things come for a work or school account (the sign-in, then how Outlook's Favorites are read), and what to do if Microsoft's page asks for an administrator: nothing has to come back for that. "Your organisation has to approve MailCraft first" is a page of its own, shown when the sign-in comes back saying so or from its link: why, and what to do next (an administrator approves on Microsoft's page, opened from there and waited for; anybody else copies a message for one; try again; not now, which leaves nothing behind). A sign-in that ends otherwise says how, in a sentence (the page came back with a no, nothing came back, no browser could be started), with Try again and the way to that page. An account that exists gets the same page as a dialog when a Send/Receive its owner asked for is refused for want of an approval. MailCraft has no web view: the provider's page is in the system's browser, never in this window |
 
 ## The message list, measured
@@ -84,3 +84,4 @@ High-DPI is handled by egui; multi-window, system tray, notifications and badges
 | 2026-10-15 | minor | The composer edits rich text as it will be sent (R4.2), and shows the original of a reply through the reading pane's renderer |
 | 2026-10-15 | minor | Rich signatures with a logo (R4.5): File › Signatures, font and colour in the composer, pictures drawn in the editor |
 | 2026-10-15 | minor | Copy Diagnostics in the title bar (D1): a pill beside the account picture runs Help › Copy Diagnostics |
+| 2026-10-15 | minor | About ▸ Contributors (D2): a Contributors tab in the About window; File › About › Show Contributors |

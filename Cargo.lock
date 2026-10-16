@@ -2412,6 +2412,7 @@ dependencies = [
  "mailcraft-time",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

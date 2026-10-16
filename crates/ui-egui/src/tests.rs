@@ -223,8 +223,21 @@ fn everything_lays_out_without_panicking() {
         ("file: options", vec![("ui.backstage", json!({"value": true, "page": "options"}))]),
         ("file: about", vec![("ui.backstage", json!({"value": true, "page": "about"}))]),
     ];
-    let dialogs =
-        ["commands", "folder", "goToDate", "about", "discardDraft", "event", "meeting", "contact", "task", "account", "categories", "rules"];
+    let dialogs = [
+        "commands",
+        "folder",
+        "goToDate",
+        "about",
+        "contributors",
+        "discardDraft",
+        "event",
+        "meeting",
+        "contact",
+        "task",
+        "account",
+        "categories",
+        "rules",
+    ];
     for theme in ["light", "dark"] {
         for size in [(1280.0, 800.0), (320.0, 200.0)] {
             for (what, steps) in &setups {
