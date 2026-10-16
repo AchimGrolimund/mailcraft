@@ -6,8 +6,9 @@ nothing in the program reports to the project or to anybody who works on it.
 
 ## What the project collects
 
-Nothing. MailCraft has no telemetry, no analytics, no crash reporting and no advertising, and it
-does not check for updates by itself.
+Nothing. MailCraft has no telemetry, no analytics, no crash reporting and no advertising. It
+checks for new versions only if you turn that on (see below), and that check sends nothing about
+you.
 
 ## Where your data is
 
@@ -34,6 +35,7 @@ MailCraft connects only to these, over encrypted connections:
 | Microsoft's sign-in pages and Microsoft Graph, for an account that signs in with Microsoft | When you sign in; for calendar, contacts, sending mail, working hours, categories and Outlook's Favorites | Your sign-in happens on Microsoft's page in your browser; the program receives tokens, never your password |
 | A public DNS-over-HTTPS resolver (Cloudflare, then Google) | Once, when you press Connect while adding an account at a domain the program does not know | The domain of your address (the part after the @), never the mailbox name |
 | The web address of a picture in a message | Only when you ask for a message's pictures, or for a sender or domain you chose to always download from | The address alone: no cookies, no referrer, no sign-in |
+| GitHub's API (`api.github.com`), to see whether a new version is out | Off unless you turn it on (the program asks once, and File › Options changes it): then at most once a day; and whenever you press Check for Updates in File › About | One request for the newest release of MailCraft's repository (`GET /repos/UCS-Care-Group/mailcraft/releases/latest`), with nothing about you, your accounts, your mail or this computer in it, not even the version you run. Nothing is downloaded or installed |
 
 Nothing in a message runs, and nothing in a message is fetched unless you ask for its pictures.
 

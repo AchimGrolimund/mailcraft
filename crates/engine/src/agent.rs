@@ -293,6 +293,8 @@ const SAFE: &[&str] = &[
     "ui.copySelection",
     "ui.selectAllInMessage",
     "ui.copyDiagnostics",
+    // (Refused by the window itself unless the owner has the daily check on.)
+    "ui.checkForUpdates",
     "ui.toggleCalendarGroup",
     "ui.findInvitation",
 ];
@@ -352,6 +354,7 @@ const SETTINGS: &[&str] = &[
     "signature.close",
     "ui.alwaysDownloadPictures",
     "ui.downloadPicturesAutomatically",
+    "ui.updateCheck",
 ];
 
 const NEVER: &[&str] = &[

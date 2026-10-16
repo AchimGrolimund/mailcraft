@@ -772,7 +772,8 @@ fn free_busy(request: FreeBusyRequest) -> FreeBusyResult {
 
 /// What the app needs from the system: native file dialogs, shown without blocking the window
 /// (`file_dialogs`); everything that opens a socket (Send/Receive, signing in, finding a domain's
-/// mail servers, checking an account), each on a background thread; and the credential store.
+/// mail servers, checking an account, asking whether a new version is out), each on a background
+/// thread; and the credential store.
 /// `kept_pictures` is where downloaded pictures are kept between runs, when they are.
 fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: Option<std::sync::Arc<picture_cache::Cache>>) -> Services {
     let pictures_ctx = ctx.clone();
@@ -781,6 +782,7 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
     let check_ctx = ctx.clone();
     let approval_ctx = ctx.clone();
     let fetch_ctx = ctx.clone();
+    let update_ctx = ctx.clone();
     let (sync_ctx, sign_in_ctx, graph_ctx, mx_ctx, test_ctx) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone(), ctx);
     let sync_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel = sync_cancel.clone();
@@ -851,6 +853,13 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
         // Help › Copy Diagnostics: the version, the platform and the redacted end of the logs.
         diagnostics: Some(Box::new(|| diagnostics::report(env!("CARGO_PKG_VERSION"), build_sha(), log_dir().filter(|_| prefs_enabled()).as_deref()))),
         microsoft_client_id: microsoft_client_id(),
+        // Whether a new version is out: GitHub is asked about this build's repository and told
+        // nothing else, once a day when the owner wants that, or when they press Check for Updates.
+        update_check: Some(Box::new(move |pre_releases| {
+            background(&update_ctx, "update check", move || mailcraft_net::update::latest(pre_releases).map_err(|e| e.to_string()))
+        })),
+        // A build that isn't one of the project's packages (they name their commit) never asks.
+        development_build: build_sha() == "dev",
         ..Default::default()
     }
 }
