@@ -25,6 +25,10 @@ const SEARCH_TIME: std::time::Duration = std::time::Duration::from_secs(2);
 /// was used longest ago and is safely on disk goes back to being named only (128 MB).
 pub const LOADED_MAX: u64 = 128 << 20;
 
+/// The largest calendar part (an invitation's `.ics`) read from a message: one past it is left
+/// where it is, unread.
+pub(crate) const MAX_CALENDAR_PART: usize = 2 << 20;
+
 /// Messages one load looks at to let go of their content ([`Session::evict`]).
 #[cfg(not(target_arch = "wasm32"))]
 const EVICT_TRIES: usize = 16;
@@ -560,6 +564,21 @@ pub struct Session {
     /// Messages whose showing couldn't bring in what it needs (a picture's or a calendar part's
     /// file missing or damaged): not asked for again every frame, until the mailbox is opened anew.
     display_failed: std::collections::HashSet<Id>,
+    /// While a command runs: the messages content was brought into or let go of, each as it was
+    /// and as it became ([`Session::put_message`]), so that the state the command started from
+    /// (its Undo step, and what a failed command goes back to) has them as they are now. Bringing
+    /// content in is not a change to the mailbox.
+    swaps: Option<Vec<Swap>>,
+    /// While a search brings bodies in: the query, and whether each message whose body was let
+    /// go of during it matched it ([`Session::load_bodies_for_search`]).
+    search_pass: Option<(mailcraft_model::search::Query, std::collections::HashMap<Id, bool>)>,
+}
+
+/// Message `id` was `old` and is `new`, the same message with more or less of it in memory.
+struct Swap {
+    id: Id,
+    old: Arc<Message>,
+    new: Arc<Message>,
 }
 
 impl Session {
@@ -597,6 +616,8 @@ impl Session {
             resident: std::collections::VecDeque::new(),
             resident_bytes: 0,
             display_failed: std::collections::HashSet::new(),
+            swaps: None,
+            search_pass: None,
         };
         s.view.date = s.today();
         s.normalize();
@@ -750,9 +771,9 @@ impl Session {
         {
             return rows.clone();
         }
-        self.load_bodies_for_search();
+        let searched = self.load_bodies_for_search();
         let key = key(self);
-        let rows = Arc::new(crate::list::rows(self));
+        let rows = Arc::new(crate::list::rows_with(self, &searched));
         self.list_cache = Some((key, rows.clone()));
         rows
     }
@@ -819,6 +840,19 @@ impl Session {
         Ok(Arc::new(copy))
     }
 
+    /// A copy of message `id` with what a reply quotes in memory: its body, and the pictures its
+    /// HTML shows in place (`cid:`). Its other attachments stay where they are.
+    pub fn loaded_for_reply(&self, id: Id) -> Result<Arc<Message>, CmdError> {
+        let m = self.loaded_message_where(id, |_| false)?;
+        let html = m.body.html.as_deref().unwrap_or("");
+        if m.attachments.iter().all(|a| a.is_loaded() || !shown_in(html, a)) {
+            return Ok(m);
+        }
+        let mut copy = Message::clone(&m);
+        loaded_into(&mut copy, |part| self.content(id, part), &|a| shown_in(html, a))?;
+        Ok(Arc::new(copy))
+    }
+
     /// [`Session::loaded_message_where`] with every attachment.
     pub fn loaded_message(&self, id: Id) -> Result<Arc<Message>, CmdError> {
         self.loaded_message_where(id, |_| true)
@@ -854,13 +888,54 @@ impl Session {
             }
             kept.text_hash = mailcraft_model::text_hash(&copy.body.text);
         }
+        // What came in before a part that failed is in memory all the same, and counted.
         let brought = in_memory(&copy).saturating_sub(in_memory(m));
-        self.mailbox.messages.insert(id, Arc::new(copy));
+        self.put_message(id, copy);
         self.loads += 1;
-        if loaded.is_ok() {
-            self.used(id, brought);
-        }
+        self.used(id, brought);
         loaded.map(|_| true)
+    }
+
+    /// Put `m`, message `id` with more or less of its content in memory, in the place of the
+    /// one the mailbox has. The one it replaces may still be held by an Undo or Redo step: the
+    /// content it keeps on disk is kept from the sweep while it is (`store::keep_held`). In a command,
+    /// the state the command started from gets it too ([`Session::run`]).
+    fn put_message(&mut self, id: Id, m: Message) {
+        let new = Arc::new(m);
+        let Some(old) = self.mailbox.messages.insert(id, new.clone()) else { return };
+        if Arc::strong_count(&old) > 1 {
+            self.hold(std::iter::once(&old));
+        }
+        if let Some(swaps) = &mut self.swaps {
+            swaps.push(Swap { id, old, new });
+        }
+    }
+
+    /// Keep what `messages` keep on disk from the sweep while something holds them.
+    fn hold<'a>(&self, messages: impl IntoIterator<Item = &'a Arc<Message>>) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(path) = &self.path {
+            crate::store::keep_held(path, messages);
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = messages;
+    }
+
+    /// After a command changed the mailbox: the messages of the state before it (`before`, its
+    /// Undo step) that the mailbox no longer has as they were, kept from the sweep while that
+    /// step holds them. One walk of both, in order of id.
+    fn hold_replaced(&self, before: &Mailbox) {
+        let mut now = self.mailbox.messages.iter().peekable();
+        let mut gone = Vec::new();
+        for (id, m) in &before.messages {
+            while now.peek().is_some_and(|(n, _)| *n < id) {
+                now.next();
+            }
+            if !now.peek().is_some_and(|(n, x)| *n == id && Arc::ptr_eq(x, m)) {
+                gone.push(m);
+            }
+        }
+        self.hold(gone);
     }
 
     /// Message `id` was just used, with `brought` more bytes in memory: it goes to the back of
@@ -899,9 +974,15 @@ impl Session {
                     continue;
                 };
                 let lean = if id == keep || self.sel.messages.contains(&id) { None } else { crate::store::evictable(&path, id, m) };
+                // A search under way has what it is looking for matched first: its body is
+                // about to be named only, and the list reads it after this.
+                let hit = lean.as_ref().and(self.search_pass.as_ref()).map(|(q, _)| q.matches(m, self.offset_at(m.date)));
+                if let (Some(hit), Some((_, hits))) = (hit, &mut self.search_pass) {
+                    hits.insert(id, hit);
+                }
                 match lean {
                     Some(lean) => {
-                        self.mailbox.messages.insert(id, Arc::new(lean));
+                        self.put_message(id, lean);
                         self.resident_bytes = self.resident_bytes.saturating_sub(bytes);
                         self.loads += 1;
                     }
@@ -940,7 +1021,7 @@ impl Session {
         let body = self.load_where(id, |_| false)?;
         let Some(m) = self.mailbox.message(id) else { return Ok(body) };
         let html = m.body.html.clone().unwrap_or_default();
-        let parts = self.load_where(id, move |a| is_calendar_part(a) || shown_in(&html, a))?;
+        let parts = self.load_where(id, move |a| is_readable_calendar_part(a) || shown_in(&html, a))?;
         Ok(body || parts)
     }
 
@@ -951,7 +1032,7 @@ impl Session {
             return true;
         }
         let html = m.body.html.as_deref().unwrap_or("");
-        m.attachments.iter().any(|a| !a.is_loaded() && (is_calendar_part(a) || shown_in(html, a)))
+        m.attachments.iter().any(|a| !a.is_loaded() && (is_readable_calendar_part(a) || shown_in(html, a)))
     }
 
     /// The whole mailbox with every part in memory, as a self-contained file needs it (File ›
@@ -989,12 +1070,15 @@ impl Session {
     }
 
     /// Before the list is built for a search that reads bodies: the bodies it lacks, newest
-    /// first, within [`Session::search_time`]; the rest are counted as not searched.
-    fn load_bodies_for_search(&mut self) {
+    /// first, within [`Session::search_time`]; the rest are counted as not searched. Bringing them
+    /// in keeps within [`Session::loaded_budget`], so a body may be let go of again before the
+    /// list is built: each is matched before it goes, and what is returned says whether it did
+    /// (for [`crate::list::rows_with`]).
+    fn load_bodies_for_search(&mut self) -> std::collections::HashMap<Id, bool> {
         self.unsearched = 0;
         let query = mailcraft_model::search::Query::parse(&self.view.search);
         if query.is_empty() || !query.reads_bodies() {
-            return;
+            return Default::default();
         }
         // The messages the list looks at (`list::rows`): the folder in view, or everywhere but
         // Deleted Items and Junk E-mail.
@@ -1018,20 +1102,32 @@ impl Session {
             .map(|m| (m.date, m.id))
             .collect();
         if wanted.is_empty() {
-            return;
+            return Default::default();
         }
         wanted.sort_unstable_by(|a, b| b.cmp(a));
-        let deadline = std::time::Instant::now() + self.search_time;
+        // The browser has no clock to time it by (and keeps every body in memory anyway); a
+        // deadline past what the clock can say is none.
+        #[cfg(not(target_arch = "wasm32"))]
+        let deadline = std::time::Instant::now().checked_add(self.search_time);
+        let out_of_time = || {
+            #[cfg(not(target_arch = "wasm32"))]
+            let out = deadline.is_some_and(|d| std::time::Instant::now() >= d);
+            #[cfg(target_arch = "wasm32")]
+            let out = false;
+            out
+        };
         let mut left = wanted.len();
+        let outer = self.search_pass.replace((query, Default::default()));
         for (_, id) in wanted {
-            if std::time::Instant::now() >= deadline {
+            if out_of_time() {
                 break;
             }
             // A body that can't be read says so in its place, and is not asked for again.
             let _ = self.load_where(id, |_| false);
-            left -= 1;
+            left = left.saturating_sub(1);
         }
         self.unsearched = left;
+        std::mem::replace(&mut self.search_pass, outer).map(|(_, hits)| hits).unwrap_or_default()
     }
 
     /// Keep the view and the selection pointing at things that exist.
@@ -1174,7 +1270,20 @@ impl Session {
         let view = self.view.clone();
         let run = spec.run;
         // Last-resort guard (never-crash): a panic in a command becomes an error and the state is restored.
+        let outer = self.swaps.replace(Vec::new());
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(self, params)));
+        // Content the command brought in or let go of is in the state it started from too: it
+        // is no change to undo, and a command that fails keeps it (and what is counted of it).
+        let swaps = std::mem::replace(&mut self.swaps, outer).unwrap_or_default();
+        let mut before = before;
+        for swap in &swaps {
+            if before.mailbox.messages.get(&swap.id).is_some_and(|m| Arc::ptr_eq(m, &swap.old)) {
+                before.mailbox.messages.insert(swap.id, swap.new.clone());
+            }
+        }
+        if let Some(outer) = &mut self.swaps {
+            outer.extend(swaps);
+        }
         let result = match result {
             Ok(r) => r,
             Err(_) => {
@@ -1193,6 +1302,7 @@ impl Session {
         match &result {
             Ok(_) => {
                 if self.mailbox != before.mailbox {
+                    self.hold_replaced(&before.mailbox);
                     self.rev += 1;
                     if history {
                         self.dirty = true;
@@ -1221,9 +1331,15 @@ impl Session {
 }
 
 /// Whether an attachment is a calendar part (an invitation, an answer to one).
-fn is_calendar_part(a: &Attachment) -> bool {
+pub(crate) fn is_calendar_part(a: &Attachment) -> bool {
     let kind = a.mime.trim().to_ascii_lowercase();
     kind.starts_with("text/calendar") || kind.starts_with("application/ics") || a.name.to_ascii_lowercase().ends_with(".ics")
+}
+
+/// A calendar part small enough to be read ([`MAX_CALENDAR_PART`]), by its size before it is
+/// brought in.
+pub(crate) fn is_readable_calendar_part(a: &Attachment) -> bool {
+    is_calendar_part(a) && a.size() <= MAX_CALENDAR_PART
 }
 
 /// Whether `html` shows the picture `a` in place (`cid:`).

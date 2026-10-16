@@ -131,6 +131,16 @@ fn source_message(s: &Session, v: &Value) -> Result<Message, CmdError> {
     s.loaded_message(id).map(|m| Message::clone(&m))
 }
 
+/// The message a reply answers, with what the reply quotes of it in memory: its body and the
+/// pictures its HTML shows (`Session::loaded_for_reply`); its other files stay where they are.
+fn reply_source(s: &Session, v: &Value) -> Result<Message, CmdError> {
+    let id = p::id(v, "id").or(s.sel.focus()).ok_or_else(|| fail("select a message first"))?;
+    if s.mailbox.message(id).is_none() {
+        return Err(fail(format!("no message with id {id}")));
+    }
+    s.loaded_for_reply(id).map(|m| Message::clone(&m))
+}
+
 /// `RE: subject`, unless it already starts that way.
 fn prefixed(prefix: &str, subject: &str) -> String {
     let lower = subject.trim_start().to_ascii_lowercase();
@@ -211,7 +221,11 @@ fn shown_pictures(m: &Message, html: &str) -> Vec<Attachment> {
 }
 
 fn respond(s: &mut Session, v: &Value, mode: ComposeMode) -> CmdResult {
-    let m = source_message(s, v)?;
+    // A forward carries every file; a reply only quotes the text and the pictures it shows.
+    let m = match mode {
+        ComposeMode::Forward => source_message(s, v)?,
+        _ => reply_source(s, v)?,
+    };
     let mine: Vec<String> = s.mailbox.accounts.iter().map(|a| a.email.to_lowercase()).filter(|e| !e.is_empty()).collect();
     let is_mine = |a: &Address| mine.contains(&a.email.to_lowercase());
     let (to, cc) = match mode {

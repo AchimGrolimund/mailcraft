@@ -568,6 +568,33 @@ struct Shared {
     /// A host keeps this file up to date by itself ([`BackgroundSave::follow`]).
     followed: AtomicBool,
     state: Mutex<State>,
+    /// Messages a session holds (an Undo or Redo step) that aren't the ones in its mailbox
+    /// ([`keep_held`]): a sweep leaves the content they keep on disk alone, as it does for [`Pins`].
+    /// Apart from `state`, so that holding one never waits for a save being written.
+    held: Mutex<Pins>,
+}
+
+/// Whether message `m` names content it keeps on disk rather than in memory.
+fn names_kept(m: &Message) -> bool {
+    m.kept.is_some() || m.attachments.iter().any(|a| a.kept.is_some())
+}
+
+/// Keep the content that `messages` keep on disk (named on them, not in memory) from being swept
+/// beside the mailbox file at `path` while anything still holds them: what a session's Undo and
+/// Redo steps hold that its mailbox no longer has as it is (a message deleted, or brought into
+/// memory or let go of since the step was taken), which the file itself may no longer name and
+/// whose record the store may never have written from that very message. A handle that nothing
+/// else holds goes by itself.
+pub fn keep_held<'a>(path: &Path, messages: impl IntoIterator<Item = &'a Arc<Message>>) {
+    let mut wanted = messages.into_iter().filter(|m| names_kept(m)).peekable();
+    if wanted.peek().is_none() {
+        return;
+    }
+    let shared = shared(path);
+    let mut held = lock(&shared.held);
+    for m in wanted {
+        held.add(&Arc::downgrade(m));
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1011,7 +1038,16 @@ pub fn open(path: &Path) -> Result<Opened, String> {
     st.stamp = Stamp::of(&file, bytes.len() as u64);
     st.loaded = loaded_unless_retired(&mailbox);
     st.legacy = Some(version.max(1));
-    Ok(Opened { mailbox, split, unavailable: filled.missing, loaded: filled.loaded, deferred: filled.deferred, unfinished: 0, lost_saves: 0, lost_records: 0 })
+    Ok(Opened {
+        mailbox,
+        split,
+        unavailable: filled.missing,
+        loaded: filled.loaded,
+        deferred: filled.deferred,
+        unfinished: 0,
+        lost_saves: 0,
+        lost_records: 0,
+    })
 }
 
 /// One item of a mailbox file in this form, read.
@@ -1336,8 +1372,9 @@ fn fill(st: &mut State, dir: &Path, mailbox: &mut Mailbox, head: Head, mut parts
         }
     }
     drop(seen);
-    let deadline = Instant::now() + STAT_TIME;
-    let looked = fan_out(on_disk.len(), |i| on_disk.get(i).map(|r| (Instant::now() < deadline).then(|| present(dir, r, &folders))));
+    // (A deadline past what the clock can say is none.)
+    let deadline = Instant::now().checked_add(STAT_TIME);
+    let looked = fan_out(on_disk.len(), |i| on_disk.get(i).map(|r| deadline.is_none_or(|d| Instant::now() < d).then(|| present(dir, r, &folders))));
     let missing: HashSet<Ref> = on_disk.iter().zip(&looked).filter(|(_, l)| matches!(l, Some(Some(Some(false))))).map(|(r, _)| *r).collect();
     drop(on_disk);
     let mut filled = Filled::default();
@@ -2507,6 +2544,7 @@ pub fn sweep(path: &Path, grace: Duration) -> Result<Swept, String> {
     named.extend(kept_aside);
     // What a message still in memory keeps on disk stays, though the file no longer names it.
     named.extend(st.pins.kept());
+    named.extend(lock(&shared.held).kept());
     let now = SystemTime::now();
     // A time in the future is no age at all.
     let old = |meta: &fs::Metadata| meta.modified().ok().and_then(|t| now.duration_since(t).ok()).is_some_and(|age| age >= grace);

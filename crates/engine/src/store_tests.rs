@@ -1723,3 +1723,6 @@ fn fifty_thousand_messages_with_two_gigabytes_of_content_open_under_a_small_budg
 /// Format 3: the log of records.
 #[path = "store_index_tests.rs"]
 mod format3;
+
+#[path = "store_session_tests.rs"]
+mod in_session;
