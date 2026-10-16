@@ -1,5 +1,6 @@
-**What's new in 0.4.1** (an alpha for testers; sign up in [#11](https://github.com/GITHUB_REPOSITORY/issues/11)):
-- MCP: agents get only what the owner allows. Every command has a class for agents; sending, deleting for good, accounts, the mailbox file, options and rules are asked about in the app's window (Don't is the default), or refused by a server without a window unless started with `--allow`; files on this computer are named only inside a folder given with `--files`; message text reaches agents marked as untrusted data. See [docs/mcp.md](https://github.com/GITHUB_REPOSITORY/blob/main/docs/mcp.md).
+**What's new in 0.4.2** (an alpha for testers; sign up in [#11](https://github.com/GITHUB_REPOSITORY/issues/11)):
+- Logs carry no addresses: every line of the program's log (file and standard error) has addresses, links, tokens and quoted text taken out, and the IMAP and SMTP wire trace shows only a line's keywords and how long the rest is.
+- About ▸ Contributors: the people who made MailCraft.
 
 **Early alpha.** The foundations are in place and tested, but much of what a daily mail program needs is not there yet, and most of the Microsoft 365 behaviour has only been tested against stand-ins. What works is in the [README](https://github.com/GITHUB_REPOSITORY#what-works-today).
 
