@@ -26,7 +26,8 @@
 //! - **Faults on demand**, per message ([`Mail::faults`](super::Mail::faults)): a change of it
 //!   is answered 404, 403 or 400, told to come back later (429 with `Retry-After`, inside a
 //!   batch among that request's own headers), or carried out with the answer lost: the
-//!   connection is closed without a word, and a batch that held it is lost whole. A whole batch
+//!   connection is closed without a word, and a batch that held it is lost whole (for its next
+//!   copy alone, [`Fault::CopyAnswerLost`]: the marker goes on first, as usual). A whole batch
 //!   is told to come back later with [`State::fail_next`] for `POST /v1.0/$batch`.
 //!
 //! `$batch` itself (up to 20 requests, each answered by itself and matched by its `id`, more
@@ -49,6 +50,9 @@ pub enum Fault {
     Throttled(usize),
     /// The next change is made, and its answer lost: the connection closes before a word of it.
     AnswerLost,
+    /// [`Fault::AnswerLost`] for the next copy of it alone; any other change is made and
+    /// answered as usual.
+    CopyAnswerLost,
 }
 
 /// The kinds of single-value extended property the reference lists, which an id begins with.
@@ -293,6 +297,7 @@ impl State {
                 self.lose_answer = true;
                 Ok(())
             }
+            Fault::CopyAnswerLost => Ok(()),
         }
     }
 
@@ -412,6 +417,10 @@ impl State {
                     return Err(not_found());
                 }
                 self.fault(&id)?;
+                if action == "copy" && self.mailbox.faults.get(&id) == Some(&Fault::CopyAnswerLost) {
+                    self.mailbox.faults.remove(&id);
+                    self.lose_answer = true;
+                }
                 let answered = if action == "move" {
                     if self.mailbox.messages.get(&id).is_some_and(|m| m.folder != to) {
                         self.mailbox.move_to(&id, &to);

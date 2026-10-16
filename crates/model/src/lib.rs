@@ -30,8 +30,8 @@ pub use calendar::{
 };
 pub use contact::{Contact, Labeled, PostalAddress};
 pub use mailbox::{
-    Account, AccountKind, Category, Directory, DownloadInFull, Folder, FolderKind, Mailbox, OAuth, OAuthProvider, Pending, Queued, Security, Server,
-    ServerFavorites, ServerFolder,
+    Account, AccountKind, Category, Directory, DownloadInFull, Folder, FolderKind, INTO_GRAPH, Mailbox, OAuth, OAuthProvider, Pending, Queued,
+    Security, Server, ServerFavorites, ServerFolder,
 };
 pub use mailcraft_time as time;
 pub use message::{Attachment, Body, FlagStatus, Importance, Message, normalize_subject};

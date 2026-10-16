@@ -205,6 +205,14 @@ pub struct ServerMessage {
     /// fetch's limit is held against (R3 spec S12).
     #[serde(skip_serializing_if = "is_zero_u64")]
     pub size: u64,
+    /// The follow-up flag's dates as the server has them (R3.3, S16): when it was flagged, when
+    /// it is due, and when it was marked complete. A file from before has none.
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub flag_start: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub flag_due: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub flag_completed: Option<Timestamp>,
 }
 
 /// The server's copy of a message that is **being moved** out of a Microsoft account
@@ -653,6 +661,137 @@ pub struct GraphMailRequest {
     /// the link is a delta link); a folder that isn't here is read from its start (R3 spec S10).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<GraphLink>,
+    /// The changes of messages made here, after the folder changes and before the listing
+    /// (R3 spec S16).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<MessageChange>,
+}
+
+/// Most changes of messages one Graph run is asked to make; more go over several runs.
+pub const MAX_MESSAGE_CHANGES: usize = 10_000;
+
+/// A change made here to a message of a Microsoft account, for its server to take on (R3 spec
+/// S16): worked out from the difference between the message and its last synced state
+/// ([`ServerMessage`]), or waiting in [`crate::Mailbox::queued`]. Messages are named by their
+/// server ids, folders by theirs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MessageChange {
+    /// Properties of the message `message` (the server's `id`) were changed here: only those are
+    /// named, and they go as one change.
+    #[serde(rename_all = "camelCase")]
+    Update {
+        message: Id,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        read: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        flag: Option<FlagUp>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        categories: Option<CategoriesUp>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        importance: Option<Importance>,
+    },
+    /// The message lies in another folder here: the folder the server calls `to`, or, when
+    /// `to_folder` names a folder of this mailbox that is made in the same run, that one once it is.
+    #[serde(rename_all = "camelCase")]
+    Move {
+        message: Id,
+        id: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        to: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_folder: Option<Id>,
+    },
+    /// The message was copied here into another folder of the account (`copy` is the copy here):
+    /// the server copies it, after giving the source MailCraft's invisible marker of the value
+    /// `marker`, by which a copy whose answer was lost is found (S21).
+    #[serde(rename_all = "camelCase")]
+    Copy {
+        copy: Id,
+        id: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        to: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_folder: Option<Id>,
+        marker: String,
+    },
+    /// The message was deleted for good here: the server deletes it (Graph's delete, which keeps
+    /// it recoverable for the retention period; never past it, S19).
+    Delete { id: String },
+    /// The message `message` was moved out of the account, is fetched whole and saved here: the
+    /// server's copy goes (S19).
+    #[serde(rename_all = "camelCase")]
+    MovedOut { message: Id, id: String },
+}
+
+impl MessageChange {
+    /// The server id of the message it is about.
+    pub fn id(&self) -> &str {
+        match self {
+            MessageChange::Update { id, .. }
+            | MessageChange::Move { id, .. }
+            | MessageChange::Copy { id, .. }
+            | MessageChange::Delete { id }
+            | MessageChange::MovedOut { id, .. } => id,
+        }
+    }
+}
+
+/// A follow-up flag as it goes up: its status and its dates.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FlagUp {
+    pub status: FlagStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub due: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed: Option<Timestamp>,
+}
+
+/// Categories changed here: the last synced list and the list here. The server's list as it is
+/// when the change is made is read first, and what was added and taken away here is applied to
+/// it ([`merge_categories`], S17).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CategoriesUp {
+    pub synced: Vec<String>,
+    pub here: Vec<String>,
+}
+
+/// What the server made of a [`MessageChange`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MessageOutcome {
+    /// Done. `categories`: the list the message has on the server now (for a change of them);
+    /// `flag`: the flag as it went; `folder`: the server id of the folder a move or a copy put
+    /// it in; `id`: the server id of a copy it made.
+    #[serde(rename_all = "camelCase")]
+    Done {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        categories: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        flag: Option<FlagUp>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        folder: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        id: String,
+    },
+    /// The server no longer has the message (404).
+    Gone,
+    /// The server won't (403 not allowed, 400 not a change it makes): `status` says which.
+    Refused { status: u16 },
+}
+
+/// A change of a message and what became of it. One that isn't answered (the server was busy,
+/// the connection went) isn't here: it is worked out again for the next run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageChangeDone {
+    pub change: MessageChange,
+    pub outcome: MessageOutcome,
 }
 
 /// Where a folder's message delta goes on from.
@@ -781,6 +920,9 @@ pub struct GraphMailResult {
     pub email: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub changes: Vec<FolderChangeDone>,
+    /// What became of the changes of messages sent (R3.3).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<MessageChangeDone>,
     /// Every folder of the mailbox, when it could be listed at all.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub listing: Option<FolderListing>,
@@ -815,6 +957,7 @@ impl GraphMailResult {
     /// pages in the order they came, and what the last piece says of the end.
     pub fn absorb(&mut self, piece: GraphMailResult) {
         self.changes.extend(piece.changes);
+        self.messages.extend(piece.messages);
         if piece.listing.is_some() {
             self.listing = piece.listing;
         }

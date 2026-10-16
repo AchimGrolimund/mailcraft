@@ -129,6 +129,7 @@ fn save(s: &mut Session, v: &Value) -> CmdResult {
     if r.get("path").is_some() {
         s.path = Some(path.into());
         s.dirty = false;
+        s.note_saved();
     }
     Ok(r)
 }
@@ -150,6 +151,7 @@ fn save_as(s: &mut Session, v: &Value) -> CmdResult {
     if r.get("path").is_some() && home {
         s.path = Some(path.into());
         s.dirty = false;
+        s.note_saved();
     }
     Ok(with(r, "copy", json!(!home)))
 }
