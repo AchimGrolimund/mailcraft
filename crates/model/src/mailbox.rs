@@ -617,6 +617,12 @@ impl Mailbox {
         mb
     }
 
+    /// Go on giving ids from where `other` has got to, so that none it gave is given again (an
+    /// older mailbox brought back by Undo, beside mail that came since).
+    pub fn ids_after(&mut self, other: &Mailbox) {
+        self.next_id = self.next_id.max(other.next_id);
+    }
+
     pub fn alloc_id(&mut self) -> Id {
         let id = self.next_id.max(1);
         self.next_id = id.saturating_add(1);
