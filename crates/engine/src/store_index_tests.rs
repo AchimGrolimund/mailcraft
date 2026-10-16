@@ -261,7 +261,7 @@ fn zeros_after_the_last_save_are_no_save_and_damage_is_kept() {
     edited.message_mut(ids[5]).unwrap().read = true;
     assert!(save(&path, &edited).unwrap().compacted);
     assert_eq!(fs::read(&kept(&path, "damaged-")[0]).unwrap(), bytes);
-    assert!(whole(&path) == edited);
+    assert!(whole(&path) == loaded(&path, &edited));
 }
 
 #[test]
@@ -337,7 +337,7 @@ fn a_damaged_save_stops_the_reading_there_so_no_later_save_says_mail_is_here_tha
     let opened = open(&path).unwrap();
     // The reading stops at save N: the mailbox is as before it, the Inbox read up to 100, so the
     // new mail is fetched again; save N+1 is left out with it, and both are said.
-    assert!(opened.mailbox == before, "the mailbox is the one before the damaged save");
+    assert!(loaded(&path, &opened.mailbox) == before, "the mailbox is the one before the damaged save");
     assert!(opened.mailbox.message(fresh).is_none());
     assert_eq!(opened.mailbox.folder(inbox).unwrap().uid_seen, 100);
     assert_eq!((opened.lost_saves, opened.lost_records, opened.unfinished), (2, 0, (bytes.len() - at_n) as u64));
@@ -446,7 +446,7 @@ fn a_damaged_item_of_the_first_save_costs_that_item_and_the_mail_is_fetched_agai
     edited.message_mut(*edited.messages.keys().next().unwrap()).unwrap().read = true;
     assert!(save(&path, &edited).unwrap().compacted);
     assert_eq!(fs::read(&kept(&path, "damaged-")[0]).unwrap(), bytes);
-    assert!(whole(&path) == edited);
+    assert!(whole(&path) == loaded(&path, &edited));
 
     // Its commit damaged, the first save is still read whole, with later saves after it.
     fs::write(&path, &good).unwrap();
@@ -507,7 +507,7 @@ fn files_kept_aside_keep_what_they_name_and_only_the_newest_damaged_ones_stay() 
     let path = tmp.file();
     let mb = mailbox(12);
     save_v2(&path, &mb);
-    let mut changed = open(&path).unwrap().mailbox;
+    let mut changed = whole(&path);
     let gone = first_with(&changed, |m| m.attachments.iter().any(|a| a.data.len() > INLINE_MAX));
     let gone_file = blob_file(&path, &changed.message(gone).unwrap().attachments[0].data);
     changed.remove_message(gone).unwrap();
@@ -696,7 +696,7 @@ fn a_hostile_file_of_this_form_is_refused_or_read_and_names_nothing_outside_its_
     assert_eq!(opened.mailbox.messages.len(), mb.messages.len() + 1);
     // Saved, what was repaired is written.
     save(&path, &opened.mailbox).unwrap();
-    assert!(whole(&path) == opened.mailbox);
+    assert!(whole(&path) == loaded(&path, &opened.mailbox));
     assert_eq!(fs::read(tmp.0.join("secret")).unwrap(), secret);
 }
 
@@ -759,7 +759,7 @@ proptest! {
             let mut next = opened.mailbox.clone();
             next.categories.clear();
             save(&path, &next).unwrap();
-            prop_assert!(whole(&path) == next);
+            prop_assert!(whole(&path) == loaded(&path, &next));
         }
         let _ = sweep(&path, Duration::ZERO);
     }

@@ -113,6 +113,13 @@ fn whole(path: &Path) -> Mailbox {
     opened.mailbox
 }
 
+/// `mb` with every part it keeps on disk at `path` brought into memory.
+fn loaded(path: &Path, mb: &Mailbox) -> Mailbox {
+    let mut mb = mb.clone();
+    load_all(path, &mut mb).unwrap();
+    mb
+}
+
 fn first_with(mb: &Mailbox, test: impl Fn(&Message) -> bool) -> Id {
     mb.messages.values().find(|m| test(m)).map(|m| m.id).unwrap()
 }
