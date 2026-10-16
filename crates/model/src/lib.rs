@@ -19,6 +19,7 @@ pub mod search;
 pub mod signature;
 pub mod sync;
 mod task;
+pub mod update;
 pub mod zoned;
 
 use serde::{Deserialize, Serialize};

@@ -44,6 +44,7 @@ pub mod scheduling;
 mod signatures;
 pub mod tasks_view;
 pub mod theme;
+pub mod updates;
 pub mod widgets;
 pub mod window_geometry;
 pub mod windows;
@@ -164,6 +165,16 @@ pub struct Services {
     /// ids and quoted text taken out. Never sent anywhere. Absent in the browser and the tests:
     /// the copy then has the version and the platform only.
     pub diagnostics: Option<Box<dyn Fn() -> String>>,
+    /// Desktop: ask, on a background thread, which is the newest release of MailCraft
+    /// ([`updates`]): GitHub alone is asked, about this build's repository, and is told nothing of
+    /// the owner (`mailcraft_net::update::latest`). The argument says whether a pre-release will
+    /// do (the running build is one). The release, or why there is none in words that name no
+    /// address, arrives through the channel and the host wakes the UI. Nothing is downloaded or
+    /// installed. Absent in the browser and the tests: nothing is asked and nothing is offered.
+    pub update_check: Option<Box<dyn Fn(bool) -> Receiver<Result<mailcraft_model::update::Release, String>>>>,
+    /// A development build (not one of the project's packages): it never asks about the daily
+    /// check for new versions and never checks by itself; Check for Updates still works.
+    pub development_build: bool,
 }
 
 /// The system's clipboard with HTML on it ([`Services::clipboard`]).
@@ -456,6 +467,14 @@ pub struct UiState {
     pub picture_domains: Vec<String>,
     /// The groups of the calendar list that are folded away under their headings.
     pub collapsed_calendar_groups: Vec<String>,
+    /// Whether MailCraft looks for new versions once a day ([`updates`]): off until the owner says.
+    pub update_check: updates::UpdateCheck,
+    /// How many starts the owner was asked about it at, without an answer.
+    pub update_asked: u8,
+    /// When a check for a new version last got an answer (seconds since 1970; 0: never).
+    pub update_checked: i64,
+    /// The last newer version the owner was told of (`0.4.3`), so it is said once.
+    pub update_told: String,
 }
 
 impl Default for UiState {
@@ -483,6 +502,10 @@ impl Default for UiState {
             picture_senders: Vec::new(),
             picture_domains: Vec::new(),
             collapsed_calendar_groups: Vec::new(),
+            update_check: updates::UpdateCheck::default(),
+            update_asked: 0,
+            update_checked: 0,
+            update_told: String::new(),
         }
     }
 }
@@ -659,6 +682,18 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
     ),
     ("ui.copyLinkAddress", "Copy Link Address", "Message", r#"{"url": string} — a link's address (http, https, mailto or tel) to the clipboard"#),
     (
+        "ui.checkForUpdates",
+        "Check for Updates",
+        "File › About",
+        r#"{} — asks GitHub once which is the newest release of MailCraft (nothing about the owner or their mail is sent; nothing is downloaded or installed). A script or an agent may ask only while the owner has the daily check on (`ui.updateCheck`); otherwise refused: "The owner hasn't allowed update checks." Answers {"pending": "updateCheck", "version"}; a newer version is then said in the status bar and in File › About"#,
+    ),
+    (
+        "ui.updateCheck",
+        "Check for New Versions",
+        "File › Options",
+        r#"{"value"?: bool (default: toggle)} — whether MailCraft asks GitHub once a day which is the newest release (off until the owner turns it on). Answers {"value", "setting": "notAsked"|"on"|"off", "asked": number, "version", "newer": {"version", "security", "page"}|null, "checking": bool}"#,
+    ),
+    (
         "ui.toggleCalendarGroup",
         "Expand or Collapse Calendar Group",
         "Calendar",
@@ -826,6 +861,8 @@ pub struct MailApp {
     pub(crate) ran: (u64, String, Result<Value, String>),
     /// When people are free and busy, as the Scheduling Assistant found out ([`scheduling`]).
     pub(crate) free_busy: scheduling::Store,
+    /// What this run knows of new versions ([`updates`]).
+    pub(crate) updates: updates::Updates,
 }
 
 impl MailApp {
@@ -905,6 +942,7 @@ impl MailApp {
             text_selection: Default::default(),
             ran: (0, String::new(), Ok(Value::Null)),
             free_busy: Default::default(),
+            updates: Default::default(),
         }
     }
 
@@ -933,6 +971,7 @@ impl MailApp {
         self.ui.collapsed_folders.truncate(10_000);
         self.ui.recent.truncate(20);
         self.ui.collapsed_calendar_groups.truncate(200);
+        updates::sanitize(&mut self.ui);
         self.session.prefs = self.ui.options.clone();
         // Layout choices carry over; the folder, the day and the search start fresh.
         let saved = self.ui.view.clone();
@@ -994,7 +1033,8 @@ impl MailApp {
             self.dialog = Some(dialogs::Dialog::Confirm { command: id.to_string(), params, ask });
             return Ok(json!({"pending": "confirm"}));
         }
-        let r = self.execute(id, params);
+        // Check for Updates pressed by the owner checks whether the daily check is on or not.
+        let r = if id == updates::CHECK { self.check_for_updates(true) } else { self.execute(id, params) };
         if id.starts_with("calendar.") {
             self.ran = (self.ran.0.wrapping_add(1), id.to_string(), r.clone());
         }
@@ -1259,7 +1299,8 @@ impl MailApp {
                     .or_else(|| meeting_dialogs::ui_command(self, id, p))
                     .or_else(|| favorites_sync::ui_command(self, id, p))
                     .or_else(|| approval::ui_command(self, id, p))
-                    .or_else(|| graph_switch::ui_command(self, id, p));
+                    .or_else(|| graph_switch::ui_command(self, id, p))
+                    .or_else(|| updates::ui_command(self, id, p));
             }
         })
     }
@@ -2148,6 +2189,8 @@ impl MailApp {
         self.poll_free_busy();
         self.poll_sync();
         self.check_secret_store();
+        // Whether a new version is out, when the owner wants that known ([`updates`]).
+        self.updates_tick(ctx);
         self.auto_sync();
         // The calendar by itself, between Send/Receive runs ([`calendar_sync`]).
         self.calendar_tick(ctx);
@@ -2368,6 +2411,8 @@ impl MailApp {
             // to the status bar across the window's foot: both are laid out before the ribbon.
             chrome::title_bar(self, ui);
             chrome::status_bar(self, ui);
+            // The question about checking for new versions, at the first starts: above the status bar.
+            updates::question(self, ui);
             nav::module_bar(self, ui);
             ribbon::show(self, ui);
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas)).show(ui, |ui| match self.session.view.module {

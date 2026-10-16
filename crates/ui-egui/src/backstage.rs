@@ -319,6 +319,10 @@ fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
             }
         });
     });
+    if app.services.update_check.is_some() {
+        section(ui, tl!("Updates"), t);
+        crate::updates::options(app, ui, t);
+    }
     let prefs = app.session.prefs.clone();
     let set = |app: &mut MailApp, params: serde_json::Value| {
         let _ = app.run("file.options", params);
@@ -540,6 +544,10 @@ fn about(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
         "Mail, calendar, people and tasks, written from scratch in Rust. It runs natively on macOS, Windows, Linux and BSD, and in the browser."
     ));
     ui.label(tl!("Open source under the MIT License or the Apache License 2.0, at your option."));
+    if app.services.update_check.is_some() {
+        section(ui, tl!("Updates"), t);
+        crate::updates::about(app, ui, t);
+    }
     section(ui, tl!("Contributors"), t);
     contributors(ui);
     if ui.button(tl!("Show Contributors")).clicked() {
