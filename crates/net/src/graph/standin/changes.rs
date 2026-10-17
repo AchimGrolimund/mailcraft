@@ -44,6 +44,8 @@ pub enum Fault {
     Gone,
     /// 403 `ErrorAccessDenied`, every time.
     Denied,
+    /// 403 `ErrorQuotaExceeded`, every time: a 403 that isn't "no access" (#70).
+    OverQuota,
     /// 400 `ErrorInvalidRequest`, every time.
     Invalid,
     /// 429 for this many changes to come, then made as usual.
@@ -294,6 +296,7 @@ impl State {
         match fault {
             Fault::Gone => Err(not_found()),
             Fault::Denied => Err(refuse(403, "ErrorAccessDenied", "Access is denied. Check credentials and try again.")),
+            Fault::OverQuota => Err(refuse(403, "ErrorQuotaExceeded", "The mailbox is over its quota.")),
             Fault::Invalid => Err(refuse(400, "ErrorInvalidRequest", "The request is invalid.")),
             Fault::Throttled(n) => {
                 if n <= 1 {
