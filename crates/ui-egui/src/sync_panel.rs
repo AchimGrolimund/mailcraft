@@ -630,10 +630,22 @@ mod tests {
         let inbox = a.session.mailbox.folder_of_kind(ms, FolderKind::Inbox).unwrap();
         for n in 0..50 {
             let server = ServerMessage { id: format!("AAM{n}"), folder: "inbox".into(), ..Default::default() };
-            let m = Message { account: ms, folder: inbox, subject: format!("Note {n}"), date: NOW - n, received: NOW - n, unfetched: true, server: Some(server), ..Default::default() };
+            let m = Message {
+                account: ms,
+                folder: inbox,
+                subject: format!("Note {n}"),
+                date: NOW - n,
+                received: NOW - n,
+                unfetched: true,
+                server: Some(server),
+                ..Default::default()
+            };
             a.session.mailbox.add_message(m).unwrap();
         }
-        a.seed_graph_token(ms, Tokens { access: "stand-in".into(), refresh: "r".into(), expires_at: mailcraft_time::now() + 3_600, ..Default::default() });
+        a.seed_graph_token(
+            ms,
+            Tokens { access: "stand-in".into(), refresh: "r".into(), expires_at: mailcraft_time::now() + 3_600, ..Default::default() },
+        );
         let jobs: Arc<Mutex<Vec<(GraphFetchJob, mpsc::Sender<GraphFetchResult>)>>> = Default::default();
         let asked = jobs.clone();
         a.services.graph_fetch = Some(Box::new(move |job: GraphFetchJob| {
@@ -645,7 +657,8 @@ mod tests {
         let answer = |a: &mut MailApp| {
             let pending: Vec<_> = std::mem::take(&mut *jobs.lock().unwrap());
             for (job, tx) in pending {
-                let fetched = job.request.ids.iter().map(|id| GraphFetched { id: id.clone(), mime: b"Subject: Note\r\n\r\nWords.\r\n".to_vec() }).collect();
+                let fetched =
+                    job.request.ids.iter().map(|id| GraphFetched { id: id.clone(), mime: b"Subject: Note\r\n\r\nWords.\r\n".to_vec() }).collect();
                 tx.send(GraphFetchResult { account: ms, fetched, ..Default::default() }).unwrap();
             }
             a.drive_fetch();

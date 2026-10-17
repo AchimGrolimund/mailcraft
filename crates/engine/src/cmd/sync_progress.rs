@@ -542,7 +542,15 @@ mod tests {
         // Full messages: none counted before the mail comes; an account on a mail server has none.
         assert_eq!((row(&mut s, ms)["fullMessages"].clone(), row(&mut s, imap)["fullMessages"].clone()), (Value::Null, Value::Null));
         let inbox = GraphFolder { id: "in".into(), name: "Inbox".into(), kind: FolderKind::Inbox, ..Default::default() };
-        graph(&mut s, GraphMailResult { account: ms, listing: Some(FolderListing { folders: vec![inbox], complete: true }), partial: true, ..Default::default() });
+        graph(
+            &mut s,
+            GraphMailResult {
+                account: ms,
+                listing: Some(FolderListing { folders: vec![inbox], complete: true }),
+                partial: true,
+                ..Default::default()
+            },
+        );
         let page = serde_json::from_value::<MessagePage>(json!({"folder": "in", "messages": [
             {"server": {"id": "AAA1", "folder": "in"}, "subject": "One"},
             {"server": {"id": "AAA2", "folder": "in"}, "subject": "Two"},
