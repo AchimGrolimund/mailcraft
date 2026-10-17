@@ -2,6 +2,7 @@
 
 use mailcraft_model::rich::RichText;
 use mailcraft_model::signature::Picture;
+use mailcraft_model::sync::{DraftKind, DraftOf, DraftState, ServerDraft};
 use mailcraft_model::{AccountKind, Address, Attachment, Body, FolderKind, Id, Importance, Message, RichBody, Signature, format_list};
 use serde_json::{Value, json};
 
@@ -319,6 +320,10 @@ fn edit_draft(s: &mut Session, v: &Value) -> CmdResult {
     if !m.draft {
         return Err(fail("that message isn't a draft"));
     }
+    // Only its headers are here: written over, the server's whole draft would be lost.
+    if m.unfetched {
+        return Err(fail("this draft isn't downloaded yet: open it once you're online, then edit it"));
+    }
     // A draft written here with an original quoted below opens as it was: the owner's text in
     // rich text, the original as it came.
     let (own_html, quote) = match m.body.html.as_deref().and_then(|h| h.find(QUOTE_MARK).map(|at| (h, at))) {
@@ -503,8 +508,10 @@ fn low_importance(s: &mut Session, _: &Value) -> CmdResult {
     toggle_importance(s, Importance::Low)
 }
 
-/// The message as written so far. `strict`: every recipient must be a deliverable address.
-fn build(s: &Session, c: &Compose, strict: bool) -> Result<Message, CmdError> {
+/// The message as written so far. `strict`: every recipient must be a deliverable address. Under
+/// the Message-ID `message_id` when it is given (a draft saved again keeps its own, and so do the
+/// Content-IDs of its pictures).
+fn build_as(s: &Session, c: &Compose, strict: bool, message_id: Option<&str>) -> Result<Message, CmdError> {
     let account = s.mailbox.account(c.account).or(s.mailbox.default_account()).ok_or_else(|| fail("add an account first (File › Add Account)"))?;
     let parse = |line: &str, what: &str| -> Result<Vec<Address>, CmdError> {
         let list = Address::parse_list(line);
@@ -519,11 +526,14 @@ fn build(s: &Session, c: &Compose, strict: bool) -> Result<Message, CmdError> {
     }
     let now = s.now();
     let domain = account.email.rsplit_once('@').map_or("", |(_, d)| d);
-    let message_id = mailcraft_mime::new_message_id(
-        domain,
-        now,
-        s.rev().wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ c.body.text().len() as u64 ^ (c.subject.len() as u64) << 32,
-    );
+    let message_id = match message_id {
+        Some(id) => id.to_string(),
+        None => mailcraft_mime::new_message_id(
+            domain,
+            now,
+            s.rev().wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ c.body.text().len() as u64 ^ (c.subject.len() as u64) << 32,
+        ),
+    };
     Ok(Message {
         account: account.id,
         in_reply_to: c.in_reply_to.clone(),
@@ -614,7 +624,17 @@ fn attachments_of(c: &Compose, message_id: &str) -> Vec<Attachment> {
 
 fn send(s: &mut Session, _: &Value) -> CmdResult {
     let c = s.compose.clone().ok_or_else(|| fail("no message is being written"))?;
-    let mut m = build(s, &c, true)?;
+    // A draft of a Microsoft account goes as the draft its server has (R3.4.2): the same
+    // Message-ID, marker and server id, brought up to date and sent there.
+    let saved = c.draft.and_then(|d| s.mailbox.message(d).cloned()).filter(|d| d.server_draft.is_some() && s.mailbox.is_graph(d.account));
+    let mut m = build_as(s, &c, true, saved.as_ref().map(|d| d.message_id.as_str()).filter(|id| !id.is_empty()))?;
+    if let Some(d) = saved.as_ref().filter(|d| d.account == m.account) {
+        (m.server, m.server_draft) = (d.server.clone(), d.server_draft.clone());
+        if let Some(sd) = m.server_draft.as_mut() {
+            (sd.pending, sd.saves) = (true, sd.saves.saturating_add(1));
+        }
+    }
+    let as_draft = m.server_draft.is_some();
     let account = s.mailbox.account(m.account).cloned().ok_or_else(|| fail("the account is gone"))?;
     // An account with a server queues the message for the next Send/Receive; a local one has
     // nowhere to send it, so it is filed as sent (and delivered to local accounts it names).
@@ -632,8 +652,9 @@ fn send(s: &mut Session, _: &Value) -> CmdResult {
         }
     }
     if let Some(d) = c.draft {
-        // The draft became this message.
-        let _ = s.mailbox.remove_message(d);
+        // The draft became this message: one the server has goes from there by being sent, not
+        // by being deleted.
+        let _ = if as_draft { s.mailbox.forget_message(d) } else { s.mailbox.remove_message(d) };
     }
     let mut delivered = 0;
     if !queued {
@@ -661,10 +682,43 @@ fn send(s: &mut Session, _: &Value) -> CmdResult {
 
 fn save_draft(s: &mut Session, _: &Value) -> CmdResult {
     let c = s.compose.clone().ok_or_else(|| fail("no message is being written"))?;
-    let mut m = build(s, &c, false)?;
+    let old = c.draft.and_then(|d| s.mailbox.message(d).cloned());
+    let mut m = build_as(s, &c, false, old.as_ref().map(|o| o.message_id.as_str()).filter(|id| !id.is_empty()))?;
     m.draft = true;
     m.folder = s.mailbox.folder_of_kind(m.account, FolderKind::Drafts).ok_or_else(|| fail("this account has no Drafts folder"))?;
-    let id = match c.draft.filter(|d| s.mailbox.message(*d).is_some()) {
+    // Saved again in the same account: what the mailbox keeps of it beside what is written (where
+    // its server has it, and its marks) stays, so that the server's copy is changed in place
+    // rather than made a second time (R3.4.1).
+    if let Some(old) = old.as_ref().filter(|o| o.account == m.account) {
+        (m.server, m.server_draft, m.uid, m.synced) = (old.server.clone(), old.server_draft.clone(), old.uid, old.synced);
+        (m.read, m.flag, m.flag_due, m.categories, m.pinned) = (old.read, old.flag, old.flag_due, old.categories.clone(), old.pinned);
+    }
+    let graph = s.mailbox.account(m.account).is_some_and(|a| a.kind == AccountKind::Microsoft);
+    if graph {
+        // Begun as an answer to, or a forward of, a message its server has: made there as one.
+        let of = c.source.and_then(|src| s.mailbox.message(src)).filter(|src| src.account == m.account).and_then(|src| {
+            let id = src.server.as_ref().filter(|server| !server.gone)?.id.clone();
+            let kind = match c.mode {
+                ComposeMode::Reply => DraftKind::Reply,
+                ComposeMode::ReplyAll => DraftKind::ReplyAll,
+                ComposeMode::Forward => DraftKind::Forward,
+                _ => return None,
+            };
+            Some(DraftOf { id, kind })
+        });
+        let mut sd = m.server_draft.take().unwrap_or_else(|| ServerDraft { of, ..Default::default() });
+        // A draft the server had from elsewhere, edited here for the first time: what the server
+        // had is what it was before.
+        if sd.synced.is_none()
+            && let Some(old) = old.as_ref().filter(|o| o.account == m.account && o.server.is_some() && !o.unfetched)
+        {
+            sd.synced = Some(DraftState::of(old));
+        }
+        sd.pending = true;
+        sd.saves = sd.saves.saturating_add(1);
+        m.server_draft = Some(sd);
+    }
+    let id = match old.as_ref().map(|o| o.id) {
         Some(d) => {
             m.id = d;
             *s.mailbox.message_mut(d)? = m;
@@ -672,6 +726,12 @@ fn save_draft(s: &mut Session, _: &Value) -> CmdResult {
         }
         None => s.mailbox.add_message(m)?,
     };
+    let now = u64::try_from(s.now()).unwrap_or_default();
+    if let Ok(m) = s.mailbox.message_mut(id)
+        && let Some(sd) = m.server_draft.as_mut().filter(|sd| sd.marker.is_empty())
+    {
+        sd.marker = super::graph_drafts::marker(id, now);
+    }
     let c = compose_mut(s)?;
     c.draft = Some(id);
     c.dirty = false;

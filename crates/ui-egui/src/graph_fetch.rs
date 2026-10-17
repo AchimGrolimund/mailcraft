@@ -68,7 +68,7 @@ impl Fetching {
 
 /// The commands that need a message whole, and the message they are about.
 fn needs_whole(app: &MailApp, id: &str, params: &Value) -> Option<Id> {
-    if !matches!(id, "mail.reply" | "mail.replyAll" | "mail.forward" | "file.exportMessage" | "mail.saveAttachment") {
+    if !matches!(id, "mail.reply" | "mail.replyAll" | "mail.forward" | "mail.editDraft" | "file.exportMessage" | "mail.saveAttachment") {
         return None;
     }
     let selected = match app.session.sel.messages.as_slice() {
@@ -120,7 +120,8 @@ impl MailApp {
     pub fn drive_fetch(&mut self) {
         self.poll_fetch_now();
         self.poll_fetch_background();
-        if !self.session.graph_mail || self.services.graph_fetch.is_none() {
+        let graph = self.session.mailbox.accounts.iter().any(|a| a.kind == mailcraft_model::AccountKind::Microsoft);
+        if !graph || self.services.graph_fetch.is_none() {
             return;
         }
         // The message the reading pane shows, at once.

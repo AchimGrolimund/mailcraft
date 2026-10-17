@@ -19,6 +19,7 @@ pub mod search;
 pub mod signature;
 pub mod sync;
 mod task;
+pub mod update;
 pub mod zoned;
 
 use serde::{Deserialize, Serialize};
@@ -30,8 +31,8 @@ pub use calendar::{
 };
 pub use contact::{Contact, Labeled, PostalAddress};
 pub use mailbox::{
-    Account, AccountKind, Category, Directory, DownloadInFull, Folder, FolderKind, Mailbox, OAuth, OAuthProvider, Pending, Queued, Security, Server,
-    ServerFavorites, ServerFolder,
+    Account, AccountKind, Category, Directory, DownloadInFull, Folder, FolderKind, GraphSwitch, IMPORTED, INTO_GRAPH, Mailbox, OAuth, OAuthProvider,
+    Pending, Queued, STAYS_LOCAL, Security, Server, ServerFavorites, ServerFolder,
 };
 pub use mailcraft_time as time;
 pub use message::{Attachment, Body, ContentRef, FlagStatus, Importance, KeptBody, Message, normalize_subject, text_hash};

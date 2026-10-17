@@ -1,6 +1,6 @@
 # Threat model
 
-> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-15 · **Change:** major (first version) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-16 · **Change:** minor (pinned build tools, build provenance; release signing in a protected environment) · **Target:** Microsoft Outlook (Microsoft 365)
 
 What MailCraft protects, from whom, and how, with the code that does it. Rules for working in the
 code are in [`CLAUDE.md`](../CLAUDE.md) and [`AGENTS.md`](../AGENTS.md); how to report a
@@ -113,8 +113,17 @@ A malicious or vulnerable dependency, GitHub Action or build step.
 - **Workflows:** every third-party action is pinned to a full commit SHA, kept current by Dependabot
   with a week's cooldown; checkouts don't keep credentials; workflows get read-only permissions
   unless a job needs more; the release passes its signing secrets by name, not `inherit`.
+- **Release signing:** the signing secrets are kept in the protected `release` environment (version
+  tags only, a maintainer's approval), and only the jobs that sign a pushed version tag, and the
+  one that makes the release, run in it; a dry run started by hand, on any ref, is unsigned and
+  gets no secrets. The workflow makes a draft release, which a maintainer publishes by hand.
   [zizmor](https://docs.zizmor.sh/) checks the workflows on every change to them, and
   [OpenSSF Scorecard](https://scorecard.dev/) scores the repository weekly.
+- **Build tools:** the shared workflows are pinned to full commit SHAs too, and every tool the
+  release downloads by URL (nfpm, appimagetool and the AppImage runtime, the Trusted Signing
+  client, rustup-init, wasm-opt) is an exact version checked against a recorded sha256 before
+  use; trunk runs offline. Every release file gets a build provenance attestation
+  (`gh attestation verify <file> -R UCS-Care-Group/mailcraft`).
 - Pure-Rust TLS (rustls), and no handwritten JavaScript.
 
 ## Out of scope and known limits
@@ -136,4 +145,6 @@ A malicious or vulnerable dependency, GitHub Action or build step.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | Release signing in the protected `release` environment; draft releases |
+| 2026-10-16 | minor | Pinned build tools with checksums; build provenance for release files |
 | 2026-10-15 | major | First version: assets, adversaries, mechanisms with their files, known limits |

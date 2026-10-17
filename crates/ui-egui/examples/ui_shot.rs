@@ -19,11 +19,16 @@
 //! one with `{"host": {"signIn": …, "adminConsent": …}}` on any line (`Host`): from that line
 //! on, a sign-in ends the way `signIn` says (`"waits"`: the owner is still in the browser;
 //! `"approval"`, `"declined"`, `"timedOut"`, `"noBrowser"`, `"signedIn"`, or any other text as
-//! Microsoft's own words), and an administrator's approval the way `adminConsent` says
+//! Microsoft's own words; `"signedInAs": "address"` has it sign in as that address rather than
+//! the one asked for, as an owner who picks another account on Microsoft's page does), and an administrator's approval the way `adminConsent` says
 //! (`"waits"`, `"approved"`, `"notAdministrator"`, `"declined"`, `"timedOut"`, `"noBrowser"`).
 //! One that is waiting when the line comes is answered by it. With a stand-in host, every
 //! address at a company's own domain is one whose mail Microsoft 365 takes. Nobody is signed
-//! in, no browser is opened and nothing leaves this machine.
+//! in, no browser is opened and nothing leaves this machine. The same host answers a check for a
+//! new version (`{"host": {"update": …}}`): `"0.9.0"` (that is the newest release), `"0.9.0
+//! security"` (and it fixes a security problem), `"same"` (the running version), or `"fails"`.
+//! With a stand-in host, the copy of the mailbox kept before a switch to Microsoft Graph is never
+//! finished, so the switch's page keeps saying that it is being saved.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -43,11 +48,17 @@ const NOW: i64 = 1_791_993_600;
 #[derive(Default)]
 struct Host {
     sign_in: String,
+    /// Who a sign-in signs in as; empty: the address it was asked for.
+    signed_in_as: String,
     admin_consent: String,
+    /// What a check for a new version finds.
+    update: String,
     /// The sign-ins and approvals that wait for the script to say how they end, each with the
     /// address it was for.
     sign_ins: Vec<(String, Sender<Result<Tokens, String>>)>,
     approvals: Vec<Sender<AdminConsentAnswer>>,
+    /// Copies of the mailbox being "written": never finished (see the header).
+    copies: Vec<Sender<Result<(), String>>>,
 }
 
 impl Host {
@@ -60,7 +71,7 @@ impl Host {
                 refresh: "stand-in-refresh".into(),
                 expires_at: mailcraft_time::now() + 3_600,
                 name: "Noor Haddad".into(),
-                email: email.to_string(),
+                email: if self.signed_in_as.is_empty() { email.to_string() } else { self.signed_in_as.clone() },
                 tenant: "3a1c5e7b-9d2f-4a6c-8e0b-1d3f5a7c9e2b".into(),
             }),
             "approval" => Err(NEEDS_APPROVAL.into()),
@@ -86,11 +97,17 @@ impl Host {
 
     /// Take in what a line of the script says, and answer what was waiting for it.
     fn told(&mut self, said: &serde_json::Value) {
+        if let Some(who) = said.get("signedInAs").and_then(|v| v.as_str()) {
+            self.signed_in_as = who.to_string();
+        }
         if let Some(how) = said.get("signIn").and_then(|v| v.as_str()) {
             self.sign_in = how.to_string();
         }
         if let Some(how) = said.get("adminConsent").and_then(|v| v.as_str()) {
             self.admin_consent = how.to_string();
+        }
+        if let Some(found) = said.get("update").and_then(|v| v.as_str()) {
+            self.update = found.to_string();
         }
         if self.sign_in != "waits" && !self.sign_in.is_empty() {
             for (email, waiting) in std::mem::take(&mut self.sign_ins) {
@@ -116,7 +133,7 @@ fn stand_in(host: &Arc<Mutex<Host>>) -> Services {
         let _ = tx.send(answer);
         rx
     }
-    let (signing, approving) = (host.clone(), host.clone());
+    let (signing, approving, updating, copying) = (host.clone(), host.clone(), host.clone(), host.clone());
     Services {
         microsoft_client_id: "11111111-2222-3333-4444-555555555555".into(),
         lookup_mx: Some(Box::new(|_| answered(Ok(vec!["example-org.mail.protection.outlook.com".to_string()])))),
@@ -149,6 +166,29 @@ fn stand_in(host: &Arc<Mutex<Host>>) -> Services {
         // (So that an account of an organisation has its last step, and its first download ends.)
         graph: Some(Box::new(|request| answered(GraphResult { account: request.account.id, ..Default::default() }))),
         sync: Some(Box::new(|request| answered(SyncResult { account: request.account.id, ..Default::default() }))),
+        write_copy: Some(Box::new(move |_, _| {
+            let (tx, rx) = channel();
+            if let Ok(mut host) = copying.lock() {
+                host.copies.push(tx);
+            }
+            rx
+        })),
+        update_check: Some(Box::new(move |_| {
+            let found = updating.lock().map(|host| host.update.clone()).unwrap_or_default();
+            let (version, security) = match found.split_once(' ') {
+                Some((version, marked)) => (version.to_string(), marked == "security"),
+                None if found == "same" => (env!("CARGO_PKG_VERSION").to_string(), false),
+                None => (found, false),
+            };
+            answered(match mailcraft_model::update::Version::parse(&version) {
+                Some(version) => Ok(mailcraft_model::update::Release {
+                    page: format!("https://github.com/UCS-Care-Group/mailcraft/releases/tag/v{version}"),
+                    version,
+                    security,
+                }),
+                None => Err("GitHub couldn't be reached".to_string()),
+            })
+        })),
         ..Default::default()
     }
 }
@@ -167,12 +207,10 @@ fn main() {
     } else {
         mailcraft_engine::sample::mailbox(NOW, offset)
     };
-    let mut session = match zone {
+    let session = match zone {
         Some(zone) => Session::in_zone(mailbox, NOW, zone),
         None => Session::at(mailbox, NOW, 0),
     };
-    // The switch for testing Microsoft accounts through Graph, as the app reads it (R3).
-    session.graph_mail = std::env::var("MAILCRAFT_GRAPH_MAIL").is_ok_and(|v| v == "1");
     // A stand-in for the host's part in signing in, when a line of the script speaks to one.
     let host: Arc<Mutex<Host>> = Default::default();
     let stood_in = lines.iter().any(|l| l.get("host").is_some());

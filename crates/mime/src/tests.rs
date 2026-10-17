@@ -468,6 +468,10 @@ fn message() -> impl Strategy<Value = Message> {
             synced: Some(mailcraft_model::sync::RemoteFlags { uid: 11, read: true, ..Default::default() }),
             server: Some(mailcraft_model::sync::ServerMessage { id: "AAMkAGI2-not-carried".into(), ..Default::default() }),
             unfetched: false,
+            moving_out: None,
+            incomplete: false,
+            server_draft: None,
+            held: String::new(),
             kept: None,
         },
     )

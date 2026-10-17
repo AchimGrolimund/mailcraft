@@ -66,6 +66,11 @@ pub enum Dialog {
     },
     /// About MailCraft, on one of its tabs: [`AboutTab`].
     About(AboutTab),
+    /// The page that offers a Microsoft account kept in step by IMAP the switch to Microsoft
+    /// Graph ([`crate::graph_switch`]).
+    GraphSwitch {
+        account: Id,
+    },
     Form(Form),
     /// Propose New Time, Forward, or the list of what was proposed ([`crate::meeting_dialogs`]).
     Meeting(crate::meeting_dialogs::MeetingDialog),
@@ -128,6 +133,7 @@ impl Dialog {
             Dialog::Report { name, .. } => name,
             Dialog::About(AboutTab::About) => "about",
             Dialog::About(AboutTab::Contributors) => "contributors",
+            Dialog::GraphSwitch { .. } => "graphSwitch",
             Dialog::Form(f) => f.name(),
             Dialog::Meeting(d) => d.name(),
         }
@@ -1062,6 +1068,11 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
             });
             close |= !open;
         }
+        Dialog::GraphSwitch { account } => {
+            let account = *account;
+            // (Escape doesn't answer it: closed with its close button, it is asked again next time.)
+            close = crate::graph_switch::show(app, ctx, account);
+        }
         Dialog::Form(form) => {
             let title = form.title();
             let mut done = false;
@@ -1083,6 +1094,8 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
     if let Some(Dialog::Commands { query: id, selected: usize::MAX }) = reopen {
         let id = match id.as_str() {
             "sync.request" => "ui.sync".to_string(),
+            // Asked on its page, which says what the switch does.
+            "account.graphSwitch" => "ui.graphSwitch".to_string(),
             _ => id,
         };
         let _ = app.run(&id, json!({}));

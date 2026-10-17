@@ -131,7 +131,7 @@ fn a_sign_in_that_lacks_the_newest_permission_keeps_everything_it_had() {
 fn graph_is_asked_for_a_calendar_it_may_write_to() {
     // Events made, moved and deleted here go back to the server: reading alone is not enough,
     // and reading alone is not asked for beside it (the wider permission covers it).
-    for resource in [Resource::Mail, Resource::Graph] {
+    for resource in [Resource::Mail, Resource::Graph, Resource::GraphMail] {
         let endpoints = Endpoints::for_resource(&oauth(), resource);
         let asked = format!("{} {}", endpoints.scope, endpoints.consent);
         let scopes: Vec<&str> = asked.split(' ').collect();
@@ -326,7 +326,7 @@ fn microsoft_endpoints() {
     // A request for tokens names one resource: neither asks for a scope of the other's.
     assert!(!common.scope.contains("graph.microsoft.com") && !graph.scope.contains("outlook.office.com"));
     // Reading and changing mail through Graph is asked for only for an account kept in step that
-    // way (R3, behind the switch for testing): never by a sign-in to mail, nor by Graph's own.
+    // way (R3): never by a sign-in to mail, nor by Graph's own.
     let mail = Endpoints::for_resource(&oauth(), Resource::GraphMail);
     assert_eq!(mail.scope, format!("{GRAPH_SCOPES_BEFORE} https://graph.microsoft.com/Mail.ReadWrite offline_access openid profile email"));
     assert_eq!((mail.authorize.as_str(), mail.consent.as_str()), (common.authorize.as_str(), graph.consent.as_str()));
@@ -802,7 +802,7 @@ fn the_favorites_permissions_are_asked_for_by_themselves_and_never_with_a_sign_i
     // Reading Outlook's Favorites takes two permissions more, of which the reference says one
     // takes an administrator in an organisation. An ordinary sign-in must not hang on that:
     // neither its page nor its tokens ask for them, for mail or for the calendar and contacts.
-    for resource in [Resource::Mail, Resource::Graph] {
+    for resource in [Resource::Mail, Resource::Graph, Resource::GraphMail] {
         let endpoints = Endpoints::for_resource(&oauth(), resource);
         let asked = format!("{} {} {}", endpoints.scope, endpoints.consent, endpoints.lesser);
         assert!(!asked.contains("MailboxConfigItem") && !asked.contains("Mail.ReadBasic"), "{asked}");
@@ -1664,11 +1664,11 @@ fn the_identity_token_says_which_directory_signed_in() {
 // ---- an administrator's approval ----
 
 /// What an administrator is asked to approve: everything the program asks an owner for.
-const ADMIN_SCOPES: &str = "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Calendars.ReadWrite https://graph.microsoft.com/Contacts.Read https://graph.microsoft.com/MailboxSettings.Read https://graph.microsoft.com/MailboxConfigItem.Read https://graph.microsoft.com/Mail.ReadBasic offline_access openid profile email";
+const ADMIN_SCOPES: &str = "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Calendars.ReadWrite https://graph.microsoft.com/Contacts.Read https://graph.microsoft.com/MailboxSettings.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/MailboxConfigItem.Read https://graph.microsoft.com/Mail.ReadBasic offline_access openid profile email";
 /// The same, service by service.
 const ADMIN_SCOPES_MAIL: &str =
     "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send offline_access openid profile email";
-const ADMIN_SCOPES_GRAPH: &str = "https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Calendars.ReadWrite https://graph.microsoft.com/Contacts.Read https://graph.microsoft.com/MailboxSettings.Read https://graph.microsoft.com/MailboxConfigItem.Read https://graph.microsoft.com/Mail.ReadBasic offline_access openid profile email";
+const ADMIN_SCOPES_GRAPH: &str = "https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Calendars.ReadWrite https://graph.microsoft.com/Contacts.Read https://graph.microsoft.com/MailboxSettings.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/MailboxConfigItem.Read https://graph.microsoft.com/Mail.ReadBasic offline_access openid profile email";
 /// A directory's id and an application's, both invented.
 const DIRECTORY: &str = "3a1c5e7b-9d2f-4a6c-8e0b-1d3f5a7c9e2b";
 const APPLICATION: &str = "0f6c8d2a-1b3e-4c5d-9e7f-a1b2c3d4e5f6";
@@ -1684,7 +1684,7 @@ fn one_approval_covers_everything_the_program_asks_an_owner_for() {
     assert_eq!(approved.join(" "), ADMIN_SCOPES);
     // What the page of a sign-in asks for, to mail and to Graph, and what the tokens are for: a
     // page that asked for one permission more would send the owner to find an administrator again.
-    for resource in [Resource::Mail, Resource::Graph] {
+    for resource in [Resource::Mail, Resource::Graph, Resource::GraphMail] {
         let endpoints = Endpoints::for_resource(&oauth(), resource);
         for asked in format!("{} {} {}", endpoints.scope, endpoints.consent, endpoints.lesser).split_whitespace() {
             assert!(approved.iter().any(|scope| scope == asked), "{resource:?}: {asked}");
