@@ -641,7 +641,13 @@ fn send_receive(app: &MailApp) -> Tab {
     };
     Tab {
         groups: vec![
-            g("Send & Receive", vec![Item::big("sync", "Send/Receive\nAll Folders", "ui.sync", no()).at(0, 1)]),
+            g(
+                "Send & Receive",
+                vec![
+                    Item::big("sync", "Send/Receive\nAll Folders", "ui.sync", no()).at(0, 1),
+                    Item::big("syncProgress", "Show\nProgress", "ui.dialog", json!({"name": "syncProgress"})).key("sync.progress").at(0, 3),
+                ],
+            ),
             g(
                 "Accounts",
                 vec![

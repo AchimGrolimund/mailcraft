@@ -287,9 +287,14 @@ pub fn status_bar(app: &mut MailApp, ui: &mut Ui) {
                         ui.add_space(10.0);
                     }
                     let sync = app.session.sync_status.clone();
-                    // The last Send/Receive had problems: one click shows all of what it said.
-                    if app.has_sync_problems() && ui.link(egui::RichText::new(tl!("Send/Receive problems")).color(t.red)).clicked() {
-                        let _ = app.run("ui.dialog", json!({"name": "syncProblems"}));
+                    // The last Send/Receive had problems: one click shows them, in Send/Receive
+                    // Progress under their accounts.
+                    if app.has_sync_problems() {
+                        let link = ui.link(egui::RichText::new(tl!("Send/Receive problems")).color(t.red));
+                        app.hit.add("syncProblemsLink", 0, link.rect);
+                        if link.clicked() {
+                            let _ = app.run("ui.dialog", json!({"name": "syncProblems"}));
+                        }
                     }
                     if !sync.is_empty() {
                         // Waiting for the owner in the browser (or for an administrator on
@@ -301,7 +306,19 @@ pub fn status_bar(app: &mut MailApp, ui: &mut Ui) {
                         if app.syncing() && ui.link(tl!("Cancel")).on_hover_text(tl!("Stop this Send/Receive; what has arrived stays")).clicked() {
                             let _ = app.run("ui.cancelSync", json!({}));
                         }
-                        st(ui, &sync, t.text_dim);
+                        // What Send/Receive is doing, or did: a click shows it account by account.
+                        let shown = st(ui, &sync, t.text_dim).interact(Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                        app.hit.add("syncStatus", 0, shown.rect);
+                        if shown.hovered() {
+                            ui.painter().hline(shown.rect.x_range(), shown.rect.max.y - 1.0, egui::Stroke::new(1.0, t.text_dim));
+                        }
+                        if shown.on_hover_text(tl!("Show Send/Receive Progress")).clicked() {
+                            if app.sync_panel.is_some() {
+                                app.sync_panel = None;
+                            } else {
+                                let _ = app.run("ui.dialog", json!({"name": "syncProgress"}));
+                            }
+                        }
                     } else if app.session.mailbox.accounts.iter().all(|a| a.kind == mailcraft_model::AccountKind::Local) {
                         st(ui, tl!("This mailbox is on this device only"), t.text_dim)
                             .on_hover_text(tl!("Add a mail server account in File › Add Account to send and receive."));

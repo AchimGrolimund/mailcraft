@@ -107,6 +107,8 @@ pub fn inspect(app: &mut MailApp, ctx: &egui::Context) -> Value {
         "selection": app.session.sel,
         "composing": app.session.compose.is_some(),
         "dialog": app.dialog.as_ref().map(|d| d.name()),
+        // Send/Receive Progress, a panel in the window rather than a dialog.
+        "panel": app.sync_panel.as_ref().map(|_| "syncProgress"),
         "agentQuestion": app.asking.front().map(|a| json!({"command": a.id, "needs": a.class.as_str(), "what": a.what})),
         "windows": crate::windows::inspect(app),
         "window": [r.width(), r.height()],

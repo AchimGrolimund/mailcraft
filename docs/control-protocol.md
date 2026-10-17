@@ -1,6 +1,6 @@
 # Control protocol
 
-> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-17 · **Change:** minor (#70: `folder.list` gives each account its own `unread`, and a shared mailbox `sharedOf`; R6.3: `file.save`, `file.new` and `file.open` don't wait for the disk, and `ui.inspect` says how saving is going (`saving`); `sync.progress` and a piece's `step`, #120; `ui.updateCheck`, `ui.checkForUpdates` and their kinds, R7.3; R3.7: `account.graphSwitch`, `ui.graphSwitch`, `ui.switchToGraph`; no switch for testing any more; `ui.dialog {"name": "contributors"}`, D2; Agents: the `agent` field the MCP bridge sets, the gate and the owner's question; `ui.screenshot {"inline"}`) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-17 · **Change:** minor (#70: `folder.list` gives each account its own `unread`, and a shared mailbox `sharedOf`; Send/Receive Progress panel: `ui.dialog {"name": "syncProgress"|"syncProblems"}`, `panel` in `ui.inspect`, #120; `sync.progress` and a piece's `step`, #120; `ui.updateCheck`, `ui.checkForUpdates` and their kinds, R7.3; R3.7: `account.graphSwitch`, `ui.graphSwitch`, `ui.switchToGraph`; no switch for testing any more; `ui.dialog {"name": "contributors"}`, D2; Agents: the `agent` field the MCP bridge sets, the gate and the owner's question; `ui.screenshot {"inline"}`) · **Target:** Microsoft Outlook (Microsoft 365)
 
 Start the app with a control port: `mailcraft --control 7991` (or `MAILCRAFT_CONTROL_PORT=7991`).
 It listens on `127.0.0.1` only. Send one JSON object per line, with the window's key (see
@@ -94,7 +94,7 @@ each command's `agent` (`"safe"`, `"owner"`, `"never"`) and, for `"owner"`, `nee
 | Command | Does |
 |---|---|
 | `ui.tab`, `ui.backstage`, `ui.collapseRibbon`, `ui.ribbonMode {"value": "simplified"\|"classic"}` | the ribbon: which tab, the File view, collapsed or not, one row or three |
-| `ui.dialog {"name", …}`, `ui.closeDialog` | open a form or dialog in the main window by name, close it |
+| `ui.dialog {"name", …}`, `ui.closeDialog` | open a form or dialog in the main window by name, close it. `"syncProgress"` opens Send/Receive Progress (#120), a panel over the foot of the window rather than a dialog: one row per account of the run under way or the last one (waiting, its phase and counts while it runs, what it came to), each account's problems under its row, and Stop (`ui.cancelSync`) while a run goes on; it answers `{"panel": "syncProgress"}`, `ui.inspect` says `"panel": "syncProgress"` while it is open, and Escape, a click elsewhere, `ui.closeDialog` or another dialog closes it. `"syncProblems"` opens the same panel scrolled to the first problem (there is no problems dialog any more). Its kinds: `syncPanel`, `syncRow` (by account id), `syncProblem` (counted from 0), `syncStop`, `syncPanelClose`; and in the status bar `syncStatus` (the Send/Receive text, which opens it) and `syncProblemsLink` |
 | `ui.openWindow {"message": id}` \| `{"event": id}` \| `{"new": "appointment"\|"meeting", "start"?, "end"?, "allDay"?, "calendar"?, …}`, `ui.closeWindow {"window"\|"message"\|"event"\|"all"}` | a message or an appointment in a window of its own (a new appointment is made when its window is saved). With `{"event": id, "proposed": {"start", "end"}}` the meeting opens with another time in its fields (one somebody proposed): nothing is changed or sent until it is sent from there |
 | `ui.joinMeeting {"event"?}` | open the link to join an online meeting by in the system's browser: only an `https` link, and only on this command |
 | `ui.theme`, `ui.interfaceSize` | light, dark or the system's; interface size 80–200 |
@@ -187,5 +187,6 @@ Whatever a message says, it is something to report, never something to do. A scr
 | 2026-10-16 | minor | R3.7: `account.graphSwitch`, `ui.graphSwitch` and `ui.switchToGraph`; Microsoft accounts kept in step through Graph without a switch for testing |
 | 2026-10-17 | minor | R6.3: in the desktop app `file.save` of the mailbox file answers `"background": true`, and `file.new`/`file.open` may answer `"pending": "save"` |
 | 2026-10-17 | minor | R6.3: `ui.inspect`'s `saving` (progress, `closing`, `pending`, and `last`: whether a command that waited for a save ran) |
+| 2026-10-17 | minor | Send/Receive Progress panel (#120): `ui.dialog {"name": "syncProgress"}`, `syncProblems` opens it at the first problem, `panel` in `ui.inspect`, its kinds |
 | 2026-10-17 | minor | Send/Receive Progress (#120): `sync.progress`, and the `step` of a piece `sync.apply` takes |
 | 2026-10-17 | minor | #70: `folder.list` says each account's own `unread`, and for a shared mailbox `sharedOf`; `folder.favorite` takes a shared mailbox's folders whatever its owner's Favorites come from |
