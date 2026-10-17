@@ -117,22 +117,41 @@ pub fn left_behind(s: &Session, account: Id) -> usize {
 /// in its name; answers where. In the copy, `account` is as it was before its owner was asked:
 /// opened again, it is asked again rather than switched by itself. A mailbox that isn't kept in a
 /// file isn't switched: there would be nowhere to keep the copy.
+///
+/// A copy the window already had written off its own thread for `account`
+/// ([`Session::graph_switch_backup`]) is taken instead, while it is still there.
 #[cfg(not(target_arch = "wasm32"))]
-fn back_up(s: &Session, account: Id) -> Result<String, CmdError> {
+fn back_up(s: &mut Session, account: Id) -> Result<String, CmdError> {
+    if let Some((_, path)) = s.graph_switch_backup.take().filter(|(of, path)| *of == account && path.is_file()) {
+        return Ok(path.to_string_lossy().into_owned());
+    }
+    let (target, copy) = prepare_backup(s, account)?;
+    crate::store::save_single(&target, &copy).map_err(|e| fail(copy_failed(&e)))?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn back_up(_: &mut Session, _: Id) -> Result<String, CmdError> {
+    Err(fail("the browser can't keep a copy of the mailbox beside it: switch in the desktop app"))
+}
+
+/// Where the copy of the mailbox goes before `account` switches, and what goes in it, for a host
+/// that writes it off the window's thread (then [`Session::graph_switch_backup`]). Nothing is
+/// written here.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn prepare_backup(s: &Session, account: Id) -> Result<(std::path::PathBuf, Mailbox), CmdError> {
     let path = s.path.clone().ok_or_else(|| fail("save the mailbox to a file first: the switch keeps a copy of it beside that file"))?;
     let target = backup_path(&path, &s.today().iso()).ok_or_else(|| fail("there is no free name for the copy of the mailbox beside it"))?;
     let mut copy = s.mailbox.clone();
     if let Ok(a) = copy.account_mut(account) {
         a.graph_switch = GraphSwitch::NotAsked;
     }
-    crate::store::save_single(&target, &copy)
-        .map_err(|e| fail(format!("the copy of the mailbox couldn't be written, so nothing was changed ({e})")))?;
-    Ok(target.to_string_lossy().into_owned())
+    Ok((target, copy))
 }
 
-#[cfg(target_arch = "wasm32")]
-fn back_up(_: &Session, _: Id) -> Result<String, CmdError> {
-    Err(fail("the browser can't keep a copy of the mailbox beside it: switch in the desktop app"))
+/// Why nothing changed, when the copy couldn't be written.
+pub fn copy_failed(why: &str) -> String {
+    format!("the copy of the mailbox couldn't be written, so nothing was changed ({why})")
 }
 
 /// `mailbox (backup 2026-10-16).mailcraft` beside `mailbox.mailcraft`; with a number when that is
