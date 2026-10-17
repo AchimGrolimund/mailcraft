@@ -20,6 +20,10 @@
 //!   and all: the tree comes from where each folder was found, never from splitting a name.
 //!   A listing that doesn't get to its end says so ([`FolderListing::complete`]), and then
 //!   nothing is removed for being missing from it.
+//! - **A shared mailbox** (#70) is asked at `/users/{address}/…` for all of it: its changes, its
+//!   drafts (in its own Drafts) and what is sent from it (the copy in its own Sent Items). A
+//!   refusal of its by Graph's code (no access, no mailbox) stops its changes, drafts and sends,
+//!   which wait here; one is never taken for a folder or a message that is gone.
 //! - **What comes back is hostile JSON.** Every list, id and name is capped; an entry that
 //!   can't be read is passed over (and makes the listing incomplete); nothing in it is run or
 //!   fetched. No folder's name or id goes into an error or a log line.
@@ -155,25 +159,9 @@ pub(crate) fn sync_folders_with(base: &str, token: &str, request: &GraphMailRequ
             return out;
         }
     };
-    // Nothing goes up to a shared mailbox in this first slice (#70): it is read, and what is
-    // changed in it here waits on this computer. (The engine asks for nothing of the kind; a
-    // request that does is not believed.)
-    let writes = !(request.changes.is_empty() && request.messages.is_empty() && request.drafts.is_empty() && request.sends.is_empty());
-    if graph.shared() {
-        if writes {
-            out.errors.push("What was changed in a shared mailbox waits on this computer: it isn't sent to Microsoft yet.".into());
-        }
-        match listing(&graph, &known) {
-            Ok(listing) => out.listing = Some(listing),
-            Err((listing, e)) => {
-                stop(&mut out, &e);
-                if !e.is_refused_sign_in() {
-                    out.listing = Some(listing);
-                }
-            }
-        }
-        return out;
-    }
+    // A shared mailbox's changes, drafts and sends go up at its own address, as the owner's do at
+    // his (#70): every path below comes of `graph`, which names that mailbox.
+    let (drafts, sends) = (&request.drafts[..], &request.sends[..]);
     // What was changed here goes up first: the listing then shows the server after it.
     let mut made: HashMap<u64, String> = HashMap::new();
     for change in request.changes.iter().take(MAX_FOLDER_CHANGES) {
@@ -191,7 +179,7 @@ pub(crate) fn sync_folders_with(base: &str, token: &str, request: &GraphMailRequ
                 log::info!("graph folders: a change got no answer; the rest wait for the next run");
                 let token_refused = e.is_refused_sign_in();
                 stop(&mut out, &e);
-                if token_refused || matches!(e, NetError::Busy { .. }) {
+                if token_refused || matches!(e, NetError::Busy { .. } | NetError::SharedRefused(_)) {
                     return out;
                 }
                 break;
@@ -199,19 +187,37 @@ pub(crate) fn sync_folders_with(base: &str, token: &str, request: &GraphMailRequ
         }
     }
     // Then the changes of messages, which may go into a folder just made (R3 spec S16).
-    if let Err(e) = up::messages(&graph, &made, &request.messages, &mut out.messages) {
-        log::info!("graph changes: the changes of messages stopped; the rest wait for the next run");
-        if let NetError::Busy { retry_after, .. } = &e {
-            out.busy_for = Some(retry_after.unwrap_or(0).max(gate.paused_for().map_or(0, |left| u32::try_from(left.as_secs()).unwrap_or(u32::MAX))));
-        }
-        out.errors.push(format!("Couldn't send the changes of messages to Microsoft: {e}"));
-        if e.is_refused_sign_in() || matches!(e, NetError::Busy { .. }) {
+    match up::messages(&graph, &made, &request.messages, &mut out.messages) {
+        Ok(0) => {}
+        // A shared mailbox that refused some of them (#70): they wait here, and the owner is told.
+        Ok(1) => out.errors.push("Microsoft refused a change made in this shared mailbox; it waits on this computer.".into()),
+        Ok(held) => out.errors.push(format!("Microsoft refused {held} changes made in this shared mailbox; they wait on this computer.")),
+        // One that won't let the owner in: said as it is, and the rest wait.
+        Err(e @ NetError::SharedRefused(_)) => {
+            log::info!("graph changes: the shared mailbox refused the owner; the changes wait for the next run");
+            stop(&mut out, &e);
             return out;
+        }
+        Err(e) => {
+            log::info!("graph changes: the changes of messages stopped; the rest wait for the next run");
+            if let NetError::Busy { retry_after, .. } = &e {
+                out.busy_for =
+                    Some(retry_after.unwrap_or(0).max(gate.paused_for().map_or(0, |left| u32::try_from(left.as_secs()).unwrap_or(u32::MAX))));
+            }
+            out.errors.push(format!("Couldn't send the changes of messages to Microsoft: {e}"));
+            if e.is_refused_sign_in() || matches!(e, NetError::Busy { .. }) {
+                return out;
+            }
         }
     }
     // Then the drafts saved here (R3.4.1).
-    if let Err(e) = drafts::drafts(&graph, &request.drafts, &mut out.drafts) {
+    if let Err(e) = drafts::drafts(&graph, drafts, &mut out.drafts) {
         log::info!("graph drafts: the drafts stopped; the rest wait for the next run");
+        // A shared mailbox that won't let the owner in (#70): said as it is, and the rest wait.
+        if let NetError::SharedRefused(_) = e {
+            stop(&mut out, &e);
+            return out;
+        }
         if let NetError::Busy { retry_after, .. } = &e {
             out.busy_for = Some(retry_after.unwrap_or(0).max(gate.paused_for().map_or(0, |left| u32::try_from(left.as_secs()).unwrap_or(u32::MAX))));
         }
@@ -221,8 +227,12 @@ pub(crate) fn sync_folders_with(base: &str, token: &str, request: &GraphMailRequ
         }
     }
     // Then what waits in the Outbox (R3.4.2): never asked twice by itself.
-    if let Err(e) = send::sends(&graph, &request.sends, &mut out.sent) {
+    if let Err(e) = send::sends(&graph, sends, &mut out.sent) {
         log::info!("graph sending: sending stopped; the rest waits for the next run");
+        if let NetError::SharedRefused(_) = e {
+            stop(&mut out, &e);
+            return out;
+        }
         if let NetError::Busy { retry_after, .. } = &e {
             out.busy_for = Some(retry_after.unwrap_or(0).max(gate.paused_for().map_or(0, |left| u32::try_from(left.as_secs()).unwrap_or(u32::MAX))));
         }
@@ -456,6 +466,7 @@ fn make_change(graph: &Graph<'_>, known: &Known, made: &HashMap<u64, String>, ch
             let body = json!({"displayName": name}).to_string();
             let reply =
                 graph.call(Kind::Once, &graph.url(&path), "POST", &[("Content-Type", "application/json")], Some(&body), WRITE_TIMEOUT, MAX_PAGE)?;
+            refusing(graph, &reply)?;
             match reply.status {
                 200 | 201 => Ok(Some(done(known, &reply, &parent)?)),
                 // There is one of that name there: an earlier try whose answer was lost, or one
@@ -474,6 +485,7 @@ fn make_change(graph: &Graph<'_>, known: &Known, made: &HashMap<u64, String>, ch
             let body = json!({"displayName": name}).to_string();
             let url = graph.url(&format!("{}/{}", folders(graph), http::encode(&id)));
             let reply = graph.call(Kind::Same, &url, "PATCH", &[("Content-Type", "application/json")], Some(&body), WRITE_TIMEOUT, MAX_PAGE)?;
+            refusing(graph, &reply)?;
             match reply.status {
                 200 | 201 => Ok(Some(done_in_place(known, &reply)?)),
                 409 => Ok(Some(refused("the server has a folder of that name there"))),
@@ -487,6 +499,7 @@ fn make_change(graph: &Graph<'_>, known: &Known, made: &HashMap<u64, String>, ch
             let body = json!({"destinationId": to}).to_string();
             let url = graph.url(&format!("{}/{}/move", folders(graph), http::encode(&id)));
             let reply = graph.call(Kind::Once, &url, "POST", &[("Content-Type", "application/json")], Some(&body), WRITE_TIMEOUT, MAX_PAGE)?;
+            refusing(graph, &reply)?;
             match reply.status {
                 200 | 201 => Ok(Some(done(known, &reply, &to)?)),
                 409 => Ok(Some(refused("the server has a folder of that name there"))),
@@ -498,6 +511,7 @@ fn make_change(graph: &Graph<'_>, known: &Known, made: &HashMap<u64, String>, ch
             let id = checked(id)?;
             let url = graph.url(&format!("{}/{}", folders(graph), http::encode(&id)));
             let reply = graph.call(Kind::Same, &url, "DELETE", &[], None, WRITE_TIMEOUT, MAX_PAGE)?;
+            refusing(graph, &reply)?;
             match reply.status {
                 200..=299 => Ok(Some(ChangeOutcome::Done { folder: GraphFolder { id, ..Default::default() } })),
                 404 | 410 => Ok(Some(ChangeOutcome::Gone)),
@@ -505,6 +519,19 @@ fn make_change(graph: &Graph<'_>, known: &Known, made: &HashMap<u64, String>, ch
             }
         }
     }
+}
+
+/// A shared mailbox that answered a change by Graph's code with no access, no mailbox or not
+/// through Graph (#70): the run's changes stop there, waiting here, and are never taken for a
+/// folder that is gone (a 404 `ErrorInvalidUser` would be).
+fn refusing(graph: &Graph<'_>, reply: &Reply) -> Result<(), NetError> {
+    if graph.shared() && !(200..300).contains(&reply.status) {
+        let body = serde_json::from_slice::<Value>(&reply.body).unwrap_or(Value::Null);
+        if let Some(why) = super::shared_refusal(u64::from(reply.status), &body) {
+            return Err(NetError::SharedRefused(why));
+        }
+    }
+    Ok(())
 }
 
 fn refused(why: &str) -> ChangeOutcome {
@@ -528,7 +555,15 @@ fn done_in_place(known: &Known, reply: &Reply) -> Result<ChangeOutcome, NetError
 
 /// What a status other than the hoped-for one means for a change: a refusal for good (said in
 /// plain words), or an error that stops the run's changes (busy, no sign-in).
+///
+/// In a shared mailbox (#70) a refusal never puts back what the owner changed: one that is by
+/// Graph's code no access (or no mailbox) stops the run's changes as [`NetError::SharedRefused`],
+/// and any other 403 stops them too, the change waiting here for the next run.
 fn outcome_of(graph: &Graph<'_>, reply: &Reply, sent: &str) -> Result<Option<ChangeOutcome>, NetError> {
+    refusing(graph, reply)?;
+    if graph.shared() && reply.status == 403 {
+        return Err(graph.refusal(Doing::Folders, reply, sent));
+    }
     match reply.status {
         400 => Ok(Some(refused("the server says the change isn't one it can make"))),
         403 => Ok(Some(refused("the server says this account may not make that change"))),

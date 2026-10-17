@@ -13,11 +13,17 @@
 //!   a client that counts on newest first without asking finds out). A later one says its token
 //!   and nothing else: the token carries the rest. `Prefer: odata.maxpagesize` sets the size of a
 //!   page.
+//! - An `$expand` is answered `400 BadRequest` ("Parsing OData Select and Expand failed"), as
+//!   Exchange Online answers one of the size; [`Mail::refuse_delta`] refuses every first request.
 //! - Ids are immutable ids only when `Prefer: IdType="ImmutableId"` is said; otherwise the same
 //!   message answers by another id, as Graph's ordinary ids differ from immutable ones.
 //! - A change may come again in a later page ([`Mail::replays`]); a token the server has
 //!   forgotten is answered `400 syncStateNotFound` ([`Mail::forget_links`]); and a round may be
 //!   told to start over (`410 Gone` with a `Location` that starts it afresh, [`Mail::resets`]).
+//! - With [`Mail::read_alone`], a message whose read state is all that changed since a delta link
+//!   comes in that link's round as its id and `isRead` alone, as Exchange Online reports a change
+//!   of read state: an event of the folder's synchronisation, not a change of the message ("Delta
+//!   queries for messages can return change events [...]: Read/unread state changes").
 //! - `GET /v1.0/me/messages/{id}/$value` answers the message's MIME.
 //!
 //! A round sees the mailbox as it was when it began: what changes while it runs comes in the
@@ -107,6 +113,8 @@ pub struct Message {
     pub attachments: Vec<super::drafts::Attached>,
     /// When it last changed, in the stand-in's count of changes.
     pub(super) changed: u64,
+    /// When its read state alone last changed, with [`Mail::read_alone`] (0: never).
+    pub(super) read_changed: u64,
 }
 
 impl Message {
@@ -222,6 +230,8 @@ fn shown(id: &str, immutable: bool) -> String {
 enum Key {
     Message(String),
     Gone(String),
+    /// Its read state alone changed ([`Mail::read_alone`]).
+    Read(String),
 }
 
 /// A round of a folder's delta, part way: what a `$skiptoken` stands for.
@@ -270,6 +280,11 @@ pub struct Mail {
     pub resets: usize,
     /// Most messages a page of delta holds, whatever is asked for; 0 for as asked.
     pub page_cap: usize,
+    /// The top of every folder's delta is refused (`400 ErrorInvalidRequest`), whatever it asks.
+    pub refuse_delta: bool,
+    /// A change of nothing but a message's read state comes in the next round as its id and
+    /// `isRead` alone, as Exchange Online reports one (see the top of this file).
+    pub read_alone: bool,
     /// Uploads of large attachments under way, by the token of their address ([`super::drafts`]).
     pub(super) uploads: HashMap<String, super::drafts::Upload>,
 }
@@ -333,9 +348,15 @@ impl Mail {
     /// Change a message as `how` does; `false` when there is no such message.
     pub fn update(&mut self, id: &str, how: impl FnOnce(&mut Message)) -> bool {
         let changed = self.change();
+        let read_alone = self.read_alone;
         let Some(message) = self.messages.get_mut(id) else { return false };
+        let before = message.clone();
         how(message);
-        message.changed = changed;
+        if read_alone && message.read != before.read && (Message { read: before.read, ..message.clone() }) == before {
+            message.read_changed = changed;
+        } else {
+            message.changed = changed;
+        }
         true
     }
 
@@ -390,6 +411,13 @@ impl Mail {
             None => messages.sort_by(|a, b| a.received.cmp(&b.received).then_with(|| a.id.cmp(&b.id))),
             Some(since) => {
                 let mut all: Vec<(u64, Key)> = messages.iter().map(|m| (m.changed, Key::Message(m.id.clone()))).collect();
+                // Read alone since, and not changed otherwise since.
+                all.extend(
+                    self.messages
+                        .values()
+                        .filter(|m| m.folder == folder && m.changed <= since && m.read_changed > since && m.read_changed <= upto)
+                        .map(|m| (m.read_changed, Key::Read(m.id.clone()))),
+                );
                 all.extend(
                     self.gone
                         .iter()
@@ -414,6 +442,11 @@ impl Mail {
                 Key::Message(id) => {
                     if let Some(m) = self.messages.get(id).filter(|m| m.folder == round.folder && m.changed <= round.upto) {
                         out.push(m.json(immutable, round.select.as_deref(), round.size));
+                    }
+                }
+                Key::Read(id) => {
+                    if let Some(m) = self.messages.get(id).filter(|m| m.folder == round.folder && m.read_changed <= round.upto) {
+                        out.push(json!({"id": shown(id, immutable), "isRead": m.read}));
                     }
                 }
                 Key::Gone(id) => {
@@ -470,6 +503,9 @@ impl State {
                 {
                     return Err(bad(format!("The query parameter '{other}' is not one this stand-in answers for a message delta.")));
                 }
+                if self.mailbox.refuse_delta {
+                    return Err(refuse(400, "ErrorInvalidRequest", "The request is not valid for this folder."));
+                }
                 let newest_first = match asked.param("$orderby") {
                     None => false,
                     Some(order) if order.trim().eq_ignore_ascii_case("receivedDateTime desc") => true,
@@ -487,20 +523,17 @@ impl State {
                         .filter(|n| (1..=MAX_PAGE).contains(n))
                         .ok_or_else(|| bad("The value of '$top' must be between 1 and 1000."))?,
                 };
-                let size = match asked.param("$expand") {
-                    None => false,
-                    Some(expand)
-                        if expand
-                            .replace(' ', "")
-                            .eq_ignore_ascii_case("singleValueExtendedProperties($filter=id eq 'Integer 0x0E08')".replace(' ', "").as_str()) =>
-                    {
-                        true
-                    }
-                    Some(_) => return Err(bad("The only expansion this stand-in answers for a message delta is the message size (Integer 0x0E08).")),
-                };
+                // As Exchange Online answers a delta that expands the size (or anything else).
+                if asked.param("$expand").is_some() {
+                    return Err(refuse(
+                        400,
+                        "BadRequest",
+                        "Parsing OData Select and Expand failed: Value cannot be null. (Parameter 'initialState')",
+                    ));
+                }
                 let upto = self.mailbox.changes;
                 let keys = self.mailbox.keys(&folder, None, upto, newest_first);
-                Round { folder: folder.clone(), upto, keys: Arc::new(keys), at: 0, page, select, newest_first, size }
+                Round { folder: folder.clone(), upto, keys: Arc::new(keys), at: 0, page, select, newest_first, size: false }
             }
         };
         // The page size: what `Prefer` says, else what the first request said, within limits.
