@@ -225,6 +225,7 @@ pub fn apply_graph_fetch(s: &mut Session, result: GraphFetchResult) -> CmdResult
         s.mailbox_changed();
     }
     let (waiting, large) = graph_down::not_fetched(&s.mailbox, account);
+    s.sync_progress.count_full(&s.mailbox, account);
     Ok(
         json!({"fetched": taken, "missing": result.missing.len(), "waiting": waiting, "large": large, "errors": result.errors, "offline": result.offline, "busyFor": result.busy_for}),
     )
@@ -348,6 +349,9 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
     };
     let piece = Piece { step, new: down.new, sent, problems: &errors, last: !result.partial, stopped: result.stopped };
     s.sync_progress.take(account, piece);
+    if !result.pages.is_empty() || result.whole {
+        s.sync_progress.count_full(&s.mailbox, account);
+    }
     let summary = match (errors.first(), taken.pushed + taken.added + taken.updated + taken.removed) {
         (Some(e), _) => e.clone(),
         (None, 0) => "Up to date".to_string(),

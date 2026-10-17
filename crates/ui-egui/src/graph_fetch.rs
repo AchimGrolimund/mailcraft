@@ -2,7 +2,9 @@
 //! background, newest first, within the account's "Download messages in full"; at once, ahead of
 //! that, for the message the owner opens; and before Reply, Reply All, Forward, Save Message As
 //! and Save Attachment, which then go on. Only while a Graph token from this session is good:
-//! each Send/Receive renews it. Cancel stops it all until the next Send/Receive.
+//! each Send/Receive renews it. Cancel (Stop) stops it all until the next Send/Receive starts,
+//! the owner's or one by itself; Send/Receive Progress says how far it has got, account by account
+//! (the engine counts them as they come in, [`mailcraft_engine::cmd::sync_progress::FullMessages`]).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,8 +41,6 @@ pub struct Fetching {
     then: Option<(String, Value)>,
     /// The message last asked for when it was opened (not asked again while it stays open).
     opened: Option<Id>,
-    /// Stopped by Cancel, until the next Send/Receive.
-    pub(crate) paused: bool,
     pub(crate) cancel: Arc<AtomicBool>,
     idle_until: f64,
     /// The last try couldn't reach Microsoft.
@@ -139,7 +139,7 @@ impl MailApp {
             }
         }
         // The background, a few at a time.
-        if self.fetching.background.is_some() || self.fetching.paused || now_ms() < self.fetching.idle_until {
+        if self.fetching.background.is_some() || self.session.sync_progress.full_paused || now_ms() < self.fetching.idle_until {
             return;
         }
         let accounts: Vec<Id> = self.session.mailbox.accounts.iter().filter(|a| a.kind == AccountKind::Microsoft).map(|a| a.id).collect();
@@ -224,13 +224,15 @@ impl MailApp {
 
     /// Cancel: the background stops after the message in hand, until the next Send/Receive.
     pub(crate) fn pause_fetch(&mut self) {
-        self.fetching.paused = true;
+        self.session.sync_progress.full_paused = true;
         self.fetching.cancel.store(true, Ordering::Relaxed);
+        // (Send/Receive Progress says how far they had got.)
+        self.session.sync_progress.count_all_full(&self.session.mailbox);
     }
 
     /// A Send/Receive started: the background may go on.
     pub(crate) fn resume_fetch(&mut self) {
-        self.fetching.paused = false;
+        self.session.sync_progress.full_paused = false;
         self.fetching.idle_until = 0.0;
     }
 }

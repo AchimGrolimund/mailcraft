@@ -1,6 +1,6 @@
 # MCP server
 
-> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-17 · **Change:** minor (`sync.progress`, its problems framed as untrusted, #120) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-17 · **Change:** minor (`sync.progress`'s `fullMessages`, `ui.skipSync` allowed, #120; `sync.progress`, its problems framed as untrusted, #120) · **Target:** Microsoft Outlook (Microsoft 365)
 
 MailCraft speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio, so
 agents can read, file and write mail and keep a calendar.
@@ -70,7 +70,8 @@ The server's instructions say the same. This is defence in depth: the gate above
 
 **Send/Receive Progress.** `sync.progress` (class `safe`, through `execute`) answers what the
 Send/Receive under way is doing, or what the last one did, account by account: its state, phase,
-folder and counts, what it brought, and its problems ([control protocol](control-protocol.md#commands-worth-knowing)).
+folder and counts, what it brought, its problems, and for a Microsoft account how far its messages have been fetched whole (`fullMessages`: done, total, paused) ([control protocol](control-protocol.md#commands-worth-knowing)).
+With the window, `ui.skipSync {"account"}` (allowed) leaves an account that waits its turn out of the run.
 It opens nothing. The problems may name a message by its subject, which is message content: they
 are framed as untrusted, like the text above.
 
@@ -112,3 +113,4 @@ parameters.
 | 2026-10-11 | major | First version, from `crates/mcp/src` |
 | 2026-10-15 | major | Agents get only what the owner allows: classes, no file paths but inside `--files`, `--allow`, the question in the window, untrusted message text framed |
 | 2026-10-17 | minor | `sync.progress` (Send/Receive Progress, #120): safe for agents, its problems framed as untrusted message content |
+| 2026-10-17 | minor | `sync.progress`'s `fullMessages`; `ui.skipSync` allowed to agents (#120) |

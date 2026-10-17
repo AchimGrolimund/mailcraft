@@ -43,7 +43,10 @@
 //! still under way when the pieces are out, until `{"host": {"syncMore": [piece, …]}}` sends it
 //! more (`{"stopped": true}` ends it as Stop does). A run with no list of its own brings nothing.
 //! From that line on, every account on a mail server has a password at hand (an invented one), so
-//! a round of all of them goes through without asking.
+//! a round of all of them goes through without asking. `{"host": {"fullMessages": [[account,
+//! done, total], …]}}` has Send/Receive Progress say that many of an account's messages are
+//! fetched whole of that many (Full messages), as the background would have counted them for a
+//! Microsoft account; Stop (`ui.cancelSync`) during a run then pauses them as it does.
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -405,6 +408,11 @@ fn main() {
         if let Some(said) = l.get("host") {
             if let Ok(mut host) = host.lock() {
                 host.told(said);
+            }
+            for full in said.get("fullMessages").and_then(|v| v.as_array()).into_iter().flatten() {
+                let n = |k: usize| full.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+                let count = |k: usize| u32::try_from(n(k)).unwrap_or(u32::MAX);
+                harness.state_mut().session.sync_progress.set_full(n(0), count(1), count(2));
             }
             step_n(&mut harness, 2);
         }
