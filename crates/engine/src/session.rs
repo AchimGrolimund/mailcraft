@@ -483,6 +483,9 @@ pub struct Clock {
 struct Undo {
     label: &'static str,
     mailbox: Mailbox,
+    /// What the step did to the Microsoft accounts' mail, for keeping them in step when it is
+    /// undone ([`crate::undo`]).
+    touched: crate::undo::Touched,
     sel: Selection,
     folder: Id,
 }
@@ -505,18 +508,25 @@ pub struct Session {
     pub clock: Clock,
     /// What the last synchronisation reported, for the status bar.
     pub sync_status: String,
-    /// Microsoft accounts may be kept in step through Microsoft Graph (R3): the switch for
-    /// testing, which a host turns on when `MAILCRAFT_GRAPH_MAIL=1` (R3 spec S35). Off, nothing
-    /// makes such an account (`account.add` with `"kind": "microsoft"` is refused); the ones a
-    /// mailbox has stay what they are. Never saved.
-    pub graph_mail: bool,
     /// Messages kept in step through Graph, by server id: kept between the pages of a run.
     pub(crate) graph_index: crate::cmd::graph_down::ServerIndex,
+    /// Messages being moved out of a Microsoft account that were whole in the mailbox file when
+    /// it was last saved: only for those is the server's copy removed (R3 spec S19). Never saved.
+    pub(crate) saved_whole: std::collections::HashSet<Id>,
+    /// What the server refused in the Graph run under way, for the status at its end (S20).
+    pub(crate) graph_said: Vec<String>,
     /// Set while a command an agent asked for runs (with what the owner allowed it): what the
     /// command did is checked against that ([`crate::agent`]), and undone when it oversteps.
     pub agent: Option<Vec<crate::agent::Class>>,
+    /// A copy of the mailbox the window had the host write off its own thread before switching an
+    /// account to Microsoft Graph (the account, where the copy is): `account.graphSwitch` takes it
+    /// instead of writing one itself ([`crate::cmd::graph_switch::prepare_backup`]). Set only by
+    /// the window once the copy is on disk, never by a command's params. Never saved.
+    pub graph_switch_backup: Option<(Id, PathBuf)>,
     history: Vec<Undo>,
     redo: Vec<Undo>,
+    /// What the last undo or redo couldn't do there (a delete for good, a message sent).
+    undo_said: Vec<String>,
     rev: u64,
     list_cache: Option<(String, Arc<Vec<Row>>)>,
 }
@@ -541,11 +551,14 @@ impl Session {
             dirty: false,
             clock,
             sync_status: String::new(),
-            graph_mail: false,
             graph_index: Default::default(),
+            saved_whole: Default::default(),
+            graph_said: Vec::new(),
             agent: None,
+            graph_switch_backup: None,
             history: Vec::new(),
             redo: Vec::new(),
+            undo_said: Vec::new(),
             rev: 0,
             list_cache: None,
         };
@@ -732,9 +745,26 @@ impl Session {
         self.normalize();
     }
 
+    /// The mailbox file holds the mailbox as it is now (it was just saved, or nothing changed
+    /// since it was opened or saved): the messages being moved out of a Microsoft account that
+    /// are whole are whole in the file, and the server's copies may go (R3 spec S19). A host
+    /// that saves by other means than `file.save` calls this when a save of the mailbox as it is
+    /// now succeeded; the engine also notes it whenever it sees nothing unsaved.
+    pub fn note_saved(&mut self) {
+        let whole = self.mailbox.messages.values().filter(|m| m.moving_out.is_some() && !m.unfetched).map(|m| m.id);
+        self.saved_whole.extend(whole);
+        self.saved_whole.retain(|id| self.mailbox.messages.get(id).is_some_and(|m| m.moving_out.is_some()));
+    }
+
+    /// Whether the mailbox file is known to hold the mailbox as it is now.
+    pub(crate) fn file_is_current(&self) -> bool {
+        self.path.is_some() && !self.dirty
+    }
+
     /// Replace the mailbox (File › New, File › Open): history and selection start over.
     pub fn replace_mailbox(&mut self, mailbox: Mailbox) {
         self.mailbox = mailbox;
+        self.saved_whole.clear();
         self.history.clear();
         self.redo.clear();
         self.sel = Selection::default();
@@ -749,7 +779,7 @@ impl Session {
     // ---- undo ----
 
     fn snapshot(&self, label: &'static str) -> Undo {
-        Undo { label, mailbox: self.mailbox.clone(), sel: self.sel.clone(), folder: self.view.folder }
+        Undo { label, mailbox: self.mailbox.clone(), touched: Default::default(), sel: self.sel.clone(), folder: self.view.folder }
     }
 
     pub fn can_undo(&self) -> bool {
@@ -777,13 +807,23 @@ impl Session {
         self.redo.clear();
     }
 
+    /// What the last undo or redo couldn't do, in words (empty when it did everything).
+    pub fn undo_said(&self) -> &[String] {
+        &self.undo_said
+    }
+
+    /// Go to the mailbox of `u`. A Microsoft account's mail stays in step with its server: what
+    /// the server last said is kept, so the next run sends the reverse ([`crate::undo`]).
     fn swap(&mut self, u: Undo) -> Undo {
-        let cur = Undo {
-            label: u.label,
-            mailbox: std::mem::replace(&mut self.mailbox, u.mailbox),
-            sel: std::mem::replace(&mut self.sel, u.sel),
-            folder: self.view.folder,
-        };
+        let now = std::mem::take(&mut self.mailbox);
+        let (back, said) = crate::undo::keep_in_step(u.mailbox, &u.touched, &now);
+        // Undone, the step is to be done again from here: what that does is the way back.
+        let touched = crate::undo::touched(&now, &back);
+        self.mailbox = back;
+        self.undo_said = said;
+        // Where each message is, is looked at afresh.
+        self.graph_index = Default::default();
+        let cur = Undo { label: u.label, mailbox: now, touched, sel: std::mem::replace(&mut self.sel, u.sel), folder: self.view.folder };
         self.view.folder = u.folder;
         self.rev += 1;
         self.dirty = true;
@@ -856,6 +896,8 @@ impl Session {
                     self.rev += 1;
                     if history {
                         self.dirty = true;
+                        let mut before = before;
+                        before.touched = crate::undo::touched(&before.mailbox, &self.mailbox);
                         self.history.push(before);
                         if self.history.len() > MAX_HISTORY {
                             self.history.remove(0);

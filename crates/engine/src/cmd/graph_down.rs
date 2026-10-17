@@ -15,9 +15,9 @@
 //! - **A folder listed afresh** (its link was no longer taken, S11) marks all its messages gone
 //!   first: what the complete new listing brings is kept, and the rest goes at the end of the run.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use mailcraft_model::sync::{GraphMessage, GraphProgress, MessagePage, ServerMessage};
+use mailcraft_model::sync::{GraphMessage, GraphProgress, MessagePage, ServerMessage, merge_categories};
 use mailcraft_model::{Body, Id, Mailbox, Message};
 
 /// Where each message a server knows is, by its server id: kept between pages, as finding one
@@ -72,6 +72,9 @@ pub struct Down {
 /// have (yet) is passed over, and so is its link: it comes again.
 pub fn take_page(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, page: &MessagePage, down: &mut Down) {
     let Some(folder) = mb.folder_by_server(account, &page.folder) else { return };
+    // The server's copies of messages being moved out of the account are not new mail.
+    let moving_out: HashSet<String> =
+        mb.messages.values().filter_map(|m| m.moving_out.as_ref().filter(|out| out.account == account).map(|out| out.id.clone())).collect();
     if page.afresh {
         for m in mb.messages.values_mut() {
             if m.account == account
@@ -101,6 +104,7 @@ pub fn take_page(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, page: &
                     down.changed += 1;
                 }
             }
+            None if moving_out.contains(&there.server.id) => {}
             None => {
                 if let Ok(m) = mb.add_message(new_message(folder, &page.folder, there)) {
                     index.note(mb, &there.server.id, m);
@@ -119,7 +123,7 @@ pub fn take_page(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, page: &
 }
 
 /// A message the server has and this mailbox hasn't: its headers and preview.
-fn new_message(folder: Id, server_folder: &str, there: &GraphMessage) -> Message {
+pub(crate) fn new_message(folder: Id, server_folder: &str, there: &GraphMessage) -> Message {
     let server = ServerMessage { folder: server_folder.to_string(), gone: false, ..there.server.clone() };
     Message {
         folder,
@@ -133,8 +137,10 @@ fn new_message(folder: Id, server_folder: &str, there: &GraphMessage) -> Message
         body: Body { text: there.preview.clone(), html: None },
         read: server.read,
         flag: server.flag,
+        flag_due: server.flag_due,
         importance: server.importance,
         categories: server.categories.clone(),
+        draft: there.draft,
         server: Some(server),
         unfetched: true,
         ..Default::default()
@@ -147,6 +153,13 @@ fn update(mb: &mut Mailbox, account: Id, id: Id, folder: Id, server_folder: &str
     let Some(m) = mb.message(id) else { return false };
     let before = m.clone();
     let last = m.server.clone().unwrap_or_default();
+    // A draft the server has changed (its change key differs from what was last seen of it).
+    let changed_there = m.draft && !last.change_key.is_empty() && !there.server.change_key.is_empty() && last.change_key != there.server.change_key;
+    if changed_there && m.server_draft.as_ref().is_some_and(|d| d.pending) {
+        // Changed here too: both are kept (S26).
+        let copy = new_message(folder, server_folder, there);
+        return super::graph_drafts::keep_twice(mb, id, Some(copy)).is_some();
+    }
     // Where the server last had it, as this mailbox has that folder: a message still there here
     // follows the server; one moved here since stays where it was put (that move goes up, R3.3).
     let was_here = mb.folder_by_server(account, &last.folder);
@@ -156,11 +169,16 @@ fn update(mb: &mut Mailbox, account: Id, id: Id, folder: Id, server_folder: &str
     if m.read == last.read {
         m.read = now.read;
     }
-    if m.flag == last.flag {
+    // The flag is its status and its due date: changed here, both stay as they are.
+    if m.flag == last.flag && m.flag_due == last.flag_due {
         m.flag = now.flag;
+        m.flag_due = now.flag_due;
     }
+    // Changed on both sides: what was added and taken away here goes onto the server's list (S17).
     if m.categories == last.categories {
         m.categories = now.categories.clone();
+    } else if now.categories != last.categories {
+        m.categories = merge_categories(&last.categories, &m.categories, &now.categories);
     }
     if m.importance == last.importance {
         m.importance = now.importance;
@@ -168,15 +186,41 @@ fn update(mb: &mut Mailbox, account: Id, id: Id, folder: Id, server_folder: &str
     if follows {
         m.folder = folder;
     }
+    if changed_there {
+        // Changed elsewhere only: the server's version, fetched afresh.
+        (m.subject, m.to, m.cc, m.unfetched) = (there.subject.clone(), there.to.clone(), there.cc.clone(), true);
+        if let Some(sd) = m.server_draft.as_mut() {
+            sd.synced = None;
+        }
+    }
     m.server = Some(ServerMessage { folder: server_folder.to_string(), gone: false, ..now.clone() });
     *m != before
 }
 
 /// Every folder's delta reached its end: what is still gone from every folder is gone here too.
 pub fn sweep(mb: &mut Mailbox, account: Id, down: &mut Down) {
+    // But for a draft saved here that waits to go up: it is made on the server anew (S26); and
+    // for what waits in the Outbox, or is held there (R3.4.2): it stays, for the owner to see.
+    let outbox = mb.folder_of_kind(account, mailcraft_model::FolderKind::Outbox);
+    for m in mb.messages.values_mut() {
+        let keeps = (m.draft && m.server_draft.as_ref().is_some_and(|d| d.pending)) || Some(m.folder) == outbox;
+        let waits = m.account == account && keeps && m.server.as_ref().is_some_and(|s| s.gone);
+        if waits {
+            let m = std::sync::Arc::make_mut(m);
+            m.server = None;
+            if let Some(sd) = m.server_draft.as_mut() {
+                sd.synced = None;
+            }
+        }
+    }
     let before = mb.messages.len();
     mb.messages.retain(|_, m| !(m.account == account && m.server.as_ref().is_some_and(|s| s.gone)));
     down.removed += before - mb.messages.len();
+}
+
+/// The message being moved out of `account` whose server copy is `id`.
+pub fn moving_out(mb: &Mailbox, account: Id, id: &str) -> Option<Id> {
+    mb.messages.values().find(|m| m.moving_out.as_ref().is_some_and(|out| out.account == account && out.id == id)).map(|m| m.id)
 }
 
 /// What the status bar says while a run is under way.
@@ -194,6 +238,20 @@ pub fn progress_words(mb: &Mailbox, account: Id, progress: &GraphProgress) -> St
 /// not gone, no larger than the account's "Download messages in full", newest first; `most` of
 /// them at most, by server id.
 pub fn fetch_queue(mb: &Mailbox, account: Id, most: usize) -> Vec<String> {
+    // Messages being moved out of the account first, whatever their size: the move ends only
+    // once they are whole here (S19).
+    let mut out: Vec<String> = mb
+        .messages
+        .values()
+        .filter(|m| m.unfetched && !m.incomplete)
+        .filter_map(|m| m.moving_out.as_ref().filter(|out| out.account == account).map(|out| out.id.clone()))
+        .take(most)
+        .collect();
+    out.extend(fetch_queue_of_account(mb, account, most.saturating_sub(out.len())));
+    out
+}
+
+fn fetch_queue_of_account(mb: &Mailbox, account: Id, most: usize) -> Vec<String> {
     let limit = mb.account(account).and_then(|a| a.download_in_full.limit());
     let mut waiting: Vec<(i64, &str)> = mb
         .messages
@@ -228,7 +286,7 @@ pub fn not_fetched(mb: &Mailbox, account: Id) -> (usize, usize) {
 /// the mailbox keeps of it (where it is, its marks, its server state) as it was. Whether there
 /// was such a message.
 pub fn take_fetched(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, id: &str, mime: &[u8]) -> bool {
-    let Some(m) = index.find(mb, account, id) else { return false };
+    let Some(m) = index.find(mb, account, id).or_else(|| moving_out(mb, account, id)) else { return false };
     let read = crate::mime::parse(mime);
     let Ok(m) = mb.message_mut(m) else { return false };
     m.message_id = read.message_id;
@@ -255,6 +313,14 @@ pub fn take_fetched(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, id: 
     m.attachments = read.attachments;
     m.headers = read.headers;
     m.unfetched = false;
+    // A draft as the server has it now: what a change made here is worked out from.
+    if m.draft {
+        let state = mailcraft_model::sync::DraftState::of(m);
+        let sd = m.server_draft.get_or_insert_with(Default::default);
+        if !sd.pending {
+            sd.synced = Some(state);
+        }
+    }
     true
 }
 

@@ -17,7 +17,6 @@ const NOW: i64 = 1_791_993_600;
 
 fn session() -> (Session, Id) {
     let mut s = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
-    s.graph_mail = true;
     let account = s.run("account.add", &json!({"email": "avery@mail.example", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     (s, account)
 }
@@ -124,8 +123,6 @@ fn two_hundred_thousand_messages_interrupted_three_times_arrive_once_each() {
         }
     });
     let mut s = Session::at(saved.unwrap(), NOW, 0);
-    s.graph_mail = true;
-
     // To the end.
     let last = run(&mut s, account, &mut |_, _, _| {});
     assert!(last.whole && !last.stopped && last.errors.is_empty(), "{last:?}");
@@ -173,8 +170,7 @@ fn messages_download_whole_in_the_background_on_opening_and_before_a_reply() {
     let ids = server.state().mailbox.generate(&inbox_there, 30, NOW);
     server.state().mailbox.update(&ids[3], |m| m.size = 30 << 20);
     let url = server.url();
-    let mut session = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
-    session.graph_mail = true;
+    let session = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
     let mut app = MailApp::new(session, Services::default());
     (app.autosave, app.auto_sync) = (false, false);
     let base = url.clone();

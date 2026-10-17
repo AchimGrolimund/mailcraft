@@ -37,6 +37,7 @@ mod graph_mail_flow;
 mod graphics;
 mod logging;
 mod picture_cache;
+mod quit;
 mod secrets;
 mod single_instance;
 
@@ -84,13 +85,9 @@ impl eframe::App for App {
         if let Some(pos) = ctx.input(|i| take_rescue(&mut self.1, i.viewport())) {
             ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
         }
-        // The window's close button: a message being written asks first (`MailApp::close_requested`).
-        if ctx.input(|i| i.viewport().close_requested()) && !self.0.close_requested() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        }
-        if self.0.quit_requested {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
+        // Leaving (the close button, Quit, the Dock): a message being written asks first, then
+        // the platform's own way out (`quit`). Last in `logic`, which runs while minimized too.
+        quit::on_frame(ctx, &mut self.0);
     }
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.0.raw_input_hook(raw);
@@ -155,17 +152,6 @@ fn log_dir() -> Option<PathBuf> {
     Some(prefs_path()?.parent()?.join("logs"))
 }
 
-/// The switch for testing Microsoft accounts kept in step through Microsoft Graph (R3 spec S35):
-/// `MAILCRAFT_GRAPH_MAIL=1`. Off, Add Account makes them as it always did (on IMAP), and nothing
-/// else is any different.
-fn graph_mail_switch() -> bool {
-    let on = std::env::var("MAILCRAFT_GRAPH_MAIL").is_ok_and(|value| value.trim() == "1");
-    if on {
-        log::info!("Microsoft accounts may be kept in step through Microsoft Graph (MAILCRAFT_GRAPH_MAIL=1, for testing)");
-    }
-    on
-}
-
 /// Runs without preferences (`MAILCRAFT_NO_PREFS`, agents' test runs) neither read nor write them,
 /// and keep their mailbox in memory only.
 fn prefs_enabled() -> bool {
@@ -176,12 +162,32 @@ fn load_prefs(app: &mut MailApp) {
     if !prefs_enabled() {
         return;
     }
-    if let Some(p) = prefs_path()
-        && let Ok(bytes) = std::fs::read(&p)
-        && let Ok(ui) = serde_json::from_slice::<UiState>(&bytes)
-    {
+    if let Some(ui) = prefs_path().and_then(|p| read_prefs(&p)) {
         app.apply_prefs(ui);
     }
+}
+
+/// The preferences in `path`. A file that can't be read as them (damaged, or written by a version
+/// that keeps them otherwise) is moved aside to `ui.json.damaged`, so the next save doesn't
+/// overwrite what the owner had set and it can still be looked at.
+fn read_prefs(path: &std::path::Path) -> Option<UiState> {
+    let bytes = std::fs::read(path).ok()?;
+    let ui = serde_json::from_slice::<UiState>(&bytes);
+    if ui.is_err() {
+        let mut aside = path.as_os_str().to_os_string();
+        aside.push(".damaged");
+        let _ = std::fs::rename(path, aside);
+    }
+    ui.ok()
+}
+
+/// Write the preferences so that a crash leaves the old file or the whole new one, readable by
+/// its owner only.
+fn write_prefs(path: &std::path::Path, ui: &UiState) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    mailcraft_engine::store::write_atomic(path, &serde_json::to_vec_pretty(ui).map_err(std::io::Error::other)?)
 }
 
 /// The saved window geometry, read before the window opens (`load_prefs` runs after).
@@ -189,8 +195,7 @@ fn saved_window() -> Option<WindowGeometry> {
     if !prefs_enabled() {
         return None;
     }
-    let bytes = std::fs::read(prefs_path()?).ok()?;
-    serde_json::from_slice::<UiState>(&bytes).ok()?.window?.sanitized()
+    read_prefs(&prefs_path()?)?.window?.sanitized()
 }
 
 fn save_prefs(app: &MailApp) {
@@ -198,12 +203,7 @@ fn save_prefs(app: &MailApp) {
         return;
     }
     if let Some(p) = prefs_path() {
-        if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(bytes) = serde_json::to_vec_pretty(&app.prefs()) {
-            let _ = std::fs::write(&p, bytes);
-        }
+        let _ = write_prefs(&p, &app.prefs());
     }
 }
 
@@ -772,7 +772,8 @@ fn free_busy(request: FreeBusyRequest) -> FreeBusyResult {
 
 /// What the app needs from the system: native file dialogs, shown without blocking the window
 /// (`file_dialogs`); everything that opens a socket (Send/Receive, signing in, finding a domain's
-/// mail servers, checking an account), each on a background thread; and the credential store.
+/// mail servers, checking an account, asking whether a new version is out), each on a background
+/// thread; and the credential store.
 /// `kept_pictures` is where downloaded pictures are kept between runs, when they are.
 fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: Option<std::sync::Arc<picture_cache::Cache>>) -> Services {
     let pictures_ctx = ctx.clone();
@@ -781,6 +782,8 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
     let check_ctx = ctx.clone();
     let approval_ctx = ctx.clone();
     let fetch_ctx = ctx.clone();
+    let update_ctx = ctx.clone();
+    let copy_ctx = ctx.clone();
     let (sync_ctx, sign_in_ctx, graph_ctx, mx_ctx, test_ctx) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone(), ctx);
     let sync_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel = sync_cancel.clone();
@@ -824,6 +827,11 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
         test_account: Some(Box::new(move |account, secret| {
             background(&test_ctx, "account check", move || mailcraft_net::test_account(&account, &secret).map_err(|e| e.to_string()))
         })),
+        // The copy of the mailbox kept before an account switches to Microsoft Graph: a large
+        // mailbox takes a while to write, and the window shows a spinner meanwhile (#118).
+        write_copy: Some(Box::new(move |path, mailbox| {
+            background(&copy_ctx, "mailbox copy", move || mailcraft_engine::store::save_single(&path, &mailbox).map(|_| ()))
+        })),
         // A picture a message keeps on the web, once the owner asked for that message's pictures.
         // The address is the message's choice, so `fetch` checks where it leads before it goes
         // there (never to this machine or a private network), and takes and waits only so much.
@@ -851,6 +859,13 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
         // Help › Copy Diagnostics: the version, the platform and the redacted end of the logs.
         diagnostics: Some(Box::new(|| diagnostics::report(env!("CARGO_PKG_VERSION"), build_sha(), log_dir().filter(|_| prefs_enabled()).as_deref()))),
         microsoft_client_id: microsoft_client_id(),
+        // Whether a new version is out: GitHub is asked about this build's repository and told
+        // nothing else, once a day when the owner wants that, or when they press Check for Updates.
+        update_check: Some(Box::new(move |pre_releases| {
+            background(&update_ctx, "update check", move || mailcraft_net::update::latest(pre_releases).map_err(|e| e.to_string()))
+        })),
+        // A build that isn't one of the project's packages (they name their commit) never asks.
+        development_build: build_sha() == "dev",
         ..Default::default()
     }
 }
@@ -1019,7 +1034,6 @@ fn main() -> eframe::Result {
             let (mailbox, path, unavailable, damaged) = first_mailbox(sample, mailbox_path);
             let (file_dialog, dialogs) = file_dialogs::hook(&cc.egui_ctx);
             let mut session = Session::new(mailbox);
-            session.graph_mail = graph_mail_switch();
             let kept = path.is_some();
             session.path = path;
             // A run that keeps its mailbox and its settings keeps downloaded pictures too.
@@ -1043,6 +1057,9 @@ fn main() -> eframe::Result {
             }
             // An ordinary start on a mailbox nobody has set up yet begins with adding an account.
             app.offer_setup = kept && !sample;
+            // A Microsoft account still on IMAP is offered the switch to Graph (R3.7): only for a
+            // mailbox kept in a file, which is where the copy from before the switch goes.
+            app.offer_graph_switch = kept && !sample;
             load_prefs(&mut app);
             app.ui.window = restored;
             app.integrated_titlebar = cfg!(target_os = "macos");
@@ -1059,6 +1076,12 @@ fn main() -> eframe::Result {
             if let Some(guard) = &guard {
                 guard.wake(&cc.egui_ctx);
             }
+            // macOS: an app menu whose Quit (⌘Q) asks the window to close, so a message being
+            // written is asked about first (winit's own quits without asking). Here, after winit
+            // has built its menu. Elsewhere it does nothing.
+            if let Err(e) = craft_quit::install_app_menu(&cc.egui_ctx, "MailCraft") {
+                log::warn!("the app menu couldn't be set up, so Quit won't ask about unsaved work: {e}");
+            }
             Ok(Box::new(App(
                 app,
                 restored,
@@ -1070,4 +1093,28 @@ fn main() -> eframe::Result {
             )))
         }),
     )
+}
+
+#[cfg(test)]
+mod prefs_tests {
+    use super::*;
+
+    #[test]
+    fn prefs_written_whole_and_a_damaged_file_kept_aside() {
+        let dir = std::env::temp_dir().join(format!("mailcraft-prefs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("ui.json");
+        let ui = UiState::default();
+        write_prefs(&path, &ui).unwrap();
+        let back = read_prefs(&path).unwrap();
+        assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&ui).unwrap());
+        // Nothing left beside it but the file itself.
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+
+        std::fs::write(&path, b"{\"theme\": ").unwrap();
+        assert!(read_prefs(&path).is_none());
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(dir.join("ui.json.damaged")).unwrap(), b"{\"theme\": ");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

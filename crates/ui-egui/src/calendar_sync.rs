@@ -355,6 +355,10 @@ impl MailApp {
     /// A Graph token that a job obtained: kept for the session, and its refresh token is the
     /// account's newest, for mail and Graph alike.
     pub(crate) fn keep_graph_tokens(&mut self, account: Id, tokens: Tokens) {
+        // Somebody else's are neither used nor remembered (#103).
+        if self.signed_in_as_other(account, &tokens) {
+            return;
+        }
         self.note_directory(account, &tokens.tenant);
         let address = self.session.mailbox.account(account).map(|a| a.email.clone()).unwrap_or_default();
         if !tokens.refresh.is_empty() {

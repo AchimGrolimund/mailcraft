@@ -5,7 +5,7 @@ use std::sync::Arc;
 use mailcraft_time::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::sync::{RemoteFlags, ServerMessage};
+use crate::sync::{MovingOut, RemoteFlags, ServerMessage};
 use crate::{Address, Id};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -167,6 +167,24 @@ pub struct Message {
     /// message of a file from before this was kept is whole.
     #[serde(skip_serializing_if = "is_false")]
     pub unfetched: bool,
+    /// It was moved here, out of a Microsoft account (into a local folder or another account),
+    /// from the server's copy this names, and that copy is still on the server: it is **being
+    /// moved** (R3 spec S19). The server's copy is removed only once this message is fetched
+    /// whole and the mailbox file holding it is saved. `None` for every other message.
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "crate::sync::lenient")]
+    pub moving_out: Option<MovingOut>,
+    /// The server's copy was gone before it could be fetched: only the headers and preview it
+    /// had are here, kept as they are, and nothing will fetch the rest (R3 spec S19).
+    #[serde(skip_serializing_if = "is_false")]
+    pub incomplete: bool,
+    /// For a draft of a Microsoft account: its marker on the server, what the server last had
+    /// of it, and whether it waits to go up (R3.4.1). `None` for every other message.
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "crate::sync::lenient")]
+    pub server_draft: Option<crate::sync::ServerDraft>,
+    /// For a message of a Microsoft account's Outbox that is **held** (R3.4.2): what happened and
+    /// what to check. It isn't sent again until the owner says so. Empty for every other message.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub held: String,
 }
 
 fn is_false(b: &bool) -> bool {

@@ -1,6 +1,6 @@
 # MailCraft architecture
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-15 · **Change:** minor (R6: the mailbox file is a log of records, format 3, `store_index.rs`; a damaged later save stops the reading there, a damaged item of the first save costs only itself, and `file.open` says so; files kept aside are bounded and keep their content from the sweep; cargo-deny, pinned actions, zizmor, Scorecard, the threat model; R3.1: a Microsoft account kept in step through Graph behind a switch for testing, server ids, `graph::pace`; the Secret Service on Linux and FreeBSD behind `Services::secrets`; `StoreTrouble`; Exchange Web Services removed: the Favorites of Outlook are read through Microsoft Graph alone, and there is no choice of a way) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-17 · **Change:** minor (R6: the mailbox file is a log of records, format 3, `store_index.rs`; a damaged later save stops the reading there, a damaged item of the first save costs only itself, and `file.open` says so; files kept aside are bounded and keep their content from the sweep; no citations of private decision records; R3.7: the switch from IMAP to Graph, no switch for testing; quitting on macOS through craft-quit, the first crate from craft-libs, for the apps alone; cargo-deny, pinned actions, zizmor, Scorecard, the threat model; R3.1: a Microsoft account kept in step through Graph behind a switch for testing, server ids, `graph::pace`; the Secret Service on Linux and FreeBSD behind `Services::secrets`; `StoreTrouble`; Exchange Web Services removed: the Favorites of Outlook are read through Microsoft Graph alone, and there is no choice of a way) · **Target:** Microsoft Outlook (Microsoft 365)
 
 How MailCraft is built today. Rules for working in the code are in [`AGENTS.md`](../AGENTS.md). The
 shape — layers, "everything is a command", the swappable egui front end, the control channel, MCP,
@@ -11,6 +11,8 @@ shape — layers, "everything is a command", the swappable egui front end, the c
 13 crates, 3 apps and `xtask` (`cargo xtask stats` prints lines and tests per crate). Layering is
 enforced by `cargo xtask layers`: a crate may only depend on crates in lower layers (one exception
 inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, winit or rfd.
+`craft-quit` (from [craft-libs](https://github.com/storytold/craft-libs), the Craft apps' shared
+code, taken from git pinned to one commit) is for the apps alone.
 
 | Layer | Crate | Job |
 |---|---|---|
@@ -26,7 +28,7 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
 | L4 | `engine` | `Session` (mailbox, selection, view, the message being written, undo), the **command registry** (`cmd/*.rs`), the message list (`list.rs`), the Outlook feature catalog (`catalog.rs`), the sample mailbox, file dispatch (`io.rs`) |
 | L5 | `mcp` | MCP server: tools over the command registry; headless or bridged to the running app |
 | L6 | `ui-egui` | The front end: title bar with search, ribbon, module bar, folder pane, message list, reading pane, composer, calendar, people, tasks, Backstage, dialogs, themes, control channel, headless `ui_shot` example |
-| apps | `mailcraft` | Desktop app (eframe + wgpu; logging, window geometry, native dialogs, Send/Receive thread, control server) |
+| apps | `mailcraft` | Desktop app (eframe + wgpu; logging, window geometry, native dialogs, Send/Receive thread, control server; leaving, `quit.rs`: unsaved work asks first on every platform, then on macOS the process ends through `-[NSApplication terminate:]` (`craft-quit`) rather than by closing the window, which can crash AppKit, and the app menu's Quit (⌘Q) asks like the close button) |
 | apps | `mailcraft-cli` | `info`, `folders`, `list`, `show`, `import`, `export`, `convert`, `run`, `sync`, `commands`, `parity`, `mcp` |
 | apps | `mailcraft-web` | Browser build (eframe web runner, WebGPU with WebGL2 fallback; browser storage, file picker, downloads) |
 
@@ -102,12 +104,16 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
   host first asks Graph to send the Outbox and, every quarter of an hour, for the calendar and
   contacts (`crates/net/src/graph.rs`); the engine merges them as server-kept, read-only items
   (`cmd/remote.rs`, `Origin`). Mail itself still goes over IMAP.
-- **A Microsoft account kept in step through Graph alone (R3, behind a switch for testing).**
-  With `MAILCRAFT_GRAPH_MAIL=1` (`Session::graph_mail`) a Microsoft account is
-  `AccountKind::Microsoft`: no mail servers, never IMAP or SMTP (ADR 0002).
+- **A Microsoft account kept in step through Graph alone (R3).**
+  A Microsoft account is `AccountKind::Microsoft`: no mail servers, never IMAP or SMTP.
+  One that was kept in step by IMAP switches when its owner says so (R3.7,
+  `cmd/graph_switch.rs`, the page in `ui-egui/src/graph_switch.rs`): what waits for the IMAP
+  server goes first, the mailbox is backed up beside its file, the server's mail is dropped and
+  comes down afresh, and its folders wait (`Folder::awaiting_listing`) to be found by path in
+  Graph's first complete listing, so that they keep their ids.
   Its folders and messages are known by server ids, beside what the server last said of them
   (`ServerFolder` on `Folder::server`, `ServerMessage` on `Message::server`;
-  ADR 0003); a change made here is
+  the server id stays the same when the item moves); a change made here is
   the difference between the two, and only what comparing can't show waits in
   `Mailbox::queued` (a folder deleted for good). The request and answer are Graph's own, beside
   the IMAP ones (`GraphMailRequest`, `FolderChange`, `GraphMailResult`, `FolderListing` in
@@ -199,5 +205,8 @@ inside L3: `net` drives `proto`), and nothing below L6 depends on egui, eframe, 
 | 2026-10-13 | minor | The owner chooses how they are read (M4.3): `ews` in `net` (Exchange Web Services, until 1 April 2027), `Account::favorites_source`, the choice and its job in the front end |
 | 2026-10-15 | minor | Sign-ins remembered on Linux and FreeBSD (R5): the Secret Service behind `Services::secrets`, and `SecretStore::take_trouble` for a store that can't be used |
 | 2026-10-15 | minor | Exchange Web Services removed (R2): Graph is the one way of reading the Favorites; a mailbox that chose the other opens and says so once |
+| 2026-10-16 | minor | Quitting on macOS through `craft-quit` (craft-libs, a git dependency pinned by `rev`), for the apps alone (`cargo xtask layers`); Rust 1.95 |
 | 2026-10-15 | minor | R3.1: `AccountKind::Microsoft` behind the switch for testing; server ids (`ServerFolder`, `ServerMessage`, `Mailbox::queued`); Graph's own sync types; `graph::mail` and `graph::pace` in `net`; `cmd/graph_mail.rs` in the engine |
 | 2026-10-15 | minor | R6 (prerequisite of R6.1): the mailbox file in format 3, a log of records a save appends to (`store_index.rs`), crash-safe, formats 1 and 2 migrated with the old file kept; a damaged later save stops the reading there, a damaged item of the first save costs only itself and the mail is fetched again (`Opened::notice`, `file.open`'s `lostSaves`, `lostRecords`); a file another writer changed kept aside; kept-aside files bounded and protected from the sweep |
+| 2026-10-16 | patch | The Graph-only account described without citing private decision records |
+| 2026-10-16 | minor | R3.7: the switch from IMAP to Graph (`cmd/graph_switch.rs`, `Account::graph_switch`, `Folder::awaiting_listing`); the switch for testing is gone |
