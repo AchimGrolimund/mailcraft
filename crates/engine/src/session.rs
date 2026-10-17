@@ -350,7 +350,7 @@ pub struct InsertedSignature {
     pub text: mailcraft_model::RichText,
 }
 
-/// A signature open in File › Options › Signatures (R4.5.3): edited as a message's body is, by the
+/// A signature open in File › Signatures (R4.5.3): edited as a message's body is, by the
 /// same commands, until `signature.save` puts it back in the mailbox.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SignatureEdit {
@@ -496,7 +496,7 @@ pub struct Session {
     pub sel: Selection,
     /// The message being written, if one is open.
     pub compose: Option<Compose>,
-    /// A signature open in File › Options › Signatures. While there is one, the editing commands
+    /// A signature open in File › Signatures. While there is one, the editing commands
     /// work on it instead of the message being written ([`Session::doc`]).
     pub signature_edit: Option<SignatureEdit>,
     pub prefs: Prefs,
