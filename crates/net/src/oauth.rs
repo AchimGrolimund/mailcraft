@@ -123,6 +123,10 @@ const MICROSOFT_GRAPH_FAVORITES: &str = "https://graph.microsoft.com/MailboxConf
 /// shared mailbox and it is first read ([`sign_in_for_shared`], [`refresh_graph_shared`]), never
 /// on the page of a sign-in: an account without shared mailboxes is never asked for it.
 const MICROSOFT_GRAPH_SHARED: &str = "https://graph.microsoft.com/Mail.ReadWrite.Shared";
+/// What sending from a shared mailbox and keeping its calendar in step will take (#70, later
+/// slices). Not asked of an owner yet; only in what an administrator is asked to approve, so
+/// that their one approval already covers those slices when they come.
+const MICROSOFT_GRAPH_SHARED_LATER: &str = "https://graph.microsoft.com/Mail.Send.Shared https://graph.microsoft.com/Calendars.ReadWrite.Shared";
 /// Whether the page of an ordinary sign-in also puts the Favorites' permissions to the owner,
 /// so that one page settles everything. **Off**: Microsoft's permissions reference lists
 /// `MailboxConfigItem.Read` as one that takes an administrator's consent in an organisation
@@ -400,15 +404,22 @@ pub enum FavoritesRefusal {
 /// too. That is what a sign-in's page asks for (IMAP, SMTP, a refresh token and who signs in;
 /// Microsoft Graph's sending, calendar, contacts, mailbox settings and, for an account kept in step
 /// through Graph, its mail), what reading the Favorites of Outlook through Graph takes, and what
-/// reading a shared mailbox takes.
+/// reading a shared mailbox takes, and what sending from one and its calendar will take.
 ///
 /// A sign-in asks for no more than is here: a page that asked for one permission an
 /// administrator had not approved would send the owner to find one again.
 fn admin_scope() -> String {
     let who: Vec<&str> = SIGN_IN_SCOPE.split(' ').collect();
     let mail = MICROSOFT_SCOPE.split(' ').filter(|scope| !who.contains(scope));
-    let all =
-        mail.chain([MICROSOFT_GRAPH, MICROSOFT_GRAPH_EXTRAS, MICROSOFT_GRAPH_MAIL, MICROSOFT_GRAPH_FAVORITES, MICROSOFT_GRAPH_SHARED, SIGN_IN_SCOPE]);
+    let all = mail.chain([
+        MICROSOFT_GRAPH,
+        MICROSOFT_GRAPH_EXTRAS,
+        MICROSOFT_GRAPH_MAIL,
+        MICROSOFT_GRAPH_FAVORITES,
+        MICROSOFT_GRAPH_SHARED,
+        MICROSOFT_GRAPH_SHARED_LATER,
+        SIGN_IN_SCOPE,
+    ]);
     all.collect::<Vec<_>>().join(" ")
 }
 
