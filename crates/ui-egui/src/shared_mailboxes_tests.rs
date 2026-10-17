@@ -368,3 +368,78 @@ fn a_refused_sign_in_of_the_owner_is_said_and_the_mailbox_being_added_is_not_kep
     assert!(matches!(&app.dialog, Some(crate::dialogs::Dialog::SharedMailbox { error, .. }) if error.contains("sign in again")));
     assert!(sign_ins.lock().unwrap().is_empty(), "nobody is sent to a page from here");
 }
+
+/// What each Graph job was asked, as JSON-ish facts: the account, whether it asked for Outlook's
+/// Favorites or their permissions, the calendar or the directory, and its mail request.
+type Asked = Arc<Mutex<Vec<(Id, bool, bool, bool, bool, Option<GraphMailRequest>)>>>;
+
+/// [`window`] with a shared mailbox whose Inbox was read; the window, the owner, the shared
+/// mailbox, and from then on what each Graph job is asked (each answered with nothing).
+fn with_shared_inbox() -> (MailApp, Id, Id, Asked) {
+    let (mut app, owner, answers, _, _) = window();
+    let shared = app.execute("account.addSharedMailbox", json!({"address": SHARED})).unwrap()["id"].as_u64().unwrap();
+    answers.lock().unwrap().push_back((GraphResult { account: shared, ..Default::default() }, vec![inbox_read(SHARED)]));
+    app.execute("ui.sync", json!({"account": shared})).unwrap();
+    app.poll_graph();
+    assert!(app.session.mailbox.folder_by_server(shared, "in").is_some());
+    let asked: Asked = Default::default();
+    let log = asked.clone();
+    app.services.graph = Some(Box::new(move |req: GraphRequest| {
+        log.lock().unwrap().push((req.account.id, req.favorites, req.favorites_scopes, req.calendar.is_some(), req.directory, req.mail.clone()));
+        let (tx, rx) = mpsc::channel();
+        tx.send(GraphResult { account: req.account.id, ..Default::default() }).unwrap();
+        rx
+    }));
+    (app, owner, shared, asked)
+}
+
+#[test]
+fn a_shared_mailboxs_folder_among_the_favorites_says_whose_it_is() {
+    let (mut app, owner, shared, _) = with_shared_inbox();
+    let theirs = app.session.mailbox.folder_by_server(shared, "in").unwrap();
+    let mine = app.session.mailbox.folder_of_kind(owner, FolderKind::Inbox).unwrap();
+    app.execute("folder.favorite", json!({"id": theirs, "value": true})).unwrap();
+    let mb = &app.session.mailbox;
+    assert_eq!(crate::nav::folder_label(mb, mb.folder(theirs).unwrap()), format!("Inbox - {SHARED}"));
+    assert_eq!(crate::nav::folder_label(mb, mb.folder(mine).unwrap()), "Inbox", "the owner's own are by their names");
+    let listed = mailcraft_engine::cmd::folder::favorites(&app.session);
+    assert!(listed.contains(&theirs) && listed.contains(&mine), "{listed:?}");
+    // The pane draws it.
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx);
+    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+        crate::nav::folder_pane(&mut app, ui);
+    });
+    out.textures_delta.clear();
+    no_imap();
+}
+
+#[test]
+fn favourites_searches_and_counts_in_a_shared_mailbox_ask_no_server_for_anything() {
+    let (mut app, owner, shared, asked) = with_shared_inbox();
+    let theirs = app.session.mailbox.folder_by_server(shared, "in").unwrap();
+    app.execute("folder.favorite", json!({"id": theirs, "value": true})).unwrap();
+    app.execute("view.search", json!({"query": "figures", "scope": "everywhere"})).unwrap();
+    app.execute("folder.list", json!({})).unwrap();
+    // Nothing was asked of any server for those.
+    assert!(asked.lock().unwrap().is_empty());
+    // The shared mailbox's next run is its mail alone, at its own address: no Favorites, no
+    // permission for them, no calendar, no directory, and nothing to change.
+    app.execute("ui.sync", json!({"account": shared})).unwrap();
+    app.poll_graph();
+    // The owner's own run is about his mailbox alone.
+    app.execute("ui.sync", json!({"account": owner})).unwrap();
+    app.poll_graph();
+    let asked = asked.lock().unwrap().clone();
+    let theirs_run = asked.iter().find(|a| a.0 == shared).expect("the shared mailbox's run");
+    assert_eq!((theirs_run.1, theirs_run.2, theirs_run.3, theirs_run.4), (false, false, false, false));
+    let mail = theirs_run.5.clone().unwrap();
+    assert_eq!((mail.account, mail.email.as_str(), mail.shared), (shared, SHARED, true));
+    assert!(mail.changes.is_empty() && mail.messages.is_empty() && mail.drafts.is_empty() && mail.sends.is_empty(), "{mail:?}");
+    let own = asked.iter().find(|a| a.0 == owner).expect("the owner's run");
+    if let Some(mail) = &own.5 {
+        assert!(!mail.shared && mail.account == owner && mail.email == OWNER);
+        assert!(!serde_json::to_string(mail).unwrap().contains(SHARED), "nothing of the shared mailbox in the owner's run: {mail:?}");
+    }
+    no_imap();
+}

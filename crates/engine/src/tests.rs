@@ -2063,6 +2063,8 @@ fn hostile_params_never_panic() {
     // the door (#70).
     s.shared_mailboxes = true;
     let _ = s.run("account.add", &json!({"email": "owner@example.org", "kind": "microsoft"}));
+    // And one open, so that the folder pane's commands (Favorites, counts) meet its folders.
+    let _ = s.run("account.addSharedMailbox", &json!({"address": "support@example.org"}));
     let ids: Vec<&'static str> = s.registry.all().iter().map(|c| c.id).collect();
     for round in 0..2 {
         for id in &ids {

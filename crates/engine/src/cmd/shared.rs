@@ -9,6 +9,13 @@
 //! when it is first read, never with a sign-in, and a server that won't let the owner in says so
 //! at that first Send/Receive.
 //!
+//! Where it shows: its own tree under its owner in the folder pane, its unread counted on its
+//! own folders and its own entry of `folder.list`, never added to its owner's; a search of All
+//! Mailboxes takes in its mail (but its Deleted Items and Junk E-mail, as for every account),
+//! and its conversations are its own. Its folders can be put among the Favorites, kept in
+//! MailCraft whatever its owner's come from (Outlook's list for the owner's own folders is
+//! unchanged): nothing is read from or written to any server for that.
+//!
 //! Not in this first slice: changes going up (what is changed in it waits on this computer, and
 //! nothing meant for it is ever sent to the owner's own mailbox), sending as it or on its
 //! behalf, its calendar. Behind a switch for testing ([`Session::shared_mailboxes`]) until
