@@ -77,5 +77,5 @@ done similar work in this code base.
 | 2026-10-16 | minor | Rough edges: mail imported for a Microsoft account goes to a local folder, and received mail in a local folder never goes into one (R3.6) |
 | 2026-10-16 | minor | Gap 18 and rough edges: a new version is told of when the owner wants that, and never installed (R7.3) |
 | 2026-10-16 | minor | Gap 2 and rough edges: the switch from IMAP to Graph (R3.7); no switch for testing |
-| 2026-10-17 | minor | Gap 8: attachments and older bodies stay on disk and are read when wanted, within a bounded budget (R6.1); after review, Undo after a sweep, a search past the budget and a rule that reads the body find what is on disk, and bringing content in is no change to undo or save |
+| 2026-10-17 | minor | Gap 8: attachments and older bodies stay on disk and are read when wanted, within a bounded budget (R6.1); after review, Undo after a sweep, a search past the budget and a rule that reads the body find what is on disk, and bringing content in is no change to undo or save; Graph sends and draft uploads read what is kept on disk |
 
