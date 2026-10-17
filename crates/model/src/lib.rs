@@ -31,8 +31,8 @@ pub use calendar::{
 };
 pub use contact::{Contact, Labeled, PostalAddress};
 pub use mailbox::{
-    Account, AccountKind, Category, Directory, DownloadInFull, Folder, FolderKind, GraphSwitch, IMPORTED, INTO_GRAPH, MAX_SHARED, Mailbox, OAuth,
-    OAuthProvider, Pending, Queued, STAYS_LOCAL, Security, Server, ServerFavorites, ServerFolder,
+    Account, AccountKind, BETWEEN_MAILBOXES, Category, Directory, DownloadInFull, Folder, FolderKind, GraphSwitch, IMPORTED, INTO_GRAPH, MAX_SHARED,
+    Mailbox, OAuth, OAuthProvider, Pending, Queued, STAYS_LOCAL, Security, Server, ServerFavorites, ServerFolder,
 };
 pub use mailcraft_time as time;
 pub use message::{Attachment, Body, ContentRef, FlagStatus, Importance, KeptBody, Message, normalize_subject, text_hash};
