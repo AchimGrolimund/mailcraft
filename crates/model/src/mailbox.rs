@@ -645,6 +645,11 @@ impl Default for Mailbox {
 /// Why nothing from elsewhere goes into a Microsoft account's folders yet (R3 spec S19).
 pub const INTO_GRAPH: &str = "Mail can't be moved or copied into a Microsoft account from another account or a local folder yet: this version can't put a message on Microsoft's server";
 
+/// Why mail doesn't move or copy between a shared mailbox and another mailbox (#70): Microsoft
+/// Graph moves and copies a message only within its own mailbox, and what it makes from a message
+/// elsewhere is always a draft (R3 spec S30).
+pub const BETWEEN_MAILBOXES: &str = "Microsoft moves and copies mail only within one mailbox, so it can't go between a shared mailbox and another mailbox: move it within its own mailbox, or into a folder on this computer";
+
 /// Why received mail in a local folder (imported mail, say) doesn't go into a Microsoft
 /// account's folders (R3 spec S30): what Graph makes there is always a draft.
 pub const STAYS_LOCAL: &str = "Microsoft doesn't let a mail program put received mail into your mailbox; it stays in a local folder.";
@@ -1241,7 +1246,9 @@ impl Mailbox {
             return Ok(false);
         }
         if self.is_graph(to_account) {
-            let Some(out) = m.moving_out.clone().filter(|out| out.account == to_account) else { return Err(invalid(self.refusal_into_graph(m))) };
+            let Some(out) = m.moving_out.clone().filter(|out| out.account == to_account) else {
+                return Err(invalid(self.refusal_into_graph(m, to_account)));
+            };
             // Where the server has it isn't known here: the next run moves it where it is now.
             let server = crate::sync::ServerMessage {
                 id: out.id,
@@ -1270,11 +1277,19 @@ impl Mailbox {
         Ok(true)
     }
 
-    /// Why `m` can't go into a Microsoft account from elsewhere: received mail in a local folder
-    /// never can (S30); anything else not yet (S19).
-    fn refusal_into_graph(&self, m: &Message) -> &'static str {
+    /// Why `m` can't go into the Microsoft account `to` from elsewhere: received mail in a local
+    /// folder never can (S30); between a shared mailbox and another mailbox, Microsoft moves and
+    /// copies only within one (#70); anything else not yet (S19).
+    fn refusal_into_graph(&self, m: &Message, to: Id) -> &'static str {
         let local = self.account(m.account).is_some_and(|a| a.kind == AccountKind::Local);
-        if local && !m.draft { STAYS_LOCAL } else { INTO_GRAPH }
+        let shared = |id: Id| self.account(id).is_some_and(Account::is_shared);
+        if local && !m.draft {
+            STAYS_LOCAL
+        } else if self.is_graph(m.account) && (shared(m.account) || shared(to)) {
+            BETWEEN_MAILBOXES
+        } else {
+            INTO_GRAPH
+        }
     }
 
     /// The first local account, made ("On this computer") when the mailbox has none.
@@ -1317,7 +1332,7 @@ impl Mailbox {
         let m = self.message(id).ok_or(not_found("message", id))?;
         let from_account = m.account;
         if from_account != to_account && self.is_graph(to_account) {
-            return Err(invalid(self.refusal_into_graph(m)));
+            return Err(invalid(self.refusal_into_graph(m, to_account)));
         }
         if from_account != to_account && self.is_graph(from_account) && m.unfetched {
             let subject: String = m.subject.chars().filter(|c| !c.is_control()).take(80).collect();
