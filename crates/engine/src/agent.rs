@@ -282,6 +282,7 @@ const SAFE: &[&str] = &[
     "ui.sync",
     "ui.cancelSignIn",
     "ui.cancelSync",
+    "ui.skipSync",
     "ui.favorites",
     "ui.copyAdminConsentLink",
     "ui.approvalHelp",

@@ -561,6 +561,12 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
     ),
     ("ui.cancelSync", "Cancel Send/Receive", "Send / Receive", "{}"),
     (
+        "ui.skipSync",
+        "Skip",
+        "Send / Receive",
+        r#"{"account": number} — leaves an account that is waiting its turn out of the Send/Receive under way (Send/Receive Progress); refused for the one running (Stop is for that) and for one that isn't waiting"#,
+    ),
+    (
         "ui.graphSwitch",
         "Switch to Microsoft Graph",
         "File › Info",
@@ -1359,6 +1365,7 @@ impl MailApp {
                 self.session.sync_status = tl!("Stopping…").to_string();
                 Ok(json!({"cancelling": true}))
             }
+            "ui.skipSync" => self.skip_sync(p),
             "ui.cancelSignIn" => match self.signing_in.take() {
                 Some(s) => {
                     s.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1575,6 +1582,8 @@ impl MailApp {
             return Err(tl!("This build can't connect to mail servers (a browser can't open mail connections). Use the desktop app, or bring mail in with File › Import.").to_string());
         }
         let quiet = p.get("quiet").and_then(Value::as_bool).unwrap_or(false);
+        // A run starts, the owner's or one by itself: full messages paused by Stop go on.
+        self.resume_fetch();
         let account = match p.get("account").and_then(Value::as_u64) {
             Some(account) => account,
             // Nobody in particular: every account with a server, one after the other.
@@ -1877,7 +1886,7 @@ impl MailApp {
                     self.session.sync_progress.leave_out(account);
                 }
                 RunState::Running => self.session.sync_progress.end(account, false),
-                RunState::Done | RunState::Stopped => {}
+                RunState::Done | RunState::Stopped | RunState::Skipped => {}
             }
         }
     }
@@ -2285,6 +2294,31 @@ impl MailApp {
     /// Whether a job of Microsoft Graph is under way for an account.
     pub fn graph_running(&self) -> bool {
         self.graph_rx.is_some()
+    }
+
+    /// The account whose part of the Send/Receive is under way (or whose sign-in for it is).
+    fn sync_running_account(&self) -> Option<Id> {
+        let imap = self.sync_rx.as_ref().and(self.sync_run.as_ref()).map(|(account, ..)| *account);
+        let graph = self.graph_rx.as_ref().map(|(account, ..)| *account);
+        imap.or(graph).or_else(|| self.signing_in.as_ref().filter(|s| !s.graph && !s.favorites).map(|s| s.account))
+    }
+
+    /// Skip: leave an account that waits its turn out of the run under way.
+    fn skip_sync(&mut self, p: &Value) -> Result<Value, String> {
+        use mailcraft_engine::cmd::sync_progress::RunState;
+        let account = p.get("account").and_then(Value::as_u64).ok_or_else(|| tl!("Say which account to skip").to_string())?;
+        let name = self.session.mailbox.account(account).map(|a| a.name.clone()).ok_or_else(|| tl!("There is no such account").to_string())?;
+        let row = self.session.sync_progress.accounts.iter().find(|r| r.account == account).map(|r| r.state);
+        if self.sync_running_account() == Some(account) || row == Some(RunState::Running) {
+            return Err(i18n::fmt(tl!("{name} is being sent and received now. Use Stop."), &[("name", &name)]));
+        }
+        if !self.sync_queue.iter().any(|(a, _)| *a == account) {
+            return Err(i18n::fmt(tl!("{name} isn't waiting its turn in a Send/Receive"), &[("name", &name)]));
+        }
+        self.sync_queue.retain(|(a, _)| *a != account);
+        self.push_only_next.remove(&account);
+        self.session.sync_progress.skip(account);
+        Ok(json!({"skipped": account}))
     }
 
     /// Whether a Send/Receive is running.
