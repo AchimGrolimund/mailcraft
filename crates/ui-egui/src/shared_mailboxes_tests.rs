@@ -40,8 +40,7 @@ fn tokens(access: &str, refresh: &str) -> Tokens {
 /// A window with a Microsoft account signed in this session, and hosts that note what they are
 /// asked and answer what `answers` holds, in turn.
 fn window() -> (MailApp, Id, Answers, Jobs, SignIns) {
-    let mut session = Session::empty();
-    session.graph_mail = true;
+    let session = Session::empty();
     let mut app = MailApp::new(session, Services::default());
     app.autosave = false;
     let owner = app.execute("account.add", json!({"email": OWNER, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();

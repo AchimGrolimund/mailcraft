@@ -110,7 +110,7 @@ const MICROSOFT_GRAPH: &str =
 const MICROSOFT_GRAPH_EXTRAS: &str = "https://graph.microsoft.com/MailboxSettings.Read";
 /// What keeping a Microsoft account's folders and mail in step through Graph takes (R3): reading
 /// and changing them. Asked for only for an account that is kept in step that way
-/// ([`Resource::GraphMail`]), which only the switch for testing makes until R3.2.
+/// ([`Resource::GraphMail`]).
 const MICROSOFT_GRAPH_MAIL: &str = "https://graph.microsoft.com/Mail.ReadWrite";
 /// And what showing the Favorites of Outlook takes on top of that, when the owner wants them:
 /// reading the mailbox's configuration items (of which one holds the list) and reading folders
@@ -184,9 +184,7 @@ pub enum Resource {
     /// and the contacts.
     Graph,
     /// Microsoft Graph with the folders and mail of a Microsoft account read and written through
-    /// it (`Mail.ReadWrite`, R3): only for an account kept in step through Graph, which is made
-    /// only behind the switch for testing (`MAILCRAFT_GRAPH_MAIL=1`) until the owners agree to
-    /// the permission for everybody (R3.2).
+    /// it (`Mail.ReadWrite`, R3): only for an account kept in step through Graph.
     GraphMail,
 }
 
@@ -400,15 +398,17 @@ pub enum FavoritesRefusal {
 /// What an administrator of an organisation is asked to approve, once for everybody in it:
 /// everything this program asks an owner for, so that one approval covers what is asked later
 /// too. That is what a sign-in's page asks for (IMAP, SMTP, a refresh token and who signs in;
-/// Microsoft Graph's sending, calendar, contacts and mailbox settings), what reading the
-/// Favorites of Outlook through Graph takes, and what reading a shared mailbox takes.
+/// Microsoft Graph's sending, calendar, contacts, mailbox settings and, for an account kept in step
+/// through Graph, its mail), what reading the Favorites of Outlook through Graph takes, and what
+/// reading a shared mailbox takes.
 ///
 /// A sign-in asks for no more than is here: a page that asked for one permission an
 /// administrator had not approved would send the owner to find one again.
 fn admin_scope() -> String {
     let who: Vec<&str> = SIGN_IN_SCOPE.split(' ').collect();
     let mail = MICROSOFT_SCOPE.split(' ').filter(|scope| !who.contains(scope));
-    let all = mail.chain([MICROSOFT_GRAPH, MICROSOFT_GRAPH_EXTRAS, MICROSOFT_GRAPH_FAVORITES, MICROSOFT_GRAPH_SHARED, SIGN_IN_SCOPE]);
+    let all =
+        mail.chain([MICROSOFT_GRAPH, MICROSOFT_GRAPH_EXTRAS, MICROSOFT_GRAPH_MAIL, MICROSOFT_GRAPH_FAVORITES, MICROSOFT_GRAPH_SHARED, SIGN_IN_SCOPE]);
     all.collect::<Vec<_>>().join(" ")
 }
 

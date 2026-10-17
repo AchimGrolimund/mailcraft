@@ -21,8 +21,6 @@ pub fn report(version: &str, build: &str, log_dir: Option<&Path>) -> String {
     let mut out = String::from("### MailCraft diagnostics\n\n");
     out.push_str(&format!("- Version: {version} ({build})\n"));
     out.push_str(&format!("- Platform: {}\n", platform()));
-    let graph = std::env::var("MAILCRAFT_GRAPH_MAIL").is_ok_and(|v| v.trim() == "1");
-    out.push_str(&format!("- Graph mail switch: {}\n", if graph { "on" } else { "off" }));
     out.push_str("- Addresses, names, paths, hosts, links, ids and quoted text are taken out of the log.\n");
     let Some(dir) = log_dir else {
         out.push_str("\nNo log is kept for this run.\n");
@@ -110,17 +108,26 @@ pub fn redact_line(line: &str) -> String {
 /// called `Accounts`) would pass; the program's own lines name folders and calendars by id, and
 /// server errors quote names, which are caught. Move to an allow-list if a report shows a leak.
 pub fn redact(text: &str) -> String {
-    unquote(text).split_inclusive(char::is_whitespace).map(word).collect()
+    unquote(text, true).split_inclusive(char::is_whitespace).map(|w| word(w, true)).collect()
+}
+
+/// What the log file itself is told of a message (every line, as it is written): `text` with
+/// quoted text (`"…"` and `'…'`), addresses, links and long ids with a digit in them (a token, a
+/// code) taken out. The program's own words, hosts, paths, numbers and `` `…` `` stay: the file is
+/// for finding a fault on this computer, and [`redact`] takes out the rest when it is copied.
+pub fn scrub(text: &str) -> String {
+    unquote(text, false).split_inclusive(char::is_whitespace).map(|w| word(w, false)).collect()
 }
 
 /// Quoted spans (`"…"`, `` `…` ``, and `'…'` where the quote doesn't follow a letter, so
 /// "couldn't" stays) become `"…"`; an unpaired quote takes the rest of the text with it.
-fn unquote(text: &str) -> String {
+/// `` `…` `` only with `backticks`.
+fn unquote(text: &str, backticks: bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     let mut before: Option<char> = None;
     while let Some(c) = chars.next() {
-        let opens = matches!(c, '"' | '`') || (c == '\'' && !before.is_some_and(char::is_alphanumeric));
+        let opens = c == '"' || (backticks && c == '`') || (c == '\'' && !before.is_some_and(char::is_alphanumeric));
         if !opens {
             out.push(c);
             before = Some(c);
@@ -145,8 +152,9 @@ fn unquote(text: &str) -> String {
     out
 }
 
-/// One word (with the whitespace after it), kept or replaced by what it was.
-fn word(raw: &str) -> String {
+/// One word (with the whitespace after it), kept or replaced by what it was: anything [`kind`]
+/// names with `all`, else only an address, a link or a long id with a digit in it.
+fn word(raw: &str, all: bool) -> String {
     let body = raw.trim_end();
     let space = raw.get(body.len()..).unwrap_or_default();
     let edge = |c: char| matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ',' | ';' | ':' | '.' | '!' | '?');
@@ -161,9 +169,10 @@ fn word(raw: &str) -> String {
         }
         _ => (core, ""),
     };
+    let taken = |what: &str| all || matches!(what, "address" | "link") || (what == "id" && host.chars().any(|c| c.is_ascii_digit()));
     match kind(host) {
-        Some(what) => format!("{lead}<{what}>{port}{trail}{space}"),
-        None => raw.to_owned(),
+        Some(what) if taken(what) => format!("{lead}<{what}>{port}{trail}{space}"),
+        _ => raw.to_owned(),
     }
 }
 
@@ -278,6 +287,17 @@ mod tests {
         assert_eq!(redact("panicked at crates/engine/src/cmd.rs:12:5"), "panicked at crates/engine/src/cmd.rs:12:5");
         assert_eq!(redact("waiting on port 7991 for 127.0.0.1"), "waiting on port 7991 for 127.0.0.1");
         assert_eq!(redact("version 0.3.0, e.g. this"), "version 0.3.0, e.g. this");
+    }
+
+    #[test]
+    fn the_log_file_keeps_hosts_paths_and_code_names_but_no_address() {
+        assert_eq!(scrub("connecting to outlook.office365.com:993 (Imap, tls)"), "connecting to outlook.office365.com:993 (Imap, tls)");
+        assert_eq!(scrub("log file /home/owner/.config/mailcraft/logs/mailcraft.log"), "log file /home/owner/.config/mailcraft/logs/mailcraft.log");
+        assert_eq!(scrub("command `mail.flag` panicked; InvalidAuthenticationToken"), "command `mail.flag` panicked; InvalidAuthenticationToken");
+        assert_eq!(scrub("550 <bob@example.org>: no 'Ada Lovelace'"), "550 <<address>>: no \"…\"");
+        for text in ["", "\"", "'", "`", "é@", "a\u{0}b", "[x] y: \"é", "::::"] {
+            let _ = scrub(text);
+        }
     }
 
     #[test]

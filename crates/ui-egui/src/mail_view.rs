@@ -56,6 +56,10 @@ const TIME_RIGHT: f32 = 24.0;
 /// Sender, subject and preview end this far from a row's right end, where the time's column
 /// starts: every row's text stops at the same place, whatever its time.
 const TEXT_RIGHT: f32 = 98.0;
+/// Where a quick action (delete, flag) on the row under the pointer takes a click.
+const QUICK_TARGET: egui::Vec2 = egui::vec2(28.0, 22.0);
+/// The clear space between the quick actions, and between them and the marks before them.
+const QUICK_GAP: f32 = 6.0;
 /// The middle of the sender's capitals, from a row's top: they stand 15 below the line above.
 const SENDER_Y: f32 = 21.0;
 /// The middle of the subject's (and the time's) capitals, from a row's top.
@@ -545,8 +549,10 @@ fn message_row(app: &mut MailApp, ui: &mut Ui, row: &Row, rect: Rect) {
     // a flagged message wears its flag) and delete. Like the read switch they sit on top of the
     // row and leave the selection alone.
     let over = ui.rect_contains_pointer(rect) && egui::DragAndDrop::payload::<MessageDrag>(ui.ctx()).is_none();
-    let flag_rect = Rect::from_center_size(pos2(rect.max.x - TIME_RIGHT / 2.0, line1), vec2(20.0, 20.0));
-    let delete_rect = flag_rect.translate(vec2(-22.0, 0.0));
+    // Wide enough to hit without aiming, a gap between them, and short enough to stay off the
+    // time on the subject's line.
+    let flag_rect = Rect::from_center_size(pos2(rect.max.x - QUICK_TARGET.x / 2.0, line1), QUICK_TARGET);
+    let delete_rect = flag_rect.translate(vec2(-(QUICK_TARGET.x + QUICK_GAP), 0.0));
     let flagged = m.flag == FlagStatus::Flagged;
     let quick = over.then(|| {
         let delete = ui.interact(delete_rect, ui.id().with(("msg_delete", row.id)), Sense::click()).on_hover_text(tl!("Delete"));
@@ -607,9 +613,10 @@ fn message_row(app: &mut MailApp, ui: &mut Ui, row: &Row, rect: Rect) {
             if resp.hovered() {
                 p.rect_filled(at, 4.0, t.pressed);
             }
-            icons::paint(p, at.shrink(3.0), icon, color, t.accent);
+            icons::paint(p, Rect::from_center_size(at.center(), vec2(14.0, 14.0)), icon, color, t.accent);
         }
-        x = delete_rect.min.x - 2.0;
+        // The marks keep clear of delete, so a click meant for the row doesn't land on it.
+        x = delete_rect.min.x - QUICK_GAP;
     } else {
         let flag = Rect::from_center_size(flag_rect.center(), vec2(12.0, 12.0));
         match m.flag {
@@ -962,9 +969,14 @@ mod tests {
         hover(&mut harness, rect.center());
         let (flag, delete) = (at(&harness, "messageFlag", row.id), at(&harness, "messageDelete", row.id));
         // The flag is in its own column at the row's end, delete before it, both on the sender's line.
-        assert!(flag.center().distance(pos2(rect.max.x - TIME_RIGHT / 2.0, rect.min.y + SENDER_Y)) < 0.01);
+        assert!(flag.max.x <= rect.max.x && (flag.center().y - (rect.min.y + SENDER_Y)).abs() < 0.01);
         assert_eq!(delete.center().y, flag.center().y);
         assert!(delete.max.x <= flag.min.x && delete.min.x > rect.max.x - TEXT_RIGHT, "the buttons keep out of the text's column");
+        // Big enough to hit without aiming, and apart, so a click meant for one doesn't take the other.
+        for b in [flag, delete] {
+            assert!(b.width() >= 28.0 && b.height() >= 22.0, "{b:?}");
+        }
+        assert!(flag.min.x - delete.max.x >= 6.0);
         assert!(flag.max.y < rect.min.y + SUBJECT_Y - 4.0, "and off the subject's line, where the time is");
 
         // They do what they say, and the selection stays where it was.

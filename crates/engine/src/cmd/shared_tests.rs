@@ -15,7 +15,6 @@ const SHARED: &str = "support@example.org";
 /// A session with a Microsoft account kept in step through Graph, and a local one; their ids.
 fn session() -> (Session, Id, Id) {
     let mut s = Session::empty();
-    s.graph_mail = true;
     let local = s.run("account.add", &json!({"email": "ada@example.org"})).unwrap()["id"].as_u64().unwrap();
     let owner = s.run("account.add", &json!({"email": OWNER, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     (s, local, owner)
@@ -79,7 +78,6 @@ fn a_shared_mailbox_is_added_under_a_microsoft_account_and_removed_again() {
 #[test]
 fn the_last_account_is_not_removed_with_its_shared_mailboxes() {
     let mut s = Session::empty();
-    s.graph_mail = true;
     let owner = s.run("account.add", &json!({"email": OWNER, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     let shared = add(&mut s, json!({"address": SHARED})).unwrap();
     assert!(s.run("account.remove", &json!({"id": owner})).unwrap_err().to_string().contains("last account"));

@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::{Account, Address, FlagStatus, FolderKind, Id, Importance, Message};
 use mailcraft_time::Timestamp;
 
+mod drafts;
+pub use drafts::*;
+
 /// A folder as the mailbox knows it, for the server side to continue from.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -144,6 +147,15 @@ impl Tokens {
     pub fn fresh(&self, now: i64) -> bool {
         !self.access.is_empty() && self.expires_at.saturating_sub(60) > now
     }
+
+    /// Whether these are somebody else's than the account's whose address is `email` and whose
+    /// user name is `username` (either may be empty): the provider named who signed in, and it
+    /// is neither, whatever the case. Tokens that name nobody are taken to be the account's.
+    pub fn someone_else(&self, email: &str, username: &str) -> bool {
+        let who = self.email.trim();
+        let is = |name: &str| !name.trim().is_empty() && name.trim().eq_ignore_ascii_case(who);
+        !who.is_empty() && !is(email) && !is(username)
+    }
 }
 
 impl std::fmt::Debug for Tokens {
@@ -205,6 +217,62 @@ pub struct ServerMessage {
     /// fetch's limit is held against (R3 spec S12).
     #[serde(skip_serializing_if = "is_zero_u64")]
     pub size: u64,
+    /// The follow-up flag's dates as the server has them (R3.3, S16): when it was flagged, when
+    /// it is due, and when it was marked complete. A file from before has none.
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub flag_start: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub flag_due: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub flag_completed: Option<Timestamp>,
+    /// The server's change key of it as last seen: for a draft, what tells an edit made elsewhere
+    /// from the server's copy of one made here (R3.4.1, S26). Empty when not known.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub change_key: String,
+}
+
+/// The server's copy of a message that is **being moved** out of a Microsoft account
+/// ([`Message::moving_out`], R3 spec S19): the account and the copy's server id.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MovingOut {
+    pub account: Id,
+    pub id: String,
+}
+
+/// Whether two names are the same category's. Outlook's categories are matched by name and a
+/// mailbox can't have two whose names differ in case only, so neither can a message: names are
+/// compared without regard to case (in every script, not ASCII only).
+pub fn same_category(a: &str, b: &str) -> bool {
+    a == b || a.chars().flat_map(char::to_lowercase).eq(b.chars().flat_map(char::to_lowercase))
+}
+
+/// A message's categories after a run, when they were changed here and may have been changed on
+/// the server too (R3 spec S17, ADR 0003 as amended): what was added and what was taken away
+/// here since the last synced list (`synced`) is applied to the server's list as it is now, so
+/// that a category the server added meanwhile stays.
+///
+/// - Names are matched as [`same_category`] does; a name given twice counts once.
+/// - The server's order is kept, with what was added here after it in the order it has here.
+/// - A category on the server's list is written as the server writes it; one added here as it
+///   is written here.
+/// - Added on both sides: there once. Taken away on both sides: gone.
+pub fn merge_categories(synced: &[String], here: &[String], server: &[String]) -> Vec<String> {
+    let has = |list: &[String], name: &str| list.iter().any(|c| same_category(c, name));
+    let mut merged: Vec<String> = Vec::new();
+    for name in server {
+        let taken_away = has(synced, name) && !has(here, name);
+        if !taken_away && !has(&merged, name) {
+            merged.push(name.clone());
+        }
+    }
+    for name in here {
+        let added = !has(synced, name);
+        if added && !has(&merged, name) {
+            merged.push(name.clone());
+        }
+    }
+    merged
 }
 
 fn is_zero_u64(n: &u64) -> bool {
@@ -618,6 +686,148 @@ pub struct GraphMailRequest {
     /// the link is a delta link); a folder that isn't here is read from its start (R3 spec S10).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<GraphLink>,
+    /// The changes of messages made here, after the folder changes and before the listing
+    /// (R3 spec S16).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<MessageChange>,
+    /// The drafts saved here that the server hasn't all of, after the changes of messages
+    /// (R3.4.1, S23–S25).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub drafts: Vec<DraftUp>,
+    /// What waits in the Outbox, sent after the drafts (R3.4.2).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sends: Vec<SendUp>,
+}
+
+/// Most changes of messages one Graph run is asked to make; more go over several runs.
+pub const MAX_MESSAGE_CHANGES: usize = 10_000;
+
+/// A change made here to a message of a Microsoft account, for its server to take on (R3 spec
+/// S16): worked out from the difference between the message and its last synced state
+/// ([`ServerMessage`]), or waiting in [`crate::Mailbox::queued`]. Messages are named by their
+/// server ids, folders by theirs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MessageChange {
+    /// Properties of the message `message` (the server's `id`) were changed here: only those are
+    /// named, and they go as one change.
+    #[serde(rename_all = "camelCase")]
+    Update {
+        message: Id,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        read: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        flag: Option<FlagUp>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        categories: Option<CategoriesUp>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        importance: Option<Importance>,
+    },
+    /// The message lies in another folder here: the folder the server calls `to`, or, when
+    /// `to_folder` names a folder of this mailbox that is made in the same run, that one once it is.
+    #[serde(rename_all = "camelCase")]
+    Move {
+        message: Id,
+        id: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        to: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_folder: Option<Id>,
+    },
+    /// The message was copied here into another folder of the account (`copy` is the copy here):
+    /// the server copies it, after giving the source MailCraft's invisible marker of the value
+    /// `marker`, by which a copy whose answer was lost is found (S21).
+    #[serde(rename_all = "camelCase")]
+    Copy {
+        copy: Id,
+        id: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        to: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_folder: Option<Id>,
+        marker: String,
+    },
+    /// The message was deleted for good here: the server deletes it (Graph's delete, which keeps
+    /// it recoverable for the retention period; never past it, S19).
+    Delete { id: String },
+    /// The message `message` was moved out of the account, is fetched whole and saved here: the
+    /// server's copy goes (S19).
+    #[serde(rename_all = "camelCase")]
+    MovedOut { message: Id, id: String },
+}
+
+impl MessageChange {
+    /// The server id of the message it is about.
+    pub fn id(&self) -> &str {
+        match self {
+            MessageChange::Update { id, .. }
+            | MessageChange::Move { id, .. }
+            | MessageChange::Copy { id, .. }
+            | MessageChange::Delete { id }
+            | MessageChange::MovedOut { id, .. } => id,
+        }
+    }
+}
+
+/// A follow-up flag as it goes up: its status and its dates.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FlagUp {
+    pub status: FlagStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub due: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed: Option<Timestamp>,
+}
+
+/// Categories changed here: the last synced list and the list here. The server's list as it is
+/// when the change is made is read first, and what was added and taken away here is applied to
+/// it ([`merge_categories`], S17).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CategoriesUp {
+    pub synced: Vec<String>,
+    pub here: Vec<String>,
+}
+
+/// What the server made of a [`MessageChange`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MessageOutcome {
+    /// Done. `categories`: the list the message has on the server now (for a change of them);
+    /// `flag`: the flag as it went; `folder`: the server id of the folder a move or a copy put
+    /// it in; `id`: the server id of a copy it made.
+    #[serde(rename_all = "camelCase")]
+    Done {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        categories: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        flag: Option<FlagUp>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        folder: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        id: String,
+    },
+    /// The server no longer has the message (404).
+    Gone,
+    /// The server won't (403 not allowed, 400 not a change it makes): `status` says which.
+    Refused { status: u16 },
+}
+
+/// A change of a message and what became of it. One that isn't answered (the server was busy,
+/// the connection went) isn't here: it is worked out again for the next run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageChangeDone {
+    pub change: MessageChange,
+    pub outcome: MessageOutcome,
+    /// For a delete for good the server refused: the message as the server has it, read after
+    /// the refusal, by which it is put back here (S20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub there: Option<Box<GraphMessage>>,
 }
 
 /// Where a folder's message delta goes on from.
@@ -650,6 +860,9 @@ pub struct GraphMessage {
     pub preview: String,
     #[serde(skip_serializing_if = "is_false")]
     pub has_attachments: bool,
+    /// It is a draft (Graph's `isDraft`).
+    #[serde(skip_serializing_if = "is_false")]
+    pub draft: bool,
 }
 
 /// One page of a folder's message delta, taken in whole with the link that goes on from it, so
@@ -746,6 +959,15 @@ pub struct GraphMailResult {
     pub email: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub changes: Vec<FolderChangeDone>,
+    /// What became of the changes of messages sent (R3.3).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<MessageChangeDone>,
+    /// What became of the drafts taken up (R3.4.1).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub drafts: Vec<DraftDone>,
+    /// What became of the messages sent (R3.4.2).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sent: Vec<SendDone>,
     /// Every folder of the mailbox, when it could be listed at all.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub listing: Option<FolderListing>,
@@ -785,6 +1007,9 @@ impl GraphMailResult {
     /// pages in the order they came, and what the last piece says of the end.
     pub fn absorb(&mut self, piece: GraphMailResult) {
         self.changes.extend(piece.changes);
+        self.messages.extend(piece.messages);
+        self.drafts.extend(piece.drafts);
+        self.sent.extend(piece.sent);
         if piece.listing.is_some() {
             self.listing = piece.listing;
         }
@@ -843,6 +1068,87 @@ mod tests {
         assert_eq!(serde_json::from_str::<GraphMailResult>(&serde_json::to_string(&result).unwrap()).unwrap(), result);
     }
 
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn merged(synced: &[&str], here: &[&str], server: &[&str]) -> Vec<String> {
+        merge_categories(&names(synced), &names(here), &names(server))
+    }
+
+    /// R3.3 (S17): what was added and taken away here goes onto the server's list as it is now.
+    #[test]
+    fn categories_merge_what_changed_here_into_the_servers_list() {
+        // Nothing changed anywhere.
+        assert_eq!(merged(&["Red"], &["Red"], &["Red"]), ["Red"]);
+        // Added here; the server added another meanwhile: both stay, the server's first.
+        assert_eq!(merged(&["Red"], &["Red", "Blue"], &["Red", "Green"]), ["Red", "Green", "Blue"]);
+        // Taken away here, and the server added one: the server's addition stays.
+        assert_eq!(merged(&["Red", "Blue"], &["Blue"], &["Red", "Blue", "Green"]), ["Blue", "Green"]);
+        // Taken away on both sides.
+        assert_eq!(merged(&["Red", "Blue"], &["Blue"], &["Blue"]), ["Blue"]);
+        // Added on both sides: once.
+        assert_eq!(merged(&[], &["Blue"], &["Blue"]), ["Blue"]);
+        // Taken away on the server and kept here untouched: the server's way.
+        assert_eq!(merged(&["Red", "Blue"], &["Red", "Blue"], &["Blue"]), ["Blue"]);
+        // Taken away here, added again on the server... it was on the synced list, so it goes.
+        assert_eq!(merged(&["Red"], &[], &["Red"]), Vec::<String>::new());
+        // The server's order is kept, additions follow in the order they have here.
+        assert_eq!(merged(&["A"], &["C", "A", "B"], &["Z", "A", "Y"]), ["Z", "A", "Y", "C", "B"]);
+    }
+
+    #[test]
+    fn categories_are_matched_by_name_whatever_the_case_and_counted_once() {
+        assert!(same_category("Red", "red") && same_category("ÉTÉ", "été") && !same_category("Red", "Red "));
+        // Spelled differently here and there: the server's spelling, once.
+        assert_eq!(merged(&[], &["blue"], &["Blue"]), ["Blue"]);
+        // Taken away here under another spelling.
+        assert_eq!(merged(&["Red", "Blue"], &["BLUE"], &["red", "Blue"]), ["Blue"]);
+        // Duplicates in any list count once.
+        assert_eq!(merged(&["Red", "red"], &["Red", "Red", "Green", "green"], &["Red", "RED", "Blue"]), ["Red", "Blue", "Green"]);
+        assert_eq!(merged(&[], &[], &[]), Vec::<String>::new());
+    }
+
+    /// R3.3: the queue of copies and deletes for good, and a message being moved out of the
+    /// account, are kept in the mailbox file; a file from before opens as it was.
+    #[test]
+    fn changes_up_read_from_older_files_and_round_trip() {
+        let old: Message = serde_json::from_str(r#"{"id": 4, "subject": "Hi", "server": {"id": "AAkA", "folder": "F1"}}"#).unwrap();
+        assert!(old.moving_out.is_none() && !old.incomplete);
+        // Something else in its place (a later version's): the message still opens.
+        let odd: Message = serde_json::from_str(r#"{"id": 4, "movingOut": 7, "incomplete": true}"#).unwrap();
+        assert!(odd.moving_out.is_none() && odd.incomplete);
+
+        let mut m = old.clone();
+        m.moving_out = Some(MovingOut { account: 2, id: "AAkA".into() });
+        m.incomplete = true;
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains(r#""movingOut":{"account":2,"id":"AAkA"}"#) && json.contains(r#""incomplete":true"#), "{json}");
+        assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), m);
+        assert!(!serde_json::to_string(&old).unwrap().contains("movingOut"));
+
+        // A mailbox of 0.4.0 (folder deletes only, or no queue at all) opens as it was.
+        let before = r#"{"version": 1, "queued": [{"deleteFolder": {"account": 1, "id": "F9"}}]}"#;
+        let mb: crate::Mailbox = serde_json::from_str(before).unwrap();
+        assert_eq!(mb.queued, [crate::Queued::DeleteFolder { account: 1, id: "F9".into() }]);
+        let mb: crate::Mailbox = serde_json::from_str(r#"{"version": 1}"#).unwrap();
+        assert!(mb.queued.is_empty());
+        // A kind of change from a later version is left out; the rest is kept.
+        let later = r#"{"version": 1, "queued": [{"somethingNew": {"x": 1}}, {"deleteMessage": {"account": 1, "id": "AAkB"}}]}"#;
+        let mb: crate::Mailbox = serde_json::from_str(later).unwrap();
+        assert_eq!(mb.queued, [crate::Queued::DeleteMessage { account: 1, id: "AAkB".into(), kept: None }]);
+
+        let mut mb = crate::Mailbox::default();
+        mb.queued = vec![
+            crate::Queued::CopyMessage { account: 1, id: "AAkA".into(), to: "F2".into(), copy: 12, marker: "mc-0f3a".into() },
+            crate::Queued::DeleteMessage { account: 1, id: "AAkB".into(), kept: None },
+        ];
+        let json = serde_json::to_string(&mb).unwrap();
+        assert!(json.contains(r#"{"copyMessage":{"account":1,"id":"AAkA","to":"F2","copy":12,"marker":"mc-0f3a"}}"#), "{json}");
+        assert_eq!(serde_json::from_str::<crate::Mailbox>(&json).unwrap().queued, mb.queued);
+        assert!(mb.queued.iter().all(|q| q.account() == 1));
+    }
+
     #[test]
     fn the_password_never_shows() {
         let req = SyncRequest {
@@ -866,6 +1172,11 @@ mod tests {
         let shown = format!("{tokens:?}");
         assert!(!shown.contains("tok-en-123") && !shown.contains("re-fresh-456"));
         assert!(tokens.fresh(900) && !tokens.fresh(950) && !Tokens::default().fresh(0));
+        // (#103) Who signed in, against the account.
+        let ada = Tokens { email: " Ada@Example.org ".into(), ..Default::default() };
+        assert!(!ada.someone_else("ada@example.org", "") && !ada.someone_else("ada.alias@example.org", "ADA@example.org"));
+        assert!(ada.someone_else("admin@example.org", "") && ada.someone_else("admin@example.org", "admin@example.org"));
+        assert!(ada.someone_else("", "") && !Tokens::default().someone_else("admin@example.org", ""));
     }
 
     #[test]

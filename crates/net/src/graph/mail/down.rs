@@ -35,10 +35,10 @@ use crate::NetError;
 use crate::http::{self, Url};
 
 /// What is asked for of each message: what the message list needs (R3 spec S9).
-const FIELDS: &str = "receivedDateTime,sentDateTime,subject,from,toRecipients,ccRecipients,bodyPreview,isRead,flag,categories,importance,parentFolderId,internetMessageId,hasAttachments";
+pub(super) const FIELDS: &str = "receivedDateTime,sentDateTime,subject,from,toRecipients,ccRecipients,bodyPreview,isRead,flag,categories,importance,parentFolderId,internetMessageId,hasAttachments,isDraft,changeKey";
 /// A message's size on the server (`PidTagMessageSize`), which Graph gives only as an extended
 /// property: what "Download messages in full" is held against.
-const SIZE: &str = "singleValueExtendedProperties($filter=id eq 'Integer 0x0E08')";
+pub(super) const SIZE: &str = "singleValueExtendedProperties($filter=id eq 'Integer 0x0E08')";
 /// Messages to a page.
 const PAGE_SIZE: &str = "odata.maxpagesize=100";
 /// Most pages of one folder in one run (a million messages): a server that never ends a round
@@ -288,6 +288,21 @@ fn people(value: &Value, name: &str) -> Vec<Address> {
     value.get(name).and_then(Value::as_array).map(|all| all.iter().take(MAX_PEOPLE).filter_map(address_of).collect()).unwrap_or_default()
 }
 
+/// A date of a message's follow-up flag (`{"dateTime", "timeZone"}`), when it has one.
+fn flag_date(value: &Value, name: &str) -> Option<mailcraft_time::Timestamp> {
+    super::super::when(value.get("flag")?.get(name).filter(|date| !date.is_null()))
+}
+
+/// A message as `GET /me/messages/{id}` gives it (asked for with [`FIELDS`] and [`SIZE`]), in
+/// the folder it names.
+pub(super) fn message_of(value: &Value) -> Option<GraphMessage> {
+    let folder = id_of(text(value, "parentFolderId"))?;
+    match entry_of(value, &folder)? {
+        Entry::Message(message) => Some(*message),
+        Entry::Removed(_) => None,
+    }
+}
+
 /// A message of a page, or the id of one the server says left the folder.
 fn entry_of(value: &Value, folder: &str) -> Option<Entry> {
     let id = id_of(text(value, "id"))?;
@@ -320,6 +335,14 @@ fn entry_of(value: &Value, folder: &str) -> Option<Entry> {
         importance,
         gone: false,
         size: size_of(value),
+        flag_start: flag_date(value, "startDateTime"),
+        flag_due: flag_date(value, "dueDateTime"),
+        flag_completed: flag_date(value, "completedDateTime"),
+        // Visible ASCII, as Graph writes a change key; anything else is none.
+        change_key: Some(text(value, "changeKey"))
+            .filter(|key| key.len() <= 512 && key.bytes().all(|b| b.is_ascii_graphic()))
+            .map(str::to_string)
+            .unwrap_or_default(),
     };
     Some(Entry::Message(Box::new(GraphMessage {
         server,
@@ -332,5 +355,6 @@ fn entry_of(value: &Value, folder: &str) -> Option<Entry> {
         received,
         preview: capped(value, "bodyPreview", MAX_PREVIEW),
         has_attachments: value.get("hasAttachments").and_then(Value::as_bool).unwrap_or(false),
+        draft: value.get("isDraft").and_then(Value::as_bool).unwrap_or(false),
     })))
 }

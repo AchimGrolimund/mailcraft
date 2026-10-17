@@ -1,10 +1,13 @@
-**What's new in 0.4.0** (an alpha for testers; sign up in [#11](https://github.com/GITHUB_REPOSITORY/issues/11)):
-- Rich signatures with a logo, in File › Signatures: one for new messages and one for replies and forwards per account, with pictures, fonts and colour; make one from your name, title, phone, email and website (the links work), and see it as recipients will before you send.
-- Font and font colour in messages you write, beside bold, italic, sizes and lists.
-- Copy Diagnostics, in Help and as a button in the title bar: the version, the system and a record of what the program did, with no message, address, password or token in it, ready to paste into a problem report. Nothing is sent.
-- Fixed: you could no longer type in a message after switching to another window and back (#60), nor, we expect, after forwarding one (#61); a message's text now fills the reading pane (#47); some web servers refused to send a message's pictures (#46); a message deleted on another device no longer counts as new mail; when Google refuses a password, MailCraft says an app password is needed (#44).
-- The project now lives at [UCS-Care-Group/mailcraft](https://github.com/UCS-Care-Group/mailcraft).
-- Known: Microsoft accounts still use IMAP; the move to Microsoft Graph is in progress. A mailbox opened in 0.4.0 may lose its signatures if opened again in 0.3.0.
+**What's new in 0.4.3** (an alpha for testers; sign up in [#11](https://github.com/GITHUB_REPOSITORY/issues/11)):
+- Microsoft 365 and Outlook.com accounts move from IMAP to Microsoft Graph. An account set up with an earlier version is offered the switch once (Switch, Later): what waits to be sent goes first, the mailbox is backed up beside its file, and the mail comes down again through Graph with folders kept. New Microsoft accounts use Graph from the start.
+- Signing in as someone else is no longer taken silently. If Microsoft's page signs in a different account than the address typed, Add Account asks: sign in again, or set up the account that signed in. An existing account refuses a sign-in that isn't its own and says so.
+- Told when a new version is out, if you want it: MailCraft asks once whether to check GitHub daily (off until you say yes; nothing about you or your mail is sent), and File › About has Check for Updates. Nothing is downloaded or installed.
+- Reply All: a long To line can be clicked at its end again (the Bcc link sat over it), so addresses there can be deleted and the message body takes typing afterwards.
+- The flag and delete buttons on a message in the list are bigger and further apart, and the attachment mark keeps clear of them.
+- Send/Receive no longer stops with "AccessTokenExpired" on a Microsoft account: the sign-in is renewed before it would run out mid-run.
+- Preferences (`ui.json`) are saved whole even if MailCraft is stopped mid-save, and a damaged file is set aside as `ui.json.damaged` instead of being overwritten.
+- macOS: quitting no longer risks a crash in the system's Touch Bar code; MailCraft quits through the system, asking first about a message being written.
+- Release pipeline hardening: every file now comes with a build provenance attestation (`gh attestation verify <file> -R GITHUB_REPOSITORY`).
 
 **Early alpha.** The foundations are in place and tested, but much of what a daily mail program needs is not there yet, and most of the Microsoft 365 behaviour has only been tested against stand-ins. What works is in the [README](https://github.com/GITHUB_REPOSITORY#what-works-today).
 

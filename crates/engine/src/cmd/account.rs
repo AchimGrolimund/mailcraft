@@ -34,11 +34,7 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-/// Why `account.add` won't make an account kept in step through Microsoft Graph.
-pub const GRAPH_MAIL_OFF: &str =
-    "Microsoft accounts kept in step through Microsoft Graph are being tested: start MailCraft with MAILCRAFT_GRAPH_MAIL=1 to add one";
-
-const ACCOUNT: &str = r#"{"email": string, "displayName"?: string, "name"?: string, "username"?: string, "incoming"?: {"host": string, "port"?: number, "security"?: "tls"|"starttls"|"none"} | null, "outgoing"?: same | null, "auth"?: "password"|"oauth2" (oauth2: sign in on the provider's page), "provider"?: "microsoft", "clientId"?: string, "tenant"?: string, "directory"?: "organisation"|"personal" (which kind of Microsoft account signs in, when the sign-in said), "kind"?: "imap"|"local"|"microsoft" (microsoft: kept in step through Microsoft Graph, no mail servers; only while MAILCRAFT_GRAPH_MAIL=1 is set)}"#;
+const ACCOUNT: &str = r#"{"email": string, "displayName"?: string, "name"?: string, "username"?: string, "incoming"?: {"host": string, "port"?: number, "security"?: "tls"|"starttls"|"none"} | null, "outgoing"?: same | null, "auth"?: "password"|"oauth2" (oauth2: sign in on the provider's page), "provider"?: "microsoft", "clientId"?: string, "tenant"?: string, "directory"?: "organisation"|"personal" (which kind of Microsoft account signs in, when the sign-in said), "kind"?: "imap"|"local"|"microsoft" (microsoft: kept in step through Microsoft Graph, no mail servers)}"#;
 
 fn has_server(s: &Session) -> Option<&'static str> {
     if s.mailbox.accounts.iter().any(|a| a.kind.has_server()) {
@@ -174,7 +170,7 @@ fn preset(_: &mut Session, v: &Value) -> CmdResult {
     }))
 }
 
-fn apply_fields(a: &mut Account, v: &Value, graph_mail: bool) -> Result<(), CmdError> {
+fn apply_fields(a: &mut Account, v: &Value) -> Result<(), CmdError> {
     let line = |k: &str| p::str(v, k).map(|t| t.replace(['\r', '\n'], " ").trim().chars().take(254).collect::<String>());
     if let Some(e) = line("email") {
         a.email = e;
@@ -200,16 +196,11 @@ fn apply_fields(a: &mut Account, v: &Value, graph_mail: bool) -> Result<(), CmdE
         a.download_in_full =
             serde_json::from_value(json!(limit.trim())).map_err(|_| bad("`downloadInFull` is upTo10Mb, upTo25Mb, upTo50Mb or everything"))?;
     }
-    // A Microsoft account kept in step through Graph (R3): asked for by name, and only while the
-    // switch for testing is on; one that is that already stays it.
+    // A Microsoft account kept in step through Graph (R3): asked for by name; one that is that
+    // already stays it. (One kept in step by IMAP becomes one by switching: `account.graphSwitch`.)
     let microsoft = match p::str(v, "kind").map(|k| k.trim().to_ascii_lowercase()) {
         None => a.kind == AccountKind::Microsoft,
-        Some(k) if k == "microsoft" || k == "graph" => {
-            if !graph_mail && a.kind != AccountKind::Microsoft {
-                return Err(fail(GRAPH_MAIL_OFF));
-            }
-            true
-        }
+        Some(k) if k == "microsoft" || k == "graph" => true,
         Some(k) if k == "imap" || k == "local" => false,
         Some(_) => return Err(bad("`kind` is imap, local or microsoft")),
     };
@@ -233,7 +224,7 @@ fn apply_fields(a: &mut Account, v: &Value, graph_mail: bool) -> Result<(), CmdE
 
 fn add(s: &mut Session, v: &Value) -> CmdResult {
     let mut a = Account::default();
-    apply_fields(&mut a, v, s.graph_mail)?;
+    apply_fields(&mut a, v)?;
     if s.mailbox.accounts.iter().any(|x| x.email.eq_ignore_ascii_case(&a.email)) {
         return Err(fail(format!("{} is already set up", a.email)));
     }
@@ -259,7 +250,7 @@ fn edit(s: &mut Session, v: &Value) -> CmdResult {
     let id = p::req_id(v, "id")?;
     let mut a = s.mailbox.account(id).cloned().ok_or_else(|| fail(format!("no account with id {id}")))?;
     let before = a.clone();
-    apply_fields(&mut a, v, s.graph_mail)?;
+    apply_fields(&mut a, v)?;
     // A shared mailbox is its address, read with its owner's sign-in (#70): another address
     // would be another mailbox under the same folders' ids.
     if before.is_shared() {

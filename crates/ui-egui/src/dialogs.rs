@@ -71,10 +71,24 @@ pub enum Dialog {
         params: Value,
         ask: Question,
     },
-    About,
+    /// About MailCraft, on one of its tabs: [`AboutTab`].
+    About(AboutTab),
+    /// The page that offers a Microsoft account kept in step by IMAP the switch to Microsoft
+    /// Graph ([`crate::graph_switch`]).
+    GraphSwitch {
+        account: Id,
+    },
     Form(Form),
     /// Propose New Time, Forward, or the list of what was proposed ([`crate::meeting_dialogs`]).
     Meeting(crate::meeting_dialogs::MeetingDialog),
+}
+
+/// The tabs of About: the program, and the people who made it ([`crate::credits`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AboutTab {
+    #[default]
+    About,
+    Contributors,
 }
 
 /// What a [`Dialog::Confirm`] asks.
@@ -125,7 +139,9 @@ impl Dialog {
             Dialog::DiscardDraft { .. } => "discardDraft",
             Dialog::Confirm { .. } => "confirm",
             Dialog::Report { name, .. } => name,
-            Dialog::About => "about",
+            Dialog::About(AboutTab::About) => "about",
+            Dialog::About(AboutTab::Contributors) => "contributors",
+            Dialog::GraphSwitch { .. } => "graphSwitch",
             Dialog::Form(f) => f.name(),
             Dialog::Meeting(d) => d.name(),
         }
@@ -171,7 +187,9 @@ impl Dialog {
             }
             "password" => Dialog::Password { account: id("account")?, password: String::new() },
             "discardDraft" => Dialog::DiscardDraft { then: params.get("then").and_then(Value::as_str).unwrap_or("").to_string() },
-            "about" => Dialog::About,
+            "about" if params.get("tab").and_then(Value::as_str) == Some("contributors") => Dialog::About(AboutTab::Contributors),
+            "about" => Dialog::About(AboutTab::About),
+            "contributors" => Dialog::About(AboutTab::Contributors),
             "syncProblems" => {
                 let lines = app.sync_problem_lines();
                 if lines.is_empty() {
@@ -1063,8 +1081,27 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
                 }
             }
         }
-        Dialog::About => {
-            let open = window(ctx, tl!("About MailCraft"), 420.0, |ui| {
+        Dialog::About(tab) => {
+            let width = if *tab == AboutTab::Contributors { 720.0 } else { 420.0 };
+            let open = window(ctx, tl!("About MailCraft"), width, |ui| {
+                ui.horizontal(|ui| {
+                    for (which, label) in [(AboutTab::About, "About"), (AboutTab::Contributors, "Contributors")] {
+                        if ui.selectable_label(*tab == which, tl!(label)).clicked() {
+                            *tab = which;
+                        }
+                    }
+                });
+                ui.separator();
+                if *tab == AboutTab::Contributors {
+                    crate::credits::contributors_ui(ui, &t);
+                    ui.add_space(4.0);
+                    button_row(ui, |ui| {
+                        if primary_button(ui, tl!("Close"), true).clicked() || enter {
+                            close = true;
+                        }
+                    });
+                    return;
+                }
                 ui.label(egui::RichText::new("MailCraft").font(semibold(20.0)).color(t.accent_text));
                 ui.label(
                     egui::RichText::new(crate::i18n::fmt(tl!("Version {version}"), &[("version", env!("CARGO_PKG_VERSION"))])).color(t.text_dim),
@@ -1081,13 +1118,18 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
                     .color(t.text_dim),
                 );
                 ui.add_space(4.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                button_row(ui, |ui| {
                     if primary_button(ui, tl!("Close"), true).clicked() || enter {
                         close = true;
                     }
                 });
             });
             close |= !open;
+        }
+        Dialog::GraphSwitch { account } => {
+            let account = *account;
+            // (Escape doesn't answer it: closed with its close button, it is asked again next time.)
+            close = crate::graph_switch::show(app, ctx, account);
         }
         Dialog::Form(form) => {
             let title = form.title();
@@ -1110,6 +1152,8 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
     if let Some(Dialog::Commands { query: id, selected: usize::MAX }) = reopen {
         let id = match id.as_str() {
             "sync.request" => "ui.sync".to_string(),
+            // Asked on its page, which says what the switch does.
+            "account.graphSwitch" => "ui.graphSwitch".to_string(),
             _ => id,
         };
         let _ = app.run(&id, json!({}));
