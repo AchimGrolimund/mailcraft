@@ -682,7 +682,9 @@ fn send(s: &mut Session, _: &Value) -> CmdResult {
 
 fn save_draft(s: &mut Session, _: &Value) -> CmdResult {
     let c = s.compose.clone().ok_or_else(|| fail("no message is being written"))?;
-    let old = c.draft.and_then(|d| s.mailbox.message(d).cloned());
+    // Whole, so that what the server had of it is worked out from its real content (R6.1); as it
+    // is when that can't be read.
+    let old = c.draft.and_then(|d| s.loaded_message(d).ok().map(|m| Message::clone(&m)).or_else(|| s.mailbox.message(d).cloned()));
     let mut m = build_as(s, &c, false, old.as_ref().map(|o| o.message_id.as_str()).filter(|id| !id.is_empty()))?;
     m.draft = true;
     m.folder = s.mailbox.folder_of_kind(m.account, FolderKind::Drafts).ok_or_else(|| fail("this account has no Drafts folder"))?;

@@ -22,15 +22,25 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-/// What `account` has waiting to be sent: every message of its Outbox that isn't held.
-pub fn sends(mb: &Mailbox, account: Id) -> Vec<SendUp> {
+/// What `account` has waiting to be sent: every message of its Outbox that isn't held, whole.
+/// What a message keeps on disk is read for it (R6.1); one whose content can't be read waits in
+/// the Outbox for the next run, with a line in the log, rather than going without its files.
+pub fn sends(s: &Session, account: Id) -> Vec<SendUp> {
+    let mb = &s.mailbox;
     let Some(outbox) = mb.folder_of_kind(account, FolderKind::Outbox) else { return Vec::new() };
-    let mut waiting: Vec<_> = mb.messages_in(outbox).filter(|m| m.held.is_empty()).collect();
-    waiting.sort_by_key(|m| m.id);
+    let mut waiting: Vec<_> = mb.messages_in(outbox).filter(|m| m.held.is_empty()).map(|m| m.id).collect();
+    waiting.sort_unstable();
     waiting
         .into_iter()
         .take(MAX_SENDS)
-        .map(|m| match m.server_draft.as_ref().and(super::graph_drafts::draft_up(m)) {
+        .filter_map(|id| match s.loaded_message(id) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                log::warn!("message {id} stays in the Outbox this time: {e}");
+                None
+            }
+        })
+        .map(|m| match m.server_draft.as_ref().and(super::graph_drafts::draft_up(&m)) {
             // Sent as it is here: whatever was changed on the server meanwhile is the owner's to lose.
             Some(draft) => SendUp { message: m.id, draft: Some(mailcraft_model::sync::DraftUp { change_key: String::new(), ..draft }), mime: None },
             None => SendUp { message: m.id, draft: None, mime: Some(Box::new(m.as_ref().clone())) },

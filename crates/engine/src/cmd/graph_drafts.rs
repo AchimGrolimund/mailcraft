@@ -25,7 +25,20 @@ pub fn draft_changes(s: &Session, account: Id, limit: usize) -> (Vec<DraftUp>, u
         .collect();
     waiting.sort_by_key(|m| m.id);
     let count = waiting.len();
-    (waiting.into_iter().take(limit).filter_map(draft_up).collect(), count)
+    // Compared and sent whole: a draft's body and files kept on disk (R6.1) are read for it, so
+    // that it neither looks changed nor goes up empty. One that can't be read waits for the next run.
+    let ups = waiting
+        .into_iter()
+        .take(limit)
+        .filter_map(|m| match s.loaded_message(m.id) {
+            Ok(m) => draft_up(&m),
+            Err(e) => {
+                log::warn!("draft {} waits to go up: {e}", m.id);
+                None
+            }
+        })
+        .collect();
+    (ups, count)
 }
 
 /// How many drafts of `account` wait to go up (cheap: nothing is compared).

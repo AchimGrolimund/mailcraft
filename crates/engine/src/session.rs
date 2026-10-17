@@ -579,9 +579,13 @@ pub struct Session {
     /// (its Undo step, and what a failed command goes back to) has them as they are now. Bringing
     /// content in is not a change to the mailbox.
     swaps: Option<Vec<Swap>>,
-    /// While a search brings bodies in: the query, and whether each message whose body was let
-    /// go of during it matched it ([`Session::load_bodies_for_search`]).
+    /// Since a search that reads bodies brought them in: the query, and whether each message
+    /// whose body was let go of since matched it ([`Session::load_bodies_for_search`]). Kept
+    /// while the list stays as it was searched (`searched_for`), so that a result opened, whose
+    /// body comes in, doesn't search everything again.
     search_pass: Option<(mailcraft_model::search::Query, std::collections::HashMap<Id, bool>)>,
+    /// What the list was when `search_pass` was made: its key without the loads.
+    searched_for: Option<String>,
 }
 
 /// Message `id` was `old` and is `new`, the same message with more or less of it in memory.
@@ -631,6 +635,7 @@ impl Session {
             display_failed: std::collections::HashSet::new(),
             swaps: None,
             search_pass: None,
+            searched_for: None,
         };
         s.view.date = s.today();
         s.normalize();
@@ -778,13 +783,24 @@ impl Session {
     /// as [`Session::search_time`] allows; what it didn't get to is counted in
     /// [`Session::unsearched`].
     pub fn rows(&mut self) -> Arc<Vec<Row>> {
-        let key = |s: &Session| format!("{}|{}|{}|{}", s.rev, s.loads, s.today().to_days(), serde_json::to_string(&s.view).unwrap_or_default());
+        let list = |s: &Session| format!("{}|{}|{}", s.rev, s.today().to_days(), serde_json::to_string(&s.view).unwrap_or_default());
+        let key = |s: &Session| format!("{}|{}", s.loads, list(s));
         if let Some((k, rows)) = &self.list_cache
             && *k == key(self)
         {
             return rows.clone();
         }
-        let searched = self.load_bodies_for_search();
+        let list_now = list(self);
+        let searched = match &self.search_pass {
+            // Only content came in or went since this list was searched (a result opened): what
+            // was found stands, and nothing is brought in for it again.
+            Some((_, hits)) if self.searched_for.as_deref() == Some(list_now.as_str()) => hits.clone(),
+            _ => {
+                let hits = self.load_bodies_for_search();
+                self.searched_for = self.search_pass.is_some().then_some(list_now);
+                hits
+            }
+        };
         let key = key(self);
         let rows = Arc::new(crate::list::rows_with(self, &searched));
         self.list_cache = Some((key, rows.clone()));
@@ -1089,6 +1105,7 @@ impl Session {
     /// (for [`crate::list::rows_with`]).
     fn load_bodies_for_search(&mut self) -> std::collections::HashMap<Id, bool> {
         self.unsearched = 0;
+        self.search_pass = None;
         let query = mailcraft_model::search::Query::parse(&self.view.search);
         if query.is_empty() || !query.reads_bodies() {
             return Default::default();
@@ -1130,7 +1147,7 @@ impl Session {
             out
         };
         let mut left = wanted.len();
-        let outer = self.search_pass.replace((query, Default::default()));
+        self.search_pass = Some((query, Default::default()));
         for (_, id) in wanted {
             if out_of_time() {
                 break;
@@ -1140,7 +1157,8 @@ impl Session {
             left = left.saturating_sub(1);
         }
         self.unsearched = left;
-        std::mem::replace(&mut self.search_pass, outer).map(|(_, hits)| hits).unwrap_or_default()
+        // Kept: what is let go of until the list changes is matched before it goes, too.
+        self.search_pass.as_ref().map(|(_, hits)| hits.clone()).unwrap_or_default()
     }
 
     /// Keep the view and the selection pointing at things that exist.
@@ -1200,6 +1218,8 @@ impl Session {
         self.resident.clear();
         self.resident_bytes = 0;
         self.display_failed.clear();
+        self.search_pass = None;
+        self.searched_for = None;
         self.saved_whole.clear();
         self.history.clear();
         self.redo.clear();

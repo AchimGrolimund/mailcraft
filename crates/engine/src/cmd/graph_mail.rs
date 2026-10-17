@@ -72,7 +72,7 @@ pub fn graph_mail_request(s: &Session, account: Id) -> Result<GraphMailRequest, 
         background: false,
         messages: graph_up::message_changes(s, account, MAX_MESSAGE_CHANGES).0,
         drafts: super::graph_drafts::draft_changes(s, account, MAX_DRAFTS).0,
-        sends: super::graph_send::sends(&s.mailbox, account),
+        sends: super::graph_send::sends(s, account),
     })
 }
 

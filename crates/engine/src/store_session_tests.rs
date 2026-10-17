@@ -256,3 +256,107 @@ fn a_reply_reads_the_text_and_its_pictures_and_a_calendar_part_too_large_is_not_
     let large = (crate::session::MAX_CALENDAR_PART + 1) as u64;
     assert!(!noting.asked.lock().unwrap().contains(&large));
 }
+
+#[test]
+fn a_result_opened_during_a_search_that_reads_bodies_does_not_search_again() {
+    let tmp = Temp::new("search-open");
+    let path = tmp.file();
+    let mut mb = mailbox(24);
+    let ids: Vec<Id> = mb.messages.keys().copied().collect();
+    for id in ids {
+        let m = mb.message_mut(id).unwrap();
+        if m.body.text.len() > INLINE_MAX {
+            m.body.text.push_str("A word: zymurgy.\n");
+        }
+    }
+    save(&path, &mb).unwrap();
+    clear_cache();
+    let mut s = session_without_bodies(&path);
+    let noting = Arc::new(Noting { asked: Mutex::new(Vec::new()) });
+    s.content_source = Some(noting.clone());
+    s.loaded_budget = mb.messages.values().map(|m| body_outside(m)).max().unwrap();
+    s.view.search = "zymurgy".into();
+    let rows = s.rows();
+    assert_eq!((rows.len(), s.unsearched), (16, 0));
+    // A result whose body went back to disk is opened: its body comes in, and only it.
+    let opened = rows.iter().map(|r| r.id).find(|id| s.mailbox.message(*id).unwrap().body_is_kept()).unwrap();
+    s.sel.messages = vec![opened];
+    noting.asked.lock().unwrap().clear();
+    assert_eq!(s.load_for_display(opened), Ok(true));
+    assert!(!noting.asked.lock().unwrap().is_empty());
+    noting.asked.lock().unwrap().clear();
+    // The list is built again (the load is seen) without bringing anything in, and still finds all.
+    let again = s.rows();
+    assert!(noting.asked.lock().unwrap().is_empty(), "searched again: {:?}", noting.asked.lock().unwrap());
+    assert_eq!((again.len(), s.unsearched), (16, 0));
+    // A different search does read again.
+    s.view.search = "zymurgy ".into();
+    assert_eq!(s.rows().len(), 16);
+    assert!(!noting.asked.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_pending_draft_and_an_outbox_message_reopened_from_disk_go_up_with_their_real_content() {
+    use mailcraft_model::FolderKind;
+    use mailcraft_model::sync::{DraftState, ServerDraft};
+    let tmp = Temp::new("graph-up-whole");
+    let path = tmp.file();
+    let mut s = Session::at(Mailbox::with_local_account("", ""), 1_800_000_000, 0);
+    let account = s.run("account.add", &json!({"email": "avery@mail.example", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
+    let drafts = s.mailbox.folder_of_kind(account, FolderKind::Drafts).unwrap();
+    let outbox = s.mailbox.folder_of_kind(account, FolderKind::Outbox).unwrap();
+    let file = noise(41, 9_001);
+    let text = long_text(5);
+    let message = |folder: Id, subject: &str| {
+        let mut m =
+            Message { account, folder, draft: true, subject: subject.into(), to: vec![Address::new("Kit", "kit@example.org")], ..Default::default() };
+        m.body.text = text.clone();
+        m.attachments.push(Attachment::new("plan.bin", "application/octet-stream", file.clone()));
+        m
+    };
+    // Never up yet: everything goes. Up before, then retitled: only the subject goes.
+    let mut fresh = message(drafts, "Fresh");
+    fresh.server_draft = Some(ServerDraft { marker: "mailcraft-draft-a".into(), pending: true, saves: 1, ..Default::default() });
+    let mut retitled = message(drafts, "Before");
+    retitled.server = Some(mailcraft_model::sync::ServerMessage { id: "AAkA-retitled".into(), ..Default::default() });
+    retitled.server_draft = Some(ServerDraft {
+        marker: "mailcraft-draft-b".into(),
+        synced: Some(DraftState::of(&retitled)),
+        pending: true,
+        saves: 2,
+        ..Default::default()
+    });
+    retitled.subject = "After".into();
+    let mut sending = message(outbox, "Going");
+    sending.draft = false;
+    let fresh = s.mailbox.add_message(fresh).unwrap();
+    let retitled = s.mailbox.add_message(retitled).unwrap();
+    let sending = s.mailbox.add_message(sending).unwrap();
+    save(&path, &s.mailbox).unwrap();
+    clear_cache();
+    // After a restart, their bodies and files are on disk.
+    let s = session_without_bodies(&path);
+    for id in [fresh, retitled, sending] {
+        let m = s.mailbox.message(id).unwrap();
+        assert!(m.attachments.iter().all(|a| !a.is_loaded()), "kept on disk");
+    }
+    let req = crate::cmd::graph_mail::graph_mail_request(&s, account).unwrap();
+    let up = |id: Id| req.drafts.iter().find(|d| d.message == id).unwrap();
+    let whole = up(fresh);
+    assert!(whole.body.as_ref().unwrap().content.contains(text.lines().next().unwrap()));
+    let here = &whole.attachments.as_ref().unwrap().here;
+    assert_eq!((here.len(), here[0].data.as_slice(), here[0].size), (1, file.as_slice(), file.len() as u64));
+    let changed = up(retitled);
+    assert_eq!(changed.subject.as_deref(), Some("After"));
+    assert!(changed.body.is_none() && changed.attachments.is_none(), "nothing else looks changed");
+    let send = req.sends.iter().find(|u| u.message == sending).unwrap();
+    let mime = send.mime.as_ref().unwrap();
+    assert_eq!((mime.body.text.as_str(), mime.attachments[0].data.as_slice()), (text.as_str(), file.as_slice()));
+    // Reading them changed nothing in the mailbox.
+    assert!(!s.dirty);
+    // A file gone from disk: that one isn't sent or sent up empty, it waits.
+    fs::remove_file(blob_file(&path, &file)).unwrap();
+    clear_cache();
+    let req = crate::cmd::graph_mail::graph_mail_request(&s, account).unwrap();
+    assert!(req.sends.is_empty() && req.drafts.is_empty(), "{:?} {:?}", req.sends.len(), req.drafts.len());
+}
