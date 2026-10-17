@@ -10,7 +10,9 @@ use crate::{Account, Address, FlagStatus, FolderKind, Id, Importance, Message};
 use mailcraft_time::Timestamp;
 
 mod drafts;
+mod progress;
 pub use drafts::*;
+pub use progress::*;
 
 /// A folder as the mailbox knows it, for the server side to continue from.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -519,6 +521,10 @@ pub struct SyncResult {
     /// in the last piece, whose summary says how it went.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub progress: String,
+    /// The same as numbers (what `progress` is made of): which step, which folder, how many of
+    /// how many. None in the last piece, and from a host that only says the line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<SyncStep>,
     /// The run was called off before it had done all there was to do (in the last piece).
     #[serde(skip_serializing_if = "is_false")]
     pub stopped: bool,
@@ -550,7 +556,7 @@ impl SyncResult {
     /// comes together under its name, its new messages in the order they came.
     pub fn absorb(&mut self, later: SyncResult) {
         (self.account, self.email) = (later.account, later.email);
-        (self.partial, self.progress, self.stopped) = (later.partial, later.progress, later.stopped);
+        (self.partial, self.progress, self.step, self.stopped) = (later.partial, later.progress, later.step, later.stopped);
         if !later.listed.is_empty() {
             self.listed = later.listed;
         }

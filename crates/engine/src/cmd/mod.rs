@@ -29,6 +29,7 @@ pub mod rules;
 pub mod signature;
 #[cfg(test)]
 mod signature_tests;
+pub mod sync_progress;
 pub mod tasks;
 pub mod view;
 #[cfg(test)]
@@ -65,6 +66,7 @@ pub fn registry() -> Registry {
     v.extend(graph_switch::specs());
     v.extend(graph_send::specs());
     v.extend(remote::specs());
+    v.extend(sync_progress::specs());
     Registry::new(v)
 }
 

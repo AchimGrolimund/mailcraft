@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use mailcraft_model::sync::{Created, Deleted, FlagsPushed, FolderState, Moved, RemoteFlags, RemoteOp, SyncRequest, SyncResult};
+use mailcraft_model::sync::{
+    Created, Deleted, FlagsPushed, FolderState, Moved, RemoteFlags, RemoteOp, SyncPhase, SyncRequest, SyncResult, SyncStage,
+};
 use mailcraft_model::{Account, AccountKind, Address, FlagStatus, FolderKind, Id, Message, OAuth, Security, Server};
 use mailcraft_proto::ProtoError;
 
@@ -1570,9 +1572,13 @@ fn a_mailbox_arrives_in_pieces_the_inbox_first() {
     let all = pieces(&asked, batches_of(50));
     // Every piece but the last says that more is to come, and how far the run has got.
     let (last, before) = all.split_last().unwrap();
-    assert!(!last.partial && last.progress.is_empty() && !last.stopped);
+    assert!(!last.partial && last.progress.is_empty() && !last.stopped && last.step.is_none());
     assert!(before.iter().all(|piece| piece.partial && !piece.stopped));
     assert!(all.iter().all(|piece| piece.errors.is_empty() && piece.account == 7 && piece.email == "ada@example.org"));
+    // The line is made of the numbers that come with it (#120).
+    assert!(before.iter().all(|piece| piece.step.as_ref().is_some_and(|step| step.line() == piece.progress)));
+    let reading = before.iter().filter_map(|piece| piece.step.as_ref()).find(|step| step.stage == SyncStage::Reading).unwrap();
+    assert_eq!((reading.folder.as_str(), reading.done, reading.total, reading.stage.phase()), ("Inbox", 50, 230, SyncPhase::NewMail));
     assert_eq!(
         before.iter().map(|piece| piece.progress.as_str()).collect::<Vec<_>>(),
         [

@@ -36,6 +36,8 @@ const CONTENT: &[&str] = &[
     "compose.suggest",
     "edit.copy",
     "edit.cut",
+    // Send/Receive problems may name a message by its subject.
+    "sync.progress",
 ];
 
 /// The fields of those answers that hold such text.
@@ -62,6 +64,7 @@ const TEXT_KEYS: &[&str] = &[
     "html",
     "email",
     "attendees",
+    "problems",
 ];
 
 fn wrap_text(t: &str) -> String {

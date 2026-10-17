@@ -267,6 +267,8 @@ const SAFE: &[&str] = &[
     "category.list",
     "account.list",
     "account.preset",
+    // What Send/Receive is doing, or did: read only.
+    "sync.progress",
     // The window's own.
     "ui.tab",
     "ui.backstage",
