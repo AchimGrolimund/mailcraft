@@ -24,7 +24,9 @@ use mailcraft_model::{Body, Id, Mailbox, Message};
 /// otherwise means a walk through every message of the mailbox.
 #[derive(Debug, Default)]
 pub struct ServerIndex {
-    ids: HashMap<String, Id>,
+    /// By account and server id: each mailbox names its messages by itself, so two mailboxes
+    /// (an account and a shared mailbox opened through it) may use the same id for two messages.
+    ids: HashMap<(Id, String), Id>,
     /// How many messages the mailbox had when this was last right: anything else that added or
     /// removed one makes it walk again.
     count: usize,
@@ -32,7 +34,7 @@ pub struct ServerIndex {
 
 impl ServerIndex {
     fn rebuild(&mut self, mb: &Mailbox) {
-        self.ids = mb.messages.values().filter_map(|m| m.server.as_ref().map(|s| (s.id.clone(), m.id))).collect();
+        self.ids = mb.messages.values().filter_map(|m| m.server.as_ref().map(|s| ((m.account, s.id.clone()), m.id))).collect();
         self.count = mb.messages.len();
     }
 
@@ -42,19 +44,20 @@ impl ServerIndex {
         if self.count != mb.messages.len() {
             self.rebuild(mb);
         }
-        match self.ids.get(id).copied() {
+        let key = (account, id.to_string());
+        match self.ids.get(&key).copied() {
             Some(m) if is(m) => Some(m),
             // Out of date (a message was changed by other means): look again, once.
             Some(_) => {
                 self.rebuild(mb);
-                self.ids.get(id).copied().filter(|m| is(*m))
+                self.ids.get(&key).copied().filter(|m| is(*m))
             }
             None => None,
         }
     }
 
-    fn note(&mut self, mb: &Mailbox, id: &str, m: Id) {
-        self.ids.insert(id.to_string(), m);
+    fn note(&mut self, mb: &Mailbox, account: Id, id: &str, m: Id) {
+        self.ids.insert((account, id.to_string()), m);
         self.count = mb.messages.len();
     }
 }
@@ -107,7 +110,7 @@ pub fn take_page(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, page: &
             None if moving_out.contains(&there.server.id) => {}
             None => {
                 if let Ok(m) = mb.add_message(new_message(folder, &page.folder, there)) {
-                    index.note(mb, &there.server.id, m);
+                    index.note(mb, account, &there.server.id, m);
                     down.new += 1;
                 }
             }
@@ -252,7 +255,7 @@ pub fn fetch_queue(mb: &Mailbox, account: Id, most: usize) -> Vec<String> {
 }
 
 fn fetch_queue_of_account(mb: &Mailbox, account: Id, most: usize) -> Vec<String> {
-    let limit = mb.account(account).and_then(|a| a.download_in_full.limit());
+    let limit = keeps_whole(mb, account);
     let mut waiting: Vec<(i64, &str)> = mb
         .messages
         .values()
@@ -275,7 +278,7 @@ fn fetch_queue_of_account(mb: &Mailbox, account: Id, most: usize) -> Vec<String>
 /// How many messages of `account` aren't fetched, and how many of those are larger than its
 /// "Download messages in full" (they wait until they are opened).
 pub fn not_fetched(mb: &Mailbox, account: Id) -> (usize, usize) {
-    let limit = mb.account(account).and_then(|a| a.download_in_full.limit());
+    let limit = keeps_whole(mb, account);
     mb.messages.values().filter(|m| m.account == account && m.unfetched).fold((0, 0), |(all, large), m| {
         let size = m.server.as_ref().map_or(0, |s| s.size);
         (all + 1, large + usize::from(limit.is_some_and(|limit| size > limit)))
@@ -322,6 +325,14 @@ pub fn take_fetched(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, id: 
         }
     }
     true
+}
+
+/// How large a message of `account` is fetched whole in the background: its own Download
+/// messages in full, and for a shared mailbox its owner's (#70: it keeps as much mail as its
+/// owner's account does; there is no setting of its own).
+fn keeps_whole(mb: &Mailbox, account: Id) -> Option<u64> {
+    let a = mb.owner_of(account).or(mb.account(account))?;
+    a.download_in_full.limit()
 }
 
 #[cfg(test)]

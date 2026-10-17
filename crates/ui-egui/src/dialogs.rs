@@ -34,6 +34,16 @@ pub enum Dialog {
         text: String,
         error: String,
     },
+    /// The address of a shared mailbox to open under a Microsoft account (#70): it only collects
+    /// the address, then runs `account.addSharedMailbox`.
+    SharedMailbox {
+        account: Id,
+        address: String,
+        error: String,
+        /// The shared mailbox added for this address, while its Inbox is being read (S1): it is
+        /// kept when that works, and removed again when it doesn't.
+        checking: Option<Id>,
+    },
     /// Where the selected text of the message being written leads (Ctrl+K).
     Link {
         url: String,
@@ -126,6 +136,7 @@ impl Dialog {
             Dialog::Commands { .. } => "commands",
             Dialog::Folder { .. } => "folder",
             Dialog::GoToDate { .. } => "goToDate",
+            Dialog::SharedMailbox { .. } => "sharedMailbox",
             Dialog::Link { .. } => "link",
             Dialog::Password { .. } => "password",
             Dialog::DiscardDraft { .. } => "discardDraft",
@@ -160,6 +171,20 @@ impl Dialog {
                 }
             }
             "goToDate" => Dialog::GoToDate { text: app.session.view.date.iso(), error: String::new() },
+            "sharedMailbox" => {
+                // Under the account named, else the first that can open one; only while shared
+                // mailboxes are being tested.
+                if !app.session.shared_mailboxes {
+                    return None;
+                }
+                let can = |a: &&mailcraft_model::Account| crate::shared_mailboxes::can_open_shared(a);
+                let mailbox = &app.session.mailbox;
+                let account = match id("account") {
+                    Some(id) => mailbox.account(id).filter(can)?.id,
+                    None => mailbox.accounts.iter().find(can)?.id,
+                };
+                Dialog::SharedMailbox { account, address: String::new(), error: String::new(), checking: None }
+            }
             "link" => {
                 let c = app.session.compose.as_ref().filter(|c| c.format == mailcraft_engine::BodyFormat::Html)?;
                 let sel = c.body.selection();
@@ -260,7 +285,35 @@ pub fn confirmation(app: &MailApp, id: &str, params: &Value) -> Option<Question>
                 tl!("and the mail kept for it on this device will be removed."),
                 tl!("Mail on the server is not touched.")
             );
+            // (The shared mailboxes opened through it go with it, #70.)
+            let shared = mb.shared_mailboxes(a.id).len();
+            let text = match shared {
+                0 => text,
+                1 => format!("{text} {}", tl!("The shared mailbox opened through it is removed from this device too.")),
+                n => format!(
+                    "{text} {}",
+                    crate::i18n::fmt(tl!("The {n} shared mailboxes opened through it are removed from this device too."), &[("n", &n.to_string())])
+                ),
+            };
             question(tl!("Remove Account"), text, tl!("Remove"))
+        }
+        // A shared mailbox is closed here only; what waits to go to it is named first (#70).
+        "account.removeSharedMailbox" => {
+            let a = mb.account(params.get("id").and_then(Value::as_u64)?).filter(|a| a.is_shared())?;
+            let waiting = app.waiting_to_go(a.id);
+            let text = crate::i18n::fmt(
+                tl!("{address} and the mail kept for it on this device will be removed. The shared mailbox on the server is not touched."),
+                &[("address", a.email.trim())],
+            );
+            let text = match waiting {
+                0 => text,
+                1 => format!("{text} {}", tl!("1 change made here hasn't reached the server and will be lost.")),
+                n => format!(
+                    "{text} {}",
+                    crate::i18n::fmt(tl!("{n} changes made here haven't reached the server and will be lost."), &[("n", &n.to_string())])
+                ),
+            };
+            question(tl!("Remove Shared Mailbox"), text, tl!("Remove"))
         }
         // A check on the account's real calendar says exactly what it is about to do there.
         "ui.checkCalendar" => {
@@ -856,6 +909,59 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
             if submit {
                 match app.execute("view.goToDate", json!({"date": text.trim()})) {
                     Ok(_) => close = true,
+                    Err(e) => *error = e,
+                }
+            }
+        }
+        Dialog::SharedMailbox { account, address, error, checking } => {
+            let mut submit = false;
+            let owner = app.session.mailbox.account(*account).map(|a| a.email.clone()).unwrap_or_default();
+            // (One that is being checked and is gone was answered: [`MailApp::finish_shared_check`].)
+            if checking.is_some_and(|id| !app.shared_checking.contains(&id)) {
+                *checking = None;
+            }
+            let open = window(ctx, tl!("Add Shared Mailbox"), 420.0, |ui| {
+                ui.label(tl!("The shared mailbox's e-mail address"));
+                let field = egui::TextEdit::singleline(address).hint_text("support@example.org").desired_width(f32::INFINITY);
+                let resp = ui.add_enabled(checking.is_none(), field);
+                if checking.is_none() && !resp.has_focus() && error.is_empty() {
+                    resp.request_focus();
+                }
+                ui.label(
+                    egui::RichText::new(crate::i18n::fmt(
+                        tl!("Opened with {owner}'s sign-in. It needs Full Access to the mailbox, which your organisation's administrator gives. Microsoft asks you once to let MailCraft read shared mailboxes. Its mail is read only for now: what you change in it stays on this computer, and mail you write goes from {owner}."),
+                        &[("owner", &owner)],
+                    ))
+                    .color(t.text_dim)
+                    .size(11.0),
+                );
+                if checking.is_some() {
+                    ui.label(egui::RichText::new(tl!("Checking the address with Microsoft…")).color(t.text_dim));
+                }
+                if !error.is_empty() {
+                    ui.label(egui::RichText::new(error.as_str()).color(t.red));
+                }
+                let (ok, cancel) = buttons(ui, tl!("Add"), checking.is_none() && !address.trim().is_empty());
+                submit = checking.is_none() && (ok || enter);
+                close |= cancel;
+            });
+            close |= !open;
+            // Called off while it was being checked: it isn't kept.
+            if close && let Some(id) = checking.take() {
+                app.drop_shared_check(id);
+            }
+            if submit && !close {
+                error.clear();
+                match app.execute("account.addSharedMailbox", json!({"account": *account, "address": address.trim()})) {
+                    // Kept only once its Inbox has been read: that is also when the owner is asked
+                    // for the permission (S1).
+                    Ok(added) => match added.get("id").and_then(Value::as_u64) {
+                        Some(id) => match app.begin_shared_check(id) {
+                            Ok(()) => *checking = Some(id),
+                            Err(e) => *error = e,
+                        },
+                        None => *error = tl!("The shared mailbox couldn't be added").to_string(),
+                    },
                     Err(e) => *error = e,
                 }
             }
