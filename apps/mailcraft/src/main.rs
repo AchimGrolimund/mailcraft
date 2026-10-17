@@ -478,12 +478,19 @@ fn graph_with(request: GraphRequest, zone: &str, renew: Renew<'_>) -> GraphResul
                 out.tokens = Some(got.tokens);
             }
             Err(e) if e.is_consent_needed() => {
+                log::info!("graph: the sign-in doesn't cover what was asked for; the owner's permission is needed");
                 out.consent_needed = true;
                 return out;
             }
-            // A sign-in that has run out is the mail's to notice and ask about, once.
-            Err(e) if e.is_refused_sign_in() => return out,
+            // A sign-in that has run out: the window asks the owner (the mail's leg does for an
+            // account on IMAP; for one kept in step through Graph, the Graph run does).
+            Err(e) if e.is_refused_sign_in() => {
+                log::info!("graph: the sign-in was refused when a token was asked for");
+                out.sign_in_refused = true;
+                return out;
+            }
             Err(e) => {
+                log::warn!("graph: the sign-in couldn't be renewed: {e}");
                 out.errors.push(format!("Couldn't reach Microsoft for sending, the calendar and the contacts: {e}"));
                 return out;
             }
@@ -513,6 +520,9 @@ fn graph_with(request: GraphRequest, zone: &str, renew: Renew<'_>) -> GraphResul
     }
     // An account kept in step through Graph (R3): the folder changes made here go up, and every
     // folder is listed. (Nothing of a folder's name or id goes into the log.)
+    if refused && request.mail.is_some() {
+        log::warn!("graph mail: the token stopped working while sending; the mail waits for the next run");
+    }
     if let Some(mail) = request.mail.as_ref().filter(|_| !refused) {
         // The run comes a piece at a time (the folders, then a page of mail at a time): to the
         // window as each comes, or put together for a caller that takes it in at once.

@@ -380,6 +380,9 @@ pub struct GraphResult {
     pub consent_needed: bool,
     /// The Graph token that was handed in is no longer taken.
     pub token_refused: bool,
+    /// The sign-in itself was refused when a token was asked for (it has run out, or was taken
+    /// back): the owner has to sign in again.
+    pub sign_in_refused: bool,
     /// Outbox messages that were sent (Microsoft files the Sent Items copy itself).
     pub sent: Vec<Id>,
     /// Outbox messages that must not be sent another way in this run: whether they went is not
@@ -758,6 +761,9 @@ pub struct MailApp {
     /// The pieces of a Graph mail run as they come (R3.2), and what they had to say.
     graph_pieces: Option<Receiver<mailcraft_model::sync::GraphMailResult>>,
     graph_problems: Vec<String>,
+    /// The account whose Graph mail run follows a sign-in for it that just went through: when
+    /// that run is refused too, the owner is told rather than sent to Microsoft's page again (#124).
+    graph_after_sign_in: Option<Id>,
     /// Messages of Microsoft accounts being fetched whole ([`graph_fetch`]).
     pub(crate) fetching: graph_fetch::Fetching,
     /// When each account's calendar and contacts were last brought down (milliseconds).
@@ -897,6 +903,7 @@ impl MailApp {
             graph_rx: None,
             graph_pieces: None,
             graph_problems: Vec::new(),
+            graph_after_sign_in: None,
             fetching: Default::default(),
             graph_checked: Default::default(),
             graph_consent_needed: Default::default(),
@@ -1499,7 +1506,10 @@ impl MailApp {
         };
         // An account kept in step through Microsoft Graph has no IMAP leg at all (R3).
         if self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft) {
-            return self.start_graph_mail(account, quiet);
+            let after_sign_in = p.get("afterSignIn").and_then(Value::as_bool).unwrap_or(false);
+            let started = self.start_graph_mail(account, quiet);
+            self.graph_after_sign_in = (after_sign_in && started.as_ref().is_ok_and(|v| v.get("started").is_some())).then_some(account);
+            return started;
         }
         let mut request = mailcraft_engine::cmd::account::sync_request(&self.session, account).map_err(|e| e.to_string())?;
         // A run that only tells the server what changed here, when that is all it was started for.
@@ -1792,9 +1802,13 @@ impl MailApp {
         let mut result = match rx.try_recv() {
             Ok(r) => r,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => GraphResult { account, ..Default::default() },
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                log::warn!("graph, account {account}: the job ended without an answer (its thread ended early)");
+                GraphResult { account, ..Default::default() }
+            }
         };
         self.graph_rx = None;
+        let after_sign_in = self.graph_after_sign_in.take() == Some(account);
         // The Favorites as Outlook has them, when they came along ([`favorites_sync`]).
         self.take_in_favorites(account, &mut result);
         let address = self.session.mailbox.account(account).map(|a| a.email.clone()).unwrap_or_default();
@@ -1816,8 +1830,10 @@ impl MailApp {
             let now = mailcraft_time::now();
             self.graph_tokens.insert(account, Tokens { expires_at: tokens.expires_at.clamp(now, now.saturating_add(86_400)), ..tokens });
         }
+        let kept_in_step = self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft);
         if result.consent_needed {
-            if self.graph_consent_needed.insert(account) && !quiet {
+            // (An account kept in step through Graph is asked below, for its mail.)
+            if self.graph_consent_needed.insert(account) && !quiet && !kept_in_step {
                 self.status(tl!("Calendar and contacts need your permission: File › Info › Connect calendar and contacts"));
             }
         } else {
@@ -1844,8 +1860,14 @@ impl MailApp {
             }
         }
         // An account kept in step through Graph: its folders, and the run is over (no IMAP leg).
-        if self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft) {
+        if kept_in_step {
             errors.append(&mut self.graph_problems);
+            // No token for the mail: Microsoft wants the owner's say-so for it, or the sign-in has
+            // run out. There is no IMAP leg to ask instead, so the owner is asked here (#124).
+            if result.mail.is_none() && (result.consent_needed || result.sign_in_refused) {
+                self.graph_mail_needs_sign_in(account, quiet, after_sign_in, result.consent_needed);
+                return;
+            }
             let status = self.session.sync_status.clone();
             match result.mail.take() {
                 Some(mail) => match mailcraft_engine::cmd::graph_mail::apply_graph_mail(&mut self.session, mail) {
@@ -1855,14 +1877,25 @@ impl MailApp {
                     }
                     Err(e) => errors.push(e.to_string()),
                 },
-                // No answer for the folders (the token couldn't be had, or Graph wasn't reached):
-                // what the job said is why.
-                None if result.consent_needed => self.session.sync_status = status,
-                None => {}
+                // No answer for the folders (Graph wasn't reached, or the job ended early): what
+                // the job said is why, and it is logged with the rest of the problems below.
+                None => {
+                    if errors.is_empty() {
+                        log::warn!("graph mail, account {account}: the run ended without the mail, and nothing said why");
+                    } else {
+                        log::warn!("graph mail, account {account}: the run ended without the mail");
+                    }
+                    if status == tl!("Sending and receiving…") {
+                        self.session.sync_status.clear();
+                    }
+                }
             }
             errors.dedup();
             if !errors.is_empty() {
                 self.session.sync_status = errors.first().cloned().unwrap_or_default();
+            } else if self.session.sync_status == tl!("Sending and receiving…") {
+                // The run is over: it never says it is still going.
+                self.session.sync_status.clear();
             }
             self.note_sync_problems(account, &errors, true);
             return;
@@ -1871,6 +1904,45 @@ impl MailApp {
         let skip: Vec<Id> = result.sent.iter().chain(&result.held).copied().collect();
         if let Err(e) = self.start_sync(&json!({"account": account, "quiet": quiet, "afterGraph": true, "skip": skip})) {
             self.session.sync_status.clear();
+            self.status(e);
+        }
+    }
+
+    /// A Graph run of an account kept in step through Graph got no token for the mail: the owner
+    /// signs in with Microsoft for it when they asked for the run (the run goes on once they
+    /// have), and is told how when they didn't.
+    fn graph_mail_needs_sign_in(&mut self, account: Id, quiet: bool, after_sign_in: bool, consent: bool) {
+        self.session.sync_status.clear();
+        let Some(owner) = self.session.mailbox.account(account).cloned() else { return };
+        let why = if consent { "the sign-in needs permission for the mail" } else { "the sign-in was refused" };
+        // Just signed in, and still refused: another trip to Microsoft's page wouldn't change it.
+        if after_sign_in {
+            log::warn!("graph mail, account {account}: {why} straight after signing in; not asking again");
+            self.status(i18n::fmt(
+                tl!("Signed in, but Microsoft still won't let MailCraft read the mail of {account}. Try Send/Receive again later."),
+                &[("account", &owner.email)],
+            ));
+            return;
+        }
+        let Some(oauth) = owner.oauth.clone() else {
+            log::warn!("graph mail, account {account}: {why}, and the account has no sign-in with Microsoft");
+            self.status(tl!("This account has no sign-in with Microsoft"));
+            return;
+        };
+        if quiet {
+            log::warn!("graph mail, account {account}: {why}; waiting for the owner to press Send/Receive");
+            self.status(i18n::fmt(tl!("Sign in to Microsoft again to get the mail of {account}: press Send/Receive"), &[("account", &owner.email)]));
+            return;
+        }
+        log::warn!("graph mail, account {account}: {why}; asking the owner to sign in");
+        // What an earlier run said is over: the sign-in's own words take its place.
+        self.status_msg = None;
+        // A refused sign-in's refresh token is no good to anybody: a fresh sign-in replaces it.
+        if !consent {
+            self.graph_tokens.remove(&account);
+            self.tokens.remove(&account);
+        }
+        if let Err(e) = self.begin_sign_in(account, oauth, &owner.email, String::new(), false, true) {
             self.status(e);
         }
     }
@@ -1946,7 +2018,7 @@ impl MailApp {
                     let busy = for_favorites && (self.sync_rx.is_some() || self.graph_rx.is_some());
                     if busy {
                         self.session.sync_status.clear();
-                    } else if let Err(e) = self.start_sync(&json!({"account": account})) {
+                    } else if let Err(e) = self.start_sync(&json!({"account": account, "afterSignIn": true})) {
                         self.session.sync_status.clear();
                         self.status(e);
                     }
@@ -1994,6 +2066,7 @@ impl MailApp {
     /// at the foot of the window. Never for a sign-in nobody asked for, and never over another
     /// dialog.
     fn sign_in_came_to_nothing(&mut self, account: Id, error: &str, asked_for: bool) {
+        log::warn!("sign-in, account {account}: ended without signing in ({:?})", approval::SignInEnd::of(error));
         if approval::SignInEnd::of(error) == approval::SignInEnd::Approval && asked_for && self.dialog.is_none() {
             self.dialog = dialogs::Dialog::open("account", self, &json!({"id": account, "page": "approval"}));
         }
@@ -2072,6 +2145,7 @@ impl MailApp {
                 Ok(piece) => piece,
                 Err(std::sync::mpsc::TryRecvError::Empty) => return,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    log::warn!("send/receive: the run stopped without an answer (its thread ended early)");
                     self.sync_rx = None;
                     self.session.sync_status = tl!("Send/Receive stopped unexpectedly").to_string();
                     return;
