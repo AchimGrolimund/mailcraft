@@ -518,6 +518,11 @@ pub struct Session {
     /// Set while a command an agent asked for runs (with what the owner allowed it): what the
     /// command did is checked against that ([`crate::agent`]), and undone when it oversteps.
     pub agent: Option<Vec<crate::agent::Class>>,
+    /// A copy of the mailbox the window had the host write off its own thread before switching an
+    /// account to Microsoft Graph (the account, where the copy is): `account.graphSwitch` takes it
+    /// instead of writing one itself ([`crate::cmd::graph_switch::prepare_backup`]). Set only by
+    /// the window once the copy is on disk, never by a command's params. Never saved.
+    pub graph_switch_backup: Option<(Id, PathBuf)>,
     history: Vec<Undo>,
     redo: Vec<Undo>,
     /// What the last undo or redo couldn't do there (a delete for good, a message sent).
@@ -550,6 +555,7 @@ impl Session {
             saved_whole: Default::default(),
             graph_said: Vec::new(),
             agent: None,
+            graph_switch_backup: None,
             history: Vec::new(),
             redo: Vec::new(),
             undo_said: Vec::new(),

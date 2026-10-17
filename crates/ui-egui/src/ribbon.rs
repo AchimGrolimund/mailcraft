@@ -1581,6 +1581,35 @@ mod tests {
         app
     }
 
+    /// A run starts on Home, and File opens on Info every time, as in Outlook: where the owner
+    /// last was is neither kept in the preferences nor while File is closed (#119).
+    #[test]
+    fn the_ribbon_opens_on_home_and_file_on_info() {
+        let mut a = app();
+        a.execute("ui.tab", json!({"tab": "View"})).unwrap();
+        a.execute("ui.backstage", json!({"value": true, "page": "options"})).unwrap();
+        let saved: crate::UiState = serde_json::from_value(serde_json::to_value(a.prefs()).unwrap()).unwrap();
+        let mut b = app();
+        b.apply_prefs(saved);
+        assert_eq!((b.ui.tab.as_str(), b.ui.backstage_page.as_str(), b.ui.backstage), ("Home", "info", false));
+        // Within a run: a tab stays chosen, File's page doesn't once File is closed.
+        b.execute("ui.tab", json!({"tab": "View"})).unwrap();
+        assert_eq!(b.ui.tab, "View");
+        b.execute("ui.backstage", json!({"value": true, "page": "options"})).unwrap();
+        assert_eq!(b.ui.backstage_page, "options");
+        // Another page while it is open is kept.
+        b.execute("ui.backstage", json!({"value": true, "page": "signatures"})).unwrap();
+        assert_eq!(b.ui.backstage_page, "signatures");
+        for open in [json!({"value": true}), json!({})] {
+            b.execute("ui.backstage", json!({"value": false})).unwrap();
+            assert_eq!(b.execute("ui.backstage", open).unwrap()["page"], "info");
+        }
+        b.execute("ui.backstage", json!({"value": true, "page": "options"})).unwrap();
+        b.execute("ui.tab", json!({"tab": "Home"})).unwrap();
+        b.execute("ui.tab", json!({"tab": "File"})).unwrap();
+        assert_eq!((b.ui.backstage, b.ui.backstage_page.as_str()), (true, "info"));
+    }
+
     fn window(app: MailApp, width: f32) -> Window {
         let mut harness = egui_kittest::Harness::builder().with_size(vec2(width, 700.0)).build_ui_state(
             |ui, app: &mut MailApp| {
