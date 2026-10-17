@@ -316,9 +316,18 @@ impl MailApp {
         let mut result = match rx.try_recv() {
             Ok(result) => result,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => GraphResult { account, ..Default::default() },
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                log::warn!("calendar, account {account}: the job ended without an answer (its thread ended early)");
+                GraphResult { account, ..Default::default() }
+            }
         };
         self.calendar.rx = None;
+        if result.consent_needed {
+            log::info!("calendar, account {account}: waiting for the owner's permission (Connect calendar and contacts)");
+        }
+        if result.sign_in_refused {
+            log::warn!("calendar, account {account}: the sign-in was refused; the next Send/Receive asks the owner");
+        }
         let mut errors = std::mem::take(&mut result.errors);
         if result.token_refused {
             self.graph_tokens.remove(&account);
@@ -553,6 +562,7 @@ impl MailApp {
             Ok(result) => result,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                log::warn!("calendar check, account {account}: the check ended without an answer (its thread ended early)");
                 CalendarCheckResult { account, error: tl!("the check stopped unexpectedly").to_string(), cleaned_up: true, ..Default::default() }
             }
         };
