@@ -1709,6 +1709,55 @@ fn imported_mail_for_a_microsoft_account_stays_in_a_local_folder_and_says_why() 
     assert_ne!(a.session.mailbox.message(imported).unwrap().folder, inbox);
 }
 
+/// A search says so over the list: how many it found and where; ✕ or Esc ends it (#115).
+#[test]
+fn a_search_is_said_over_the_list_and_ended_by_its_cross_or_esc() {
+    use egui_kittest::kittest::Queryable;
+    let mut a = app();
+    let found = a.execute("view.search", json!({"query": "Atlas"})).unwrap()["found"].as_u64().unwrap();
+    assert!(found > 1);
+    let inbox = a.session.mailbox.folder(a.session.view.folder).map(|f| f.name.clone()).unwrap();
+    let mut h = window(a);
+    h.run_steps(3);
+    h.get_by_label(&format!("{found} results in {inbox}"));
+    // Every mailbox.
+    h.state_mut().execute("view.search", json!({"query": "Atlas", "scope": "everywhere"})).unwrap();
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("results in All Mailboxes").is_some());
+    // Nothing found.
+    h.state_mut().execute("view.search", json!({"query": "zzzzqq", "scope": "folder"})).unwrap();
+    h.run_steps(3);
+    h.get_by_label(&format!("No results in {inbox}"));
+    // The cross ends it.
+    let close = h.state().hit.rect("searchBarClose", 0).unwrap();
+    h.event(egui::Event::PointerMoved(close.center()));
+    h.event(egui::Event::PointerButton {
+        pos: close.center(),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.step();
+    h.event(egui::Event::PointerButton {
+        pos: close.center(),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(3);
+    assert!(h.state().session.view.search.is_empty());
+    assert!(h.query_by_label_contains("results in").is_none() && h.query_by_label_contains("No results").is_none());
+    // So does Esc, with the keyboard in the list.
+    h.state_mut().execute("view.search", json!({"query": "Atlas"})).unwrap();
+    h.run_steps(3);
+    for pressed in [true, false] {
+        h.event(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE });
+        h.step();
+    }
+    h.run_steps(2);
+    assert!(h.state().session.view.search.is_empty());
+}
+
 /// #122: signatures have one place in File, their own page; File › Options no longer has a
 /// Signatures section with a button that opens that page.
 #[test]
