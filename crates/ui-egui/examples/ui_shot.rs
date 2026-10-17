@@ -30,7 +30,10 @@
 //! And a Graph job (`{"host": {"graph": …}}`): `"consent"` (Microsoft wants the owner's
 //! permission first) or `"refused"` (it refused the sign-in); anything else answers with nothing.
 //! With a stand-in host, the copy of the mailbox kept before a switch to Microsoft Graph is never
-//! finished, so the switch's page keeps saying that it is being saved.
+//! finished, so the switch's page keeps saying that it is being saved. And the background
+//! saver (`{"host": {"saving": …}}`): `"messages 12000 200000"` or `"content 3 90000"` (a save
+//! that has been at it for a minute, at that stage, done of total; it never ends), `"sweeping"`,
+//! or `""` (nothing being written).
 //!
 //! And Send/Receive, for Send/Receive Progress (`{"host": {"sync": [[piece, …], …]}}`): one list
 //! of pieces for each run of an account from that line on, in turn, each piece a `sync.apply`
@@ -47,6 +50,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 use mailcraft_engine::Session;
+use mailcraft_engine::io::{BackgroundSave, SaveProgress, SaveReport, SaveStage};
 use mailcraft_model::sync::{SyncResult, Tokens};
 use mailcraft_ui_egui::approval::{NEEDS_APPROVAL, NO_BROWSER, SIGN_IN_DECLINED, SIGN_IN_TIMED_OUT};
 use mailcraft_ui_egui::{AdminConsentAnswer, ControlRequest, GraphResult, MailApp, Services};
@@ -72,6 +76,8 @@ struct Host {
     /// address it was for.
     sign_ins: Vec<(String, Sender<Result<Tokens, String>>)>,
     approvals: Vec<Sender<AdminConsentAnswer>>,
+    /// How far the background saver has got (see the header).
+    saving: Option<SaveProgress>,
     /// Copies of the mailbox being "written": never finished (see the header).
     copies: Vec<Sender<Result<(), String>>>,
     /// The pieces of the Send/Receive runs to come, one list for each, and whether the script
@@ -204,6 +210,18 @@ impl Host {
                 self.sync_open = Some((account, inbox, to));
             }
         }
+        if let Some(how) = said.get("saving").and_then(|v| v.as_str()) {
+            let mut words = how.split_whitespace();
+            let stage = match words.next() {
+                Some("messages") => Some(SaveStage::Messages),
+                Some("content") => Some(SaveStage::Content),
+                Some("sweeping") => Some(SaveStage::Sweeping),
+                _ => None,
+            };
+            let mut number = || words.next().and_then(|w| w.parse().ok()).unwrap_or(0);
+            let (done, total) = (number(), number());
+            self.saving = stage.map(|stage| SaveProgress { stage, done, total, millis: 60_000 });
+        }
         if self.sign_in != "waits" && !self.sign_in.is_empty() {
             for (email, waiting) in std::mem::take(&mut self.sign_ins) {
                 if let Some(answer) = self.signed_in(&email) {
@@ -217,6 +235,22 @@ impl Host {
             }
         }
     }
+}
+
+/// The background saver of a stand-in host: it is at what the script last said, and writes
+/// nothing.
+struct StandInSaver(Arc<Mutex<Host>>);
+
+impl BackgroundSave for StandInSaver {
+    fn follow(&self, _: &std::path::Path) {}
+    fn submit(&self, _: &std::path::Path, _: &mailcraft_model::Mailbox, _: u64) {}
+    fn reports(&self) -> Vec<SaveReport> {
+        Vec::new()
+    }
+    fn progress(&self) -> Option<SaveProgress> {
+        self.0.lock().ok().and_then(|host| host.saving)
+    }
+    fn flush(&self) {}
 }
 
 /// The services of a stand-in host: Microsoft 365 takes the mail of every company's domain,
@@ -308,6 +342,7 @@ fn stand_in(host: &Arc<Mutex<Host>>) -> Services {
                 None => Err("GitHub couldn't be reached".to_string()),
             })
         })),
+        saver: Some(Box::new(StandInSaver(host.clone()))),
         ..Default::default()
     }
 }
@@ -326,10 +361,12 @@ fn main() {
     } else {
         mailcraft_engine::sample::mailbox(NOW, offset)
     };
-    let session = match zone {
+    let mut session = match zone {
         Some(zone) => Session::in_zone(mailbox, NOW, zone),
         None => Session::at(mailbox, NOW, 0),
     };
+    // Shared mailboxes, as the window has them with `MAILCRAFT_SHARED_MAILBOXES=1` (#70).
+    session.shared_mailboxes = std::env::var("MAILCRAFT_SHARED_MAILBOXES").is_ok_and(|value| value.trim() == "1");
     // A stand-in for the host's part in signing in, when a line of the script speaks to one.
     let host: Arc<Mutex<Host>> = Default::default();
     let stood_in = lines.iter().any(|l| l.get("host").is_some());

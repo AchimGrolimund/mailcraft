@@ -70,6 +70,14 @@ pub enum Place {
 pub fn show(app: &mut MailApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let picked = app.session.sel.messages.len();
+    // What showing it needs (its body, the pictures in it, a calendar part) is brought into
+    // memory first, when the mailbox keeps it on disk; the message then shows whole in this
+    // very frame. (One that can't be read says so in its text, once.)
+    if let Some(id) = app.session.sel.focus()
+        && app.session.needs_load_for_display(id)
+    {
+        let _ = app.session.load_for_display(id);
+    }
     let Some(m) = app.session.sel.focus().and_then(|id| app.session.mailbox.messages.get(&id).cloned()) else {
         let r = ui.available_rect_before_wrap();
         icons::paint(
@@ -101,6 +109,11 @@ pub fn show(app: &mut MailApp, ui: &mut Ui) {
 /// The reading pane shows the selected message with it, and a message window its own.
 pub fn show_message(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, place: Place) {
     let ctx = ui.ctx().clone();
+    // A window shows its own copy of the message: what the mailbox keeps on disk is brought in
+    // here, and the window takes the whole message up at its next frame.
+    if place != Place::Quote && app.session.needs_load_for_display(m.id) {
+        let _ = app.session.load_for_display(m.id);
+    }
     remote::tick(app, &ctx);
     select::begin(app, ui, m, place);
     let doc = view::doc_where(&ctx, m, place, remote::available(app));
@@ -193,6 +206,8 @@ fn quote_message(app: &MailApp, ctx: &egui::Context) -> Option<Arc<Message>> {
     m.body = mailcraft_model::Body { text: quote.text.clone(), html: Some(quote.html.clone()) };
     // A forward carries the original's attachments itself, its pictures among them.
     m.attachments = pictures.clone();
+    // Its body is the quote's, whole: nothing of it waits on disk.
+    m.kept = None;
     let m = Arc::new(m);
     ctx.data_mut(|d| d.insert_temp(key, m.clone()));
     Some(m)

@@ -40,7 +40,8 @@ pub(crate) fn fetch_messages_with(
 ) -> GraphFetchResult {
     let mut out = GraphFetchResult { account: request.account, email: request.email.clone(), ..Default::default() };
     let priority = if request.background { Priority::Background } else { Priority::Owner };
-    let graph = match Graph::for_mail(base, token, gate, priority, retry) {
+    let shared = request.shared.then_some(request.email.as_str());
+    let graph = match Graph::for_mail(base, token, gate, priority, retry).and_then(|graph| graph.of_shared(shared)) {
         Ok(graph) => graph,
         Err(e) => {
             out.errors.push(format!("Couldn't reach Microsoft for the messages: {e}"));
@@ -52,7 +53,7 @@ pub(crate) fn fetch_messages_with(
             break;
         }
         let Some(id) = id_of(id) else { continue };
-        let url = graph.url(&format!("/v1.0/me/messages/{}/$value", http::encode(&id)));
+        let url = graph.url(&graph.mail_path(&format!("/messages/{}/$value", http::encode(&id))));
         let reply = match graph.call(Kind::Read, &url, "GET", &[], None, FETCH_TIMEOUT, MAX_MIME) {
             Ok(reply) => reply,
             Err(e) => {

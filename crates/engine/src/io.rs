@@ -120,10 +120,14 @@ pub fn write_mailbox(mb: &Mailbox) -> Result<Vec<u8>, String> {
 }
 
 /// Open a mailbox file by path: one self-contained file, or a file with its content folder
-/// beside it (`crate::store`).
+/// beside it (`crate::store`), with every body and attachment in memory: what comes back is the
+/// whole mailbox, to use without its file. A program that works on the mailbox opens it with
+/// `store::open` instead and reads what stays on disk when it wants it (`Session::content`).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn open_path(path: &std::path::Path) -> Result<Mailbox, String> {
-    crate::store::open(path).map(|opened| opened.mailbox)
+    let mut mailbox = crate::store::open(path)?.mailbox;
+    crate::store::load_all(path, &mut mailbox)?;
+    Ok(mailbox)
 }
 
 /// A host's way of keeping a mailbox file up to date without whoever changed the mailbox waiting
@@ -134,13 +138,63 @@ pub trait BackgroundSave {
     /// changes first, so they can't fall between two saves.
     fn follow(&self, path: &std::path::Path);
     /// Write this state of the mailbox (the session's `rev`) to `path` soon, without waiting. A
-    /// state still waiting its turn gives way to this newer one.
-    fn submit(&self, path: &std::path::Path, mailbox: Mailbox, rev: u64);
+    /// state still waiting its turn gives way to this newer one. The mailbox is copied (a cheap
+    /// copy: its items are shared) only when it is to be written: the same state handed in again
+    /// while it is on its way costs nothing.
+    fn submit(&self, path: &std::path::Path, mailbox: &Mailbox, rev: u64);
     /// What became of the states handed in, since this was last asked.
     fn reports(&self) -> Vec<SaveReport>;
-    /// Wait until nothing handed in is waiting or being written (the program is closing).
+    /// How far the writing has got, for the window to show: `None` when nothing handed in is
+    /// waiting or being written, and the file isn't busy otherwise ([`SaveStage::Sweeping`]).
+    fn progress(&self) -> Option<SaveProgress> {
+        None
+    }
+    /// Wait until nothing handed in is waiting or being written (the program is closing), for a
+    /// while at most: never forever. A save cut short leaves the file as the last one left it.
     fn flush(&self);
 }
+
+/// How far the saving of a mailbox has got ([`BackgroundSave::progress`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SaveProgress {
+    pub stage: SaveStage,
+    /// How many of the stage's `total` are done.
+    pub done: u64,
+    pub total: u64,
+    /// How long the state being written has been at it, in milliseconds (0 while it waits): a
+    /// save of a moment is not worth telling.
+    pub millis: u64,
+}
+
+/// What a save is at ([`SaveProgress`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SaveStage {
+    /// Handed in, waiting its turn.
+    #[default]
+    Waiting,
+    /// Going through the messages: what each comes to in the mailbox file.
+    Messages,
+    /// Writing the bodies and attachments that aren't on disk yet, one file each.
+    Content,
+    /// Nothing of the mailbox is being written, but its file is busy: the content files it no
+    /// longer names are being looked for and removed (or are about to be). Whatever replaces the
+    /// mailbox waits for this too, so as not to find the file taken.
+    Sweeping,
+}
+
+/// Where a host gets the content of a mailbox that isn't in memory: the attachments, and the
+/// bodies of mail older than the memory the mailbox was given when it was opened, which the
+/// desktop's `store` keeps in the content folder beside the mailbox file ([`ContentRef`]). The
+/// engine asks for a part when something needs its bytes ([`Session::content`]); nothing is
+/// fetched for a message nobody looks at. The browser keeps every mailbox in memory and has no
+/// source.
+pub trait ContentSource: Send + Sync {
+    /// The bytes kept under `r` for the mailbox file at `mailbox`, checked against the length and
+    /// SHA-256 the reference names (anything else is "missing or damaged", never bytes).
+    fn fetch(&self, mailbox: &std::path::Path, r: &ContentRef) -> Result<std::sync::Arc<Vec<u8>>, String>;
+}
+
+pub use mailcraft_model::ContentRef;
 
 /// How writing one state of a mailbox went ([`BackgroundSave::reports`]).
 #[derive(Clone, Debug, PartialEq, Eq)]

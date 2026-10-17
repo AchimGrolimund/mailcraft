@@ -250,7 +250,17 @@ fn add(s: &mut Session, v: &Value) -> CmdResult {
 fn edit(s: &mut Session, v: &Value) -> CmdResult {
     let id = p::req_id(v, "id")?;
     let mut a = s.mailbox.account(id).cloned().ok_or_else(|| fail(format!("no account with id {id}")))?;
+    let before = a.clone();
     apply_fields(&mut a, v)?;
+    // A shared mailbox is its address, read with its owner's sign-in (#70): another address
+    // would be another mailbox under the same folders' ids.
+    if before.is_shared() {
+        if !a.email.trim().eq_ignore_ascii_case(before.email.trim()) {
+            return Err(fail("a shared mailbox's address can't be changed: remove it and add the other one"));
+        }
+        (a.email, a.kind, a.oauth, a.incoming, a.outgoing, a.username) = (before.email, before.kind, None, None, None, String::new());
+        a.shared_of = before.shared_of;
+    }
     if s.mailbox.accounts.iter().any(|x| x.id != id && x.email.eq_ignore_ascii_case(&a.email)) {
         return Err(fail(format!("{} is already set up", a.email)));
     }
@@ -260,10 +270,14 @@ fn edit(s: &mut Session, v: &Value) -> CmdResult {
 
 fn remove(s: &mut Session, v: &Value) -> CmdResult {
     let id = p::req_id(v, "id")?;
-    if s.mailbox.accounts.len() <= 1 {
+    // (The shared mailboxes opened through it go with it.)
+    if s.mailbox.accounts.iter().all(|a| a.id == id || a.shared_of == Some(id)) {
         return Err(fail("the last account can't be removed"));
     }
     s.mailbox.remove_account(id)?;
+    if s.mailbox.folder(s.view.folder).is_none() {
+        s.view.folder = s.mailbox.default_account().and_then(|a| s.mailbox.folder_of_kind(a.id, FolderKind::Inbox)).unwrap_or(0);
+    }
     Ok(json!({"deleted": id}))
 }
 
@@ -273,7 +287,7 @@ fn list(s: &mut Session, _: &Value) -> CmdResult {
         .accounts
         .iter()
         .map(|a| {
-            json!({"id": a.id, "name": a.name, "email": a.email, "displayName": a.display_name, "kind": a.kind, "username": a.username, "incoming": a.incoming, "outgoing": a.outgoing, "signature": a.signature, "replySignature": a.reply_signature(), "auth": if a.oauth.is_some() { "oauth2" } else { "password" }, "oauth": a.oauth, "downloadInFull": a.download_in_full})
+            json!({"id": a.id, "name": a.name, "email": a.email, "displayName": a.display_name, "kind": a.kind, "username": a.username, "incoming": a.incoming, "outgoing": a.outgoing, "signature": a.signature, "replySignature": a.reply_signature(), "auth": if a.oauth.is_some() { "oauth2" } else { "password" }, "oauth": a.oauth, "downloadInFull": a.download_in_full, "sharedOf": a.shared_of})
         })
         .collect();
     Ok(json!({"accounts": accounts, "signatures": s.mailbox.signatures}))
@@ -318,6 +332,8 @@ pub fn sync_request(s: &Session, account: Id) -> Result<SyncRequest, CmdError> {
         })
         .collect();
     let (ops, _) = remote_ops(&s.mailbox, account, MAX_OPS);
+    // What is sent goes whole: the files a message keeps on disk are read for it.
+    let outbox = s.loaded_outbox(outbox);
     Ok(SyncRequest { account: a.clone(), folders, outbox, max_per_folder: s.prefs.sync_limit, ops, ..Default::default() })
 }
 

@@ -2045,6 +2045,9 @@ fn hostile_params_never_panic() {
         json!({"conditions": [{"type": "x"}, 5, null], "actions": [{"type": "moveTo", "value": "x"}], "name": "r"}),
         json!({"email": "a@b.example", "incoming": {"host": "", "port": 1e9, "security": 5}, "outgoing": 7}),
         json!({"emails": [1, null, {"value": 2}], "phones": "x", "address": {"street": 5}, "birthday": 5, "workDays": [], "weekStart": 1}),
+        json!({"account": 1, "address": "a@example.org/../../me\r\n?$top=1#x"}),
+        json!({"account": 2, "address": "x".repeat(100_000)}),
+        json!({"id": 2, "address": "\u{0}@example.org", "email": "\u{202e}@example.org"}),
         json!({"account": 1, "download": {"account": 1, "calendar": "\u{0}", "from": 1e300, "events": [{"id": 5}, null], "contacts": {"id": "c"}}}),
         json!({"account": 1, "download": {
             "account": 1, "complete": true, "from": i64::MIN, "to": i64::MAX,
@@ -2056,6 +2059,10 @@ fn hostile_params_never_panic() {
         }}),
     ];
     let mut s = session();
+    // Shared mailboxes switched on, under a Microsoft account, so that their commands get past
+    // the door (#70).
+    s.shared_mailboxes = true;
+    let _ = s.run("account.add", &json!({"email": "owner@example.org", "kind": "microsoft"}));
     let ids: Vec<&'static str> = s.registry.all().iter().map(|c| c.id).collect();
     for round in 0..2 {
         for id in &ids {

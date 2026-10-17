@@ -511,7 +511,7 @@ impl State {
         round.page = page;
         let start = round.at;
         let (value, done) = self.mailbox.page(&mut round, immutable);
-        let base = format!("{}/v1.0/me/mailFolders/{folder}/messages/delta", self.base);
+        let base = format!("{}/v1.0/{}/mailFolders/{folder}/messages/delta", self.base, self.whose());
         let mut list = json!({"@odata.context": format!("{}/v1.0/$metadata#Collection(message)", self.base), "value": value});
         if done && self.mailbox.replays == 0 {
             let token = self.mailbox.token();
@@ -539,7 +539,7 @@ impl State {
 
     /// `410 Gone`: start the folder afresh, at the address the `Location` header gives.
     fn reset(&mut self, folder: &str) -> Refusal {
-        self.location = Some(format!("{}/v1.0/me/mailFolders/{folder}/messages/delta?$deltatoken=", self.base));
+        self.location = Some(format!("{}/v1.0/{}/mailFolders/{folder}/messages/delta?$deltatoken=", self.base, self.whose()));
         refuse(410, "resyncRequired", "The delta state was reset. Synchronize again from the start.")
     }
 

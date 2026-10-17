@@ -319,6 +319,8 @@ const ACCOUNTS: &[&str] = &[
     "account.edit",
     "account.remove",
     "account.graphSwitch",
+    "account.addSharedMailbox",
+    "account.removeSharedMailbox",
     "calendar.moveToAccount",
     "ui.connectMicrosoft",
     "ui.connectFavorites",
@@ -595,6 +597,11 @@ pub fn describe(s: &Session, id: &str, params: &Value) -> String {
             format!("{} ({label}) and write to the people invited", event_title(s, params))
         }
         "account.add" => format!("add the account {}", clip(st("email"), 80)),
+        "account.addSharedMailbox" => format!("open the shared mailbox {}", clip(st("address"), 80)),
+        "account.removeSharedMailbox" => {
+            let a = p::id(params, "id").and_then(|a| s.mailbox.account(a)).map(|a| a.email.clone()).unwrap_or_else(|| st("address").to_string());
+            format!("close the shared mailbox {} and remove its mail from this computer", clip(&a, 80))
+        }
         "account.graphSwitch" | "ui.switchToGraph" => {
             let a = p::id(params, "account").and_then(|a| s.mailbox.account(a)).map(|a| clip(&a.email, 80)).unwrap_or_default();
             match st("answer") {

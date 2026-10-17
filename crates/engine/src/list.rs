@@ -61,6 +61,13 @@ fn group_label(s: &Session, m: &Message) -> Option<String> {
 }
 
 pub fn rows(s: &Session) -> Vec<Row> {
+    rows_with(s, &HashMap::new())
+}
+
+/// [`rows`], for a search whose bodies were brought in and let go of again while it ran
+/// (`Session::load_bodies_for_search`): `searched` says whether each of those matched, which a
+/// body named only can no longer say.
+pub fn rows_with(s: &Session, searched: &HashMap<Id, bool>) -> Vec<Row> {
     let mb = &s.mailbox;
     let query = Query::parse(&s.view.search);
     let everywhere = !query.is_empty() && s.view.scope == Scope::Everywhere;
@@ -83,7 +90,13 @@ pub fn rows(s: &Session) -> Vec<Row> {
             Filter::Attachments => m.has_attachments(),
             Filter::ToMe => m.to.iter().any(|a| me.iter().any(|e| a.email.eq_ignore_ascii_case(e))),
         })
-        .filter(|m| query.is_empty() || query.matches(m, s.offset_at(m.date)))
+        .filter(|m| {
+            query.is_empty()
+                || match searched.get(&m.id).filter(|_| m.body_is_kept()) {
+                    Some(hit) => *hit,
+                    None => query.matches(m, s.offset_at(m.date)),
+                }
+        })
         .collect();
 
     let desc = s.view.sort_descending;

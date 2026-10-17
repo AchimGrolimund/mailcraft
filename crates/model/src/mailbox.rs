@@ -14,6 +14,8 @@ const MAX_DEPTH: usize = 32;
 const MAX_ID: Id = 1 << 53;
 /// Most changes waiting for the mail server that a file may hold ([`Mailbox::pending`]).
 const MAX_PENDING: usize = 100_000;
+/// Most shared mailboxes one account opens ([`Mailbox::add_shared_mailbox`]).
+pub const MAX_SHARED: usize = 20;
 /// Most folders one account's Favorites from its server hold ([`Mailbox::server_favorites`]).
 const MAX_SERVER_FAVORITES: usize = crate::remote::MAX_FAVORITES;
 
@@ -241,6 +243,14 @@ pub struct Account {
     /// to Microsoft Graph (R3.7). Nothing for every other account.
     #[serde(skip_serializing_if = "GraphSwitch::is_default", deserialize_with = "crate::sync::lenient_or_default")]
     pub graph_switch: GraphSwitch,
+    /// For a **shared mailbox** (a mailbox of the owner's organisation that the owner was given
+    /// Full Access to, such as `support@`): the Microsoft account it is opened through, whose
+    /// sign-in reads it. Its address is [`Account::email`]; it has no sign-in of its own, and its
+    /// folders and messages are its own, so that the server ids of two mailboxes never meet
+    /// (ADR 0003: the mailbox's address goes beside each id, here by the account the folder is
+    /// in). `None` for every other account, and in a file from before there were any.
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "crate::sync::lenient")]
+    pub shared_of: Option<Id>,
 }
 
 /// What the owner of a Microsoft account kept in step by IMAP said to switching it to Microsoft
@@ -361,6 +371,11 @@ impl Account {
 
     pub fn address(&self) -> crate::Address {
         crate::Address::new(self.display_name.clone(), self.email.clone())
+    }
+
+    /// Whether it is a shared mailbox opened through another account ([`Account::shared_of`]).
+    pub fn is_shared(&self) -> bool {
+        self.shared_of.is_some()
     }
 
     /// The name the servers know the owner by: the login name, or else the address.
@@ -706,22 +721,99 @@ impl Mailbox {
         self.accounts.first()
     }
 
-    /// Remove an account with its folders and messages. Its server isn't told anything: what
-    /// was still waiting to be pushed there is dropped.
+    /// Remove an account with its folders and messages, and the shared mailboxes opened through
+    /// it with theirs. Its server isn't told anything: what was still waiting to be pushed there
+    /// is dropped.
     pub fn remove_account(&mut self, id: Id) -> Result<(), ModelError> {
-        let before = self.accounts.len();
-        self.accounts.retain(|a| a.id != id);
-        if self.accounts.len() == before {
+        if self.account(id).is_none() {
             return Err(not_found("account", id));
         }
-        self.folders.retain(|f| f.account != id);
-        self.messages.retain(|_, m| m.account != id);
-        self.pending.retain(|p| p.account() != id);
-        self.event_changes.retain(|change| change.account != id);
-        self.event_checks.retain(|check| check.account != id);
-        self.queued.retain(|queued| queued.account() != id);
-        self.favorites_from_server.retain(|list| list.account != id);
+        let going: HashSet<Id> = self.accounts.iter().filter(|a| a.id == id || a.shared_of == Some(id)).map(|a| a.id).collect();
+        self.accounts.retain(|a| !going.contains(&a.id));
+        self.folders.retain(|f| !going.contains(&f.account));
+        self.messages.retain(|_, m| !going.contains(&m.account));
+        self.pending.retain(|p| !going.contains(&p.account()));
+        self.event_changes.retain(|change| !going.contains(&change.account));
+        self.event_checks.retain(|check| !going.contains(&check.account));
+        self.queued.retain(|queued| !going.contains(&queued.account()));
+        self.favorites_from_server.retain(|list| !going.contains(&list.account));
         Ok(())
+    }
+
+    // ---- shared mailboxes ----
+
+    /// The shared mailboxes opened through `account` ([`Account::shared_of`]), in the order they
+    /// were added.
+    pub fn shared_mailboxes(&self, account: Id) -> Vec<&Account> {
+        self.accounts.iter().filter(|a| a.shared_of == Some(account) && a.id != account).collect()
+    }
+
+    /// The account whose sign-in reads the shared mailbox `account`: a Microsoft account that is
+    /// no shared mailbox itself. `None` for an account that isn't a shared mailbox, and for one
+    /// whose owner is gone or can't be one (a file may say anything).
+    pub fn owner_of(&self, account: Id) -> Option<&Account> {
+        let owner = self.account(account)?.shared_of.filter(|owner| *owner != account)?;
+        self.account(owner).filter(|o| o.kind == AccountKind::Microsoft && !o.is_shared())
+    }
+
+    /// The accounts in the order the folder pane lists them: each account of its own, followed
+    /// by the shared mailboxes opened through it. A shared mailbox whose owner is gone comes
+    /// last, as it is (it can't be read, and says so when it is).
+    pub fn accounts_in_order(&self) -> Vec<&Account> {
+        let mut out: Vec<&Account> = Vec::with_capacity(self.accounts.len());
+        for a in self.accounts.iter().filter(|a| !a.is_shared()) {
+            out.push(a);
+            out.extend(self.shared_mailboxes(a.id).into_iter().filter(|s| self.owner_of(s.id).is_some()));
+        }
+        // (A shared mailbox whose owner is missing.)
+        for a in &self.accounts {
+            if !out.iter().any(|o| o.id == a.id) {
+                out.push(a);
+            }
+        }
+        out
+    }
+
+    /// Open the shared mailbox at `address` under the Microsoft account `owner`: an account of
+    /// its own kind ([`AccountKind::Microsoft`]) with its standard folders, read with the owner's
+    /// sign-in ([`Account::shared_of`]). Nothing is asked of any server here: whether the owner
+    /// may open it is found at its first Send/Receive. Its id.
+    pub fn add_shared_mailbox(&mut self, owner: Id, address: &str) -> Result<Id, ModelError> {
+        let address = crate::mailbox_address(address).ok_or_else(|| invalid("that isn't an e-mail address"))?;
+        let o = self.account(owner).ok_or(not_found("account", owner))?;
+        if o.is_shared() {
+            return Err(invalid("a shared mailbox can't open another one: name the account it is opened through"));
+        }
+        if o.kind != AccountKind::Microsoft {
+            return Err(invalid("shared mailboxes open under an account that is kept in step through Microsoft Graph"));
+        }
+        if o.oauth.as_ref().is_some_and(|oauth| oauth.directory == Directory::Personal) {
+            return Err(invalid("a personal Microsoft account (Outlook.com) has no shared mailboxes: they are Microsoft 365's"));
+        }
+        if o.email.trim().eq_ignore_ascii_case(&address) {
+            return Err(invalid("that is the account's own address: name the shared mailbox's"));
+        }
+        if self.accounts.iter().any(|a| a.email.trim().eq_ignore_ascii_case(&address)) {
+            return Err(invalid(format!("{address} is already here")));
+        }
+        if self.shared_mailboxes(owner).len() >= MAX_SHARED {
+            return Err(invalid(format!("an account opens {MAX_SHARED} shared mailboxes at most")));
+        }
+        let download_in_full = o.download_in_full;
+        let shared = Account {
+            name: address.clone(),
+            email: address,
+            kind: AccountKind::Microsoft,
+            download_in_full,
+            shared_of: Some(owner),
+            ..Default::default()
+        };
+        let id = self.add_account(shared);
+        // Outlook doesn't put a shared mailbox's Inbox among the Favorites by itself.
+        for f in self.folders.iter_mut().filter(|f| f.account == id) {
+            f.favorite = false;
+        }
+        Ok(id)
     }
 
     // ---- favourites ----
