@@ -584,6 +584,37 @@ fn dotted_frame(p: &egui::Painter, r: Rect, color: Color32) {
     p.add(egui::Shape::mesh(dots));
 }
 
+/// Where a message's follow-up flag stands, as its row in the list shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FollowUp {
+    /// Not flagged, or the flag is done with: the row is as any other.
+    None,
+    /// Flagged: the row wears a faint tint.
+    Flagged,
+    /// Flagged, and due on a day before today: its text is red as well.
+    Overdue,
+}
+
+impl FollowUp {
+    pub(crate) fn of(m: &mailcraft_model::Message, session: &mailcraft_engine::Session) -> FollowUp {
+        match (m.flag, m.flag_due) {
+            (FlagStatus::Flagged, Some(due)) if session.local(due).date < session.today() => FollowUp::Overdue,
+            (FlagStatus::Flagged, _) => FollowUp::Flagged,
+            (FlagStatus::Complete | FlagStatus::None, _) => FollowUp::None,
+        }
+    }
+}
+
+/// What a row is filled with, under the pointer's shade: a selected row's colour, a flagged
+/// one's tint, or nothing (the list shows through).
+pub(crate) fn row_fill(t: &Tokens, follow_up: FollowUp, selected: bool, focus: bool) -> Option<Color32> {
+    match (selected, follow_up) {
+        (true, _) => Some(if focus { t.selection } else { t.selection.linear_multiply(0.7) }),
+        (false, FollowUp::Flagged | FollowUp::Overdue) => Some(t.flagged_row),
+        (false, FollowUp::None) => None,
+    }
+}
+
 /// One message in the list: the sender in the larger size, the subject with the time at the end
 /// of its line, then the preview in the dimmer colour; marks at the right of the sender's line,
 /// category marks and the size of a conversation at the right of the preview's.
@@ -629,10 +660,22 @@ fn message_row(app: &mut MailApp, ui: &mut Ui, row: &Row, rect: Rect) {
     let p = ui.painter();
     // The row is what is above the line under it; its content starts a little in from the list's edge.
     let body = Rect::from_min_max(pos2(rect.min.x + ROW_INSET, rect.min.y), pos2(rect.max.x, rect.max.y - 1.0));
-    if selected {
-        p.rect_filled(body, 0.0, if focus { t.selection } else { t.selection.linear_multiply(0.7) });
-    } else if resp.hovered() || read_resp.hovered() || quick.is_some() {
+    let follow_up = FollowUp::of(&m, &app.session);
+    let fill = row_fill(&t, follow_up, selected, focus);
+    if let Some(fill) = fill {
+        p.rect_filled(body, 0.0, fill);
+        if fill == t.flagged_row {
+            app.hit.add("messageFlagShade", row.id, body);
+        }
+    }
+    if !selected && (resp.hovered() || read_resp.hovered() || quick.is_some()) {
+        // The pointer's shade goes over a flagged row's tint.
         p.rect_filled(body, 0.0, t.hover.linear_multiply(0.6));
+    }
+    // Past its due date, its text is red.
+    let overdue = follow_up == FollowUp::Overdue;
+    if overdue {
+        app.hit.add("messageOverdue", row.id, body);
     }
     // Unread wears the bar; under the pointer it widens, and a read message shows a faint one
     // so the switch can be found.
@@ -716,12 +759,16 @@ fn message_row(app: &mut MailApp, ui: &mut Ui, row: &Row, rect: Rect) {
         let w = paint_clipped(p, pos2(left, line1), (who_end - left).max(0.0), tl!("[Draft]"), regular(SENDER_TEXT), t.red);
         who_x += w + 5.0;
     }
-    paint_clipped(p, pos2(who_x, line1), (who_end - who_x).max(0.0), &who, who_font, t.text);
+    paint_clipped(p, pos2(who_x, line1), (who_end - who_x).max(0.0), &who, who_font, if overdue { t.overdue } else { t.text });
 
     // The subject's line, with the time at its end.
     let date =
         mailcraft_time::list_label(mailcraft_engine::list::when(&m), app.session.now(), app.session.offset_at(m.date), app.session.prefs.twelve_hour);
-    let (date_font, date_color) = if unread { (semibold(LIST_TEXT), t.accent_text) } else { (regular(LIST_TEXT), t.text) };
+    let (date_font, date_color) = match (unread, overdue) {
+        (true, false) => (semibold(LIST_TEXT), t.accent_text),
+        (true, true) => (semibold(LIST_TEXT), t.overdue),
+        (false, _) => (regular(LIST_TEXT), if overdue { t.overdue } else { t.text }),
+    };
     let date_w = p.text(pos2(time_end, line2), Align2::RIGHT_CENTER, &date, date_font, date_color).width();
     let mut subject_end = text_end.min(time_end - date_w - 8.0);
 
@@ -747,7 +794,11 @@ fn message_row(app: &mut MailApp, ui: &mut Ui, row: &Row, rect: Rect) {
         subject_end = subject_end.min(sx - 6.0);
     }
     let subject = if m.subject.trim().is_empty() { tl!("(no subject)") } else { m.subject.as_str() };
-    let (sfont, scolor) = if unread { (semibold(LIST_TEXT), t.accent_text) } else { (regular(LIST_TEXT), t.text) };
+    let (sfont, scolor) = match (unread, overdue) {
+        (true, false) => (semibold(LIST_TEXT), t.accent_text),
+        (true, true) => (semibold(LIST_TEXT), t.overdue),
+        (false, _) => (regular(LIST_TEXT), if overdue { t.overdue } else { t.text }),
+    };
     paint_clipped(p, pos2(left, line2), (subject_end - left).max(0.0), subject, sfont, scolor);
 
     // Then the preview: whole words, as many lines as asked for, and no mark where it stops.
@@ -1267,5 +1318,42 @@ mod tests {
             let changed = Arc::new(Message { body: Body { text: "Other words".into(), html: None }, ..(**first).clone() });
             assert_eq!(&*preview(ui, 8, &changed, 40), "Other words");
         });
+    }
+
+    /// A flagged message's row wears a faint tint, as in Outlook; one whose follow-up was due on
+    /// a day before today has red text as well. A completed flag wears neither, and a selected
+    /// row is the selection's colour whatever its flag.
+    #[test]
+    fn flagged_rows_are_tinted_and_overdue_ones_red() {
+        let mut a = app();
+        let ids: Vec<Id> = a.session.rows().iter().take(5).map(|r| r.id).collect();
+        a.execute("mail.clearFlag", json!({"ids": ids})).unwrap();
+        a.execute("mail.flag", json!({"ids": [ids[0]], "due": "2026-10-09"})).unwrap();
+        a.execute("mail.flag", json!({"ids": [ids[1]], "due": "2026-10-14"})).unwrap();
+        a.execute("mail.flag", json!({"ids": [ids[2]]})).unwrap();
+        a.execute("mail.flag", json!({"ids": [ids[3]], "due": "2026-10-01"})).unwrap();
+        a.execute("mail.complete", json!({"ids": [ids[3]]})).unwrap();
+        let follow_ups: Vec<FollowUp> = ids.iter().map(|id| FollowUp::of(&a.session.mailbox.messages[id], &a.session)).collect();
+        assert_eq!(follow_ups, [FollowUp::Overdue, FollowUp::Flagged, FollowUp::Flagged, FollowUp::None, FollowUp::None], "due today is not overdue");
+        a.execute("mail.select", json!({"id": ids[4]})).unwrap();
+        let mut harness = window(a, (1440.0, 900.0));
+        harness.run_steps(3);
+        let look = |harness: &Window, id: Id| {
+            let hit = &harness.state().hit;
+            (hit.rect("messageFlagShade", id).is_some(), hit.rect("messageOverdue", id).is_some())
+        };
+        let looks: Vec<(bool, bool)> = ids.iter().map(|id| look(&harness, *id)).collect();
+        assert_eq!(looks, [(true, true), (true, false), (true, false), (false, false), (false, false)]);
+        // Selected, the row is the selection's colour (its text stays red when it is overdue).
+        harness.state_mut().execute("mail.select", json!({"id": ids[0]})).unwrap();
+        harness.run_steps(3);
+        assert_eq!(look(&harness, ids[0]), (false, true));
+        // The tint is neither the list, the selection nor the pointer's shade, in either palette.
+        for t in [Tokens::light(), Tokens::dark()] {
+            assert_eq!(row_fill(&t, FollowUp::Flagged, false, false), Some(t.flagged_row));
+            assert_eq!(row_fill(&t, FollowUp::Overdue, true, true), Some(t.selection));
+            assert_eq!(row_fill(&t, FollowUp::None, false, false), None);
+            assert!(![t.surface, t.selection, t.hover].contains(&t.flagged_row));
+        }
     }
 }

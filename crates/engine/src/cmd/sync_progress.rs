@@ -72,6 +72,10 @@ pub struct AccountRun {
     /// How many of how many (messages sent, or a folder's new messages); 0 when not known.
     pub done: u32,
     pub total: u32,
+    /// Which folder of how many it is at while it brings new mail down (the first is 1); 0 of 0
+    /// when not known.
+    pub folder_number: u32,
+    pub folders: u32,
     /// New messages and messages sent so far in the run.
     pub new: usize,
     pub sent: usize,
@@ -80,6 +84,35 @@ pub struct AccountRun {
     /// The run changed nothing for it (no new mail, nothing sent, no problems): what it shows is
     /// what the run before came to.
     pub kept: bool,
+}
+
+impl AccountRun {
+    /// How far its part of the run has got, 0 to 1: nothing while it waits, all of it once it is
+    /// over, and in between by its phase (sending, the folders, new mail folder by folder, the
+    /// calendar and contacts), and within new mail by the folder it is at and the messages of it
+    /// that have come.
+    pub fn fraction(&self) -> f32 {
+        let part = |done: u32, total: u32| if total == 0 { 0.0 } else { (done.min(total) as f32 / total as f32).clamp(0.0, 1.0) };
+        match self.state {
+            RunState::Waiting => 0.0,
+            RunState::Done | RunState::Stopped | RunState::Skipped => 1.0,
+            RunState::Running => match self.phase {
+                None => 0.0,
+                Some(SyncPhase::Sending) => 0.1 * part(self.done, self.total),
+                Some(SyncPhase::Folders) => 0.1,
+                Some(SyncPhase::NewMail) => {
+                    let within = part(self.done, self.total);
+                    let folders = if self.folders == 0 {
+                        within
+                    } else {
+                        ((self.folder_number.saturating_sub(1) as f32 + within) / self.folders as f32).clamp(0.0, 1.0)
+                    };
+                    0.15 + 0.75 * folders
+                }
+                Some(SyncPhase::CalendarAndContacts) => 0.92,
+            },
+        }
+    }
 }
 
 /// What an account's part of a run came to, kept for the next run that changes nothing.
@@ -128,6 +161,8 @@ pub struct SyncProgress {
 pub(crate) struct Piece<'a> {
     /// The step it is at, when the piece says (else the row keeps the one before).
     pub step: Option<(SyncPhase, String, u32, u32)>,
+    /// Which folder of how many the run is at, when the piece says (else the row keeps it).
+    pub folders: Option<(u32, u32)>,
     pub new: usize,
     pub sent: usize,
     pub problems: &'a [String],
@@ -140,6 +175,21 @@ impl SyncProgress {
     /// Whether a run is under way: an account in it is running or waiting its turn.
     pub fn running(&self) -> bool {
         self.accounts.iter().any(|a| a.state.under_way())
+    }
+
+    /// How far the run under way has got, 0 to 1, its accounts counted alike; `None` when no run
+    /// is under way.
+    pub fn fraction(&self) -> Option<f32> {
+        if !self.running() || self.accounts.is_empty() {
+            return None;
+        }
+        let sum: f32 = self.accounts.iter().map(AccountRun::fraction).sum();
+        Some((sum / self.accounts.len() as f32).clamp(0.0, 1.0))
+    }
+
+    /// The account whose part of the run is under way now, if one is.
+    pub fn current(&self) -> Option<&AccountRun> {
+        self.accounts.iter().find(|r| r.state == RunState::Running)
     }
 
     /// A new run, of these accounts in this order, every one waiting: it takes the place of the
@@ -258,6 +308,12 @@ impl SyncProgress {
             row.phase = Some(phase);
             row.folder = folder;
             (row.done, row.total) = (done, total);
+            if phase != SyncPhase::NewMail {
+                (row.folder_number, row.folders) = (0, 0);
+            }
+        }
+        if let Some((number, folders)) = piece.folders {
+            (row.folder_number, row.folders) = (number.min(folders), folders);
         }
         row.new = row.new.saturating_add(piece.new);
         row.sent = row.sent.saturating_add(piece.sent);
@@ -279,7 +335,7 @@ impl SyncProgress {
         }
         let Some(row) = self.accounts.iter_mut().find(|r| r.account == account) else { return };
         row.state = if piece.stopped { RunState::Stopped } else { RunState::Done };
-        (row.folder, row.done, row.total) = (String::new(), 0, 0);
+        (row.folder, row.done, row.total, row.folder_number, row.folders) = (String::new(), 0, 0, 0, 0);
         let outcome = Outcome { new: row.new, sent: row.sent, problems: row.problems.clone(), stopped: piece.stopped };
         let nothing = outcome.new == 0 && outcome.sent == 0 && outcome.problems.is_empty() && !outcome.stopped;
         match self.last.get(&account) {
@@ -606,5 +662,74 @@ mod tests {
         s.sync_progress.begin(&[imap]);
         s.sync_progress.end(imap, true);
         assert_eq!(row(&mut s, imap)["state"], json!("stopped"));
+    }
+
+    /// How far a run has got, for the status bar's bar: by account, by phase, by folder of how
+    /// many and by message of how many, never going back as the pieces come in; none once over.
+    #[test]
+    fn a_run_says_how_far_it_has_got() {
+        let (mut s, imap, ms) = session();
+        assert_eq!(s.sync_progress.fraction(), None);
+        s.sync_progress.begin(&[imap, ms]);
+        assert_eq!(s.sync_progress.fraction(), Some(0.0));
+        assert!(s.sync_progress.current().is_none(), "both wait");
+        let mut seen = vec![0.0];
+        let mut at = |s: &mut Session| {
+            let f = s.sync_progress.fraction().unwrap();
+            assert!(seen.last().is_some_and(|last| f >= *last), "{f} after {seen:?}");
+            seen.push(f);
+        };
+        let piece = |step: Option<SyncStep>| SyncResult { account: imap, partial: true, step, ..Default::default() };
+        for p in [
+            step(SyncStage::Sending, "", 0, 2),
+            step(SyncStage::Sending, "", 2, 2),
+            step(SyncStage::Connecting, "", 0, 0),
+            step(SyncStage::Listed, "", 0, 4),
+            step(SyncStage::Checking, "Inbox", 1, 4),
+            step(SyncStage::Reading, "Inbox", 50, 100),
+            step(SyncStage::Reading, "Inbox", 100, 100),
+            step(SyncStage::Checking, "Archive", 2, 4),
+            step(SyncStage::Checking, "Sent", 4, 4),
+        ] {
+            apply(&mut s, piece(p));
+            at(&mut s);
+        }
+        assert_eq!(s.sync_progress.current().map(|r| (r.account, r.folder_number, r.folders)), Some((imap, 4, 4)));
+        // Half way through the Inbox, the first of four folders: an eighth of new mail.
+        let inbox = AccountRun {
+            state: RunState::Running,
+            phase: Some(SyncPhase::NewMail),
+            done: 50,
+            total: 100,
+            folder_number: 1,
+            folders: 4,
+            ..Default::default()
+        };
+        assert!((inbox.fraction() - (0.15 + 0.75 / 8.0)).abs() < 1e-6);
+        apply(&mut s, SyncResult { account: imap, ..Default::default() });
+        at(&mut s);
+        assert_eq!(s.sync_progress.fraction(), Some(0.5), "one account of two is done");
+        let row = s.sync_progress.accounts.iter().find(|r| r.account == imap).unwrap();
+        assert_eq!((row.folder_number, row.folders), (0, 0), "nothing kept of where it was");
+
+        // A Microsoft account says which folder of how many in its progress.
+        let progress = Some(GraphProgress { folder: "in".into(), read: 10, total: 20, number: 2, folders: 3 });
+        graph(&mut s, GraphMailResult { account: ms, progress, partial: true, ..Default::default() });
+        at(&mut s);
+        let row = s.sync_progress.current().unwrap();
+        assert_eq!((row.account, row.folder_number, row.folders), (ms, 2, 3));
+        // Odd numbers never go past the end.
+        let odd = AccountRun {
+            state: RunState::Running,
+            phase: Some(SyncPhase::NewMail),
+            done: u32::MAX,
+            total: 1,
+            folder_number: 9,
+            folders: 3,
+            ..Default::default()
+        };
+        assert!(odd.fraction() <= 1.0);
+        graph(&mut s, GraphMailResult { account: ms, ..Default::default() });
+        assert_eq!(s.sync_progress.fraction(), None, "over");
     }
 }
