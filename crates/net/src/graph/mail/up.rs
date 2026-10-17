@@ -21,15 +21,21 @@
 //!   message (`GET /me/messages/{id}`), for the engine to put it back here as the server has it;
 //!   one whose read isn't answered waits for the next run, delete and all.
 //!
+//! Every address is the mailbox's own ([`Graph::batch_path`]): `/me/…` for the owner's, and
+//! `/users/{address}/…` for a shared mailbox (#70), with that mailbox's own ids; nothing meant
+//! for a shared mailbox is ever asked of `/me`.
+//!
 //! A request the server refuses (404, 403, 400) is answered so, for the engine to put back and
-//! say (S20), and logged by status and Graph's code alone. One it is too busy for (429, 503,
+//! say (S20), and logged by status and Graph's code alone. In a shared mailbox a 403 never puts
+//! back what the owner changed: by Graph's code, no access stops the run's changes and the
+//! mailbox shows No access; any other 403 holds the change here, counted, for the next run. One it is too busy for (429, 503,
 //! 504) is asked again after the wait it named, when it is one that is the same however often
 //! it is made (a property, a delete, the marker); a move or a copy waits for the next run. No
 //! subject, address, id or name of a message goes into a log line or an error.
 
 use std::collections::HashMap;
 
-use mailcraft_model::sync::{FlagUp, MessageChange, MessageChangeDone, MessageOutcome, merge_categories};
+use mailcraft_model::sync::{FlagUp, MessageChange, MessageChangeDone, MessageOutcome, SharedRefusal, merge_categories};
 use mailcraft_model::{FlagStatus, Importance};
 use mailcraft_time::{DateTime, Timestamp};
 use serde_json::{Map, Value, json};
@@ -73,31 +79,42 @@ fn busy(status: u16) -> bool {
 
 /// Make the changes of messages of a run, in the order of S16, putting what became of each into
 /// `out`. A change that isn't there waits for the next run. An error is what stops the run's
-/// changes (the server busy, no sign-in, no answer).
+/// changes (the server busy, no sign-in, no answer, a shared mailbox that won't let the owner
+/// in). Answers how many changes of a shared mailbox were refused with a 403 and wait here
+/// (#70): a shared mailbox's 403 never puts back what the owner changed.
 pub(super) fn messages(
     graph: &Graph<'_>,
     made: &HashMap<u64, String>,
     changes: &[MessageChange],
     out: &mut Vec<MessageChangeDone>,
-) -> Result<(), NetError> {
+) -> Result<usize, NetError> {
     let changes: Vec<&MessageChange> = changes.iter().take(mailcraft_model::sync::MAX_MESSAGE_CHANGES).collect();
     if changes.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
-    let mut up = Up { graph, changes: &changes, out };
+    let mut up = Up { graph, changes: &changes, out, denied: None, held: 0 };
     up.updates()?;
+    up.denied()?;
     up.moves(made)?;
+    up.denied()?;
     up.copies(made)?;
+    up.denied()?;
     up.deletes()?;
+    up.denied()?;
     let refused = up.out.iter().filter(|done| !matches!(done.outcome, MessageOutcome::Done { .. })).count();
     log::info!("graph changes: {} of {} changes of messages answered, {refused} of them refused", up.out.len(), changes.len());
-    Ok(())
+    Ok(up.held)
 }
 
 struct Up<'g, 'c, 'o> {
     graph: &'g Graph<'g>,
     changes: &'c [&'c MessageChange],
     out: &'o mut Vec<MessageChangeDone>,
+    /// A shared mailbox that won't let the owner in any more, as a request of a batch said by
+    /// Graph's code (#70): the changes stop, and every one not yet answered waits here.
+    denied: Option<SharedRefusal>,
+    /// Changes of a shared mailbox refused with a 403 of another code: they wait here too.
+    held: usize,
 }
 
 /// An id as the server writes one, as a piece of an address.
@@ -185,9 +202,42 @@ impl Up<'_, '_, '_> {
         }
     }
 
+    /// The changes stop when a shared mailbox said it won't let the owner in (#70).
+    fn denied(&self) -> Result<(), NetError> {
+        match self.denied {
+            Some(why) => Err(NetError::SharedRefused(why)),
+            None => Ok(()),
+        }
+    }
+
+    /// For a shared mailbox (#70): a refusal that leaves the change waiting here rather than put
+    /// back, told apart by Graph's code. No access, no mailbox, not through Graph: the changes
+    /// stop ([`Up::denied`]). Any other 403 (a quota, a consent, a folder kept from the owner):
+    /// held, and counted. Whether it was one of these.
+    fn held_back(&mut self, status: u16, body: &Value, what: &str) -> bool {
+        if !self.graph.shared() {
+            return false;
+        }
+        let code = code_of(body.to_string().as_bytes(), &[self.graph.token]);
+        if let Some(why) = super::super::shared_refusal(u64::from(status), body) {
+            log::info!("graph changes: in a shared mailbox, {what} was refused (status {status}{code}); the changes wait here");
+            self.denied.get_or_insert(why);
+            return true;
+        }
+        if status == 403 {
+            log::info!("graph changes: in a shared mailbox, {what} was refused (status {status}{code}); it waits here");
+            self.held = self.held.saturating_add(1);
+            return true;
+        }
+        false
+    }
+
     /// Answered for good with `status`: settled as a refusal, logged by status and code alone.
-    /// Whether it was one.
+    /// Whether it was one (or, in a shared mailbox, held back: [`Up::held_back`]).
     fn refused(&mut self, at: usize, status: u16, body: &Value, what: &str) -> bool {
+        if self.held_back(status, body, what) {
+            return true;
+        }
         let Some(outcome) = refusal(status) else { return false };
         let code = logged_code(body.to_string().as_bytes(), &[self.graph.token]);
         log::info!("graph changes: {what} was refused (status {status}{code})");
@@ -318,7 +368,7 @@ impl Up<'_, '_, '_> {
                     Some(id) => reads.push(Sub {
                         at,
                         method: "GET",
-                        url: format!("/me/messages/{id}?{}", http::form(&[("$select", "categories")])),
+                        url: self.graph.batch_path(&format!("/messages/{id}?{}", http::form(&[("$select", "categories")]))),
                         body: None,
                     }),
                     None => self.settle(at, MessageOutcome::Refused { status: 400 }),
@@ -374,7 +424,7 @@ impl Up<'_, '_, '_> {
             }
             // (A due date filled in at the start comes back with the folder's next delta.)
             sent.insert(at, (merged, flag.clone()));
-            patches.push(Sub { at, method: "PATCH", url: format!("/me/messages/{id}"), body: Some(Value::Object(body)) });
+            patches.push(Sub { at, method: "PATCH", url: self.graph.batch_path(&format!("/messages/{id}")), body: Some(Value::Object(body)) });
         }
         for (sub, status, body) in self.repeatable(Kind::Same, patches)? {
             if (200..300).contains(&status) {
@@ -405,7 +455,12 @@ impl Up<'_, '_, '_> {
                 self.settle(at, MessageOutcome::Refused { status: 400 });
                 continue;
             };
-            subs.push(Sub { at, method: "POST", url: format!("/me/messages/{id}/move"), body: Some(json!({"destinationId": to})) });
+            subs.push(Sub {
+                at,
+                method: "POST",
+                url: self.graph.batch_path(&format!("/messages/{id}/move")),
+                body: Some(json!({"destinationId": to})),
+            });
             to_of.insert(at, to);
         }
         for round in 0..2 {
@@ -470,7 +525,7 @@ impl Up<'_, '_, '_> {
                 continue;
             };
             let body = json!({"singleValueExtendedProperties": [{"id": MARKER, "value": marker}]});
-            marks.push(Sub { at, method: "PATCH", url: format!("/me/messages/{id}"), body: Some(body) });
+            marks.push(Sub { at, method: "PATCH", url: self.graph.batch_path(&format!("/messages/{id}")), body: Some(body) });
             plan.insert(at, (id, to, marker.clone()));
         }
         let mut marked = Vec::new();
@@ -489,7 +544,12 @@ impl Up<'_, '_, '_> {
                     let (_, to, marker) = plan.get(at)?;
                     let filter = format!("singleValueExtendedProperties/any(ep: ep/id eq '{MARKER}' and ep/value eq '{marker}')");
                     let query = http::form(&[("$filter", &filter), ("$select", "id,parentFolderId"), ("$top", "1")]);
-                    Some(Sub { at: *at, method: "GET", url: format!("/me/mailFolders/{}/messages?{query}", http::encode(to)), body: None })
+                    Some(Sub {
+                        at: *at,
+                        method: "GET",
+                        url: self.graph.batch_path(&format!("/mailFolders/{}/messages?{query}", http::encode(to))),
+                        body: None,
+                    })
                 })
                 .collect();
             let mut to_copy = Vec::new();
@@ -505,7 +565,7 @@ impl Up<'_, '_, '_> {
                             to_copy.push(Sub {
                                 at: look.at,
                                 method: "POST",
-                                url: format!("/me/messages/{id}/copy"),
+                                url: self.graph.batch_path(&format!("/messages/{id}/copy")),
                                 body: Some(json!({"destinationId": to})),
                             });
                         }
@@ -550,7 +610,7 @@ impl Up<'_, '_, '_> {
         for (at, change) in self.changes.iter().enumerate() {
             let (MessageChange::Delete { id } | MessageChange::MovedOut { id, .. }) = change else { continue };
             match piece(id) {
-                Some(id) => subs.push(Sub { at, method: "DELETE", url: format!("/me/messages/{id}"), body: None }),
+                Some(id) => subs.push(Sub { at, method: "DELETE", url: self.graph.batch_path(&format!("/messages/{id}")), body: None }),
                 None => self.settle(at, MessageOutcome::Refused { status: 400 }),
             }
         }
@@ -561,6 +621,8 @@ impl Up<'_, '_, '_> {
             let refused_for_good = matches!(refusal(status), Some(MessageOutcome::Refused { .. }));
             if (200..300).contains(&status) {
                 self.settle(sub.at, done());
+            } else if self.held_back(status, &body, "a delete of a message") {
+                // Waits here, delete and all.
             } else if refused_for_good && matches!(self.changes.get(sub.at), Some(MessageChange::Delete { .. })) {
                 let code = logged_code(body.to_string().as_bytes(), &[self.graph.token]);
                 log::info!("graph changes: a delete of a message was refused (status {status}{code}); it is read to be put back");
@@ -582,8 +644,13 @@ impl Up<'_, '_, '_> {
                 }
                 // Gone after all.
                 404 | 410 => self.settle(look.at, MessageOutcome::Gone),
-                // Not to be read either: put back from what is kept here.
-                400 | 403 => self.settle(look.at, MessageOutcome::Refused { status: was }),
+                // Not to be read either: put back from what is kept here (in a shared mailbox, a
+                // 403 leaves it waiting).
+                400 | 403 => {
+                    if !self.held_back(status, &body, "reading a message whose delete was refused") {
+                        self.settle(look.at, MessageOutcome::Refused { status: was });
+                    }
+                }
                 _ => log::info!("graph changes: a message whose delete was refused couldn't be read (status {status}); it waits for the next run"),
             }
         }
