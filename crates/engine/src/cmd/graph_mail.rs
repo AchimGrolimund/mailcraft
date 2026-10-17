@@ -325,7 +325,9 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
     if result.whole {
         graph_down::sweep(&mut s.mailbox, account, &mut down);
     }
-    if taken != Taken::default() || down != Down::default() || !result.pages.is_empty() {
+    // A shared mailbox is named as its server names it, once its Sent Items say so (#70).
+    let named = s.mailbox.name_shared_from_sent(account);
+    if taken != Taken::default() || down != Down::default() || !result.pages.is_empty() || named {
         s.mailbox_changed();
     }
     // The view stays on a folder that is there.

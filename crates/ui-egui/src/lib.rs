@@ -814,6 +814,13 @@ pub struct MailApp {
     shared_next: Option<Id>,
     /// With `shared_next`: that sign-in asks for sending from shared mailboxes too (#70).
     shared_send_next: bool,
+    /// Shared mailboxes whose Outbox waits for the owner's permission to send from shared
+    /// mailboxes (#70): a run that starts by itself neither takes that mail along nor starts for
+    /// it, until the owner asks for a run, presses Send in it, or allows it.
+    shared_send_waits: std::collections::HashSet<Id>,
+    /// Shared mailboxes the owner pressed Send in since their last run: when that run finds
+    /// sending from shared mailboxes isn't allowed yet, the window asks, whoever started it (#70).
+    shared_send_pressed: std::collections::HashSet<Id>,
     /// Shared mailboxes whose server won't let the owner in, and why (no Full Access, no such
     /// mailbox…): shown as No access, and not read again by a Send/Receive that started by
     /// itself, only by one the owner asks for (#70).
@@ -980,6 +987,8 @@ impl MailApp {
             favorites_next: false,
             shared_next: None,
             shared_send_next: false,
+            shared_send_waits: Default::default(),
+            shared_send_pressed: Default::default(),
             shared_refused: Default::default(),
             shared_checking: Default::default(),
             mail_only_next: false,
@@ -1135,6 +1144,13 @@ impl MailApp {
         }
         // Check for Updates pressed by the owner checks whether the daily check is on or not.
         let r = if id == updates::CHECK { self.check_for_updates(true) } else { self.execute(id, params) };
+        // Sent from a shared mailbox (#70): pressing Send is the owner asking for it to go.
+        if id == "compose.send"
+            && let Ok(v) = &r
+            && let Some(sent) = v.get("id").and_then(Value::as_u64)
+        {
+            self.shared_send_pressed_in(sent);
+        }
         if id.starts_with("calendar.") {
             self.ran = (self.ran.0.wrapping_add(1), id.to_string(), r.clone());
         }
@@ -1807,10 +1823,21 @@ impl MailApp {
     /// that the server hasn't been told.
     fn waiting_to_go(&self, account: Id) -> usize {
         let mb = &self.session.mailbox;
-        // (A held message waits for the owner, not for a run.)
-        let outbox =
-            mb.folder_of_kind(account, mailcraft_model::FolderKind::Outbox).map_or(0, |f| mb.messages_in(f).filter(|m| m.held.is_empty()).count());
+        // (A held message waits for the owner, not for a run; and so does mail in a shared
+        // mailbox's Outbox that may not be sent from it yet, #70.)
+        let outbox = if self.shared_send_waits.contains(&account) {
+            0
+        } else {
+            mb.folder_of_kind(account, mailcraft_model::FolderKind::Outbox).map_or(0, |f| mb.messages_in(f).filter(|m| m.held.is_empty()).count())
+        };
         outbox + mailcraft_engine::cmd::account::unpushed(&self.session, account)
+    }
+
+    /// A run of `account` is over: what still waits to go to its server, and when that was seen.
+    /// What a server refused, or what waits on the owner, then doesn't start a run every few
+    /// seconds ([`MailApp::auto_sync`]), whichever way the account is kept in step.
+    pub(crate) fn note_pushed(&mut self, account: Id) {
+        self.push_seen.insert(account, (self.waiting_to_go(account), now_ms()));
     }
 
     /// Whether a Send/Receive for `account` can go ahead without asking anybody anything: its
@@ -2047,6 +2074,8 @@ impl MailApp {
         if kept_in_step {
             self.session.sync_progress.end(account, false);
             errors.append(&mut self.graph_problems);
+            // What still waits after this run doesn't start another every few seconds.
+            self.note_pushed(account);
             // No token for the mail: Microsoft wants the owner's say-so for it, or the sign-in has
             // run out. There is no IMAP leg to ask instead, so the owner is asked here (#124).
             if result.mail.is_none() && (result.consent_needed || result.sign_in_refused) {
@@ -2423,7 +2452,7 @@ impl MailApp {
                 self.note_sync_problems(account, &[], true);
             }
             self.status(totals.summary());
-            self.push_seen.insert(account, (self.waiting_to_go(account), now_ms()));
+            self.note_pushed(account);
             self.graph_switch_after_sync(account, totals.errors.is_empty() && !totals.stopped);
             return;
         }

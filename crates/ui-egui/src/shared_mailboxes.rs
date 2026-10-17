@@ -6,7 +6,9 @@
 //! Favorites. Mail written in it is from its address, and goes through it. The first time
 //! something waits to be sent from one, the window asks the owner whether to go ahead, and then
 //! Microsoft's page asks him for `Mail.Send.Shared`, by itself; until then nothing of it is sent
-//! (it waits), and a no holds it in its Outbox with why. Its token is
+//! (it waits), and a no holds it in its Outbox with why. The window asks when the owner asked for
+//! the run or pressed Send in it; mail that waits for that starts no run by itself, and a run
+//! that starts by itself leaves it where it is (#155). Its token is
 //! renewed for the run with `Mail.ReadWrite.Shared`; when the owner's sign-in doesn't cover that
 //! yet, he is asked for it on Microsoft's page, by itself, when he asked for the run (adding a
 //! shared mailbox does), and never with a sign-in of any other kind. The refresh token that
@@ -77,7 +79,12 @@ impl MailApp {
             self.begin_sign_in(owner.id, oauth, &address, String::new(), false, true)?;
             return Ok(json!({"pending": "signIn", "account": owner.id}));
         }
-        let mail = mailcraft_engine::cmd::graph_mail::graph_mail_request(&self.session, account).map_err(|e| e.to_string())?;
+        let mut mail = mailcraft_engine::cmd::graph_mail::graph_mail_request(&self.session, account).map_err(|e| e.to_string())?;
+        // Its Outbox waits for the owner's permission (#70): a run nobody asked for leaves it
+        // there, and asks Microsoft nothing about it.
+        if quiet && self.shared_send_waits.contains(&account) {
+            mail.sends.clear();
+        }
         let (pieces, taken) = std::sync::mpsc::sync_channel(8);
         let ask = GraphRequest {
             account: mailbox,
@@ -103,8 +110,10 @@ impl MailApp {
         self.graph_pieces = Some(taken);
         self.graph_problems.clear();
         // Asked for: the owner wants to know whether the server opens it now.
+        // (And whether its mail may be sent from it now.)
         if !quiet {
             self.shared_refused.remove(&account);
+            self.shared_send_waits.remove(&account);
         }
         self.graph_rx = Some((account, quiet, false, graph(ask)));
         self.session.sync_status = tl!("Sending and receiving…").to_string();
@@ -163,14 +172,20 @@ impl MailApp {
             }
         }
         // Mail waits to go from it, and sending from shared mailboxes isn't allowed yet (#70):
-        // asked about when the owner asked for the run, else said.
-        if result.send_consent_needed
-            && self.session.mailbox.account(account).is_some()
-            && (quiet || asking || self.dialog.is_some() || !self.ask_shared_send(account))
-        {
-            errors.push(
-                tl!("Mail in this shared mailbox's Outbox waits: sending from shared mailboxes needs your permission. Use Send/Receive.").to_string(),
-            );
+        // asked about when the owner asked for the run or pressed Send in it, else said. Either
+        // way it waits for the owner: no run starts again for it by itself.
+        if result.send_consent_needed && self.session.mailbox.account(account).is_some() {
+            self.shared_send_waits.insert(account);
+            let pressed = self.shared_send_pressed.remove(&account);
+            if (quiet && !pressed) || asking || self.dialog.is_some() || !self.ask_shared_send(account) {
+                errors.push(
+                    tl!("Mail in this shared mailbox's Outbox waits: sending from shared mailboxes needs your permission. Use Send/Receive.")
+                        .to_string(),
+                );
+            }
+        } else if self.outbox_waiting(account) == 0 {
+            // (What was pressed Send on is gone.)
+            self.shared_send_pressed.remove(&account);
         }
         errors.dedup();
         // Being added: kept when its Inbox was read, else removed again with the reason (S1).
@@ -204,6 +219,28 @@ impl MailApp {
             self.session.sync_status.clear();
         }
         self.note_sync_problems(account, &errors, true);
+        self.note_pushed(account);
+    }
+
+    /// How many messages in the Outbox of `account` wait to be sent (not held).
+    fn outbox_waiting(&self, account: Id) -> usize {
+        let mb = &self.session.mailbox;
+        mb.folder_of_kind(account, FolderKind::Outbox).map_or(0, |f| mb.messages_in(f).filter(|m| m.held.is_empty()).count())
+    }
+
+    /// The owner pressed Send on `message` (#70). From a shared mailbox that may not be sent from
+    /// yet, the window asks at once; otherwise the run that takes it out asks if it finds so,
+    /// though that run starts by itself.
+    pub(crate) fn shared_send_pressed_in(&mut self, message: Id) {
+        let Some(account) = self.session.mailbox.message(message).map(|m| m.account) else { return };
+        if !self.session.mailbox.account(account).is_some_and(Account::is_shared) {
+            return;
+        }
+        if !self.shared_send_waits.contains(&account) {
+            self.shared_send_pressed.insert(account);
+        } else if self.dialog.is_none() {
+            self.ask_shared_send(account);
+        }
     }
 
     /// Ask the owner of the shared mailbox `shared`, on Microsoft's page, to let this program read
@@ -313,6 +350,8 @@ impl MailApp {
                     }
                 }
                 self.graph_tokens.insert(shared, tokens);
+                // (Allowed: what waits goes now.)
+                self.shared_send_waits.remove(&shared);
                 if let Err(e) = self.start_sync(&json!({"account": shared})) {
                     self.status(e);
                 }
@@ -329,6 +368,8 @@ impl MailApp {
             Err(_) => "declined",
         };
         let _ = self.execute("sync.holdSends", json!({"account": shared, "why": why}));
+        // (Held, it waits for Send Again, not for permission.)
+        self.shared_send_waits.remove(&shared);
         if why == "approval" {
             // What to do next (#124): an administrator approves once, for everybody.
             let _ = self.run("ui.approvalHelp", json!({"account": owner}));
