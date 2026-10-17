@@ -363,10 +363,56 @@ fn scroll_arrows(app: &mut MailApp, ui: &mut Ui, lane: Rect, out: &egui::scroll_
     }
 }
 
+/// While a search is on, a bar over the list says so: how many it found and where, with a way
+/// back to the folder (✕, or Esc). Search is quick enough that the list changing by itself
+/// went unnoticed (#115).
+fn search_bar(app: &mut MailApp, ui: &mut Ui, found: usize) {
+    let on = !app.session.view.search.trim().is_empty();
+    // It fades in when a search starts; with no search it is gone at once, ready to fade again.
+    let shown = ui.ctx().animate_bool_with_time(ui.id().with("search_bar_fade"), on, if on { 0.15 } else { 0.0 });
+    if !on {
+        return;
+    }
+    let t = Tokens::get(ui.ctx());
+    let scope = if app.session.view.scope == mailcraft_engine::Scope::Everywhere {
+        tl!("All Mailboxes").to_string()
+    } else {
+        app.session.mailbox.folder(app.session.view.folder).map(|f| f.name.clone()).unwrap_or_default()
+    };
+    let said = match found {
+        0 => crate::i18n::fmt(tl!("No results in {scope}"), &[("scope", &scope)]),
+        1 => crate::i18n::fmt(tl!("1 result in {scope}"), &[("scope", &scope)]),
+        n => crate::i18n::fmt(tl!("{n} results in {scope}"), &[("n", &n.to_string()), ("scope", &scope)]),
+    };
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width() - SCROLL_LANE, 30.0), Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &said));
+    let fill = t.selection.gamma_multiply(shown);
+    ui.painter().rect_filled(r.shrink2(vec2(6.0, 3.0)), 4.0, fill);
+    let close = Rect::from_center_size(pos2(r.max.x - 22.0, r.center().y), vec2(22.0, 22.0));
+    crate::theme::paint_clipped(ui.painter(), pos2(r.min.x + 16.0, r.center().y), close.min.x - r.min.x - 24.0, &said, semibold(12.0), t.text);
+    let x = ui.interact(close, ui.id().with("search_bar_close"), Sense::click()).on_hover_text(tl!("Clear search (Esc)"));
+    x.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("Clear search")));
+    app.hit.add("searchBarClose", 0, close);
+    if x.hovered() {
+        ui.painter().rect_filled(close, 4.0, t.hover);
+    }
+    let ink = if x.hovered() { t.text } else { t.text_dim };
+    let c = close.center();
+    for (a, b) in [(vec2(-4.5, -4.5), vec2(4.5, 4.5)), (vec2(-4.5, 4.5), vec2(4.5, -4.5))] {
+        ui.painter().line_segment([c + a, c + b], Stroke::new(1.4, ink));
+    }
+    if x.clicked() {
+        app.search_text.clear();
+        let _ = app.run("view.clearSearch", json!({}));
+    }
+}
+
 fn list(app: &mut MailApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
     list_header(app, ui);
+    let rows = app.session.rows();
+    search_bar(app, ui, rows.len());
     // A search covers what is here: of a message not fetched yet, its headers and preview (R3.2).
     if !app.session.view.search.trim().is_empty() {
         let folder = app.session.view.folder;
@@ -383,7 +429,6 @@ fn list(app: &mut MailApp, ui: &mut Ui) {
             });
         }
     }
-    let rows = app.session.rows();
     // A search that reads the text of messages goes as far into older mail as its time allows,
     // and says how far that was.
     if app.session.unsearched > 0 && !app.session.view.search.trim().is_empty() {
