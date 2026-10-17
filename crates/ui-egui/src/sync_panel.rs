@@ -7,10 +7,14 @@
 //! anywhere else closes it. What it shows is the engine's ([`mailcraft_engine::cmd::sync_progress`])
 //! with the problems the window keeps ([`MailApp::sync_problem_lines`]).
 //!
+//! A waiting account has Skip (`ui.skipSync`), which leaves it out of the run; under each
+//! Microsoft account, how far its messages have been fetched whole (Full messages), or that Stop
+//! has paused that until the next Send/Receive.
+//!
 //! Problems may name a message by its subject; messages being sent are only counted.
 
 use egui::{Align2, Rect, RichText, Sense, Ui, pos2, vec2};
-use mailcraft_engine::cmd::sync_progress::{AccountRun, RunState};
+use mailcraft_engine::cmd::sync_progress::{AccountRun, FullMessages, RunState};
 use mailcraft_model::Id;
 use serde_json::json;
 
@@ -49,9 +53,24 @@ pub(crate) struct Row {
     /// isn't the one shown (it never got started in it, say).
     pub run: Option<AccountRun>,
     pub problems: Vec<String>,
+    /// Its full messages, while some are still to be fetched; and whether Stop has paused that.
+    pub full: Option<FullMessages>,
+    pub paused: bool,
 }
 
 impl Row {
+    /// The Full messages line under the row, while some are still to be fetched.
+    pub fn full_line(&self) -> Option<String> {
+        let full = self.full.filter(|f| f.waiting())?;
+        let counted = i18n::fmt(tl!("Full messages: {done} of {total}"), &[("done", &full.done.to_string()), ("total", &full.total.to_string())]);
+        Some(if self.paused { format!("{counted} · {}", tl!("Paused until the next Send/Receive")) } else { counted })
+    }
+
+    /// Whether it waits its turn (and can be skipped).
+    pub fn waiting(&self) -> bool {
+        self.run.as_ref().is_some_and(|r| r.state == RunState::Waiting)
+    }
+
     /// What the row says under the account's name, in one line.
     pub fn line(&self) -> String {
         let count = |n: usize, one: &str, many: &str| i18n::fmt(if n == 1 { tl!(one) } else { tl!(many) }, &[("n", &n.to_string())]);
@@ -59,6 +78,7 @@ impl Row {
         let Some(run) = &self.run else { return problems() };
         match run.state {
             RunState::Waiting => tl!("Waiting").to_string(),
+            RunState::Skipped => tl!("Skipped").to_string(),
             RunState::Running => {
                 let Some(phase) = run.phase else { return tl!("Starting…").to_string() };
                 let counted = match (run.done, run.total) {
@@ -99,6 +119,8 @@ impl Row {
 pub(crate) fn rows(app: &MailApp) -> Vec<Row> {
     let mb = &app.session.mailbox;
     let problems = |account: Id| app.sync_problems.iter().find(|(a, ..)| *a == account).map(|(.., lines)| lines.clone()).unwrap_or_default();
+    let progress = &app.session.sync_progress;
+    let (full, paused) = (|account: Id| progress.full(account), progress.full_paused);
     let mut rows: Vec<Row> = app
         .session
         .sync_progress
@@ -106,13 +128,13 @@ pub(crate) fn rows(app: &MailApp) -> Vec<Row> {
         .iter()
         .filter_map(|run| {
             let name = mb.account(run.account)?.name.clone();
-            Some(Row { account: run.account, name, run: Some(run.clone()), problems: problems(run.account) })
+            Some(Row { account: run.account, name, run: Some(run.clone()), problems: problems(run.account), full: full(run.account), paused })
         })
         .collect();
     for (account, name, _, lines) in &app.sync_problems {
         if !rows.iter().any(|r| r.account == *account) && !lines.is_empty() {
             let name = mb.account(*account).map_or_else(|| name.clone(), |a| a.name.clone());
-            rows.push(Row { account: *account, name, run: None, problems: lines.clone() });
+            rows.push(Row { account: *account, name, run: None, problems: lines.clone(), full: full(*account), paused });
         }
     }
     rows
@@ -142,6 +164,7 @@ pub(crate) fn show(app: &mut MailApp, ctx: &egui::Context) {
     let rows = rows(app);
     let syncing = app.syncing();
     let mut stop = false;
+    let mut skip = None;
     let mut close = false;
     let mut scrolled = false;
     let shown = egui::Area::new(egui::Id::new("sync_progress_panel"))
@@ -191,7 +214,12 @@ pub(crate) fn show(app: &mut MailApp, ctx: &egui::Context) {
                             ui.add_space(6.0);
                         }
                         let top = ui.cursor().min.y;
-                        account_row(ui, &t, row);
+                        if let Some(r) = account_row(ui, &t, row) {
+                            app.hit.add("syncSkip", row.account, r.rect);
+                            if r.clicked() {
+                                skip = Some(row.account);
+                            }
+                        }
                         for (k, problem) in row.problems.iter().enumerate() {
                             let r = problem_line(ui, &t, problem);
                             app.hit.add("syncProblem", said, r);
@@ -216,6 +244,11 @@ pub(crate) fn show(app: &mut MailApp, ctx: &egui::Context) {
     if stop {
         let _ = app.run("ui.cancelSync", json!({}));
     }
+    if let Some(account) = skip
+        && let Err(e) = app.run("ui.skipSync", json!({"account": account}))
+    {
+        app.status(e);
+    }
     // A press anywhere else closes it; on what opens it, that does (a click there toggles it).
     let openers = [app.hit.rect("syncStatus", 0), app.hit.rect("syncProblemsLink", 0)];
     let away = ctx.input(|i| {
@@ -231,12 +264,14 @@ pub(crate) fn show(app: &mut MailApp, ctx: &egui::Context) {
 }
 
 /// An account's name and how it is doing: a bar when the total is known, else a spinner while
-/// it runs.
-fn account_row(ui: &mut Ui, t: &Tokens, row: &Row) {
+/// it runs; Skip on the right while it waits its turn (its response); and under it, for a
+/// Microsoft account, how far its full messages have got.
+fn account_row(ui: &mut Ui, t: &Tokens, row: &Row) -> Option<egui::Response> {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::hover());
     // (Room on the right for what a waiting account can be told: Skip.)
     let room = r.width() - 90.0;
     crate::theme::paint_clipped(ui.painter(), pos2(r.min.x, r.center().y), room.max(40.0), &row.name, semibold(13.0), t.text);
+    let top = r;
     let line = row.line();
     let color = match &row.run {
         Some(run) if run.state == RunState::Running => t.text,
@@ -260,6 +295,19 @@ fn account_row(ui: &mut Ui, t: &Tokens, row: &Row) {
         let filled = Rect::from_min_size(bar.min, vec2((bar.width() * done).max(6.0), bar.height()));
         ui.painter().rect_filled(filled, 3.0, t.accent);
     }
+    if let Some(full) = row.full_line() {
+        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
+        crate::theme::paint_clipped(ui.painter(), pos2(r.min.x, r.center().y), r.width().max(40.0), &full, regular(12.0), t.text_dim);
+    }
+    if !row.waiting() {
+        return None;
+    }
+    // Skip, over the two lines' right end.
+    let at = Rect::from_center_size(pos2(top.max.x - 36.0, top.max.y + 2.0), vec2(72.0, 26.0));
+    let skip = ui
+        .put(at, egui::Button::new(RichText::new(tl!("Skip")).font(regular(12.5))))
+        .on_hover_text(tl!("Leave this account out of this Send/Receive"));
+    Some(skip)
 }
 
 /// A problem under its account's row, wrapped, with a red mark before it. Its rect.
@@ -513,11 +561,167 @@ mod tests {
         assert!(h.state().sync_panel.is_some());
     }
 
+    /// Skip leaves a waiting account out of the run, and its row says so; the account running
+    /// is for Stop, and one not waiting has nothing to skip.
+    #[test]
+    fn skip_leaves_a_waiting_account_out_of_the_run() {
+        let (mut a, ids, pipe) = app();
+        a.execute("ui.sync", json!({})).unwrap();
+        // The first is running (its run started, though nothing has come from it yet).
+        let refused = a.execute("ui.skipSync", json!({"account": ids[0]})).unwrap_err();
+        assert!(refused.contains("Use Stop"), "{refused}");
+        assert_eq!(a.execute("ui.skipSync", json!({"account": ids[2]})).unwrap(), json!({"skipped": ids[2]}));
+        assert_eq!(lines(&a), ["Waiting", "Waiting", "Skipped"]);
+        // Skipped once is not waiting any more; nor is an account that isn't in the run, or none.
+        assert!(a.execute("ui.skipSync", json!({"account": ids[2]})).unwrap_err().contains("isn't waiting"));
+        let local = a.session.mailbox.accounts[0].id;
+        assert!(a.execute("ui.skipSync", json!({"account": local})).unwrap_err().contains("isn't waiting"));
+        for junk in [json!({}), json!({"account": "x"}), json!({"account": 424_242}), json!(null), json!([1])] {
+            assert!(a.execute("ui.skipSync", junk).is_err());
+        }
+        send(&pipe, mail(&a, ids[0], &[1], false));
+        a.poll_sync();
+        a.auto_sync();
+        let r = a.execute("ui.skipSync", json!({"account": ids[1]})).unwrap_err();
+        assert!(r.contains("Use Stop"), "the second one runs now: {r}");
+        send(&pipe, mail(&a, ids[1], &[2], false));
+        a.poll_sync();
+        a.auto_sync();
+        a.auto_sync();
+        // The skipped one was never started: the run is over without it.
+        assert_eq!(lines(&a), ["Done: 1 new", "Done: 1 new", "Skipped"]);
+        assert!(!a.session.sync_progress.running() && !a.syncing() && a.sync_queue.is_empty());
+        let said = a.execute("sync.progress", json!({})).unwrap();
+        assert_eq!(said["accounts"][2]["state"], json!("skipped"));
+    }
+
+    /// Skip on a waiting row in the panel.
+    #[test]
+    fn the_skip_button_is_on_waiting_rows() {
+        let (mut a, ids, _) = app();
+        a.execute("ui.sync", json!({})).unwrap();
+        a.execute("ui.dialog", json!({"name": "syncProgress"})).unwrap();
+        let mut h = window(a, 800.0);
+        let panel = h.state().hit.rect("syncPanel", 0).unwrap();
+        for id in &ids[1..] {
+            let skip = h.state().hit.rect("syncSkip", *id).expect("Skip on a waiting row");
+            assert!(panel.contains(skip.center()) && h.state().hit.rect("syncRow", *id).is_some_and(|r| r.contains(skip.center())));
+        }
+        let skip = h.state().hit.rect("syncSkip", ids[1]).unwrap();
+        click_at(&mut h, skip.center());
+        assert_eq!(lines(h.state())[1], "Skipped");
+        assert!(h.state().sync_panel.is_some(), "the panel stays open");
+        h.run_steps(2);
+        assert!(h.state().hit.rect("syncSkip", ids[1]).is_none(), "nothing to skip once skipped");
+        assert!(h.state().hit.rect("syncSkip", ids[2]).is_some());
+    }
+
+    /// A Microsoft account's full messages: counted under its row as they come in; Stop pauses
+    /// them, and the next run, the owner's or one by itself, has them go on.
+    #[test]
+    fn full_messages_pause_with_stop_and_go_on_with_the_next_run() {
+        use mailcraft_engine::cmd::graph_mail;
+        use mailcraft_model::sync::{GraphFetchResult, GraphFetched, ServerMessage, Tokens};
+
+        use crate::graph_fetch::GraphFetchJob;
+
+        let (mut a, ids, pipe) = app();
+        let ms = a.execute("account.add", json!({"email": "owner@example.org", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
+        let inbox = a.session.mailbox.folder_of_kind(ms, FolderKind::Inbox).unwrap();
+        for n in 0..50 {
+            let server = ServerMessage { id: format!("AAM{n}"), folder: "inbox".into(), ..Default::default() };
+            let m = Message { account: ms, folder: inbox, subject: format!("Note {n}"), date: NOW - n, received: NOW - n, unfetched: true, server: Some(server), ..Default::default() };
+            a.session.mailbox.add_message(m).unwrap();
+        }
+        a.seed_graph_token(ms, Tokens { access: "stand-in".into(), refresh: "r".into(), expires_at: mailcraft_time::now() + 3_600, ..Default::default() });
+        let jobs: Arc<Mutex<Vec<(GraphFetchJob, mpsc::Sender<GraphFetchResult>)>>> = Default::default();
+        let asked = jobs.clone();
+        a.services.graph_fetch = Some(Box::new(move |job: GraphFetchJob| {
+            let (tx, rx) = mpsc::channel();
+            asked.lock().unwrap().push((job, tx));
+            rx
+        }));
+        // Every job is answered with the messages it asked for.
+        let answer = |a: &mut MailApp| {
+            let pending: Vec<_> = std::mem::take(&mut *jobs.lock().unwrap());
+            for (job, tx) in pending {
+                let fetched = job.request.ids.iter().map(|id| GraphFetched { id: id.clone(), mime: b"Subject: Note\r\n\r\nWords.\r\n".to_vec() }).collect();
+                tx.send(GraphFetchResult { account: ms, fetched, ..Default::default() }).unwrap();
+            }
+            a.drive_fetch();
+        };
+        let asked_for = || jobs.lock().unwrap().len();
+        let full = |a: &MailApp| rows(a).into_iter().find(|r| r.account == ms).and_then(|r| r.full_line());
+
+        // A round of every account, the Microsoft one among them.
+        a.execute("ui.sync", json!({})).unwrap();
+        a.drive_fetch();
+        assert_eq!(asked_for(), 1, "the background fetches them");
+        answer(&mut a);
+        assert_eq!(full(&a).as_deref(), Some("Full messages: 10 of 50"));
+        let said = a.execute("sync.progress", json!({})).unwrap();
+        let row = said["accounts"].as_array().unwrap().iter().find(|r| r["id"] == json!(ms)).unwrap().clone();
+        assert_eq!(row["fullMessages"], json!({"done": 10, "total": 50, "paused": false}));
+        assert_eq!(said["accounts"][0]["fullMessages"], json!(null), "a mail server's account has none");
+
+        // Stop: the batch in hand is called off, and no other is asked for.
+        a.execute("ui.cancelSync", json!({})).unwrap();
+        assert!(jobs.lock().unwrap().iter().all(|(job, _)| job.cancel.load(std::sync::atomic::Ordering::Relaxed)));
+        answer(&mut a);
+        for _ in 0..3 {
+            a.drive_fetch();
+        }
+        assert_eq!(asked_for(), 0);
+        assert_eq!(full(&a).as_deref(), Some("Full messages: 20 of 50 · Paused until the next Send/Receive"));
+        assert_eq!(graph_mail::graph_fetch_request(&a.session, ms, None, 50).unwrap().ids.len(), 30, "thirty still to go");
+        send(&pipe, SyncResult { account: ids[0], stopped: true, ..Default::default() });
+        a.poll_sync();
+        a.auto_sync();
+        assert!(!a.syncing());
+        a.drive_fetch();
+        assert_eq!(asked_for(), 0, "still paused once the run has ended");
+
+        // The owner's next Send/Receive: they go on.
+        a.execute("ui.sync", json!({"account": ids[1]})).unwrap();
+        a.drive_fetch();
+        assert_eq!(asked_for(), 1);
+        answer(&mut a);
+        // (The Microsoft account isn't in this run: it has no row, and its numbers go on.)
+        let counted = |a: &MailApp| (a.session.sync_progress.full(ms), a.session.sync_progress.full_paused);
+        assert_eq!(counted(&a), (Some(FullMessages { done: 30, total: 50 }), false));
+        a.execute("ui.cancelSync", json!({})).unwrap();
+        answer(&mut a);
+        assert_eq!(counted(&a), (Some(FullMessages { done: 40, total: 50 }), true));
+        send(&pipe, SyncResult { account: ids[1], stopped: true, ..Default::default() });
+        a.poll_sync();
+        a.auto_sync();
+
+        // A Send/Receive that starts by itself does too.
+        a.auto_sync = true;
+        a.session.prefs.sync_minutes = 5;
+        a.last_auto_sync = 0.0;
+        a.auto_sync();
+        a.auto_sync();
+        assert!(a.syncing(), "a round started by itself");
+        a.drive_fetch();
+        assert_eq!(asked_for(), 1);
+        answer(&mut a);
+        assert_eq!(full(&a), None, "all of them are here: no line");
+        assert!(a.session.mailbox.messages.values().all(|m| !m.unfetched));
+    }
+
     /// What a row says, whatever the numbers.
     #[test]
     fn a_row_says_where_it_is_in_one_line() {
         use mailcraft_model::sync::SyncPhase;
-        let row = |run: AccountRun, problems: usize| Row { account: 1, name: "A".into(), run: Some(run), problems: vec!["x".into(); problems] };
+        let row = |run: AccountRun, problems: usize| Row {
+            account: 1,
+            name: "A".into(),
+            run: Some(run),
+            problems: vec!["x".into(); problems],
+            full: None,
+            paused: false,
+        };
         let running = |phase, folder: &str, done, total| AccountRun {
             state: RunState::Running,
             phase: Some(phase),
@@ -538,6 +742,13 @@ mod tests {
         assert_eq!(row(done(0, 0), 0).line(), "Done: up to date");
         assert_eq!(row(done(3, 0), 1).line(), "1 problem");
         assert_eq!(row(AccountRun { state: RunState::Stopped, new: 4, ..Default::default() }, 0).line(), "Stopped");
-        assert_eq!(Row { account: 1, name: "A".into(), run: None, problems: vec!["x".into(); 2] }.line(), "2 problems");
+        let none = Row { account: 1, name: "A".into(), run: None, problems: vec!["x".into(); 2], full: None, paused: false };
+        assert_eq!((none.line(), none.full_line()), ("2 problems".to_string(), None));
+        assert_eq!(row(AccountRun { state: RunState::Skipped, ..Default::default() }, 1).line(), "Skipped");
+        // Full messages, while some are still to be fetched; paused by Stop.
+        let full = |done, total, paused| Row { full: Some(FullMessages { done, total }), paused, ..none.clone() }.full_line();
+        assert_eq!(full(40, 900, false).as_deref(), Some("Full messages: 40 of 900"));
+        assert_eq!(full(40, 900, true).as_deref(), Some("Full messages: 40 of 900 · Paused until the next Send/Receive"));
+        assert_eq!(full(900, 900, true), None, "all of them are here");
     }
 }

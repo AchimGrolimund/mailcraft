@@ -6,18 +6,23 @@
 //! A run starts when a host says which accounts it covers ([`SyncProgress::begin`]), or else with
 //! the first piece for an account when no run is under way. Problems may name a message by its
 //! subject: that is message content.
+//!
+//! With the rows, how far each Microsoft account's messages have been fetched whole in the
+//! background (Full messages), counted again as they come in, and whether Stop has paused that
+//! until the next run starts.
 
 use std::collections::HashMap;
 
 use mailcraft_model::sync::{SyncPhase, SyncStage, SyncStep};
-use mailcraft_model::{Id, Mailbox};
+use mailcraft_model::{AccountKind, Id, Mailbox};
 use serde_json::{Value, json};
 
+use super::graph_down;
 use crate::{CmdResult, CommandSpec, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![CommandSpec::new("sync.progress", "Show Progress", "Send / Receive", progress).pure().params(
-        r#"{} — answers {"running": bool, "accounts": [{"id", "name", "state": "waiting"|"running"|"done"|"stopped", "phase": "sending"|"folders"|"newMail"|"calendarAndContacts"|null, "folder", "done", "total", "new", "sent", "problems": [string], "kept": bool}]}; opens nothing"#,
+        r#"{} — answers {"running": bool, "accounts": [{"id", "name", "state": "waiting"|"running"|"done"|"stopped"|"skipped", "phase": "sending"|"folders"|"newMail"|"calendarAndContacts"|null, "folder", "done", "total", "new", "sent", "problems": [string], "kept": bool, "fullMessages": {"done", "total", "paused"}|null}]}; opens nothing"#,
     )]
 }
 
@@ -35,6 +40,8 @@ pub enum RunState {
     Done,
     /// Its part of the run was called off before it was through.
     Stopped,
+    /// The owner left it out of the run while it waited its turn (Skip).
+    Skipped,
 }
 
 impl RunState {
@@ -44,6 +51,7 @@ impl RunState {
             RunState::Running => "running",
             RunState::Done => "done",
             RunState::Stopped => "stopped",
+            RunState::Skipped => "skipped",
         }
     }
 
@@ -83,6 +91,21 @@ struct Outcome {
     stopped: bool,
 }
 
+/// How many of a Microsoft account's messages are here whole, of how many are to be: those the
+/// background fetches (its Download messages in full), not the large ones that wait to be opened.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FullMessages {
+    pub done: u32,
+    pub total: u32,
+}
+
+impl FullMessages {
+    /// Whether some are still to be fetched.
+    pub fn waiting(self) -> bool {
+        self.done < self.total
+    }
+}
+
 /// The current run, or else the last one.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SyncProgress {
@@ -94,6 +117,10 @@ pub struct SyncProgress {
     /// contacts come after it): the host ends it with [`SyncProgress::end`]. With each, whether
     /// that last piece said it was stopped.
     held: HashMap<Id, bool>,
+    /// Full messages of each Microsoft account, as last counted.
+    full: HashMap<Id, FullMessages>,
+    /// Stop paused the fetching of full messages, until the next run starts.
+    pub full_paused: bool,
 }
 
 /// What a piece of a run says, whatever kind of account it is for.
@@ -161,6 +188,50 @@ impl SyncProgress {
         let before = self.accounts.len();
         self.accounts.retain(|r| r.account != account || r.state != RunState::Waiting);
         self.accounts.len() != before
+    }
+
+    /// Leave an account that is waiting its turn out of the run because the owner said so: its
+    /// row says it was skipped. Whether it was waiting.
+    pub fn skip(&mut self, account: Id) -> bool {
+        let Some(row) = self.accounts.iter_mut().find(|r| r.account == account && r.state == RunState::Waiting) else { return false };
+        row.state = RunState::Skipped;
+        true
+    }
+
+    /// Count the account's full messages again, from the mailbox (nothing kept for an account
+    /// that isn't a Microsoft one).
+    pub fn count_full(&mut self, mb: &Mailbox, account: Id) {
+        if mb.account(account).is_none_or(|a| a.kind != AccountKind::Microsoft) {
+            self.full.remove(&account);
+            return;
+        }
+        let all = mb.messages.values().filter(|m| m.account == account && (m.server.is_some() || m.unfetched)).count();
+        let (waiting, large) = graph_down::not_fetched(mb, account);
+        let total = all.saturating_sub(large);
+        let done = total.saturating_sub(waiting.saturating_sub(large));
+        let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        self.full.insert(account, FullMessages { done: count(done), total: count(total) });
+    }
+
+    /// Count every Microsoft account's full messages again (what a host said of another account
+    /// stays; what was kept for an account that is gone goes).
+    pub fn count_all_full(&mut self, mb: &Mailbox) {
+        self.full.retain(|account, _| mb.account(*account).is_some());
+        let accounts: Vec<Id> = mb.accounts.iter().filter(|a| a.kind == AccountKind::Microsoft).map(|a| a.id).collect();
+        for account in accounts {
+            self.count_full(mb, account);
+        }
+    }
+
+    /// A host's own count of the account's full messages (a stand-in that has no such mail).
+    pub fn set_full(&mut self, account: Id, done: u32, total: u32) {
+        self.full.insert(account, FullMessages { done: done.min(total), total });
+    }
+
+    /// The account's full messages as last counted; `None` for one never counted (or not a
+    /// Microsoft account).
+    pub fn full(&self, account: Id) -> Option<FullMessages> {
+        self.full.get(&account).copied()
     }
 
     /// The account's row for a piece that came for it, running from now on. A piece for an
@@ -246,6 +317,7 @@ impl SyncProgress {
                     "sent": r.sent,
                     "problems": r.problems,
                     "kept": r.kept,
+                    "fullMessages": self.full(r.account).map(|f| json!({"done": f.done, "total": f.total, "paused": self.full_paused})),
                 }))
             })
             .collect();
@@ -452,6 +524,49 @@ mod tests {
         for junk in [json!(null), json!([1, 2]), json!({"account": "x", "accounts": [[]]}), json!("sync")] {
             assert_eq!(s.run("sync.progress", &junk).unwrap()["accounts"].as_array().map(Vec::len), Some(1));
         }
+    }
+
+    #[test]
+    fn skipped_accounts_and_full_messages() {
+        let (mut s, imap, ms) = session();
+        s.sync_progress.begin(&[imap, ms]);
+        // Skip is for an account waiting its turn: its row says so, and the run goes on without it.
+        assert!(s.sync_progress.skip(ms));
+        assert!(!s.sync_progress.skip(ms) && !s.sync_progress.skip(424_242));
+        assert_eq!(row(&mut s, ms)["state"], json!("skipped"));
+        apply(&mut s, SyncResult { account: imap, partial: true, ..Default::default() });
+        assert!(!s.sync_progress.skip(imap), "running");
+        apply(&mut s, SyncResult { account: imap, ..Default::default() });
+        assert_eq!(progress(&mut s)["running"], json!(false));
+
+        // Full messages: none counted before the mail comes; an account on a mail server has none.
+        assert_eq!((row(&mut s, ms)["fullMessages"].clone(), row(&mut s, imap)["fullMessages"].clone()), (Value::Null, Value::Null));
+        let inbox = GraphFolder { id: "in".into(), name: "Inbox".into(), kind: FolderKind::Inbox, ..Default::default() };
+        graph(&mut s, GraphMailResult { account: ms, listing: Some(FolderListing { folders: vec![inbox], complete: true }), partial: true, ..Default::default() });
+        let page = serde_json::from_value::<MessagePage>(json!({"folder": "in", "messages": [
+            {"server": {"id": "AAA1", "folder": "in"}, "subject": "One"},
+            {"server": {"id": "AAA2", "folder": "in"}, "subject": "Two"},
+            {"server": {"id": "AAA3", "folder": "in"}, "subject": "Three"}]}))
+        .unwrap();
+        graph(&mut s, GraphMailResult { account: ms, pages: vec![page], whole: true, ..Default::default() });
+        let unfetched = s.mailbox.messages.values().filter(|m| m.account == ms && m.unfetched).count() as u32;
+        assert_eq!(row(&mut s, ms)["fullMessages"], json!({"done": 3 - unfetched, "total": 3, "paused": false}));
+        // As they are fetched whole, counted again; Stop's pause is said with them.
+        let mime = b"Subject: One\r\n\r\nWords.\r\n".to_vec();
+        let fetched = json!({"account": ms, "fetched": [{"id": "AAA1", "mime": mime}]});
+        s.run("sync.applyGraphFetch", &json!({"result": fetched})).unwrap();
+        s.sync_progress.full_paused = true;
+        let full = row(&mut s, ms)["fullMessages"].clone();
+        assert_eq!((full["total"].as_u64(), full["paused"].as_bool()), (Some(3), Some(true)));
+        assert!(full["done"].as_u64() >= Some(1));
+        // The IMAP account is never counted; a host may say its own numbers, never past the total.
+        s.sync_progress.count_full(&s.mailbox.clone(), imap);
+        s.sync_progress.set_full(ms, 900, 40);
+        assert_eq!(s.sync_progress.full(ms), Some(FullMessages { done: 40, total: 40 }));
+        assert_eq!(s.sync_progress.full(imap), None);
+        s.run("account.remove", &json!({"id": ms})).unwrap();
+        s.sync_progress.count_all_full(&s.mailbox.clone());
+        assert_eq!(s.sync_progress.full(ms), None);
     }
 
     #[test]
