@@ -34,7 +34,18 @@
 //! saver (`{"host": {"saving": …}}`): `"messages 12000 200000"` or `"content 3 90000"` (a save
 //! that has been at it for a minute, at that stage, done of total; it never ends), `"sweeping"`,
 //! or `""` (nothing being written).
+//!
+//! And Send/Receive, for Send/Receive Progress (`{"host": {"sync": [[piece, …], …]}}`): one list
+//! of pieces for each run of an account from that line on, in turn, each piece a `sync.apply`
+//! result (`docs/control-protocol.md`) with its account filled in, and `"newMessages": n` to have
+//! that many made-up messages arrive in the Inbox (`"sendOutbox": true`: what waits in the
+//! account's Outbox is sent). A run whose last piece is `"partial": true` is
+//! still under way when the pieces are out, until `{"host": {"syncMore": [piece, …]}}` sends it
+//! more (`{"stopped": true}` ends it as Stop does). A run with no list of its own brings nothing.
+//! From that line on, every account on a mail server has a password at hand (an invented one), so
+//! a round of all of them goes through without asking.
 
+use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
@@ -69,6 +80,66 @@ struct Host {
     saving: Option<SaveProgress>,
     /// Copies of the mailbox being "written": never finished (see the header).
     copies: Vec<Sender<Result<(), String>>>,
+    /// The pieces of the Send/Receive runs to come, one list for each, and whether the script
+    /// spoke of Send/Receive at all (then passwords are at hand).
+    sync_runs: VecDeque<Vec<serde_json::Value>>,
+    syncing: bool,
+    /// The run under way, still waiting for more of its pieces: its account, the Inbox's id and
+    /// where its pieces go.
+    sync_open: Option<(u64, u64, Sender<SyncResult>)>,
+    /// The last UID a made-up message was given.
+    uid: u32,
+}
+
+/// A piece of a stand-in Send/Receive, from what the script says: for `account`, whose Inbox is
+/// `inbox`, with any made-up new messages in it, and with what waits in its Outbox sent when it
+/// says `"sendOutbox": true`. Nothing in it is anybody's.
+fn sync_piece(said: &serde_json::Value, account: u64, inbox: u64, outbox: &[u64], uid: &mut u32) -> SyncResult {
+    let mut piece: SyncResult = serde_json::from_value(said.clone()).unwrap_or_default();
+    piece.account = account;
+    if said.get("sendOutbox").and_then(|v| v.as_bool()) == Some(true) {
+        piece.sent = outbox.to_vec();
+        piece.filed = outbox.to_vec();
+    }
+    let new = said.get("newMessages").and_then(|v| v.as_u64()).unwrap_or(0).min(500);
+    if new > 0 && inbox != 0 {
+        let messages = (0..new)
+            .map(|_| {
+                *uid += 1;
+                mailcraft_model::Message {
+                    uid: *uid,
+                    subject: format!("Update {uid}"),
+                    from: mailcraft_model::Address::new("Lumen Updates", "news@lumen.example"),
+                    date: NOW - i64::from(*uid) * 60,
+                    ..Default::default()
+                }
+            })
+            .collect();
+        piece.folders.push(mailcraft_model::sync::FolderDelta {
+            id: Some(inbox),
+            remote: "INBOX".into(),
+            kind: mailcraft_model::FolderKind::Inbox,
+            uid_validity: 1,
+            uid_seen: *uid,
+            new: messages,
+            ..Default::default()
+        });
+    }
+    piece
+}
+
+/// Every password asked for is an invented one, once the script speaks of Send/Receive.
+struct StandInSecrets(Arc<Mutex<Host>>);
+
+impl mailcraft_ui_egui::SecretStore for StandInSecrets {
+    fn get(&self, key: &str) -> Option<String> {
+        let syncing = self.0.lock().map(|host| host.syncing).unwrap_or(false);
+        (syncing && key.starts_with("password:")).then(|| "stand-in-password".to_string())
+    }
+    fn set(&self, _: &str, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn delete(&self, _: &str) {}
 }
 
 impl Host {
@@ -121,6 +192,23 @@ impl Host {
         }
         if let Some(how) = said.get("graph").and_then(|v| v.as_str()) {
             self.graph = how.to_string();
+        }
+        if let Some(runs) = said.get("sync").and_then(|v| v.as_array()) {
+            self.syncing = true;
+            self.sync_runs = runs.iter().map(|run| run.as_array().cloned().unwrap_or_default()).collect();
+        }
+        if let Some(more) = said.get("syncMore").and_then(|v| v.as_array())
+            && let Some((account, inbox, to)) = self.sync_open.take()
+        {
+            let mut open = true;
+            for said in more {
+                let piece = sync_piece(said, account, inbox, &[], &mut self.uid);
+                open = piece.partial;
+                let _ = to.send(piece);
+            }
+            if open {
+                self.sync_open = Some((account, inbox, to));
+            }
         }
         if let Some(how) = said.get("saving").and_then(|v| v.as_str()) {
             let mut words = how.split_whitespace();
@@ -175,6 +263,7 @@ fn stand_in(host: &Arc<Mutex<Host>>) -> Services {
         rx
     }
     let (signing, approving, updating, graphing, copying) = (host.clone(), host.clone(), host.clone(), host.clone(), host.clone());
+    let syncing = host.clone();
     Services {
         microsoft_client_id: "11111111-2222-3333-4444-555555555555".into(),
         lookup_mx: Some(Box::new(|_| answered(Ok(vec!["example-org.mail.protection.outlook.com".to_string()])))),
@@ -210,7 +299,26 @@ fn stand_in(host: &Arc<Mutex<Host>>) -> Services {
             let (consent_needed, sign_in_refused) = (how == "consent", how == "refused");
             answered(GraphResult { account: request.account.id, consent_needed, sign_in_refused, ..Default::default() })
         })),
-        sync: Some(Box::new(|request| answered(SyncResult { account: request.account.id, ..Default::default() }))),
+        sync: Some(Box::new(move |request| {
+            let (account, (tx, rx)) = (request.account.id, channel());
+            let inbox = request.folders.iter().find(|f| f.kind == mailcraft_model::FolderKind::Inbox).map_or(0, |f| f.id);
+            let outbox: Vec<u64> = request.outbox.iter().map(|m| m.id).collect();
+            let Ok(mut host) = syncing.lock() else { return rx };
+            let pieces = host.sync_runs.pop_front().unwrap_or_default();
+            let mut open = true;
+            for said in &pieces {
+                let piece = sync_piece(said, account, inbox, &outbox, &mut host.uid);
+                open = piece.partial;
+                let _ = tx.send(piece);
+            }
+            if pieces.is_empty() {
+                let _ = tx.send(SyncResult { account, ..Default::default() });
+            } else if open {
+                host.sync_open = Some((account, inbox, tx));
+            }
+            rx
+        })),
+        secrets: Some(Box::new(StandInSecrets(host.clone()))),
         write_copy: Some(Box::new(move |_, _| {
             let (tx, rx) = channel();
             if let Ok(mut host) = copying.lock() {

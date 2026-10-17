@@ -90,6 +90,10 @@ pub struct SyncProgress {
     pub accounts: Vec<AccountRun>,
     /// What each account's last run came to (as last shown).
     last: HashMap<Id, Outcome>,
+    /// Accounts whose part of the run goes on after their last piece of mail (the calendar and
+    /// contacts come after it): the host ends it with [`SyncProgress::end`]. With each, whether
+    /// that last piece said it was stopped.
+    held: HashMap<Id, bool>,
 }
 
 /// What a piece of a run says, whatever kind of account it is for.
@@ -122,6 +126,41 @@ impl SyncProgress {
             }
         }
         self.accounts = rows;
+    }
+
+    /// A host's word on the phase an account is in, for what no piece of mail says (the calendar
+    /// and contacts, the messages Microsoft sends before the mail server is asked).
+    pub fn phase(&mut self, account: Id, phase: SyncPhase) {
+        self.take(account, Piece { step: Some((phase, String::new(), 0, 0)), ..Default::default() });
+    }
+
+    /// The account's part of the run doesn't end with its last piece of mail: the host has more
+    /// for it, and says when it is over ([`SyncProgress::end`]).
+    pub fn hold(&mut self, account: Id) {
+        self.held.insert(account, false);
+    }
+
+    /// Whether the account's part of the run goes on after its mail ([`SyncProgress::hold`]).
+    pub fn holding(&self, account: Id) -> bool {
+        self.held.contains_key(&account)
+    }
+
+    /// A host's word that the account's part of the run is over, when no piece said so (its
+    /// mail was held for the calendar, or the host gave up on it). Nothing for an account that
+    /// isn't running or waiting in the run.
+    pub fn end(&mut self, account: Id, stopped: bool) {
+        let stopped = self.held.remove(&account).unwrap_or(false) || stopped;
+        if self.accounts.iter().any(|r| r.account == account && r.state.under_way()) {
+            self.take(account, Piece { last: true, stopped, ..Default::default() });
+        }
+    }
+
+    /// Leave an account that is still waiting its turn out of the run: it won't be started (it
+    /// needs the owner, or couldn't start). Whether it was waiting.
+    pub fn leave_out(&mut self, account: Id) -> bool {
+        let before = self.accounts.len();
+        self.accounts.retain(|r| r.account != account || r.state != RunState::Waiting);
+        self.accounts.len() != before
     }
 
     /// The account's row for a piece that came for it, running from now on. A piece for an
@@ -163,6 +202,11 @@ impl SyncProgress {
         if !piece.last {
             return;
         }
+        if let Some(stopped) = self.held.get_mut(&account) {
+            *stopped |= piece.stopped;
+            return;
+        }
+        let Some(row) = self.accounts.iter_mut().find(|r| r.account == account) else { return };
         row.state = if piece.stopped { RunState::Stopped } else { RunState::Done };
         (row.folder, row.done, row.total) = (String::new(), 0, 0);
         let outcome = Outcome { new: row.new, sent: row.sent, problems: row.problems.clone(), stopped: piece.stopped };
@@ -408,5 +452,36 @@ mod tests {
         for junk in [json!(null), json!([1, 2]), json!({"account": "x", "accounts": [[]]}), json!("sync")] {
             assert_eq!(s.run("sync.progress", &junk).unwrap()["accounts"].as_array().map(Vec::len), Some(1));
         }
+    }
+
+    #[test]
+    fn a_host_says_what_no_piece_says() {
+        let (mut s, imap, ms) = session();
+        s.sync_progress.begin(&[ms, imap]);
+        // The calendar and contacts after a Graph account's mail: its last piece of mail doesn't
+        // end its row, the host does.
+        s.sync_progress.hold(ms);
+        assert!(s.sync_progress.holding(ms));
+        graph(&mut s, GraphMailResult { account: ms, partial: true, ..Default::default() });
+        graph(&mut s, GraphMailResult { account: ms, stopped: true, ..Default::default() });
+        assert_eq!(row(&mut s, ms)["state"], json!("running"));
+        s.sync_progress.phase(ms, SyncPhase::CalendarAndContacts);
+        assert_eq!(row(&mut s, ms)["phase"], json!("calendarAndContacts"));
+        s.sync_progress.end(ms, false);
+        assert_eq!((row(&mut s, ms)["state"].as_str(), s.sync_progress.holding(ms)), (Some("stopped"), false), "as its last piece said");
+        // Ending a row that is over already changes nothing.
+        let before = s.sync_progress.clone();
+        s.sync_progress.end(ms, false);
+        s.sync_progress.end(424_242, true);
+        assert_eq!(s.sync_progress, before);
+        // A waiting account can be left out; one that has run can't.
+        assert!(!s.sync_progress.leave_out(ms));
+        assert!(s.sync_progress.leave_out(imap));
+        let all = progress(&mut s);
+        assert_eq!((all["running"].as_bool(), all["accounts"].as_array().map(Vec::len)), (Some(false), Some(1)));
+        // A waiting account that is ended (the run was stopped) says so.
+        s.sync_progress.begin(&[imap]);
+        s.sync_progress.end(imap, true);
+        assert_eq!(row(&mut s, imap)["state"], json!("stopped"));
     }
 }
