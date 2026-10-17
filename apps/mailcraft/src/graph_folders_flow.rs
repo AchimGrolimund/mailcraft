@@ -107,3 +107,50 @@ fn a_send_receive_keeps_the_folders_in_step_through_graph_and_never_imap() {
             .all(|asked| asked.header("prefer").contains("IdType=\"ImmutableId\"") || !asked.target.contains("mailFolders"))
     );
 }
+
+/// After the switch, Microsoft wanting the owner's permission for the mail, or refusing the
+/// sign-in, ends this host's Graph job with nothing but that said; the window asks the owner to
+/// sign in for the mail, and never leaves "Sending and receiving…" behind (#124).
+#[test]
+fn a_token_refused_for_the_mail_has_the_owner_asked_to_sign_in() {
+    use mailcraft_net::NetError;
+    use mailcraft_ui_egui::SignInRequest;
+    let answers: [fn() -> NetError; 2] = [
+        || NetError::ConsentNeeded("AADSTS65001: consent required".into()),
+        || NetError::Proto(mailcraft_proto::ProtoError::Auth("invalid_grant".into())),
+    ];
+    for answer in answers {
+        let session = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
+        let mut app = MailApp::new(session, Services::default());
+        (app.autosave, app.auto_sync) = (false, false);
+        app.services.graph = Some(Box::new(move |request: GraphRequest| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(super::graph_with(request, "UTC", &move |_, _, _| Err(answer())));
+            });
+            rx
+        }));
+        app.services.sync = Some(Box::new(|_| std::sync::mpsc::channel().1));
+        let asked: Arc<Mutex<Vec<SignInRequest>>> = Arc::default();
+        let kept = asked.clone();
+        let browser = Mutex::new(Vec::new());
+        app.services.sign_in = Some(Box::new(move |request: SignInRequest| {
+            kept.lock().unwrap().push(request);
+            let (tx, rx) = std::sync::mpsc::channel();
+            browser.lock().unwrap().push(tx);
+            rx
+        }));
+        let account = app.execute("account.add", json!({"email": "avery@mail.example", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
+        app.seed_graph_token(
+            account,
+            Tokens { access: TOKEN.into(), refresh: "ref".into(), expires_at: mailcraft_time::now() + 3_600, ..Default::default() },
+        );
+        app.execute("ui.sync", json!({"account": account})).unwrap();
+        finish(&mut app);
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.len(), 1, "{}", answer());
+        assert!(asked[0].graph && asked[0].mail_write && asked[0].account == account);
+        assert!(app.signing_in());
+        assert_ne!(app.session.sync_status, "Sending and receiving…");
+    }
+}

@@ -202,3 +202,145 @@ fn switch_sends_what_waits_first_waits_while_offline_and_then_switches() {
     assert!(status(&h).contains("now uses Microsoft Graph"), "{}", status(&h));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// What the log has said, for the tests that look at it (one logger for the whole test run).
+fn logged() -> &'static Mutex<Vec<String>> {
+    static LINES: std::sync::OnceLock<Mutex<Vec<String>>> = std::sync::OnceLock::new();
+    struct Kept;
+    impl log::Log for Kept {
+        fn enabled(&self, m: &log::Metadata<'_>) -> bool {
+            m.level() <= log::Level::Info
+        }
+        fn log(&self, r: &log::Record<'_>) {
+            if let Some(lines) = LINES.get() {
+                lines.lock().unwrap().push(format!("{} {}", r.level(), r.args()));
+            }
+        }
+        fn flush(&self) {}
+    }
+    static KEPT: Kept = Kept;
+    let lines = LINES.get_or_init(|| Mutex::new(Vec::new()));
+    if log::set_logger(&KEPT).is_ok() {
+        log::set_max_level(log::LevelFilter::Info);
+    }
+    lines
+}
+
+/// An account already kept in step through Graph, whose Graph runs all answer `answer`; the
+/// sign-ins asked for are kept in `asked`, and answered with tokens.
+fn on_graph(name: &str, answer: fn() -> crate::GraphResult) -> (MailApp, Id, Arc<Mutex<Vec<crate::SignInRequest>>>, Arc<Mutex<Vec<bool>>>) {
+    let (mut app, account, _) = app(name);
+    app.offer_graph_switch = false;
+    app.dialog = None;
+    // Only the runs the tests start (no round of Send/Receive by itself).
+    app.auto_sync = false;
+    app.session.mailbox.account_mut(account).unwrap().kind = AccountKind::Microsoft;
+    let refresh = Tokens { access: String::new(), refresh: "kept-refresh".into(), expires_at: 0, ..Default::default() };
+    app.tokens.insert(account, refresh);
+    app.services.sync = Some(Box::new(|_req: SyncRequest| mpsc::channel().1));
+    let runs = Arc::new(Mutex::new(Vec::new()));
+    let seen = runs.clone();
+    app.services.graph = Some(Box::new(move |req: crate::GraphRequest| {
+        seen.lock().unwrap().push(req.mail.is_some());
+        let (tx, rx) = mpsc::channel();
+        // The job's mail pieces end with it.
+        drop(req.mail_pieces);
+        tx.send(crate::GraphResult { account: req.account.id, ..answer() }).unwrap();
+        rx
+    }));
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let kept = asked.clone();
+    // Still in the browser: the sender is kept, so the page waits until the test answers.
+    let browsers = Mutex::new(Vec::new());
+    app.services.sign_in = Some(Box::new(move |req: crate::SignInRequest| {
+        kept.lock().unwrap().push(req);
+        let (tx, rx) = mpsc::channel();
+        browsers.lock().unwrap().push(tx);
+        rx
+    }));
+    (app, account, asked, runs)
+}
+
+fn consent() -> crate::GraphResult {
+    crate::GraphResult { consent_needed: true, ..Default::default() }
+}
+
+fn refused() -> crate::GraphResult {
+    crate::GraphResult { sign_in_refused: true, ..Default::default() }
+}
+
+/// After the switch, a Send/Receive whose token Microsoft won't give for the mail (permission
+/// needed, or the sign-in refused) asks the owner to sign in for it, never ends in silence with
+/// "Sending and receiving…" left behind, and says so in the log (#124).
+#[test]
+fn a_graph_run_without_a_token_for_the_mail_asks_the_owner_to_sign_in() {
+    let lines = logged();
+    for (name, answer) in [("consent", consent as fn() -> crate::GraphResult), ("refused", refused)] {
+        let (app, account, asked, runs) = on_graph(&format!("124-{name}"), answer);
+        let mut h = window(app);
+        h.state_mut().run("ui.sync", json!({})).unwrap();
+        h.run_steps(6);
+        assert_eq!(runs.lock().unwrap().as_slice(), [true], "{name}: one mail run");
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.len(), 1, "{name}: a sign-in is asked for");
+        assert!(asked[0].graph && asked[0].mail_write && asked[0].account == account, "{name}");
+        assert_ne!(h.state().session.sync_status, "Sending and receiving…", "{name}");
+        assert!(h.state().signing_in(), "{name}");
+    }
+    let lines = lines.lock().unwrap();
+    assert!(
+        lines.iter().any(|l| l.starts_with("WARN graph mail, account") && l.contains("needs permission for the mail; asking the owner")),
+        "{lines:?}"
+    );
+    assert!(lines.iter().any(|l| l.contains("the sign-in was refused; asking the owner")), "{lines:?}");
+    // Nothing of the owner in it.
+    assert!(lines.iter().all(|l| !l.contains("owner@contoso.example") && !l.contains("kept-refresh")), "{lines:?}");
+}
+
+/// The same with nobody asking (Send/Receive by itself): no page is opened; the owner is told
+/// what to do.
+#[test]
+fn a_quiet_graph_run_without_a_token_for_the_mail_says_what_to_do() {
+    let (app, _, asked, _) = on_graph("124-quiet", consent);
+    let mut h = window(app);
+    h.state_mut().run("ui.sync", json!({"quiet": true})).unwrap();
+    h.run_steps(6);
+    assert!(asked.lock().unwrap().is_empty());
+    assert_eq!(status(&h), "Sign in to Microsoft again to get the mail of owner@contoso.example: press Send/Receive");
+    assert_ne!(h.state().session.sync_status, "Sending and receiving…");
+    assert!(!h.state().syncing());
+}
+
+/// Once the owner has signed in, the mail run goes ahead with the new sign-in; when Microsoft
+/// still says no, the owner is told, and not sent to its page again and again.
+#[test]
+fn after_signing_in_the_mail_run_goes_ahead() {
+    let (app, account, asked, runs) = on_graph("124-after", consent);
+    let mut h = window(app);
+    h.state_mut().run("ui.sync", json!({})).unwrap();
+    h.run_steps(6);
+    assert_eq!(asked.lock().unwrap().len(), 1);
+    // The browser comes back with tokens: the window takes them, and runs the mail again.
+    let (tx, rx) = mpsc::channel();
+    tx.send(Ok(Tokens {
+        access: "graph-token".into(),
+        refresh: "new-refresh".into(),
+        expires_at: mailcraft_time::now() + 3600,
+        ..Default::default()
+    }))
+    .unwrap();
+    h.state_mut().signing_in.as_mut().unwrap().rx = rx;
+    h.run_steps(6);
+    assert_eq!(runs.lock().unwrap().as_slice(), [true, true]);
+    assert!(h.state().graph_tokens.contains_key(&account));
+    // (The stand-in says no to every run.)
+    assert_eq!(asked.lock().unwrap().len(), 1, "no second trip to Microsoft's page");
+    assert!(!h.state().signing_in());
+    assert!(status(&h).starts_with("Signed in, but Microsoft still won't let MailCraft read the mail of owner@contoso.example"), "{}", status(&h));
+    assert_ne!(h.state().session.sync_status, "Sending and receiving…");
+    // The owner's own Send/Receive after that asks once more.
+    h.state_mut().run("ui.sync", json!({})).unwrap();
+    h.run_steps(6);
+    assert_eq!(asked.lock().unwrap().len(), 2);
+    assert!(!status(&h).starts_with("Signed in, but"), "what the last run said is over: {}", status(&h));
+}

@@ -132,9 +132,16 @@ fn info(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
         crate::theme::paint_clipped(ui.painter(), pos2(r.min.x + 58.0, r.min.y + 39.0), r.width() - 240.0, &detail, regular(11.5), t.text_dim);
         // Sending, calendar and contacts through Microsoft wait for the owner's say-so.
         if app.graph_consent_needed(a.id) {
-            let link = ui.link(tl!("Connect calendar and contacts")).on_hover_text(tl!(
-                "Sign in once more to let MailCraft send through Microsoft and show your calendar and contacts. Mail works without it."
-            ));
+            // An account kept in step through Graph gets its mail that way too: without it, none.
+            let link = if a.kind == AccountKind::Microsoft {
+                ui.link(tl!("Connect to Microsoft (mail, calendar and contacts)")).on_hover_text(tl!(
+                    "Sign in once more to let MailCraft read and change your mail, send, and show your calendar and contacts through Microsoft."
+                ))
+            } else {
+                ui.link(tl!("Connect calendar and contacts")).on_hover_text(tl!(
+                    "Sign in once more to let MailCraft send through Microsoft and show your calendar and contacts. Mail works without it."
+                ))
+            };
             if link.clicked() {
                 let _ = app.run("ui.connectMicrosoft", json!({"account": a.id}));
             }
