@@ -180,15 +180,15 @@ fn a_round_begun_in_an_earlier_run_is_followed_by_one_that_brings_what_changed_s
 }
 
 #[test]
-fn messages_come_with_their_size_and_are_fetched_whole_by_their_immutable_id() {
+fn messages_come_without_their_size_and_are_fetched_whole_by_their_immutable_id() {
     let server = StandIn::start().unwrap();
     let inbox = server.state().well_known("inbox");
     let ids = server.state().mailbox.generate(&inbox, 3, NOW);
     server.state().mailbox.update(&ids[1], |m| m.size = 30 << 20);
     let pieces = run(&server, Vec::new(), &AtomicBool::new(false));
     let sizes: Vec<u64> = pieces.iter().flat_map(|p| &p.pages).flat_map(|p| &p.messages).map(|m| m.server.size).collect();
-    assert_eq!(sizes.len(), 3);
-    assert!(sizes[0] > 100 && sizes[0] < 1_000 && sizes[1] == 30 << 20, "{sizes:?}");
+    // A delta can't be asked for the sizes: none is said.
+    assert_eq!(sizes, [0, 0, 0]);
 
     server.state().mailbox.delete(&ids[2]);
     let request = mailcraft_model::sync::GraphFetchRequest {
@@ -209,4 +209,82 @@ fn messages_come_with_their_size_and_are_fetched_whole_by_their_immutable_id() {
     // Cancel: nothing more is asked.
     let cancelled = super::fetch::fetch_messages_with(&server.url(), TOKEN, &request, Arc::new(Gate::new()), QUICK, &AtomicBool::new(true));
     assert!(cancelled.fetched.is_empty());
+}
+
+#[test]
+fn a_delta_is_never_asked_to_expand_the_sizes_which_exchange_online_refuses() {
+    let server = StandIn::start().unwrap();
+    let inbox = server.state().well_known("inbox");
+    server.state().mailbox.generate(&inbox, 3, NOW);
+    let pieces = run(&server, Vec::new(), &AtomicBool::new(false));
+    let last = pieces.last().unwrap();
+    assert!(!last.partial && last.whole && last.errors.is_empty(), "{:?}", last.errors);
+    let messages: Vec<_> = pieces.iter().flat_map(|p| &p.pages).flat_map(|p| &p.messages).collect();
+    assert_eq!(messages.len(), 3);
+    assert!(messages.iter().all(|m| m.server.size == 0), "a size not said is 0");
+    let deltas = server.state().requests.iter().filter(|r| r.target.contains("/messages/delta")).count();
+    assert!(deltas > 1 && server.state().requests.iter().all(|r| !(r.target.contains("/messages/delta") && r.target.contains("expand"))));
+}
+
+#[test]
+fn folders_the_server_refuses_to_list_are_said_with_graphs_code() {
+    let server = StandIn::start().unwrap();
+    let inbox = server.state().well_known("inbox");
+    {
+        let mut state = server.state();
+        state.mailbox.generate(&inbox, 3, NOW);
+        state.mailbox.refuse_delta = true;
+    }
+    let pieces = run(&server, Vec::new(), &AtomicBool::new(false));
+    let last = pieces.last().unwrap();
+    assert!(!last.partial && !last.whole);
+    assert_eq!(last.errors.len(), 1, "{:?}", last.errors);
+    let said = &last.errors[0];
+    assert!(said.starts_with("Microsoft Graph refused to list the mail in ") && said.contains("folders (ErrorInvalidRequest)"), "{said}");
+    assert!(!said.contains(&inbox), "no folder's id: {said}");
+    assert!(pieces.iter().all(|p| p.pages.is_empty()));
+}
+
+fn fetch_request(ids: &[String]) -> mailcraft_model::sync::GraphFetchRequest {
+    mailcraft_model::sync::GraphFetchRequest {
+        account: 3,
+        email: "owner@example.org".into(),
+        ids: ids.to_vec(),
+        background: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_message_the_server_refuses_is_passed_over_and_the_rest_still_come() {
+    use crate::graph::standin::Fault;
+    let server = StandIn::start().unwrap();
+    let inbox = server.state().well_known("inbox");
+    let ids = server.state().mailbox.generate(&inbox, 3, NOW);
+    server.state().mailbox.faults.insert(ids[0].clone(), Fault::Invalid);
+    let got = super::fetch::fetch_messages_with(&server.url(), TOKEN, &fetch_request(&ids), Arc::new(Gate::new()), QUICK, &AtomicBool::new(false));
+    // The first one held up the whole batch before: now it is named, and the others come.
+    assert_eq!(got.failed, [ids[0].clone()]);
+    assert_eq!(got.fetched.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), [ids[1].as_str(), ids[2].as_str()]);
+    assert!(got.errors.is_empty() && got.missing.is_empty() && !got.offline && got.busy_for.is_none(), "{:?}", got.errors);
+}
+
+#[test]
+fn three_messages_refused_one_after_another_stop_the_batch() {
+    use crate::graph::standin::Fault;
+    let server = StandIn::start().unwrap();
+    let inbox = server.state().well_known("inbox");
+    let ids = server.state().mailbox.generate(&inbox, 5, NOW);
+    for id in &ids[..4] {
+        server.state().mailbox.faults.insert(id.clone(), Fault::Invalid);
+    }
+    let got = super::fetch::fetch_messages_with(&server.url(), TOKEN, &fetch_request(&ids), Arc::new(Gate::new()), QUICK, &AtomicBool::new(false));
+    assert_eq!(got.failed, ids[..3].to_vec());
+    assert!(got.fetched.is_empty());
+    // Said by its status and Graph's code, and nothing of the message.
+    assert_eq!(got.errors.len(), 1, "{:?}", got.errors);
+    assert!(got.errors[0].contains("status 400 (ErrorInvalidRequest)"), "{}", got.errors[0]);
+    assert!(ids.iter().all(|id| !got.errors[0].contains(id.as_str())));
+    let asked = server.state().requests.iter().filter(|r| r.target.contains("$value")).count();
+    assert_eq!(asked, 3, "the rest wait");
 }

@@ -310,6 +310,11 @@ pub struct GraphFetchResult {
     /// says which).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub missing: Vec<String>,
+    /// Server ids the server wouldn't give whole although it has them (a `400`, say): the
+    /// background passes them over for the rest of the session, so that one message can't hold
+    /// up the rest. Opening one still asks for it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
     /// The server could not be reached: whatever wasn't fetched waits until it can.
@@ -883,6 +888,10 @@ pub struct MessagePage {
     /// The server ids of the messages that left the folder (`@removed`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub removed: Vec<String>,
+    /// Messages whose read state alone changed: Exchange Online says one by its id and `isRead`,
+    /// nothing else (#148).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub read: Vec<ReadState>,
     /// Where the folder goes on from after this page.
     pub link: String,
     /// `link` is a delta link: this page ended the round.
@@ -893,6 +902,15 @@ pub struct MessagePage {
     /// (R3 spec S11).
     #[serde(skip_serializing_if = "is_false")]
     pub afresh: bool,
+}
+
+/// A message's read state as a folder's delta says it alone.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ReadState {
+    /// Its server id.
+    pub id: String,
+    pub read: bool,
 }
 
 /// One folder of a Microsoft account's mailbox, as the server lists it.

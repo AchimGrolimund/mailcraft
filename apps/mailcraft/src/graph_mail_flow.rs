@@ -156,8 +156,8 @@ fn two_hundred_thousand_messages_interrupted_three_times_arrive_once_each() {
 }
 
 /// The window, its Send/Receive and the background fetch, the whole way: messages come down as
-/// headers and previews, then whole in the background within the account's limit; a larger one
-/// when it is opened; and a reply to one not yet fetched waits for it.
+/// headers and previews; one not yet here whole is fetched when it is opened; a reply to one not
+/// yet fetched waits for it; and the rest come whole in the background.
 #[test]
 fn messages_download_whole_in_the_background_on_opening_and_before_a_reply() {
     use mailcraft_model::sync::Tokens;
@@ -168,7 +168,6 @@ fn messages_download_whole_in_the_background_on_opening_and_before_a_reply() {
     let server = StandIn::start().unwrap();
     let inbox_there = server.state().well_known("inbox");
     let ids = server.state().mailbox.generate(&inbox_there, 30, NOW);
-    server.state().mailbox.update(&ids[3], |m| m.size = 30 << 20);
     let url = server.url();
     let session = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
     let mut app = MailApp::new(session, Services::default());
@@ -213,24 +212,31 @@ fn messages_download_whole_in_the_background_on_opening_and_before_a_reply() {
         }
         panic!("it didn't happen");
     };
-    app.execute("ui.sync", json!({"account": account})).unwrap();
-    wait(&mut app, &|app| !app.graph_running());
+    // The run, with the background held back (as after Stop) so that what is opened isn't here yet.
+    let synced = |app: &mut MailApp| {
+        app.execute("ui.sync", json!({"account": account})).unwrap();
+        for _ in 0..4_000 {
+            app.poll_graph();
+            if !app.graph_running() {
+                app.session.sync_progress.full_paused = true;
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        panic!("the run didn't end");
+    };
+    synced(&mut app);
     let by = |app: &MailApp, id: &str| app.session.mailbox.messages.values().find(|m| m.server.as_ref().is_some_and(|s| s.id == id)).unwrap().id;
-    // In the background: all but the large one.
-    wait(&mut app, &|app| app.session.mailbox.messages.values().filter(|m| m.unfetched).count() == 1);
-    let large = by(&app, &ids[3]);
-    assert!(app.session.mailbox.message(large).unwrap().unfetched);
-    assert!(app.session.mailbox.message(by(&app, &ids[0])).unwrap().body.text.contains("The words of message 1."));
+    let opened = by(&app, &ids[3]);
+    assert!(app.session.mailbox.message(opened).unwrap().unfetched);
 
     // Opened: at once.
-    app.session.sel.messages = vec![large];
-    wait(&mut app, &|app| !app.session.mailbox.message(large).unwrap().unfetched);
+    app.session.sel.messages = vec![opened];
+    wait(&mut app, &|app| !app.session.mailbox.message(opened).unwrap().unfetched);
 
     // A reply to one that isn't here whole waits for it, and then opens with its text.
     let late = server.state().mailbox.add(&inbox_there, "Late", NOW + 60);
-    server.state().mailbox.update(&late, |m| m.size = 40 << 20);
-    app.execute("ui.sync", json!({"account": account})).unwrap();
-    wait(&mut app, &|app| !app.graph_running());
+    synced(&mut app);
     let late = by(&app, &late);
     assert!(app.session.mailbox.message(late).unwrap().unfetched);
     let pending = app.run("mail.reply", json!({"id": late})).unwrap();
@@ -238,4 +244,54 @@ fn messages_download_whole_in_the_background_on_opening_and_before_a_reply() {
     wait(&mut app, &|app| app.session.compose.is_some());
     assert!(app.session.compose.as_ref().unwrap().subject.contains("Late"));
     assert!(!app.session.mailbox.message(late).unwrap().unfetched);
+
+    // In the background: all the rest (a delta says no sizes, so none is held back as large).
+    app.session.sync_progress.full_paused = false;
+    wait(&mut app, &|app| app.session.mailbox.messages.values().all(|m| !m.unfetched));
+    assert!(app.session.mailbox.message(by(&app, &ids[0])).unwrap().body.text.contains("The words of message 1."));
+}
+
+/// What changed on the server after every folder had come to its end (read on a phone, flagged
+/// and categorised in Outlook on the web) comes down with the next Send/Receive, across a save
+/// and a reopen of the mailbox: Exchange Online says a change of read state alone as the
+/// message's id and `isRead`, nothing else (#148).
+#[test]
+fn what_changed_on_the_server_after_a_whole_run_comes_down_with_the_next() {
+    let server = StandIn::start().unwrap();
+    let _route = server.route();
+    let inbox_there = server.state().well_known("inbox");
+    let ids = {
+        let mut state = server.state();
+        state.mailbox.read_alone = true;
+        state.mailbox.generate(&inbox_there, 5, NOW)
+    };
+    let (mut s, account) = session();
+    let first = run(&mut s, account, &mut |_, _, _| {});
+    assert!(first.whole, "{first:?}");
+    let all_caught_up = s.mailbox.folders.iter().filter(|f| f.account == account).filter_map(|f| f.server.as_ref()).all(|f| f.caught_up);
+    assert!(all_caught_up);
+    // Saved and opened again, as the window does between runs.
+    let dir = std::env::temp_dir().join(format!("mailcraft-changes-down-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("changes.mailcraft");
+    mailcraft_engine::store::save(&path, &s.mailbox).unwrap();
+    let mut s = Session::at(mailcraft_engine::store::open(&path).unwrap().mailbox, NOW, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+    {
+        let mut state = server.state();
+        state.mailbox.update(&ids[0], |m| m.read = true);
+        state.mailbox.update(&ids[1], |m| m.flag = "flagged".into());
+        state.mailbox.update(&ids[2], |m| m.categories = vec!["Red category".into()]);
+    }
+    let second = run(&mut s, account, &mut |_, _, _| {});
+    assert!(second.whole && second.errors.is_empty(), "{second:?}");
+    let here = |s: &Session, id: &str| s.mailbox.messages.values().find(|m| m.server.as_ref().is_some_and(|s| s.id == *id)).unwrap().clone();
+    assert!(here(&s, &ids[0]).read, "read on the phone");
+    assert_eq!(here(&s, &ids[1]).flag, FlagStatus::Flagged);
+    assert_eq!(here(&s, &ids[2]).categories, ["Red category"]);
+    assert!(!here(&s, &ids[3]).read && here(&s, &ids[3]).flag == FlagStatus::None);
+    // And back: marked unread there, it is unread here.
+    server.state().mailbox.update(&ids[0], |m| m.read = false);
+    run(&mut s, account, &mut |_, _, _| {});
+    assert!(!here(&s, &ids[0]).read, "marked unread on the phone");
 }

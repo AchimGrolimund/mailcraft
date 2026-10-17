@@ -9,6 +9,9 @@
 //! - **A message the server has changed** takes the server's read, flag, categories and
 //!   importance, but for a property changed here since the server last said (ADR 0003): that
 //!   goes up with R3.3, and nothing changed here is overwritten by coming down.
+//! - **A message whose read state alone the server says changed** (its id and `isRead`, as
+//!   Exchange Online says a message read or unread elsewhere, #148) takes it, as a message changed
+//!   there does: but for a message whose read state was changed here since.
 //! - **A message the server says left a folder** (`@removed`: deleted, or moved out) is marked
 //!   gone and kept. Seen in another folder, it has moved there, with what was fetched of it. Only
 //!   once every folder's delta reached its end in a run is what is still gone removed here.
@@ -95,6 +98,19 @@ pub fn take_page(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, page: &
         {
             s.gone = true;
             down.gone += 1;
+        }
+    }
+    for there in &page.read {
+        let Some(m) = index.find(mb, account, &there.id) else { continue };
+        if let Ok(m) = mb.message_mut(m)
+            && let Some(s) = m.server.as_mut().filter(|s| s.folder == page.folder)
+        {
+            let was = s.read;
+            s.read = there.read;
+            if m.read == was && m.read != there.read {
+                m.read = there.read;
+                down.changed += 1;
+            }
         }
     }
     for there in &page.messages {
@@ -241,26 +257,35 @@ pub fn progress_words(mb: &Mailbox, account: Id, progress: &GraphProgress) -> St
 /// not gone, no larger than the account's "Download messages in full", newest first; `most` of
 /// them at most, by server id.
 pub fn fetch_queue(mb: &Mailbox, account: Id, most: usize) -> Vec<String> {
+    fetch_queue_passing_over(mb, account, most, &HashSet::new())
+}
+
+/// [`fetch_queue`] without the messages in `passed_over` (by account and server id): those the
+/// server wouldn't give whole this session.
+pub fn fetch_queue_passing_over(mb: &Mailbox, account: Id, most: usize, passed_over: &HashSet<(Id, String)>) -> Vec<String> {
+    let skip = |id: &str| passed_over.contains(&(account, id.to_string()));
     // Messages being moved out of the account first, whatever their size: the move ends only
     // once they are whole here (S19).
     let mut out: Vec<String> = mb
         .messages
         .values()
         .filter(|m| m.unfetched && !m.incomplete)
-        .filter_map(|m| m.moving_out.as_ref().filter(|out| out.account == account).map(|out| out.id.clone()))
+        .filter_map(|m| m.moving_out.as_ref().filter(|out| out.account == account && !skip(&out.id)).map(|out| out.id.clone()))
         .take(most)
         .collect();
-    out.extend(fetch_queue_of_account(mb, account, most.saturating_sub(out.len())));
+    out.extend(fetch_queue_of_account(mb, account, most.saturating_sub(out.len()), &skip));
     out
 }
 
-fn fetch_queue_of_account(mb: &Mailbox, account: Id, most: usize) -> Vec<String> {
+fn fetch_queue_of_account(mb: &Mailbox, account: Id, most: usize, skip: &dyn Fn(&str) -> bool) -> Vec<String> {
     let limit = keeps_whole(mb, account);
     let mut waiting: Vec<(i64, &str)> = mb
         .messages
         .values()
         .filter(|m| m.account == account && m.unfetched)
-        .filter_map(|m| m.server.as_ref().filter(|s| !s.gone && limit.is_none_or(|limit| s.size <= limit)).map(|s| (m.received, s.id.as_str())))
+        .filter_map(|m| {
+            m.server.as_ref().filter(|s| !s.gone && limit.is_none_or(|limit| s.size <= limit) && !skip(&s.id)).map(|s| (m.received, s.id.as_str()))
+        })
         .collect();
     let most = most.min(waiting.len());
     if most == 0 {
