@@ -1,7 +1,8 @@
 //! Shared mailboxes in the window (#70, a draft): read through Microsoft Graph with the sign-in
 //! of the account they are opened through, at their own address.
 //!
-//! A shared mailbox's Send/Receive is its folders and mail alone: no Outbox (mail written there
+//! A shared mailbox's Send/Receive is its folders and mail alone, what was changed in it here going
+//! up first, to its own address: no Outbox (mail written there
 //! goes from the owner's own account), no calendar, no contacts, no Favorites. Its token is
 //! renewed for the run with `Mail.ReadWrite.Shared`; when the owner's sign-in doesn't cover that
 //! yet, he is asked for it on Microsoft's page, by itself, when he asked for the run (adding a

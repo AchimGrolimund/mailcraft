@@ -50,8 +50,8 @@
 //!   or belong to another mailbox, entries that are no folders, and a document that is anything
 //!   at all ([`State::configuration_document`]).
 //! - **Other mailboxes** (#70). `/v1.0/users/{address}/mailFolders…` and
-//!   `/users/{address}/messages/{id}/$value` answer a shared mailbox's folders and mail as `/me`
-//!   answers the owner's ([`State::add_other`]); 403 when the owner wasn't given Full Access to
+//!   `/users/{address}/messages/{id}[/$value|/move|/copy]` answer a shared mailbox's folders and
+//!   mail as `/me` answers the owner's, its changes made in it alone ([`State::add_other`]); 403 when the owner wasn't given Full Access to
 //!   it, 404 for an address it doesn't know.
 //! - **Messages.** A folder's message delta in pages, with next and delta links, `@removed`,
 //!   replays, forgotten and reset links, and a message's MIME (`$value`): [`messages`]. Changes
@@ -887,6 +887,10 @@ impl State {
             ["mailFolders"] => self.mail_folders(asked, method, None, &[]),
             ["mailFolders", folder, rest @ ..] => self.mail_folders(asked, method, Some(folder), rest),
             ["messages", id, "$value"] if method == "GET" => self.message_value(id),
+            // Its messages read, changed, moved, copied and deleted, within it alone: a folder
+            // of another mailbox is no destination here (#70, slice 3).
+            ["messages", id] => self.message_at(asked, method, id, None),
+            ["messages", id, action @ ("move" | "copy")] => self.message_at(asked, method, id, Some(action)),
             [first, ..] => Err(refuse(400, "BadRequest", format!("Resource not found for the segment '{first}'."))),
             [] => Err(refuse(405, "MethodNotAllowed", "The method is not allowed on this resource.")),
         };
@@ -1799,6 +1803,8 @@ impl State {
                 "ErrorItemNotFound" => "ErrorItemNotFound",
                 "ErrorAccessDenied" => "ErrorAccessDenied",
                 "ErrorInvalidRequest" => "ErrorInvalidRequest",
+                "ErrorInvalidUser" => "ErrorInvalidUser",
+                "ErrorQuotaExceeded" => "ErrorQuotaExceeded",
                 _ => "ServiceUnavailable",
             };
             return Err(refuse(status, code, "The stand-in was told to say so."));

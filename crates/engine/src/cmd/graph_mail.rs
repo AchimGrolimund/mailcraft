@@ -66,12 +66,14 @@ pub fn graph_mail_request(s: &Session, account: Id) -> Result<GraphMailRequest, 
         return Err(fail(format!("{} isn't kept in step through Microsoft Graph", a.name)));
     }
     let shared = shared_mailbox(s, account)?;
-    // A shared mailbox is read, and nothing of it goes up yet (#70, first slice): what is changed
-    // in it here waits on this computer ([`unpushed`] counts it), and nothing meant for it can
-    // reach the owner's own mailbox.
-    if shared {
-        return Ok(GraphMailRequest { account, email: a.email.clone(), shared, links: links(&s.mailbox, account), ..Default::default() });
-    }
+    // A shared mailbox's changes go up as its owner's do, at its own address with its own ids
+    // (#70: the host asks `/users/{address}/…`, never `/me`). Its drafts and what is sent from it
+    // don't yet: mail written there goes from the owner's own account.
+    let (drafts, sends) = if shared {
+        (Vec::new(), Vec::new())
+    } else {
+        (super::graph_drafts::draft_changes(s, account, MAX_DRAFTS).0, super::graph_send::sends(s, account))
+    };
     Ok(GraphMailRequest {
         account,
         email: a.email.clone(),
@@ -80,8 +82,8 @@ pub fn graph_mail_request(s: &Session, account: Id) -> Result<GraphMailRequest, 
         links: links(&s.mailbox, account),
         background: false,
         messages: graph_up::message_changes(s, account, MAX_MESSAGE_CHANGES).0,
-        drafts: super::graph_drafts::draft_changes(s, account, MAX_DRAFTS).0,
-        sends: super::graph_send::sends(s, account),
+        drafts,
+        sends,
     })
 }
 

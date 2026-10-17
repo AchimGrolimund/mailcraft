@@ -125,9 +125,7 @@ fn info(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
                 tl!("Shared mailbox · No access: Microsoft won't open it for you. Send/Receive tries again").to_string()
             }
             AccountKind::Microsoft if a.is_shared() => match &owner {
-                Some(owner) => {
-                    crate::i18n::fmt(tl!("Shared mailbox · opened with {owner}'s sign-in · read only for now (testing)"), &[("owner", owner)])
-                }
+                Some(owner) => crate::i18n::fmt(tl!("Shared mailbox · opened with {owner}'s sign-in (testing)"), &[("owner", owner)]),
                 None => tl!("Shared mailbox · the account it was opened through is gone: remove it").to_string(),
             },
             AccountKind::Local => tl!("On this device only: no mail server").to_string(),
