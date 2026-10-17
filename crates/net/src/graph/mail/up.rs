@@ -218,7 +218,7 @@ impl Up<'_, '_, '_> {
         if !self.graph.shared() {
             return false;
         }
-        let code = code_of(body.to_string().as_bytes(), &[self.graph.token]);
+        let code = logged_code(body.to_string().as_bytes(), &[self.graph.token]);
         if let Some(why) = super::super::shared_refusal(u64::from(status), body) {
             log::info!("graph changes: in a shared mailbox, {what} was refused (status {status}{code}); the changes wait here");
             self.denied.get_or_insert(why);
