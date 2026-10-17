@@ -20,13 +20,14 @@ use std::collections::{HashMap, HashSet};
 
 use mailcraft_model::sync::{
     ChangeOutcome, FolderChange, FolderListing, GraphFetchRequest, GraphFetchResult, GraphFolder, GraphLink, GraphMailRequest, GraphMailResult,
-    MAX_DRAFTS, MAX_FOLDER_CHANGES, MAX_MESSAGE_CHANGES, MessageOutcome,
+    MAX_DRAFTS, MAX_FOLDER_CHANGES, MAX_MESSAGE_CHANGES, MessageOutcome, SendOutcome, SyncPhase,
 };
 use mailcraft_model::{AccountKind, Folder, FolderKind, Id, Mailbox, Queued, ServerFolder, clean_name};
 use serde_json::{Value, json};
 
 use super::graph_down::{self, Down};
 use super::graph_up::{self, Refusals};
+use super::sync_progress::{self, Piece};
 use super::{bad, fail};
 use crate::{CmdError, CmdResult, CommandSpec, Session, p};
 
@@ -275,8 +276,10 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
         }
     }
     // What was sent (R3.4.2): gone from the Outbox, or held there with what happened.
+    let mut sent = 0;
     for done in &result.sent {
         if super::graph_send::send_done(&mut s.mailbox, account, done, &mut refused) {
+            sent += usize::from(matches!(done.outcome, SendOutcome::Sent));
             taken.updated += 1;
             s.graph_index = Default::default();
         }
@@ -304,6 +307,18 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
         s.view.folder = s.mailbox.folder_of_kind(account, FolderKind::Inbox).unwrap_or(0);
         s.sel.messages.clear();
     }
+    // Send/Receive Progress: where the run is, what it brought, what went wrong.
+    let step = match (&result.progress, &result.listing, result.sent.is_empty()) {
+        (Some(progress), ..) => {
+            let name = s.mailbox.folder_by_server(account, &progress.folder).and_then(|f| s.mailbox.folder(f)).map(|f| f.name.as_str());
+            Some((SyncPhase::NewMail, sync_progress::shown(name.unwrap_or_default()), progress.read.min(progress.total), progress.total))
+        }
+        (None, Some(_), _) => Some((SyncPhase::Folders, String::new(), 0, 0)),
+        (None, None, false) => Some((SyncPhase::Sending, String::new(), 0, 0)),
+        (None, None, true) => None,
+    };
+    let piece = Piece { step, new: down.new, sent, problems: &errors, last: !result.partial, stopped: result.stopped };
+    s.sync_progress.take(account, piece);
     let summary = match (errors.first(), taken.pushed + taken.added + taken.updated + taken.removed) {
         (Some(e), _) => e.clone(),
         (None, 0) => "Up to date".to_string(),

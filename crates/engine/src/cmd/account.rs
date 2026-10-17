@@ -13,6 +13,7 @@ use mailcraft_model::{
 };
 use serde_json::{Value, json};
 
+use super::sync_progress::{self, Piece};
 use super::{bad, fail};
 use crate::{CmdError, CmdResult, CommandSpec, Session, p};
 
@@ -523,9 +524,17 @@ pub fn apply_sync_part(s: &mut Session, run: &mut SyncTotals, mut result: SyncRe
     if !result.email.is_empty() && !a.email.trim().eq_ignore_ascii_case(result.email.trim()) {
         return Err(fail(format!("this Send/Receive was for another account, not for {}", a.name)));
     }
-    let (partial, stopped, progress) = (result.partial, result.stopped, result.progress.clone());
+    // A host that says only the numbers has its line made of them.
+    let progress = match (&result.step, result.progress.is_empty()) {
+        (Some(step), true) => step.line(),
+        _ => result.progress.clone(),
+    };
+    let (partial, stopped) = (result.partial, result.stopped);
     let pushed = result.pushed_count();
     let (counts, sent) = if result.has_news() { take_in_news(s, account, &mut result) } else { (Counts::default(), 0) };
+    let piece =
+        Piece { step: result.step.as_ref().map(sync_progress::imap_step), new: counts.new, sent, problems: &result.errors, last: !partial, stopped };
+    s.sync_progress.take(account, piece);
     run.new += counts.new;
     run.sent += sent;
     run.removed += counts.removed;

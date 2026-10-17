@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use mailcraft_model::Id;
-use mailcraft_model::sync::{Created, Deleted, FlagsPushed, Moved, RemoteOp, SyncRequest, SyncResult};
+use mailcraft_model::sync::{Created, Deleted, FlagsPushed, Moved, RemoteOp, SyncRequest, SyncResult, SyncStage, SyncStep};
 use mailcraft_proto::ProtoError;
 use mailcraft_proto::imap::{Copied, Imap, Mailbox, decode_utf7, encode_utf7, uid_sets};
 
@@ -70,7 +70,7 @@ pub(crate) fn push(run: &mut Run, imap: &mut Imap<Stream<'_>>, mailboxes: &[Mail
         let here: Vec<&RemoteOp> = ops.iter().copied().filter(|op| op.mailbox() == remote).collect();
         let alive = push.mailbox(imap, remote, &here, &mut run.out);
         if run.out.has_news() || !run.out.errors.is_empty() {
-            run.hand_over(format!("Updated {} on the server", label(remote)));
+            run.hand_over(SyncStep::new(SyncStage::Updating, &label(remote), 0, 0));
         }
         if !alive {
             return None;
