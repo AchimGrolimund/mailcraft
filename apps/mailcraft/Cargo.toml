@@ -24,12 +24,17 @@ eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "
 egui = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
+# Quitting the platform's own way: on macOS `-[NSApplication terminate:]` and an app menu whose
+# Quit asks first; elsewhere it does nothing (`quit.rs`).
+craft-quit = { workspace = true }
 
 [dev-dependencies]
 # The tests run the whole way of a calendar change, and of reading Outlook's Favorites, against
 # a stand-in for Microsoft Graph that takes only what the documented service takes
 # (`mailcraft_net::graph::standin`).
 mailcraft-net = { workspace = true, features = ["stand-in"] }
+# A sign-in the provider refuses, as `mailcraft-net` says it.
+mailcraft-proto = { workspace = true }
 
 [build-dependencies]
 # Icon + VERSIONINFO for mailcraft.exe; build.rs only uses it when the target is Windows.

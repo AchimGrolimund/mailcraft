@@ -432,7 +432,36 @@ impl<'a> Graph<'a> {
         } else {
             headers.extend_from_slice(more);
         }
-        http::request(url, &Request { method, headers: &headers, body, patience, max_body }).map_err(|e| e.without(self.token))
+        http::request(url, &Request { method, headers: &headers, body: body.map(str::as_bytes), patience, max_body })
+            .map_err(|e| e.without(self.token))
+    }
+
+    /// `PUT` a piece of a large attachment to the address an upload session gave (R3.4.1): through
+    /// the mailbox's gate, and with no `Authorization`, as the address is its own permission (and
+    /// the token goes to Graph alone). A piece is asked again only when the server said it was
+    /// busy: one whose answer was lost may have been taken, and the next run starts the upload
+    /// afresh, looking first whether the attachment is there.
+    fn upload(&self, url: &Url, range: &str, piece: &[u8]) -> Result<Reply, NetError> {
+        let headers = [("Content-Type", "application/octet-stream"), ("Content-Range", range)];
+        let ask = || http::request(url, &Request { method: "PUT", headers: &headers, body: Some(piece), patience: SEND_TIMEOUT, max_body: MAX_PAGE });
+        let Some(pace) = &self.pace else { return ask() };
+        let mut tries = 0u32;
+        loop {
+            tries = tries.saturating_add(1);
+            let permit = pace.gate.enter(pace.priority, pace.retry.longest_wait)?;
+            let asked = ask();
+            drop(permit);
+            match asked {
+                Ok(reply) if matches!(reply.status, 429 | 503) => {
+                    let wait = pace.retry.wait_before(tries.saturating_add(1), wait_of(reply.retry_after.as_deref(), mailcraft_time::now()));
+                    pace.gate.pause(wait);
+                    if tries >= pace.retry.tries || wait > pace.retry.longest_wait {
+                        return Ok(reply);
+                    }
+                }
+                other => return other,
+            }
+        }
     }
 
     /// The error for an answer that isn't the one hoped for. `sent` is what went to Graph besides
@@ -568,6 +597,19 @@ fn is_address(email: &str) -> bool {
 
 /// [`send`] through Graph at `base`.
 fn send_at(base: &str, token: &str, message: &Message, options: &SendOptions) -> Result<(), NetError> {
+    let body = mime_body_with(message, options)?;
+    let graph = Graph::at(base, token)?;
+    let reply = graph.ask(&graph.url(SEND_MAIL), "POST", &[("Content-Type", "text/plain")], Some(&body), SEND_TIMEOUT, http::MAX_BODY)?;
+    if reply.status == 202 { Ok(()) } else { Err(graph.refusal(Doing::Sending, &reply, &body)) }
+}
+
+/// What `sendMail` is handed for `message`: its MIME, with its Bcc, in base64, after the checks
+/// every message goes through (someone to send it to, every address one).
+fn mime_body(message: &Message) -> Result<String, NetError> {
+    mime_body_with(message, &SendOptions::default())
+}
+
+fn mime_body_with(message: &Message, options: &SendOptions) -> Result<String, NetError> {
     // Leaving someone out silently would be worse than not sending.
     let mut anyone = false;
     for address in message.recipients() {
@@ -584,7 +626,6 @@ fn send_at(base: &str, token: &str, message: &Message, options: &SendOptions) ->
     if !anyone {
         return Err(NetError::Config("the message has no recipients".into()));
     }
-    let graph = Graph::at(base, token)?;
     // A message that was never dated is dated now, as it is for SMTP.
     let message = if message.date == 0 { Cow::Owned(Message { date: mailcraft_time::now(), ..message.clone() }) } else { Cow::Borrowed(message) };
     let offset_minutes = options.offset_minutes.unwrap_or_else(|| mailcraft_time::local_offset_minutes(message.date));
@@ -593,10 +634,7 @@ fn send_at(base: &str, token: &str, message: &Message, options: &SendOptions) ->
     if mime.len() > MAX_MESSAGE {
         return Err(NetError::Config("the message is too large to send through Microsoft Graph".into()));
     }
-    let body = STANDARD.encode(&mime);
-    drop(mime);
-    let reply = graph.ask(&graph.url(SEND_MAIL), "POST", &[("Content-Type", "text/plain")], Some(&body), SEND_TIMEOUT, http::MAX_BODY)?;
-    if reply.status == 202 { Ok(()) } else { Err(graph.refusal(Doing::Sending, &reply, &body)) }
+    Ok(STANDARD.encode(&mime))
 }
 
 /// [`events`] from Graph at `base`.

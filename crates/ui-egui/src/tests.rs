@@ -406,6 +406,8 @@ fn send_receive_signs_in_first_for_an_account_without_a_password() {
     let synced: Arc<Mutex<Vec<(String, String)>>> = Default::default();
     let asked: Arc<Mutex<Vec<(String, String)>>> = Default::default();
     let refuse = Arc::new(AtomicBool::new(false));
+    // An error the next Send/Receive ends with, once.
+    let error: Arc<Mutex<Option<String>>> = Default::default();
     // What the next sign-in answers; `None` leaves the owner in the browser.
     let answer: Arc<Mutex<Option<Answer>>> = Default::default();
     let waiting: Arc<Mutex<Vec<(mpsc::Sender<Answer>, Arc<AtomicBool>)>>> = Default::default();
@@ -413,10 +415,11 @@ fn send_receive_signs_in_first_for_an_account_without_a_password() {
         |access: &str| Ok(Tokens { access: access.into(), refresh: "ref-1".into(), expires_at: mailcraft_time::now() + 3600, ..Default::default() });
 
     let mut a = app();
-    let (synced2, refuse2) = (synced.clone(), refuse.clone());
+    let (synced2, refuse2, error2) = (synced.clone(), refuse.clone(), error.clone());
     a.services.sync = Some(Box::new(move |req: SyncRequest| {
         synced2.lock().unwrap().push((req.access_token.clone(), req.password.clone()));
-        let errors = if refuse2.load(Ordering::Relaxed) { vec!["The server refused the sign-in".to_string()] } else { Vec::new() };
+        let mut errors = if refuse2.load(Ordering::Relaxed) { vec!["The server refused the sign-in".to_string()] } else { Vec::new() };
+        errors.extend(error2.lock().unwrap().take());
         let (tx, rx) = mpsc::channel();
         tx.send(SyncResult { account: req.account.id, errors, ..Default::default() }).unwrap();
         rx
@@ -464,6 +467,24 @@ fn send_receive_signs_in_first_for_an_account_without_a_password() {
     a.poll_sync();
     assert_eq!(asked.lock().unwrap().last().unwrap().1, "ref-1");
     assert_eq!(synced.lock().unwrap().last().unwrap().0, "tok-2");
+
+    // A token that runs out before a run could be over is renewed first, not taken along.
+    a.tokens.get_mut(&id).unwrap().expires_at = mailcraft_time::now() + 300;
+    *answer.lock().unwrap() = Some(good("tok-3"));
+    assert_eq!(a.execute("ui.sync", json!({"account": id})).unwrap()["pending"], "signIn");
+    a.poll_sign_in();
+    a.poll_sync();
+    assert_eq!(synced.lock().unwrap().last().unwrap().0, "tok-3");
+
+    // Microsoft ends the session when the token runs out during the run: the next run renews it.
+    *error.lock().unwrap() = Some("Couldn't open \"Inbox\": the server ended the session: Session invalidated - AccessTokenExpired".into());
+    a.execute("ui.sync", json!({"account": id})).unwrap();
+    a.poll_sync();
+    *answer.lock().unwrap() = Some(good("tok-4"));
+    assert_eq!(a.execute("ui.sync", json!({"account": id})).unwrap()["pending"], "signIn");
+    a.poll_sign_in();
+    a.poll_sync();
+    assert_eq!(synced.lock().unwrap().last().unwrap().0, "tok-4");
 
     // A sign-in that fails says so. What was kept to renew with stays (the trouble may have been
     // the network); the host decides when the provider has refused it for good.
@@ -609,6 +630,104 @@ fn the_system_remembers_passwords_and_sign_ins_only_when_wanted() {
     assert!(kept("password:avery@mail.example").is_some());
     b.execute("account.remove", json!({"id": plain})).unwrap();
     assert_eq!(kept("password:avery@mail.example"), None);
+}
+
+/// (#103) An account that exists is signed in again, and on the provider's page the owner picks
+/// somebody else: those tokens are neither used nor remembered, mail's or Graph's, however they
+/// come in, and the owner is told who to sign in as. The account's own address in any case, its
+/// user name, and a sign-in that names nobody are the account's, as before.
+#[test]
+fn a_sign_in_as_somebody_else_is_never_taken_for_an_account_that_exists() {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, mpsc};
+
+    use mailcraft_model::sync::{SyncRequest, SyncResult, Tokens};
+
+    #[derive(Clone, Default)]
+    struct Store(Arc<Mutex<HashMap<String, String>>>);
+    impl crate::SecretStore for Store {
+        fn get(&self, key: &str) -> Option<String> {
+            self.0.lock().unwrap().get(key).cloned()
+        }
+        fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+            self.0.lock().unwrap().insert(key.to_string(), secret.to_string());
+            Ok(())
+        }
+        fn delete(&self, key: &str) {
+            self.0.lock().unwrap().remove(key);
+        }
+    }
+    let store = Store::default();
+    let who: Arc<Mutex<String>> = Arc::new(Mutex::new("admin@mail.example".into()));
+    let synced: Arc<Mutex<Vec<String>>> = Default::default();
+    let mut a = MailApp::new(Session::at(mailcraft_engine::sample::mailbox(NOW, 0), NOW, 0), Services::default());
+    (a.autosave, a.auto_sync) = (false, false);
+    let log = synced.clone();
+    a.services.sync = Some(Box::new(move |req: SyncRequest| {
+        log.lock().unwrap().push(req.access_token.clone());
+        let (tx, rx) = mpsc::channel();
+        tx.send(SyncResult { account: req.account.id, ..Default::default() }).unwrap();
+        rx
+    }));
+    let signs = who.clone();
+    a.services.sign_in = Some(Box::new(move |_req: crate::SignInRequest| {
+        let (tx, rx) = mpsc::channel();
+        let email = signs.lock().unwrap().clone();
+        let tokens =
+            Tokens { access: "tok-other".into(), refresh: "ref-other".into(), expires_at: mailcraft_time::now() + 3600, email, ..Default::default() };
+        tx.send(Ok(tokens)).unwrap();
+        rx
+    }));
+    a.services.secrets = Some(Box::new(store.clone()));
+    let id = a.execute(
+        "account.add",
+        json!({"email": "quinn@mail.example", "auth": "oauth2", "provider": "microsoft", "incoming": {"host": "outlook.office365.com"}}),
+    );
+    let id = id.unwrap()["id"].as_u64().unwrap();
+    let said = "You signed in as admin@mail.example, but this account is quinn@mail.example. Sign in again as quinn@mail.example.";
+    let nothing_kept = |a: &MailApp| !a.tokens.contains_key(&id) && !a.graph_tokens.contains_key(&id) && store.0.lock().unwrap().is_empty();
+
+    // Send/Receive signs in for mail: refused, said, and no run with the other one's token.
+    a.execute("ui.sync", json!({"account": id})).unwrap();
+    a.poll_sign_in();
+    assert!(nothing_kept(&a) && synced.lock().unwrap().is_empty() && !a.syncing());
+    assert_eq!(a.status_msg.as_ref().map(|(m, _)| m.as_str()), Some(said));
+    // "Connect calendar and contacts" signs in for Graph: the same.
+    a.status_msg = None;
+    a.execute("ui.connectMicrosoft", json!({"account": id})).unwrap();
+    a.poll_sign_in();
+    assert!(nothing_kept(&a));
+    assert_eq!(a.status_msg.as_ref().map(|(m, _)| m.as_str()), Some(said));
+    // Tokens a background job renewed for it are looked at the same way.
+    a.keep_graph_tokens(
+        id,
+        Tokens { access: "tok-other".into(), refresh: "ref-other".into(), email: "admin@mail.example".into(), ..Default::default() },
+    );
+    assert!(nothing_kept(&a));
+
+    // The account's own address, whatever its case: used and remembered as before.
+    *who.lock().unwrap() = "Quinn@Mail.Example".into();
+    a.execute("ui.sync", json!({"account": id})).unwrap();
+    a.poll_sign_in();
+    assert_eq!(a.tokens.get(&id).map(|t| t.access.as_str()), Some("tok-other"));
+    assert_eq!(store.0.lock().unwrap().get("refresh:quinn@mail.example").map(String::as_str), Some("ref-other"));
+    assert_eq!(synced.lock().unwrap().as_slice(), ["tok-other"]);
+    a.poll_sync();
+    // A sign-in that names nobody: the account's, as it always was.
+    a.tokens.clear();
+    store.0.lock().unwrap().clear();
+    who.lock().unwrap().clear();
+    a.execute("ui.sync", json!({"account": id})).unwrap();
+    a.poll_sign_in();
+    assert!(a.tokens.contains_key(&id));
+    a.poll_sync();
+    // An address that is another name for the one that signs in: its user name is who signs in.
+    a.tokens.clear();
+    a.execute("account.edit", json!({"id": id, "username": "q.admin@mail.example"})).unwrap();
+    *who.lock().unwrap() = "Q.Admin@mail.example".into();
+    a.execute("ui.sync", json!({"account": id})).unwrap();
+    a.poll_sign_in();
+    assert!(a.tokens.contains_key(&id));
 }
 
 /// A system whose credential store can't be used (on Linux, no Secret Service running, or one
@@ -1582,4 +1701,113 @@ fn opening_a_damaged_mailbox_file_says_what_was_left_out() {
     // Otherwise what the content folder lost, and nothing when nothing was.
     assert!(said(json!({"lostSaves": 0, "unfinished": 0, "unavailable": 2})).unwrap().starts_with("2 parts of messages"));
     assert_eq!(said(json!({"lostSaves": 0, "unfinished": 0, "unavailable": 0})), None);
+}
+
+/// R3 spec S30: mail imported for a Microsoft account goes to a local folder, and moving it into
+/// the account's folders is refused, with the reason in the status bar.
+#[test]
+fn imported_mail_for_a_microsoft_account_stays_in_a_local_folder_and_says_why() {
+    let mut a = app();
+    let account = a.run("account.add", json!({"email": "owner@example.org", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
+    let inbox = a.session.mailbox.folder_of_kind(account, mailcraft_model::FolderKind::Inbox).unwrap();
+    let id = first_message(&mut a);
+    let eml = a.execute("file.exportMessage", json!({"id": id})).unwrap();
+    let r = a.run("file.import", json!({"name": "in.eml", "data": eml["data"], "folder": inbox})).unwrap();
+    let said = a.status_msg.as_ref().map(|(text, _)| text.clone()).unwrap_or_default();
+    assert_eq!(said, "Imported 1 message into a local folder: Microsoft doesn't let a mail program put received mail into your mailbox");
+    let imported = r["ids"][0].as_u64().unwrap();
+    assert_ne!(a.session.mailbox.message(imported).unwrap().folder, inbox);
+    assert!(a.run("mail.move", json!({"ids": [imported], "folder": inbox})).is_err());
+    let said = a.status_msg.as_ref().map(|(text, _)| text.clone()).unwrap_or_default();
+    assert_eq!(said, "Microsoft doesn't let a mail program put received mail into your mailbox; it stays in a local folder.");
+    assert_ne!(a.session.mailbox.message(imported).unwrap().folder, inbox);
+}
+
+/// A search says so over the list: how many it found and where; ✕ or Esc ends it (#115).
+#[test]
+fn a_search_is_said_over_the_list_and_ended_by_its_cross_or_esc() {
+    use egui_kittest::kittest::Queryable;
+    let mut a = app();
+    let found = a.execute("view.search", json!({"query": "Atlas"})).unwrap()["found"].as_u64().unwrap();
+    assert!(found > 1);
+    let inbox = a.session.mailbox.folder(a.session.view.folder).map(|f| f.name.clone()).unwrap();
+    let mut h = window(a);
+    h.run_steps(3);
+    h.get_by_label(&format!("{found} results in {inbox}"));
+    // Every mailbox.
+    h.state_mut().execute("view.search", json!({"query": "Atlas", "scope": "everywhere"})).unwrap();
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("results in All Mailboxes").is_some());
+    // Nothing found.
+    h.state_mut().execute("view.search", json!({"query": "zzzzqq", "scope": "folder"})).unwrap();
+    h.run_steps(3);
+    h.get_by_label(&format!("No results in {inbox}"));
+    // The cross ends it.
+    let close = h.state().hit.rect("searchBarClose", 0).unwrap();
+    h.event(egui::Event::PointerMoved(close.center()));
+    h.event(egui::Event::PointerButton {
+        pos: close.center(),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.step();
+    h.event(egui::Event::PointerButton {
+        pos: close.center(),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(3);
+    assert!(h.state().session.view.search.is_empty());
+    assert!(h.query_by_label_contains("results in").is_none() && h.query_by_label_contains("No results").is_none());
+    // So does Esc, with the keyboard in the list.
+    h.state_mut().execute("view.search", json!({"query": "Atlas"})).unwrap();
+    h.run_steps(3);
+    for pressed in [true, false] {
+        h.event(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE });
+        h.step();
+    }
+    h.run_steps(2);
+    assert!(h.state().session.view.search.is_empty());
+}
+
+/// #122: signatures have one place in File, their own page; File › Options no longer has a
+/// Signatures section with a button that opens that page.
+#[test]
+fn signatures_are_in_file_once() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut harness = window(app());
+    harness.state_mut().execute("ui.dismissReminder", json!({"all": true})).unwrap();
+    harness.state_mut().execute("ui.backstage", json!({"value": true, "page": "options"})).unwrap();
+    harness.run_steps(3);
+    assert!(harness.query_by_label_contains("Show week numbers").is_some());
+    // Neither the button nor the section's heading (File's list of pages is painted, not labelled).
+    assert!(harness.query_by_label("Signatures…").is_none());
+    assert!(harness.query_by_label("Signatures").is_none());
+    assert!(crate::backstage::PAGES.iter().any(|(page, ..)| *page == "signatures"));
+    harness.state_mut().execute("ui.backstage", json!({"value": true, "page": "signatures"})).unwrap();
+    harness.run_steps(3);
+    assert_eq!(harness.state().ui.backstage_page, "signatures");
+}
+
+/// File › Info for a Microsoft account: what comes after its card (the download choice, the link
+/// to connect the calendar) is laid out below the card, never over it or over each other (#121).
+#[test]
+fn info_account_card_keeps_what_follows_below_it() {
+    use egui_kittest::kittest::Queryable;
+    let mut a = app();
+    if let Some(acc) = a.session.mailbox.accounts.first_mut() {
+        acc.kind = mailcraft_model::AccountKind::Microsoft;
+    }
+    a.execute("ui.backstage", json!({"value": true, "page": "info"})).unwrap();
+    let mut h = window(a);
+    h.run_steps(3);
+    let rect = |n: egui_kittest::Node<'_>| n.rect();
+    let settings = rect(h.get_by_label("Settings"));
+    let download = rect(h.get_by_label_contains("Download messages in full"));
+    // The card is 58 pt, and Settings sits in its middle: the download line starts below the
+    // card's bottom edge, with the page's spacing between them.
+    let card_bottom = settings.center().y + 29.0;
+    assert!(download.min.y >= card_bottom + 8.0, "download {download:?} under the card ending at {card_bottom}");
 }

@@ -20,12 +20,13 @@ use std::collections::{HashMap, HashSet};
 
 use mailcraft_model::sync::{
     ChangeOutcome, FolderChange, FolderListing, GraphFetchRequest, GraphFetchResult, GraphFolder, GraphLink, GraphMailRequest, GraphMailResult,
-    MAX_FOLDER_CHANGES,
+    MAX_DRAFTS, MAX_FOLDER_CHANGES, MAX_MESSAGE_CHANGES, MessageOutcome,
 };
 use mailcraft_model::{AccountKind, Folder, FolderKind, Id, Mailbox, Queued, ServerFolder, clean_name};
 use serde_json::{Value, json};
 
 use super::graph_down::{self, Down};
+use super::graph_up::{self, Refusals};
 use super::{bad, fail};
 use crate::{CmdError, CmdResult, CommandSpec, Session, p};
 
@@ -69,6 +70,9 @@ pub fn graph_mail_request(s: &Session, account: Id) -> Result<GraphMailRequest, 
         changes: folder_changes(&s.mailbox, account, MAX_FOLDER_CHANGES).0,
         links: links(&s.mailbox, account),
         background: false,
+        messages: graph_up::message_changes(s, account, MAX_MESSAGE_CHANGES).0,
+        drafts: super::graph_drafts::draft_changes(s, account, MAX_DRAFTS).0,
+        sends: super::graph_send::sends(s, account),
     })
 }
 
@@ -86,7 +90,7 @@ fn links(mb: &Mailbox, account: Id) -> Vec<GraphLink> {
 /// How many changes made in `account` its server hasn't heard of yet ([`super::account::unpushed`]
 /// for an account kept in step through Graph).
 pub fn unpushed(s: &Session, account: Id) -> usize {
-    folder_changes(&s.mailbox, account, 0).1
+    folder_changes(&s.mailbox, account, 0).1 + graph_up::message_changes(s, account, 0).1 + super::graph_drafts::pending(&s.mailbox, account)
 }
 
 /// The server id of the folder a folder of `account` lies in, as the server would have it:
@@ -114,8 +118,9 @@ fn folder_changes(mb: &Mailbox, account: Id, limit: usize) -> (Vec<FolderChange>
     folders.sort_by_cached_key(|f| (depth(f), f.id));
     for f in folders {
         match &f.server {
-            // The special folders are the server's: they are found in its listing, never made.
-            None if f.kind != FolderKind::Custom => {}
+            // The special folders are the server's: they are found in its listing, never made;
+            // so is a folder that was on the account's IMAP server before it switched (R3.7).
+            None if f.kind != FolderKind::Custom || f.awaiting_listing => {}
             None => {
                 let parent = mb.folder(f.parent.unwrap_or(0)).filter(|p| p.account == account);
                 let (server_parent, local_parent) = match parent {
@@ -140,6 +145,8 @@ fn folder_changes(mb: &Mailbox, account: Id, limit: usize) -> (Vec<FolderChange>
     for queued in mb.queued.iter().filter(|q| q.account() == account) {
         match queued {
             Queued::DeleteFolder { id, .. } => note(&|| FolderChange::Delete { id: id.clone() }),
+            // Changes of messages: sent with the message changes (R3.3.2).
+            Queued::CopyMessage { .. } | Queued::DeleteMessage { .. } => {}
         }
     }
     (changes, count)
@@ -176,10 +183,15 @@ pub fn apply_graph_fetch(s: &mut Session, result: GraphFetchResult) -> CmdResult
     if !result.email.is_empty() && !a.email.trim().eq_ignore_ascii_case(result.email.trim()) {
         return Err(fail(format!("these messages were for another account, not for {}", a.name)));
     }
+    if s.file_is_current() {
+        s.note_saved();
+    }
     let mut index = std::mem::take(&mut s.graph_index);
     let taken = result.fetched.iter().filter(|f| graph_down::take_fetched(&mut s.mailbox, &mut index, account, &f.id, &f.mime)).count();
     s.graph_index = index;
-    if taken > 0 {
+    // Gone before it could be fetched: a message being moved out of the account stays as it is.
+    let incomplete = graph_up::missing(&mut s.mailbox, account, &result.missing);
+    if taken + incomplete > 0 {
         s.mailbox_changed();
     }
     let (waiting, large) = graph_down::not_fetched(&s.mailbox, account);
@@ -219,8 +231,8 @@ struct Taken {
 
 /// Take in what a Graph run brought back: what became of the changes sent, then the listing.
 /// Not an undo step: the server is the source of truth, but for what was changed here and hasn't
-/// reached it yet. When a change reached the server the undo history is forgotten (undoing it
-/// here would leave the server as it is; R3.5 makes undo another change).
+/// reached it yet. The undo history stays: undoing a change that reached the server is another
+/// change, which the next run sends (R3.5, [`crate::undo`]).
 pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
     let account = result.account;
     let a = s.mailbox.account(account).ok_or_else(|| fail(format!("no account with id {account}")))?;
@@ -232,13 +244,45 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
     if !result.email.is_empty() && !a.email.trim().eq_ignore_ascii_case(result.email.trim()) {
         return Err(fail(format!("this Send/Receive was for another account, not for {}", a.name)));
     }
-    let mut errors = result.errors.clone();
+    if s.file_is_current() {
+        s.note_saved();
+    }
     let mut taken = Taken::default();
+    let mut errors = result.errors.clone();
     for done in &result.changes {
         if let Some(said) = change_done(&mut s.mailbox, account, &done.change, &done.outcome, &mut taken) {
             errors.push(said);
         }
     }
+    // The changes of messages (R3.3): a refusal is said once per kind of change and reason, and
+    // the status says it at the end of the run.
+    let mut refusals = Refusals::default();
+    for done in &result.messages {
+        if graph_up::message_done(&mut s.mailbox, account, done, &mut refusals) {
+            match done.outcome {
+                MessageOutcome::Done { .. } => taken.pushed += 1,
+                _ => taken.updated += 1,
+            }
+        }
+    }
+    let mut refused = refusals.lines();
+    // The drafts (R3.4.1).
+    for done in &result.drafts {
+        if super::graph_drafts::draft_done(&mut s.mailbox, account, done, &mut refused) {
+            taken.updated += 1;
+            // A draft's server id is new or gone: where each message is, is looked at afresh.
+            s.graph_index = Default::default();
+        }
+    }
+    // What was sent (R3.4.2): gone from the Outbox, or held there with what happened.
+    for done in &result.sent {
+        if super::graph_send::send_done(&mut s.mailbox, account, done, &mut refused) {
+            taken.updated += 1;
+            s.graph_index = Default::default();
+        }
+    }
+    errors.extend(refused.iter().cloned());
+    s.graph_said.extend(refused);
     if let Some(listing) = &result.listing {
         take_listing(&mut s.mailbox, account, listing, &mut taken);
     }
@@ -254,9 +298,6 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
     }
     if taken != Taken::default() || down != Down::default() || !result.pages.is_empty() {
         s.mailbox_changed();
-    }
-    if taken.pushed > 0 {
-        s.forget_history();
     }
     // The view stays on a folder that is there.
     if s.mailbox.folder(s.view.folder).is_none() {
@@ -274,7 +315,15 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
         (_, true) => {}
         (_, false) => {
             let t = s.local_now();
-            let said = if result.stopped && errors.is_empty() { "Stopped; carries on from here next time" } else { summary.as_str() };
+            // What the server refused in this run, said once, ahead of anything else.
+            let refused = std::mem::take(&mut s.graph_said);
+            let said = if !refused.is_empty() {
+                refused.join(" ")
+            } else if result.stopped && errors.is_empty() {
+                "Stopped; carries on from here next time".to_string()
+            } else {
+                summary.clone()
+            };
             s.sync_status = format!("{said} — {}", t.time_short(s.prefs.twelve_hour));
         }
     }
@@ -422,6 +471,7 @@ fn take_listing(mb: &mut Mailbox, account: Id, listing: &FolderListing, taken: &
             .collect();
         taken.removed += gone.len();
         mb.remove_folders(&gone);
+        taken.removed += super::graph_switch::sweep_unlisted(mb, account);
     }
 }
 
@@ -465,6 +515,8 @@ fn update(mb: &mut Mailbox, id: Id, there: &GraphFolder, name: &str, parent_here
     if f.kind == FolderKind::Custom && there.kind != FolderKind::Custom {
         f.kind = there.kind;
     }
+    // Found: the server's folder from now on (R3.7).
+    f.awaiting_listing = false;
     f.server = Some(ServerFolder {
         id: there.id.clone(),
         name: name.to_string(),

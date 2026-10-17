@@ -109,7 +109,10 @@ fn info(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
         ui.painter().rect(r, 6.0, t.panel, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
         crate::widgets::avatar(ui, pos2(r.min.x + 30.0, r.center().y), 17.0, &a.address());
         let title = if a.email.is_empty() { tl!("Local mailbox").to_string() } else { a.address().full() };
-        crate::theme::paint_clipped(ui.painter(), pos2(r.min.x + 58.0, r.min.y + 20.0), r.width() - 240.0, &title, semibold(13.0), t.text);
+        // The text runs up to the buttons at the right: Settings, and Remove when there are others.
+        let buttons = usize::from(!a.email.is_empty()) + usize::from(accounts.len() > 1);
+        let text_w = r.width() - 70.0 - 82.0 * buttons as f32;
+        crate::theme::paint_clipped(ui.painter(), pos2(r.min.x + 58.0, r.min.y + 20.0), text_w, &title, semibold(13.0), t.text);
         let server = |s: &Option<mailcraft_model::Server>| {
             s.as_ref().map(|s| format!("{}{}", s.host, if s.security == Security::None { tl!(" (not encrypted)") } else { "" }))
         };
@@ -129,27 +132,41 @@ fn info(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
                 }
             }
         };
-        crate::theme::paint_clipped(ui.painter(), pos2(r.min.x + 58.0, r.min.y + 39.0), r.width() - 240.0, &detail, regular(11.5), t.text_dim);
+        crate::theme::paint_clipped(ui.painter(), pos2(r.min.x + 58.0, r.min.y + 39.0), text_w, &detail, regular(11.5), t.text_dim);
         // Sending, calendar and contacts through Microsoft wait for the owner's say-so.
         if app.graph_consent_needed(a.id) {
-            let link = ui.link(tl!("Connect calendar and contacts")).on_hover_text(tl!(
-                "Sign in once more to let MailCraft send through Microsoft and show your calendar and contacts. Mail works without it."
-            ));
+            // An account kept in step through Graph gets its mail that way too: without it, none.
+            let link = if a.kind == AccountKind::Microsoft {
+                ui.link(tl!("Connect to Microsoft (mail, calendar and contacts)")).on_hover_text(tl!(
+                    "Sign in once more to let MailCraft read and change your mail, send, and show your calendar and contacts through Microsoft."
+                ))
+            } else {
+                ui.link(tl!("Connect calendar and contacts")).on_hover_text(tl!(
+                    "Sign in once more to let MailCraft send through Microsoft and show your calendar and contacts. Mail works without it."
+                ))
+            };
             if link.clicked() {
                 let _ = app.run("ui.connectMicrosoft", json!({"account": a.id}));
             }
         }
-        if !a.email.is_empty() {
-            let br = Rect::from_min_size(pos2(r.max.x - 168.0, r.center().y - 13.0), vec2(74.0, 26.0));
-            if ui.put(br, egui::Button::new(tl!("Settings"))).on_hover_text(tl!("Change this account's name, servers and sign-in")).clicked() {
-                let _ = app.run("ui.dialog", json!({"name": "account", "id": a.id}));
-            }
+        // The buttons sit on the card: placed without moving the page's layout on (`ui.put` would
+        // take it back up into the card, and what follows was drawn over it).
+        let on_card = |ui: &mut Ui, right: f32, button: egui::Button<'_>| {
+            let br = Rect::from_min_size(pos2(r.max.x - right, r.center().y - 13.0), vec2(74.0, 26.0));
+            ui.new_child(egui::UiBuilder::new().max_rect(br)).add_sized(br.size(), button)
+        };
+        let settings_at = if accounts.len() > 1 { 168.0 } else { 86.0 };
+        if !a.email.is_empty()
+            && on_card(ui, settings_at, egui::Button::new(tl!("Settings")))
+                .on_hover_text(tl!("Change this account's name, servers and sign-in"))
+                .clicked()
+        {
+            let _ = app.run("ui.dialog", json!({"name": "account", "id": a.id}));
         }
-        if accounts.len() > 1 {
-            let br = Rect::from_min_size(pos2(r.max.x - 86.0, r.center().y - 13.0), vec2(74.0, 26.0));
-            if ui.put(br, egui::Button::new(tl!("Remove"))).on_hover_text(tl!("Remove this account and the mail kept for it here")).clicked() {
-                let _ = app.run("account.remove", json!({"id": a.id}));
-            }
+        if accounts.len() > 1
+            && on_card(ui, 86.0, egui::Button::new(tl!("Remove"))).on_hover_text(tl!("Remove this account and the mail kept for it here")).clicked()
+        {
+            let _ = app.run("account.remove", json!({"id": a.id}));
         }
         // Which messages are kept whole on this computer (R3.2).
         if a.kind == AccountKind::Microsoft {
@@ -319,6 +336,10 @@ fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
             }
         });
     });
+    if app.services.update_check.is_some() {
+        section(ui, tl!("Updates"), t);
+        crate::updates::options(app, ui, t);
+    }
     let prefs = app.session.prefs.clone();
     let set = |app: &mut MailApp, params: serde_json::Value| {
         let _ = app.run("file.options", params);
@@ -462,10 +483,6 @@ fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     }
     crate::reading::invitation_options(app, ui);
     time_zones(app, ui, &prefs);
-    section(ui, tl!("Signatures"), t);
-    if ui.button(tl!("Signatures…")).clicked() {
-        let _ = app.run("ui.backstage", json!({"value": true, "page": "signatures"}));
-    }
 }
 
 /// The time zone the calendar is shown in, and a second one for its time bar, each with a label
@@ -540,6 +557,10 @@ fn about(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
         "Mail, calendar, people and tasks, written from scratch in Rust. It runs natively on macOS, Windows, Linux and BSD, and in the browser."
     ));
     ui.label(tl!("Open source under the MIT License or the Apache License 2.0, at your option."));
+    if app.services.update_check.is_some() {
+        section(ui, tl!("Updates"), t);
+        crate::updates::about(app, ui, t);
+    }
     section(ui, tl!("Contributors"), t);
     contributors(ui);
     if ui.button(tl!("Show Contributors")).clicked() {

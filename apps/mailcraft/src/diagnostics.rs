@@ -21,8 +21,6 @@ pub fn report(version: &str, build: &str, log_dir: Option<&Path>) -> String {
     let mut out = String::from("### MailCraft diagnostics\n\n");
     out.push_str(&format!("- Version: {version} ({build})\n"));
     out.push_str(&format!("- Platform: {}\n", platform()));
-    let graph = std::env::var("MAILCRAFT_GRAPH_MAIL").is_ok_and(|v| v.trim() == "1");
-    out.push_str(&format!("- Graph mail switch: {}\n", if graph { "on" } else { "off" }));
     out.push_str("- Addresses, names, paths, hosts, links, ids and quoted text are taken out of the log.\n");
     let Some(dir) = log_dir else {
         out.push_str("\nNo log is kept for this run.\n");

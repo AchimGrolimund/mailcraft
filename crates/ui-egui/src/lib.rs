@@ -29,6 +29,7 @@ pub mod favorites_sync;
 pub mod files;
 pub mod forms;
 pub mod graph_fetch;
+mod graph_switch;
 pub mod i18n;
 pub mod icons;
 pub mod keys;
@@ -43,6 +44,7 @@ pub mod scheduling;
 mod signatures;
 pub mod tasks_view;
 pub mod theme;
+pub mod updates;
 pub mod widgets;
 pub mod window_geometry;
 pub mod windows;
@@ -117,6 +119,11 @@ pub struct Services {
     /// Desktop: write the mailbox file on a background thread, so the window never waits for the
     /// disk. Without one (tests, scripts) the mailbox is saved in place through `file.save`.
     pub saver: Option<Box<dyn mailcraft_engine::io::BackgroundSave>>,
+    /// Desktop: write a copy of the mailbox to a file (as one file that holds everything) on a
+    /// background thread: the copy kept before an account switches to Microsoft Graph, which can
+    /// take a while for a large mailbox. Without one (tests, scripts) the copy is written in
+    /// place by `account.graphSwitch`.
+    pub write_copy: Option<Box<dyn Fn(std::path::PathBuf, mailcraft_model::Mailbox) -> Receiver<Result<(), String>>>>,
     /// Desktop: download one picture a message refers to on the web, on a background thread,
     /// once the owner has asked for that message's pictures ([`reading::remote`]). The address
     /// is the message's own choice: the host checks where it leads before going there, takes
@@ -163,6 +170,16 @@ pub struct Services {
     /// ids and quoted text taken out. Never sent anywhere. Absent in the browser and the tests:
     /// the copy then has the version and the platform only.
     pub diagnostics: Option<Box<dyn Fn() -> String>>,
+    /// Desktop: ask, on a background thread, which is the newest release of MailCraft
+    /// ([`updates`]): GitHub alone is asked, about this build's repository, and is told nothing of
+    /// the owner (`mailcraft_net::update::latest`). The argument says whether a pre-release will
+    /// do (the running build is one). The release, or why there is none in words that name no
+    /// address, arrives through the channel and the host wakes the UI. Nothing is downloaded or
+    /// installed. Absent in the browser and the tests: nothing is asked and nothing is offered.
+    pub update_check: Option<Box<dyn Fn(bool) -> Receiver<Result<mailcraft_model::update::Release, String>>>>,
+    /// A development build (not one of the project's packages): it never asks about the daily
+    /// check for new versions and never checks by itself; Check for Updates still works.
+    pub development_build: bool,
 }
 
 /// The system's clipboard with HTML on it ([`Services::clipboard`]).
@@ -261,7 +278,7 @@ pub struct SignInRequest {
     /// [`favorites_sync::REFUSED_FOR_ACCOUNT`].
     pub favorites: bool,
     /// With `graph`: ask also for reading and changing mail (`Mail.ReadWrite`), for an account kept
-    /// in step through Microsoft Graph (R3, behind the switch for testing).
+    /// in step through Microsoft Graph (R3).
     pub mail_write: bool,
 }
 
@@ -363,6 +380,9 @@ pub struct GraphResult {
     pub consent_needed: bool,
     /// The Graph token that was handed in is no longer taken.
     pub token_refused: bool,
+    /// The sign-in itself was refused when a token was asked for (it has run out, or was taken
+    /// back): the owner has to sign in again.
+    pub sign_in_refused: bool,
     /// Outbox messages that were sent (Microsoft files the Sent Items copy itself).
     pub sent: Vec<Id>,
     /// Outbox messages that must not be sent another way in this run: whether they went is not
@@ -455,6 +475,14 @@ pub struct UiState {
     pub picture_domains: Vec<String>,
     /// The groups of the calendar list that are folded away under their headings.
     pub collapsed_calendar_groups: Vec<String>,
+    /// Whether MailCraft looks for new versions once a day ([`updates`]): off until the owner says.
+    pub update_check: updates::UpdateCheck,
+    /// How many starts the owner was asked about it at, without an answer.
+    pub update_asked: u8,
+    /// When a check for a new version last got an answer (seconds since 1970; 0: never).
+    pub update_checked: i64,
+    /// The last newer version the owner was told of (`0.4.3`), so it is said once.
+    pub update_told: String,
 }
 
 impl Default for UiState {
@@ -482,6 +510,10 @@ impl Default for UiState {
             picture_senders: Vec::new(),
             picture_domains: Vec::new(),
             collapsed_calendar_groups: Vec::new(),
+            update_check: updates::UpdateCheck::default(),
+            update_asked: 0,
+            update_checked: 0,
+            update_told: String::new(),
         }
     }
 }
@@ -519,6 +551,18 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "{} — gives up the sign-in, or the administrator's approval, that the browser is open for",
     ),
     ("ui.cancelSync", "Cancel Send/Receive", "Send / Receive", "{}"),
+    (
+        "ui.graphSwitch",
+        "Switch to Microsoft Graph",
+        "File › Info",
+        r#"{"account"?: number} — the page that offers a Microsoft account kept in step by IMAP the switch to Microsoft Graph"#,
+    ),
+    (
+        "ui.switchToGraph",
+        "Switch to Microsoft Graph",
+        "File › Info",
+        r#"{"account"?: number, "answer": "switch"|"switchWithout"|"later"} — the page's answer: switch goes ahead once nothing waits for the IMAP server (a Send/Receive first, when something does), with a copy of the mailbox kept beside it; switchWithout goes ahead at once, leaving what waits for the IMAP server in that copy; later keeps the account on IMAP"#,
+    ),
     (
         "ui.connectMicrosoft",
         "Connect Calendar and Contacts",
@@ -649,6 +693,18 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
     ),
     ("ui.copyLinkAddress", "Copy Link Address", "Message", r#"{"url": string} — a link's address (http, https, mailto or tel) to the clipboard"#),
     (
+        "ui.checkForUpdates",
+        "Check for Updates",
+        "File › About",
+        r#"{} — asks GitHub once which is the newest release of MailCraft (nothing about the owner or their mail is sent; nothing is downloaded or installed). A script or an agent may ask only while the owner has the daily check on (`ui.updateCheck`); otherwise refused: "The owner hasn't allowed update checks." Answers {"pending": "updateCheck", "version"}; a newer version is then said in the status bar and in File › About"#,
+    ),
+    (
+        "ui.updateCheck",
+        "Check for New Versions",
+        "File › Options",
+        r#"{"value"?: bool (default: toggle)} — whether MailCraft asks GitHub once a day which is the newest release (off until the owner turns it on). Answers {"value", "setting": "notAsked"|"on"|"off", "asked": number, "version", "newer": {"version", "security", "page"}|null, "checking": bool}"#,
+    ),
+    (
         "ui.toggleCalendarGroup",
         "Expand or Collapse Calendar Group",
         "Calendar",
@@ -708,6 +764,9 @@ pub struct MailApp {
     /// The pieces of a Graph mail run as they come (R3.2), and what they had to say.
     graph_pieces: Option<Receiver<mailcraft_model::sync::GraphMailResult>>,
     graph_problems: Vec<String>,
+    /// The account whose Graph mail run follows a sign-in for it that just went through: when
+    /// that run is refused too, the owner is told rather than sent to Microsoft's page again (#124).
+    graph_after_sign_in: Option<Id>,
     /// Messages of Microsoft accounts being fetched whole ([`graph_fetch`]).
     pub(crate) fetching: graph_fetch::Fetching,
     /// When each account's calendar and contacts were last brought down (milliseconds).
@@ -757,6 +816,21 @@ pub struct MailApp {
     /// Open account setup when the app starts on a mailbox nobody has set up yet (the host turns
     /// this on for an ordinary start; not for the sample or a mailbox named on the command line).
     pub offer_setup: bool,
+    /// Offer each Microsoft account still on IMAP the switch to Microsoft Graph, on its page, by
+    /// itself ([`graph_switch`]): the desktop app does, for a mailbox kept in a file. Off, the
+    /// page opens only when asked for (`ui.graphSwitch`).
+    pub offer_graph_switch: bool,
+    /// Microsoft accounts on IMAP whose page offering the switch to Microsoft Graph was shown
+    /// in this run (closed without an answer, it is shown again in the next one).
+    graph_switch_shown: std::collections::HashSet<Id>,
+    /// Accounts switching to Microsoft Graph for which the switch was tried since their last
+    /// Send/Receive ([`graph_switch`]).
+    graph_switch_tried: std::collections::HashSet<Id>,
+    /// The copy of the mailbox being written before an account switches to Microsoft Graph
+    /// ([`graph_switch`]): the window shows that it is working until it is done.
+    pub(crate) graph_switch_copy: Option<graph_switch::Copying>,
+    /// Accounts whose waiting switch was offered "Switch without Them" in this run.
+    graph_switch_waiting_shown: std::collections::HashSet<Id>,
     /// Send/Receive by itself when the app starts and every few minutes (on by default; how often
     /// is the owner's `syncMinutes` option).
     pub auto_sync: bool,
@@ -773,6 +847,8 @@ pub struct MailApp {
     /// What a server refuses keeps waiting, and must not start a run every few seconds.
     push_seen: std::collections::HashMap<Id, (usize, f64)>,
     last_autosave: f64,
+    /// When the draft being written was last saved by itself (ms; 0: not since it was opened).
+    draft_saved_at: f64,
     saved_rev: u64,
     /// How far the background saver has got with what it was handed, as of this frame (`None`:
     /// nothing waiting or being written).
@@ -823,6 +899,8 @@ pub struct MailApp {
     pub(crate) ran: (u64, String, Result<Value, String>),
     /// When people are free and busy, as the Scheduling Assistant found out ([`scheduling`]).
     pub(crate) free_busy: scheduling::Store,
+    /// What this run knows of new versions ([`updates`]).
+    pub(crate) updates: updates::Updates,
 }
 
 impl MailApp {
@@ -849,6 +927,7 @@ impl MailApp {
             graph_rx: None,
             graph_pieces: None,
             graph_problems: Vec::new(),
+            graph_after_sign_in: None,
             fetching: Default::default(),
             graph_checked: Default::default(),
             graph_consent_needed: Default::default(),
@@ -878,6 +957,11 @@ impl MailApp {
             quit_requested: false,
             autosave: true,
             offer_setup: false,
+            offer_graph_switch: false,
+            graph_switch_shown: Default::default(),
+            graph_switch_tried: Default::default(),
+            graph_switch_copy: None,
+            graph_switch_waiting_shown: Default::default(),
             auto_sync: true,
             last_auto_sync: 0.0,
             sync_queue: Default::default(),
@@ -885,6 +969,7 @@ impl MailApp {
             push_only_next: Default::default(),
             push_seen: Default::default(),
             last_autosave: 0.0,
+            draft_saved_at: 0.0,
             saved_rev,
             save_progress: None,
             closing_after_save: None,
@@ -904,6 +989,7 @@ impl MailApp {
             text_selection: Default::default(),
             ran: (0, String::new(), Ok(Value::Null)),
             free_busy: Default::default(),
+            updates: Default::default(),
         }
     }
 
@@ -927,11 +1013,16 @@ impl MailApp {
     pub fn apply_prefs(&mut self, ui: UiState) {
         self.ui = ui;
         self.ui.backstage = false;
+        // As in Outlook, a run starts on Home, and File on Info: where the owner last was isn't
+        // where they want to start.
+        self.ui.tab = "Home".into();
+        self.ui.backstage_page = "info".into();
         self.ui.folder_pane_width = if self.ui.folder_pane_width.is_finite() { self.ui.folder_pane_width.clamp(150.0, 500.0) } else { 230.0 };
         self.ui.list_width = if self.ui.list_width.is_finite() { self.ui.list_width.clamp(240.0, 900.0) } else { 380.0 };
         self.ui.collapsed_folders.truncate(10_000);
         self.ui.recent.truncate(20);
         self.ui.collapsed_calendar_groups.truncate(200);
+        updates::sanitize(&mut self.ui);
         self.session.prefs = self.ui.options.clone();
         // Layout choices carry over; the folder, the day and the search start fresh.
         let saved = self.ui.view.clone();
@@ -993,11 +1084,14 @@ impl MailApp {
             self.dialog = Some(dialogs::Dialog::Confirm { command: id.to_string(), params, ask });
             return Ok(json!({"pending": "confirm"}));
         }
-        let r = self.execute(id, params);
+        // Check for Updates pressed by the owner checks whether the daily check is on or not.
+        let r = if id == updates::CHECK { self.check_for_updates(true) } else { self.execute(id, params) };
         if id.starts_with("calendar.") {
             self.ran = (self.ran.0.wrapping_add(1), id.to_string(), r.clone());
         }
         match &r {
+            // (The engine's refusal of received mail for a Microsoft account, in the interface's language.)
+            Err(e) if e == mailcraft_model::STAYS_LOCAL => self.status(tl!(mailcraft_model::STAYS_LOCAL)),
             Err(e) => self.status(e.clone()),
             Ok(v) => {
                 if let Some(msg) = feedback(id, v).or_else(|| self.stays_here_note(id, v)) {
@@ -1072,6 +1166,9 @@ impl MailApp {
             "ui.tab" => {
                 let Some(tab) = s("tab") else { return Some(Err("missing `tab`".into())) };
                 if tab == "File" {
+                    if !self.ui.backstage {
+                        self.ui.backstage_page = "info".into();
+                    }
                     self.ui.backstage = true;
                 } else if ribbon::tabs(self).contains(&tab) {
                     self.ui.tab = tab.to_string();
@@ -1083,7 +1180,12 @@ impl MailApp {
                 Ok(json!({"tab": self.ui.tab}))
             }
             "ui.backstage" => {
+                let was_open = self.ui.backstage;
                 self.ui.backstage = b("value").unwrap_or(!self.ui.backstage);
+                // As in Outlook, File opens on Info; a page is kept only while it stays open.
+                if self.ui.backstage && !was_open {
+                    self.ui.backstage_page = "info".into();
+                }
                 if let Some(page) = s("page") {
                     if !backstage::PAGES.iter().any(|(code, _, _)| *code == page) {
                         return Some(Err(format!("no File page \"{page}\"")));
@@ -1258,7 +1360,9 @@ impl MailApp {
                     .or_else(|| calendar_view::ui_command(self, id, p))
                     .or_else(|| meeting_dialogs::ui_command(self, id, p))
                     .or_else(|| favorites_sync::ui_command(self, id, p))
-                    .or_else(|| approval::ui_command(self, id, p));
+                    .or_else(|| approval::ui_command(self, id, p))
+                    .or_else(|| graph_switch::ui_command(self, id, p))
+                    .or_else(|| updates::ui_command(self, id, p));
             }
         })
     }
@@ -1350,8 +1454,7 @@ impl MailApp {
             favorites,
             // An account kept in step through Graph needs its mail read and changed there too.
             mail_write: graph
-                && (self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft)
-                    || (account == 0 && self.session.graph_mail)),
+                && (account == 0 || self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft)),
         };
         let rx = sign_in(request);
         self.signing_in = Some(SigningIn { graph, favorites, quiet, account, rx, cancel });
@@ -1364,9 +1467,10 @@ impl MailApp {
     pub(crate) fn begin_setup_sign_in(&mut self, oauth: mailcraft_model::OAuth, email: &str, mail_only: bool) -> Result<(), String> {
         self.setup_sign_in = None;
         self.mail_only_next = mail_only;
-        // With the switch for testing on, a Microsoft account is kept in step through Graph (R3):
-        // its sign-in is for Graph, with its mail, rather than for IMAP and SMTP.
-        let graph = self.session.graph_mail && oauth.provider == mailcraft_model::OAuthProvider::Microsoft && !mail_only;
+        // A Microsoft account is kept in step through Graph (R3): its sign-in is for Graph, with
+        // its mail, rather than for IMAP and SMTP. (Unless the owner asked for mail only: that
+        // is IMAP's until IMAP is turned off for Microsoft accounts.)
+        let graph = oauth.provider == mailcraft_model::OAuthProvider::Microsoft && !mail_only;
         self.begin_sign_in(0, oauth, email, String::new(), false, graph)
     }
 
@@ -1377,11 +1481,34 @@ impl MailApp {
 
     /// Account setup: the account exists now; keep what signing in brought back for it.
     pub(crate) fn adopt_tokens(&mut self, account: Id, tokens: Tokens) {
+        if self.signed_in_as_other(account, &tokens) {
+            return;
+        }
         if let Some(address) = self.session.mailbox.account(account).map(|a| a.email.clone()) {
             self.remember("refresh", &address, &tokens.refresh);
         }
         self.note_directory(account, &tokens.tenant);
         self.tokens.insert(account, tokens);
+    }
+
+    /// Whether tokens that came back for `account`, an account that exists, are somebody
+    /// else's: the provider named who signed in, and that is neither the account's address nor
+    /// its user name (#103). They are then not to be used or remembered, and the owner is told
+    /// who to sign in as. Tokens that name nobody are the account's, as they always were.
+    pub(crate) fn signed_in_as_other(&mut self, account: Id, tokens: &Tokens) -> bool {
+        let Some(a) = self.session.mailbox.account(account) else { return false };
+        if !tokens.someone_else(&a.email, &a.username) {
+            return false;
+        }
+        let who = tokens.email.trim();
+        // (Said on screen; never written to the log, which names nobody.)
+        let said = i18n::fmt(
+            tl!("You signed in as {signedIn}, but this account is {account}. Sign in again as {account}."),
+            &[("signedIn", &forms::kit::shown(who, 120)), ("account", &forms::kit::shown(a.email.trim(), 120))],
+        );
+        self.session.sync_status.clear();
+        self.status(said);
+        true
     }
 
     /// Account setup: the password that was just shown to work, for this session's Send/Receive
@@ -1413,7 +1540,10 @@ impl MailApp {
         };
         // An account kept in step through Microsoft Graph has no IMAP leg at all (R3).
         if self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft) {
-            return self.start_graph_mail(account, quiet);
+            let after_sign_in = p.get("afterSignIn").and_then(Value::as_bool).unwrap_or(false);
+            let started = self.start_graph_mail(account, quiet);
+            self.graph_after_sign_in = (after_sign_in && started.as_ref().is_ok_and(|v| v.get("started").is_some())).then_some(account);
+            return started;
         }
         let mut request = mailcraft_engine::cmd::account::sync_request(&self.session, account).map_err(|e| e.to_string())?;
         // A run that only tells the server what changed here, when that is all it was started for.
@@ -1424,7 +1554,10 @@ impl MailApp {
             // one the host renews it or the owner signs in, and this runs again after.
             let kept = self.tokens.get(&account).map(|t| t.refresh.clone()).filter(|r| !r.is_empty());
             let refresh = kept.or_else(|| self.remembered("refresh", &address)).unwrap_or_default();
-            match self.tokens.get(&account).filter(|t| t.fresh(mailcraft_time::now())).map(|t| t.access.clone()) {
+            // Good for the whole run: Microsoft ends an IMAP session the moment its token runs
+            // out, folders still to go. ponytail: ten minutes covers a run; a longer first
+            // download still meets the end, and the next run renews.
+            match self.tokens.get(&account).filter(|t| t.fresh(mailcraft_time::now() + 600)).map(|t| t.access.clone()) {
                 Some(access) => request.access_token = access,
                 None => {
                     self.begin_sign_in(account, oauth, &address, refresh, quiet, false)?;
@@ -1501,10 +1634,10 @@ impl MailApp {
         Ok(json!({"started": true, "account": account}))
     }
 
-    /// A Send/Receive of an account kept in step through Microsoft Graph (R3, behind the switch
-    /// for testing): one Graph job sends the Outbox, makes the folder changes made here, lists
-    /// the folders and, when they are due, brings the calendar and the contacts; no IMAP, no
-    /// SMTP. Its token is always renewed for the job, with `Mail.ReadWrite`.
+    /// A Send/Receive of an account kept in step through Microsoft Graph (R3): one Graph job
+    /// sends the Outbox, makes the folder changes made here, lists the folders and, when they are
+    /// due, brings the calendar and the contacts; no IMAP, no SMTP. Its token is always renewed
+    /// for the job, with `Mail.ReadWrite`.
     fn start_graph_mail(&mut self, account: Id, quiet: bool) -> Result<Value, String> {
         if self.services.graph.is_none() {
             return Err(tl!("This build can't connect to Microsoft").to_string());
@@ -1523,11 +1656,9 @@ impl MailApp {
             return Ok(json!({"pending": "signIn", "account": account}));
         }
         let mail = mailcraft_engine::cmd::graph_mail::graph_mail_request(&self.session, account).map_err(|e| e.to_string())?;
-        let outbox: Vec<mailcraft_model::Message> = match self.session.mailbox.folder_of_kind(account, mailcraft_model::FolderKind::Outbox) {
-            // Whole: the files a message keeps on disk are read for it.
-            Some(folder) => self.session.loaded_outbox(self.session.mailbox.messages_in(folder).map(|m| m.as_ref().clone()).collect()),
-            None => Vec::new(),
-        };
+        // The Outbox goes with the mail run itself (R3.4.2): sent as drafts or with `sendMail`,
+        // and a message held there is not sent again by itself.
+        let outbox: Vec<mailcraft_model::Message> = Vec::new();
         // The calendar and the contacts as for any account that signs in with Microsoft: the
         // wide stretch every quarter of an hour, and what was changed in the calendar here.
         let now = now_ms();
@@ -1581,7 +1712,9 @@ impl MailApp {
     /// that the server hasn't been told.
     fn waiting_to_go(&self, account: Id) -> usize {
         let mb = &self.session.mailbox;
-        let outbox = mb.folder_of_kind(account, mailcraft_model::FolderKind::Outbox).map_or(0, |f| mb.count(f));
+        // (A held message waits for the owner, not for a run.)
+        let outbox =
+            mb.folder_of_kind(account, mailcraft_model::FolderKind::Outbox).map_or(0, |f| mb.messages_in(f).filter(|m| m.held.is_empty()).count());
         outbox + mailcraft_engine::cmd::account::unpushed(&self.session, account)
     }
 
@@ -1703,9 +1836,13 @@ impl MailApp {
         let mut result = match rx.try_recv() {
             Ok(r) => r,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => GraphResult { account, ..Default::default() },
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                log::warn!("graph, account {account}: the job ended without an answer (its thread ended early)");
+                GraphResult { account, ..Default::default() }
+            }
         };
         self.graph_rx = None;
+        let after_sign_in = self.graph_after_sign_in.take() == Some(account);
         // The Favorites as Outlook has them, when they came along ([`favorites_sync`]).
         self.take_in_favorites(account, &mut result);
         let address = self.session.mailbox.account(account).map(|a| a.email.clone()).unwrap_or_default();
@@ -1713,7 +1850,9 @@ impl MailApp {
         if result.token_refused {
             self.graph_tokens.remove(&account);
         }
-        if let Some(tokens) = result.tokens {
+        if let Some(tokens) = result.tokens
+            && !self.signed_in_as_other(account, &tokens)
+        {
             self.note_directory(account, &tokens.tenant);
             // The newest refresh token is the account's, for mail and Graph alike.
             if !tokens.refresh.is_empty() {
@@ -1725,8 +1864,10 @@ impl MailApp {
             let now = mailcraft_time::now();
             self.graph_tokens.insert(account, Tokens { expires_at: tokens.expires_at.clamp(now, now.saturating_add(86_400)), ..tokens });
         }
+        let kept_in_step = self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft);
         if result.consent_needed {
-            if self.graph_consent_needed.insert(account) && !quiet {
+            // (An account kept in step through Graph is asked below, for its mail.)
+            if self.graph_consent_needed.insert(account) && !quiet && !kept_in_step {
                 self.status(tl!("Calendar and contacts need your permission: File › Info › Connect calendar and contacts"));
             }
         } else {
@@ -1753,8 +1894,14 @@ impl MailApp {
             }
         }
         // An account kept in step through Graph: its folders, and the run is over (no IMAP leg).
-        if self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft) {
+        if kept_in_step {
             errors.append(&mut self.graph_problems);
+            // No token for the mail: Microsoft wants the owner's say-so for it, or the sign-in has
+            // run out. There is no IMAP leg to ask instead, so the owner is asked here (#124).
+            if result.mail.is_none() && (result.consent_needed || result.sign_in_refused) {
+                self.graph_mail_needs_sign_in(account, quiet, after_sign_in, result.consent_needed);
+                return;
+            }
             let status = self.session.sync_status.clone();
             match result.mail.take() {
                 Some(mail) => match mailcraft_engine::cmd::graph_mail::apply_graph_mail(&mut self.session, mail) {
@@ -1764,14 +1911,25 @@ impl MailApp {
                     }
                     Err(e) => errors.push(e.to_string()),
                 },
-                // No answer for the folders (the token couldn't be had, or Graph wasn't reached):
-                // what the job said is why.
-                None if result.consent_needed => self.session.sync_status = status,
-                None => {}
+                // No answer for the folders (Graph wasn't reached, or the job ended early): what
+                // the job said is why, and it is logged with the rest of the problems below.
+                None => {
+                    if errors.is_empty() {
+                        log::warn!("graph mail, account {account}: the run ended without the mail, and nothing said why");
+                    } else {
+                        log::warn!("graph mail, account {account}: the run ended without the mail");
+                    }
+                    if status == tl!("Sending and receiving…") {
+                        self.session.sync_status.clear();
+                    }
+                }
             }
             errors.dedup();
             if !errors.is_empty() {
                 self.session.sync_status = errors.first().cloned().unwrap_or_default();
+            } else if self.session.sync_status == tl!("Sending and receiving…") {
+                // The run is over: it never says it is still going.
+                self.session.sync_status.clear();
             }
             self.note_sync_problems(account, &errors, true);
             return;
@@ -1780,6 +1938,45 @@ impl MailApp {
         let skip: Vec<Id> = result.sent.iter().chain(&result.held).copied().collect();
         if let Err(e) = self.start_sync(&json!({"account": account, "quiet": quiet, "afterGraph": true, "skip": skip})) {
             self.session.sync_status.clear();
+            self.status(e);
+        }
+    }
+
+    /// A Graph run of an account kept in step through Graph got no token for the mail: the owner
+    /// signs in with Microsoft for it when they asked for the run (the run goes on once they
+    /// have), and is told how when they didn't.
+    fn graph_mail_needs_sign_in(&mut self, account: Id, quiet: bool, after_sign_in: bool, consent: bool) {
+        self.session.sync_status.clear();
+        let Some(owner) = self.session.mailbox.account(account).cloned() else { return };
+        let why = if consent { "the sign-in needs permission for the mail" } else { "the sign-in was refused" };
+        // Just signed in, and still refused: another trip to Microsoft's page wouldn't change it.
+        if after_sign_in {
+            log::warn!("graph mail, account {account}: {why} straight after signing in; not asking again");
+            self.status(i18n::fmt(
+                tl!("Signed in, but Microsoft still won't let MailCraft read the mail of {account}. Try Send/Receive again later."),
+                &[("account", &owner.email)],
+            ));
+            return;
+        }
+        let Some(oauth) = owner.oauth.clone() else {
+            log::warn!("graph mail, account {account}: {why}, and the account has no sign-in with Microsoft");
+            self.status(tl!("This account has no sign-in with Microsoft"));
+            return;
+        };
+        if quiet {
+            log::warn!("graph mail, account {account}: {why}; waiting for the owner to press Send/Receive");
+            self.status(i18n::fmt(tl!("Sign in to Microsoft again to get the mail of {account}: press Send/Receive"), &[("account", &owner.email)]));
+            return;
+        }
+        log::warn!("graph mail, account {account}: {why}; asking the owner to sign in");
+        // What an earlier run said is over: the sign-in's own words take its place.
+        self.status_msg = None;
+        // A refused sign-in's refresh token is no good to anybody: a fresh sign-in replaces it.
+        if !consent {
+            self.graph_tokens.remove(&account);
+            self.tokens.remove(&account);
+        }
+        if let Err(e) = self.begin_sign_in(account, oauth, &owner.email, String::new(), false, true) {
             self.status(e);
         }
     }
@@ -1817,20 +2014,18 @@ impl MailApp {
             return;
         }
         let address = self.session.mailbox.account(account).map(|a| a.email.clone()).unwrap_or_default();
-        // Which kind of Microsoft account it is, as the sign-in says ([`favorites_sync`]).
-        if let Ok(tokens) = &answer
-            && (tokens.email.is_empty() || tokens.email.trim().eq_ignore_ascii_case(address.trim()))
-        {
+        // The owner picks who signs in on the page: it has to be this account. Somebody else's
+        // tokens are neither used nor remembered, mail's or Graph's (#103).
+        if let Ok(tokens) = &answer {
+            if self.signed_in_as_other(account, tokens) {
+                return;
+            }
+            // Which kind of Microsoft account it is, as the sign-in says ([`favorites_sync`]).
             self.note_directory(account, &tokens.tenant);
         }
         if for_graph {
             // "Connect calendar and contacts": the token is Graph's; the next run uses it.
             match answer {
-                // The owner picks who signs in on the page: it has to be this account.
-                Ok(tokens) if !tokens.email.is_empty() && !tokens.email.trim().eq_ignore_ascii_case(address.trim()) => {
-                    self.session.sync_status.clear();
-                    self.status(format!("{} {} {} {address}", tl!("You signed in as"), tokens.email, tl!("but this account is")));
-                }
                 Ok(tokens) => {
                     if !tokens.refresh.is_empty() {
                         self.remember("refresh", &address, &tokens.refresh);
@@ -1857,7 +2052,7 @@ impl MailApp {
                     let busy = for_favorites && (self.sync_rx.is_some() || self.graph_rx.is_some());
                     if busy {
                         self.session.sync_status.clear();
-                    } else if let Err(e) = self.start_sync(&json!({"account": account})) {
+                    } else if let Err(e) = self.start_sync(&json!({"account": account, "afterSignIn": true})) {
                         self.session.sync_status.clear();
                         self.status(e);
                     }
@@ -1905,6 +2100,7 @@ impl MailApp {
     /// at the foot of the window. Never for a sign-in nobody asked for, and never over another
     /// dialog.
     fn sign_in_came_to_nothing(&mut self, account: Id, error: &str, asked_for: bool) {
+        log::warn!("sign-in, account {account}: ended without signing in ({:?})", approval::SignInEnd::of(error));
         if approval::SignInEnd::of(error) == approval::SignInEnd::Approval && asked_for && self.dialog.is_none() {
             self.dialog = dialogs::Dialog::open("account", self, &json!({"id": account, "page": "approval"}));
         }
@@ -1983,6 +2179,7 @@ impl MailApp {
                 Ok(piece) => piece,
                 Err(std::sync::mpsc::TryRecvError::Empty) => return,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    log::warn!("send/receive: the run stopped without an answer (its thread ended early)");
                     self.sync_rx = None;
                     self.session.sync_status = tl!("Send/Receive stopped unexpectedly").to_string();
                     return;
@@ -1992,7 +2189,8 @@ impl MailApp {
             let downloading = !piece.folders.is_empty();
             let refused = piece.errors.iter().any(|e| {
                 let e = e.to_lowercase();
-                e.contains("sign-in") || e.contains("sign in")
+                // Microsoft's word for a token that ran out during the run.
+                e.contains("sign-in") || e.contains("sign in") || e.contains("accesstokenexpired")
             });
             self.sync_refused |= refused;
             self.note_sync_problems(account, &piece.errors, false);
@@ -2040,6 +2238,7 @@ impl MailApp {
             }
             self.status(totals.summary());
             self.push_seen.insert(account, (self.waiting_to_go(account), now_ms()));
+            self.graph_switch_after_sync(account, totals.errors.is_empty() && !totals.stopped);
             return;
         }
     }
@@ -2119,6 +2318,8 @@ impl MailApp {
         self.poll_free_busy();
         self.poll_sync();
         self.check_secret_store();
+        // Whether a new version is out, when the owner wants that known ([`updates`]).
+        self.updates_tick(ctx);
         self.auto_sync();
         // The calendar by itself, between Send/Receive runs ([`calendar_sync`]).
         self.calendar_tick(ctx);
@@ -2126,9 +2327,12 @@ impl MailApp {
         if std::mem::take(&mut self.offer_setup) && self.dialog.is_none() && self.needs_setup() {
             self.dialog = dialogs::Dialog::open("account", self, &json!({}));
         }
+        self.poll_graph_switch_copy();
+        self.tick_graph_switch();
         let _ = files::poll(self);
         files::drain_inbox(self);
         self.autosave_tick(ctx);
+        self.draft_autosave_tick(ctx);
         self.collect_screenshots(ctx);
         self.issue_screenshots(ctx);
         let waiting = self.sync_rx.is_some() || self.graph_rx.is_some() || self.signing_in.is_some() || self.approving();
@@ -2176,6 +2380,33 @@ impl MailApp {
     /// Save a moment after the last change: to the mailbox file on the desktop (through the
     /// host's background saver when it has one, so the window never waits for the disk), to the
     /// host's storage in the browser. A failure shows in the status bar and is tried again later.
+    /// A draft of a Microsoft account that is being written is saved every five minutes while
+    /// it has changes, and so goes up to its server with the next Send/Receive (R3.4.1).
+    fn draft_autosave_tick(&mut self, ctx: &egui::Context) {
+        const EVERY_MS: f64 = 5.0 * 60_000.0;
+        let Some(c) = &self.session.compose else {
+            self.draft_saved_at = 0.0;
+            return;
+        };
+        let graph = self.session.mailbox.account(c.account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft);
+        if !graph || !c.dirty {
+            return;
+        }
+        let now = now_ms();
+        if self.draft_saved_at == 0.0 {
+            self.draft_saved_at = now;
+        }
+        let waited = now - self.draft_saved_at;
+        if waited >= EVERY_MS {
+            self.draft_saved_at = now;
+            if let Err(e) = self.run("compose.saveDraft", json!({})) {
+                log::info!("the draft couldn't be saved by itself: {e}");
+            }
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis((EVERY_MS - waited).max(1_000.0) as u64));
+        }
+    }
+
     fn autosave_tick(&mut self, ctx: &egui::Context) {
         // How far the saver has got is looked at before what it reports: when it has nothing
         // left, whatever it wrote is among the reports read next.
@@ -2449,6 +2680,8 @@ impl MailApp {
             // to the status bar across the window's foot: both are laid out before the ribbon.
             chrome::title_bar(self, ui);
             chrome::status_bar(self, ui);
+            // The question about checking for new versions, at the first starts: above the status bar.
+            updates::question(self, ui);
             nav::module_bar(self, ui);
             ribbon::show(self, ui);
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas)).show(ui, |ui| match self.session.view.module {
@@ -2658,7 +2891,15 @@ fn feedback(id: &str, v: &Value) -> Option<String> {
                     parts.push(plural(c, tl!(one), tl!(many)));
                 }
             }
-            (!parts.is_empty()).then(|| i18n::fmt(tl!("Imported {what}"), &[("what", &parts.join(", "))]))
+            let what = parts.join(", ");
+            // Mail meant for a Microsoft account went to a local folder (R3 spec S30).
+            if v.get("local").and_then(Value::as_bool) == Some(true) {
+                return Some(i18n::fmt(
+                    tl!("Imported {what} into a local folder: Microsoft doesn't let a mail program put received mail into your mailbox"),
+                    &[("what", &what)],
+                ));
+            }
+            (!parts.is_empty()).then(|| i18n::fmt(tl!("Imported {what}"), &[("what", &what)]))
         }
         "people.fromMessage" if v.get("existing").and_then(Value::as_bool) == Some(true) => Some(tl!("Already in your contacts").to_string()),
         "folder.empty" => n("removed").map(|c| plural(c, tl!("message removed"), tl!("messages removed"))),

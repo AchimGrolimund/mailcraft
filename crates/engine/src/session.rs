@@ -376,7 +376,7 @@ pub struct InsertedSignature {
     pub text: mailcraft_model::RichText,
 }
 
-/// A signature open in File › Options › Signatures (R4.5.3): edited as a message's body is, by the
+/// A signature open in File › Signatures (R4.5.3): edited as a message's body is, by the
 /// same commands, until `signature.save` puts it back in the mailbox.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SignatureEdit {
@@ -509,6 +509,9 @@ pub struct Clock {
 struct Undo {
     label: &'static str,
     mailbox: Mailbox,
+    /// What the step did to the Microsoft accounts' mail, for keeping them in step when it is
+    /// undone ([`crate::undo`]).
+    touched: crate::undo::Touched,
     sel: Selection,
     folder: Id,
 }
@@ -519,7 +522,7 @@ pub struct Session {
     pub sel: Selection,
     /// The message being written, if one is open.
     pub compose: Option<Compose>,
-    /// A signature open in File › Options › Signatures. While there is one, the editing commands
+    /// A signature open in File › Signatures. While there is one, the editing commands
     /// work on it instead of the message being written ([`Session::doc`]).
     pub signature_edit: Option<SignatureEdit>,
     pub prefs: Prefs,
@@ -531,18 +534,25 @@ pub struct Session {
     pub clock: Clock,
     /// What the last synchronisation reported, for the status bar.
     pub sync_status: String,
-    /// Microsoft accounts may be kept in step through Microsoft Graph (R3): the switch for
-    /// testing, which a host turns on when `MAILCRAFT_GRAPH_MAIL=1` (R3 spec S35). Off, nothing
-    /// makes such an account (`account.add` with `"kind": "microsoft"` is refused); the ones a
-    /// mailbox has stay what they are. Never saved.
-    pub graph_mail: bool,
     /// Messages kept in step through Graph, by server id: kept between the pages of a run.
     pub(crate) graph_index: crate::cmd::graph_down::ServerIndex,
+    /// Messages being moved out of a Microsoft account that were whole in the mailbox file when
+    /// it was last saved: only for those is the server's copy removed (R3 spec S19). Never saved.
+    pub(crate) saved_whole: std::collections::HashSet<Id>,
+    /// What the server refused in the Graph run under way, for the status at its end (S20).
+    pub(crate) graph_said: Vec<String>,
     /// Set while a command an agent asked for runs (with what the owner allowed it): what the
     /// command did is checked against that ([`crate::agent`]), and undone when it oversteps.
     pub agent: Option<Vec<crate::agent::Class>>,
+    /// A copy of the mailbox the window had the host write off its own thread before switching an
+    /// account to Microsoft Graph (the account, where the copy is): `account.graphSwitch` takes it
+    /// instead of writing one itself ([`crate::cmd::graph_switch::prepare_backup`]). Set only by
+    /// the window once the copy is on disk, never by a command's params. Never saved.
+    pub graph_switch_backup: Option<(Id, PathBuf)>,
     history: Vec<Undo>,
     redo: Vec<Undo>,
+    /// What the last undo or redo couldn't do there (a delete for good, a message sent).
+    undo_said: Vec<String>,
     rev: u64,
     list_cache: Option<(String, Arc<Vec<Row>>)>,
     /// Where the content that isn't in memory comes from ([`Session::content`]). `None`: the
@@ -569,9 +579,13 @@ pub struct Session {
     /// (its Undo step, and what a failed command goes back to) has them as they are now. Bringing
     /// content in is not a change to the mailbox.
     swaps: Option<Vec<Swap>>,
-    /// While a search brings bodies in: the query, and whether each message whose body was let
-    /// go of during it matched it ([`Session::load_bodies_for_search`]).
+    /// Since a search that reads bodies brought them in: the query, and whether each message
+    /// whose body was let go of since matched it ([`Session::load_bodies_for_search`]). Kept
+    /// while the list stays as it was searched (`searched_for`), so that a result opened, whose
+    /// body comes in, doesn't search everything again.
     search_pass: Option<(mailcraft_model::search::Query, std::collections::HashMap<Id, bool>)>,
+    /// What the list was when `search_pass` was made: its key without the loads.
+    searched_for: Option<String>,
 }
 
 /// Message `id` was `old` and is `new`, the same message with more or less of it in memory.
@@ -601,11 +615,14 @@ impl Session {
             dirty: false,
             clock,
             sync_status: String::new(),
-            graph_mail: false,
             graph_index: Default::default(),
+            saved_whole: Default::default(),
+            graph_said: Vec::new(),
             agent: None,
+            graph_switch_backup: None,
             history: Vec::new(),
             redo: Vec::new(),
+            undo_said: Vec::new(),
             rev: 0,
             list_cache: None,
             content_source: None,
@@ -618,6 +635,7 @@ impl Session {
             display_failed: std::collections::HashSet::new(),
             swaps: None,
             search_pass: None,
+            searched_for: None,
         };
         s.view.date = s.today();
         s.normalize();
@@ -765,13 +783,24 @@ impl Session {
     /// as [`Session::search_time`] allows; what it didn't get to is counted in
     /// [`Session::unsearched`].
     pub fn rows(&mut self) -> Arc<Vec<Row>> {
-        let key = |s: &Session| format!("{}|{}|{}|{}", s.rev, s.loads, s.today().to_days(), serde_json::to_string(&s.view).unwrap_or_default());
+        let list = |s: &Session| format!("{}|{}|{}", s.rev, s.today().to_days(), serde_json::to_string(&s.view).unwrap_or_default());
+        let key = |s: &Session| format!("{}|{}", s.loads, list(s));
         if let Some((k, rows)) = &self.list_cache
             && *k == key(self)
         {
             return rows.clone();
         }
-        let searched = self.load_bodies_for_search();
+        let list_now = list(self);
+        let searched = match &self.search_pass {
+            // Only content came in or went since this list was searched (a result opened): what
+            // was found stands, and nothing is brought in for it again.
+            Some((_, hits)) if self.searched_for.as_deref() == Some(list_now.as_str()) => hits.clone(),
+            _ => {
+                let hits = self.load_bodies_for_search();
+                self.searched_for = self.search_pass.is_some().then_some(list_now);
+                hits
+            }
+        };
         let key = key(self);
         let rows = Arc::new(crate::list::rows_with(self, &searched));
         self.list_cache = Some((key, rows.clone()));
@@ -1076,6 +1105,7 @@ impl Session {
     /// (for [`crate::list::rows_with`]).
     fn load_bodies_for_search(&mut self) -> std::collections::HashMap<Id, bool> {
         self.unsearched = 0;
+        self.search_pass = None;
         let query = mailcraft_model::search::Query::parse(&self.view.search);
         if query.is_empty() || !query.reads_bodies() {
             return Default::default();
@@ -1117,7 +1147,7 @@ impl Session {
             out
         };
         let mut left = wanted.len();
-        let outer = self.search_pass.replace((query, Default::default()));
+        self.search_pass = Some((query, Default::default()));
         for (_, id) in wanted {
             if out_of_time() {
                 break;
@@ -1127,7 +1157,8 @@ impl Session {
             left = left.saturating_sub(1);
         }
         self.unsearched = left;
-        std::mem::replace(&mut self.search_pass, outer).map(|(_, hits)| hits).unwrap_or_default()
+        // Kept: what is let go of until the list changes is matched before it goes, too.
+        self.search_pass.as_ref().map(|(_, hits)| hits.clone()).unwrap_or_default()
     }
 
     /// Keep the view and the selection pointing at things that exist.
@@ -1165,12 +1196,31 @@ impl Session {
         self.normalize();
     }
 
+    /// The mailbox file holds the mailbox as it is now (it was just saved, or nothing changed
+    /// since it was opened or saved): the messages being moved out of a Microsoft account that
+    /// are whole are whole in the file, and the server's copies may go (R3 spec S19). A host
+    /// that saves by other means than `file.save` calls this when a save of the mailbox as it is
+    /// now succeeded; the engine also notes it whenever it sees nothing unsaved.
+    pub fn note_saved(&mut self) {
+        let whole = self.mailbox.messages.values().filter(|m| m.moving_out.is_some() && !m.unfetched).map(|m| m.id);
+        self.saved_whole.extend(whole);
+        self.saved_whole.retain(|id| self.mailbox.messages.get(id).is_some_and(|m| m.moving_out.is_some()));
+    }
+
+    /// Whether the mailbox file is known to hold the mailbox as it is now.
+    pub(crate) fn file_is_current(&self) -> bool {
+        self.path.is_some() && !self.dirty
+    }
+
     /// Replace the mailbox (File › New, File › Open): history and selection start over.
     pub fn replace_mailbox(&mut self, mailbox: Mailbox) {
         self.mailbox = mailbox;
         self.resident.clear();
         self.resident_bytes = 0;
         self.display_failed.clear();
+        self.search_pass = None;
+        self.searched_for = None;
+        self.saved_whole.clear();
         self.history.clear();
         self.redo.clear();
         self.sel = Selection::default();
@@ -1185,7 +1235,7 @@ impl Session {
     // ---- undo ----
 
     fn snapshot(&self, label: &'static str) -> Undo {
-        Undo { label, mailbox: self.mailbox.clone(), sel: self.sel.clone(), folder: self.view.folder }
+        Undo { label, mailbox: self.mailbox.clone(), touched: Default::default(), sel: self.sel.clone(), folder: self.view.folder }
     }
 
     pub fn can_undo(&self) -> bool {
@@ -1213,13 +1263,23 @@ impl Session {
         self.redo.clear();
     }
 
+    /// What the last undo or redo couldn't do, in words (empty when it did everything).
+    pub fn undo_said(&self) -> &[String] {
+        &self.undo_said
+    }
+
+    /// Go to the mailbox of `u`. A Microsoft account's mail stays in step with its server: what
+    /// the server last said is kept, so the next run sends the reverse ([`crate::undo`]).
     fn swap(&mut self, u: Undo) -> Undo {
-        let cur = Undo {
-            label: u.label,
-            mailbox: std::mem::replace(&mut self.mailbox, u.mailbox),
-            sel: std::mem::replace(&mut self.sel, u.sel),
-            folder: self.view.folder,
-        };
+        let now = std::mem::take(&mut self.mailbox);
+        let (back, said) = crate::undo::keep_in_step(u.mailbox, &u.touched, &now);
+        // Undone, the step is to be done again from here: what that does is the way back.
+        let touched = crate::undo::touched(&now, &back);
+        self.mailbox = back;
+        self.undo_said = said;
+        // Where each message is, is looked at afresh.
+        self.graph_index = Default::default();
+        let cur = Undo { label: u.label, mailbox: now, touched, sel: std::mem::replace(&mut self.sel, u.sel), folder: self.view.folder };
         self.view.folder = u.folder;
         self.rev += 1;
         self.dirty = true;
@@ -1306,6 +1366,8 @@ impl Session {
                     self.rev += 1;
                     if history {
                         self.dirty = true;
+                        let mut before = before;
+                        before.touched = crate::undo::touched(&before.mailbox, &self.mailbox);
                         self.history.push(before);
                         if self.history.len() > MAX_HISTORY {
                             self.history.remove(0);

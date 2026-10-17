@@ -19,7 +19,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .pure()
             .params(r#"{"path": string} — everything in one self-contained file; a copy, unless the mailbox wasn't kept anywhere yet"#),
         CommandSpec::new("file.import", "Import", "File › Open & Export", import)
-            .params(r#"{"path": string} | {"name": string, "data": base64}, "folder"?: number — .eml, .mbox, .ics, .vcf"#),
+            .params(r#"{"path": string} | {"name": string, "data": base64}, "folder"?: number — .eml, .mbox, .ics, .vcf; messages meant for a Microsoft account go to the local folder Imported (`local`)"#),
         CommandSpec::new("file.exportMessage", "Save Message As", "File › Save As", export_message).pure().params(r#"{"id"?: number, "path"?: string} — one message as .eml"#),
         CommandSpec::new("file.exportFolder", "Export Folder", "File › Open & Export", export_folder).pure().params(r#"{"id"?: number, "path"?: string} — a folder's messages as .mbox"#),
         CommandSpec::new("file.exportCalendar", "Save Calendar", "File › Save Calendar", export_calendar).pure().params(r#"{"calendar"?: number, "id"?: number (one event), "path"?: string} — .ics"#),
@@ -169,6 +169,7 @@ fn save(s: &mut Session, v: &Value) -> CmdResult {
     if r.get("path").is_some() {
         s.path = Some(path.into());
         s.dirty = false;
+        s.note_saved();
     }
     Ok(r)
 }
@@ -190,6 +191,7 @@ fn save_as(s: &mut Session, v: &Value) -> CmdResult {
     if r.get("path").is_some() && home {
         s.path = Some(path.into());
         s.dirty = false;
+        s.note_saved();
     }
     Ok(with(r, "copy", json!(!home)))
 }

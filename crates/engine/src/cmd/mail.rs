@@ -267,7 +267,7 @@ fn copy_to(s: &mut Session, v: &Value) -> CmdResult {
     let ids = targets(s, v)?;
     let mut copies = Vec::new();
     for id in &ids {
-        copies.push(s.mailbox.copy_message(*id, folder)?);
+        copies.push(s.mailbox.copy_message_marked(*id, folder, u64::try_from(s.now()).unwrap_or_default())?);
     }
     Ok(json!({"copies": copies, "folder": folder}))
 }

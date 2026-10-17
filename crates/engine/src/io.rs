@@ -2,7 +2,7 @@
 //! calendars and contacts travel in (`.eml`, `.mbox`, `.ics`, `.vcf`). How a mailbox is kept on
 //! disk while it is worked on is `crate::store`.
 
-use mailcraft_model::{FolderKind, Id, Mailbox};
+use mailcraft_model::{AccountKind, FolderKind, Id, Mailbox};
 use serde_json::{Value, json};
 
 use crate::cmd::{bad, fail};
@@ -222,6 +222,19 @@ pub fn import(s: &mut Session, name: &str, bytes: &[u8], folder: Option<Id>) -> 
             if messages.is_empty() {
                 return Err(fail(format!("{name} has no messages")));
             }
+            // Graph can't put received mail into a Microsoft account's folders: a local folder
+            // has it instead, and is shown (R3 spec S30).
+            let microsoft = s.mailbox.folder(folder).and_then(|f| s.mailbox.account(f.account)).is_some_and(|a| a.kind == AccountKind::Microsoft);
+            let folder = if microsoft {
+                let drafts = s.mailbox.folder(folder).is_some_and(|f| f.kind == FolderKind::Drafts);
+                let local = s.mailbox.imported_folder(drafts)?;
+                s.view.folder = local;
+                s.view.module = crate::Module::Mail;
+                s.view.search.clear();
+                local
+            } else {
+                folder
+            };
             let drafts = s.mailbox.folder(folder).is_some_and(|f| f.kind == FolderKind::Drafts);
             let mut ids = Vec::new();
             for mut m in messages {
@@ -237,7 +250,9 @@ pub fn import(s: &mut Session, name: &str, bytes: &[u8], folder: Option<Id>) -> 
             if let Some(last) = ids.last() {
                 s.sel.messages = vec![*last];
             }
-            Ok(json!({"format": if format == Format::Eml { "eml" } else { "mbox" }, "messages": ids.len(), "ids": ids, "folder": folder}))
+            Ok(
+                json!({"format": if format == Format::Eml { "eml" } else { "mbox" }, "messages": ids.len(), "ids": ids, "folder": folder, "local": microsoft}),
+            )
         }
         Format::Ics => {
             let text = String::from_utf8_lossy(bytes);

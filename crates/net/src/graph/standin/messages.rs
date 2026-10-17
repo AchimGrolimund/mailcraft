@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 use super::{Answer, Asked, Refusal, State, bad, not_found, refuse, stamp};
 
 /// What a message may be asked for by name (`$select`).
-const PROPERTIES: &[&str] = &[
+pub(super) const PROPERTIES: &[&str] = &[
     "id",
     "receivedDateTime",
     "sentDateTime",
@@ -48,6 +48,11 @@ const PROPERTIES: &[&str] = &[
     "parentFolderId",
     "internetMessageId",
     "hasAttachments",
+    "isDraft",
+    "changeKey",
+    "conversationId",
+    "bccRecipients",
+    "body",
 ];
 /// Most messages a page holds, whatever is asked for.
 const MAX_PAGE: usize = 1_000;
@@ -70,6 +75,10 @@ pub struct Message {
     pub read: bool,
     /// `notFlagged`, `flagged` or `complete`.
     pub flag: String,
+    /// The flag's start, due and completed dates and times (instants), when it has them.
+    pub flag_start: Option<Timestamp>,
+    pub flag_due: Option<Timestamp>,
+    pub flag_completed: Option<Timestamp>,
     pub categories: Vec<String>,
     /// `low`, `normal` or `high`.
     pub importance: String,
@@ -79,15 +88,32 @@ pub struct Message {
     pub mime: Option<String>,
     /// The size the server says it is (`PidTagMessageSize`); 0: the size of its MIME.
     pub size: u64,
+    /// Its single-value extended properties: their ids as they were written, and their values.
+    pub extended: Vec<(String, String)>,
+    /// It is a draft (`isDraft`): its subject, body and recipients may be changed ([`super::drafts`]).
+    pub draft: bool,
+    pub cc: Vec<String>,
+    pub bcc: Vec<String>,
+    /// Its body, and whether that is HTML (else text). Empty: the preview is its text.
+    pub body: String,
+    pub html: bool,
+    /// The conversation it is part of (`conversationId`); empty: one of its own.
+    pub conversation: String,
+    /// The message it answers (`In-Reply-To`), with the angle brackets.
+    pub in_reply_to: String,
+    /// Its `internetMessageHeaders`, as they were written when it was made.
+    pub headers: Vec<(String, String)>,
+    /// Its attachments.
+    pub attachments: Vec<super::drafts::Attached>,
     /// When it last changed, in the stand-in's count of changes.
-    changed: u64,
+    pub(super) changed: u64,
 }
 
 impl Message {
     /// The message as a list of messages writes it, with its id as asked for and only what
     /// `select` names (and its id) when it names anything; with its size when that was asked for
     /// (`$expand` of the extended property `Integer 0x0E08`, `PidTagMessageSize`).
-    fn json(&self, immutable: bool, select: Option<&[String]>, size: bool) -> Value {
+    pub(super) fn json(&self, immutable: bool, select: Option<&[String]>, size: bool) -> Value {
         let address = |address: &str| json!({"emailAddress": {"name": address.split('@').next().unwrap_or(""), "address": address}});
         let mut all = json!({
             "id": shown(&self.id, immutable),
@@ -99,13 +125,19 @@ impl Message {
             "ccRecipients": [],
             "bodyPreview": self.preview,
             "isRead": self.read,
-            "flag": {"flagStatus": self.flag},
+            "flag": self.flag_json(),
             "categories": self.categories,
             "importance": self.importance,
             "parentFolderId": self.folder,
             "internetMessageId": self.internet_id,
-            "hasAttachments": false,
+            "hasAttachments": self.attachments.iter().any(|a| !a.inline),
+            "isDraft": self.draft,
+            "changeKey": self.change_key(),
+            "conversationId": self.conversation_id(),
+            "bccRecipients": self.bcc.iter().map(|to| address(to)).collect::<Vec<_>>(),
+            "body": {"contentType": if self.html { "html" } else { "text" }, "content": self.text()},
         });
+        all["ccRecipients"] = json!(self.cc.iter().map(|to| address(to)).collect::<Vec<_>>());
         if let (Some(select), Some(map)) = (select, all.as_object_mut()) {
             map.retain(|name, _| name == "id" || select.iter().any(|s| s == name));
         }
@@ -116,10 +148,44 @@ impl Message {
         all
     }
 
+    /// Its flag as Graph writes a `followupFlag`: the dates in UTC, and only those it has.
+    pub(super) fn flag_json(&self) -> Value {
+        let mut flag = json!({"flagStatus": self.flag});
+        let dates = [("startDateTime", self.flag_start), ("dueDateTime", self.flag_due), ("completedDateTime", self.flag_completed)];
+        for (name, at) in dates {
+            if let Some(at) = at {
+                flag[name] = json!({"dateTime": stamp(at), "timeZone": "UTC"});
+            }
+        }
+        flag
+    }
+
+    /// Its change key: a new one with every change of it.
+    pub fn change_key(&self) -> String {
+        format!("CQAAABYAAAD{:010}", self.changed)
+    }
+
+    /// The conversation it is part of.
+    pub fn conversation_id(&self) -> String {
+        if self.conversation.is_empty() {
+            format!("AAQkAD-c-{}", self.id.get(self.id.len().saturating_sub(16)..).unwrap_or(""))
+        } else {
+            self.conversation.clone()
+        }
+    }
+
+    /// Its body's text: what it was written with, else its preview.
+    pub fn text(&self) -> String {
+        if self.body.is_empty() { self.preview.clone() } else { self.body.clone() }
+    }
+
     /// Its MIME: what it was given, or a plain message made of its headers and preview.
-    fn mime(&self) -> String {
+    pub(super) fn mime(&self) -> String {
         if let Some(mime) = &self.mime {
             return mime.clone();
+        }
+        if self.draft || !self.attachments.is_empty() {
+            return super::drafts::mime_of(self);
         }
         let date = mailcraft_time::DateTime::from_timestamp(self.received, 0);
         format!(
@@ -131,6 +197,15 @@ impl Message {
             self.internet_id,
             self.preview
         )
+    }
+}
+
+/// The immutable id of the message an id names (an ordinary id names the same message as the
+/// immutable id it was made from).
+pub(super) fn immutable_of(id: &str) -> String {
+    match id.strip_prefix(ORDINARY) {
+        Some(rest) => format!("{IMMUTABLE}{rest}"),
+        None => id.to_string(),
     }
 }
 
@@ -182,6 +257,9 @@ pub struct Mail {
     changes: u64,
     made: u64,
     rounds: HashMap<String, Round>,
+    /// What changes of a message are answered with instead of being made, by its immutable id
+    /// ([`super::changes`]).
+    pub faults: HashMap<String, super::changes::Fault>,
     seen: HashMap<String, Seen>,
     tokens: u64,
     /// How many pages to come end where the page before them ended, so that what was in that
@@ -192,10 +270,12 @@ pub struct Mail {
     pub resets: usize,
     /// Most messages a page of delta holds, whatever is asked for; 0 for as asked.
     pub page_cap: usize,
+    /// Uploads of large attachments under way, by the token of their address ([`super::drafts`]).
+    pub(super) uploads: HashMap<String, super::drafts::Upload>,
 }
 
 impl Mail {
-    fn change(&mut self) -> u64 {
+    pub(super) fn change(&mut self) -> u64 {
         self.changes += 1;
         self.changes
     }
@@ -206,11 +286,15 @@ impl Mail {
         format!("aSt-{:016x}_{:08x}", self.tokens.wrapping_mul(0x9E37_79B9_7F4A_7C15), self.tokens)
     }
 
+    /// A new immutable id, and the number it was made with.
+    pub(super) fn new_id(&mut self) -> (String, u64) {
+        self.made += 1;
+        (format!("{IMMUTABLE}{:010}AAA=", self.made), self.made)
+    }
+
     /// A message of the stand-in's making in `folder`: its immutable id.
     pub fn add(&mut self, folder: &str, subject: &str, received: Timestamp) -> String {
-        self.made += 1;
-        let n = self.made;
-        let id = format!("{IMMUTABLE}{n:010}AAA=");
+        let (id, n) = self.new_id();
         let changed = self.change();
         self.gone.remove(&(folder.to_string(), id.clone()));
         let message = Message {
@@ -231,6 +315,16 @@ impl Mail {
         id
     }
 
+    /// `m` as a new message, under a new immutable id: that id.
+    pub(super) fn put(&mut self, mut m: Message) -> String {
+        let (id, _) = self.new_id();
+        m.id = id.clone();
+        m.changed = self.change();
+        self.gone.remove(&(m.folder.clone(), id.clone()));
+        self.messages.insert(id.clone(), m);
+        id
+    }
+
     /// `count` messages in `folder`, one a minute back from `newest`, every third one read: their ids.
     pub fn generate(&mut self, folder: &str, count: usize, newest: Timestamp) -> Vec<String> {
         (0..count).map(|i| self.add(folder, &format!("Message {i}"), newest.saturating_sub(60 * i as i64))).collect()
@@ -243,6 +337,19 @@ impl Mail {
         how(message);
         message.changed = changed;
         true
+    }
+
+    /// A copy of a message in `to`, under an id of its own, with everything it has (its
+    /// extended properties too): the copy's id; `None` when there is no such message.
+    pub fn copy_to(&mut self, id: &str, to: &str) -> Option<String> {
+        let mut copy = self.messages.get(id)?.clone();
+        let (new, _) = self.new_id();
+        copy.id = new.clone();
+        copy.folder = to.to_string();
+        copy.changed = self.change();
+        self.gone.remove(&(to.to_string(), new.clone()));
+        self.messages.insert(new.clone(), copy);
+        Some(new)
     }
 
     /// Move a message to another folder: it is gone from the one it was in, and new in `to`.
@@ -441,10 +548,7 @@ impl State {
         if id.len() < 20 || id.chars().any(|c| !(c.is_ascii_alphanumeric() || "-_=".contains(c))) {
             return Err(refuse(400, "ErrorInvalidIdMalformed", "Id is malformed."));
         }
-        let immutable = match id.strip_prefix(ORDINARY) {
-            Some(rest) => format!("{IMMUTABLE}{rest}"),
-            None => id.to_string(),
-        };
+        let immutable = immutable_of(id);
         let mime = self.mailbox.messages.get(&immutable).map(Message::mime).ok_or_else(not_found)?;
         self.raw = Some(("text/plain".into(), mime));
         Ok((200, None))

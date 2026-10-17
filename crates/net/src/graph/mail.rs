@@ -173,6 +173,39 @@ pub(crate) fn sync_folders_with(base: &str, token: &str, request: &GraphMailRequ
             }
         }
     }
+    // Then the changes of messages, which may go into a folder just made (R3 spec S16).
+    if let Err(e) = up::messages(&graph, &made, &request.messages, &mut out.messages) {
+        log::info!("graph changes: the changes of messages stopped; the rest wait for the next run");
+        if let NetError::Busy { retry_after, .. } = &e {
+            out.busy_for = Some(retry_after.unwrap_or(0).max(gate.paused_for().map_or(0, |left| u32::try_from(left.as_secs()).unwrap_or(u32::MAX))));
+        }
+        out.errors.push(format!("Couldn't send the changes of messages to Microsoft: {e}"));
+        if e.is_refused_sign_in() || matches!(e, NetError::Busy { .. }) {
+            return out;
+        }
+    }
+    // Then the drafts saved here (R3.4.1).
+    if let Err(e) = drafts::drafts(&graph, &request.drafts, &mut out.drafts) {
+        log::info!("graph drafts: the drafts stopped; the rest wait for the next run");
+        if let NetError::Busy { retry_after, .. } = &e {
+            out.busy_for = Some(retry_after.unwrap_or(0).max(gate.paused_for().map_or(0, |left| u32::try_from(left.as_secs()).unwrap_or(u32::MAX))));
+        }
+        out.errors.push(format!("Couldn't save the drafts on Microsoft's server: {e}"));
+        if e.is_refused_sign_in() || matches!(e, NetError::Busy { .. }) {
+            return out;
+        }
+    }
+    // Then what waits in the Outbox (R3.4.2): never asked twice by itself.
+    if let Err(e) = send::sends(&graph, &request.sends, &mut out.sent) {
+        log::info!("graph sending: sending stopped; the rest waits for the next run");
+        if let NetError::Busy { retry_after, .. } = &e {
+            out.busy_for = Some(retry_after.unwrap_or(0).max(gate.paused_for().map_or(0, |left| u32::try_from(left.as_secs()).unwrap_or(u32::MAX))));
+        }
+        out.errors.push(format!("Couldn't send through Microsoft: {e}"));
+        if e.is_refused_sign_in() || matches!(e, NetError::Busy { .. }) {
+            return out;
+        }
+    }
     match listing(&graph, &known) {
         Ok(listing) => {
             log::debug!("graph folders: {} listed, complete: {}", listing.folders.len(), listing.complete);
@@ -469,7 +502,10 @@ fn child_named(graph: &Graph<'_>, known: &Known, parent: &str, name: &str) -> Re
 }
 
 mod down;
+mod drafts;
 mod fetch;
+mod send;
+mod up;
 
 pub use fetch::fetch_messages;
 
