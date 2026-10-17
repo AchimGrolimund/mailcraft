@@ -350,3 +350,21 @@ fn removing_a_shared_mailbox_asks_first_and_names_what_waits() {
     let _ = app.run("account.removeSharedMailbox", json!({"id": shared}));
     assert!(matches!(app.dialog, Some(crate::dialogs::Dialog::Confirm { .. })) && app.session.mailbox.account(shared).is_some());
 }
+
+#[test]
+fn a_refused_sign_in_of_the_owner_is_said_and_the_mailbox_being_added_is_not_kept() {
+    let (mut app, owner, answers, _, sign_ins) = window();
+    answers.lock().unwrap().push_back((GraphResult { sign_in_refused: true, ..Default::default() }, Vec::new()));
+    app.execute("ui.dialog", json!({"name": "sharedMailbox", "account": owner})).unwrap();
+    if let Some(crate::dialogs::Dialog::SharedMailbox { address, .. }) = app.dialog.as_mut() {
+        *address = SHARED.into();
+    }
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx);
+    let mut out = ctx.run_ui(egui::RawInput { events: vec![enter()], ..Default::default() }, |ui| crate::dialogs::show(&mut app, &ui.ctx().clone()));
+    out.textures_delta.clear();
+    app.poll_graph();
+    assert!(app.session.mailbox.accounts.iter().all(|a| a.email != SHARED));
+    assert!(matches!(&app.dialog, Some(crate::dialogs::Dialog::SharedMailbox { error, .. }) if error.contains("sign in again")));
+    assert!(sign_ins.lock().unwrap().is_empty(), "nobody is sent to a page from here");
+}

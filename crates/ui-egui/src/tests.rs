@@ -1709,6 +1709,25 @@ fn imported_mail_for_a_microsoft_account_stays_in_a_local_folder_and_says_why() 
     assert_ne!(a.session.mailbox.message(imported).unwrap().folder, inbox);
 }
 
+/// #122: signatures have one place in File, their own page; File › Options no longer has a
+/// Signatures section with a button that opens that page.
+#[test]
+fn signatures_are_in_file_once() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut harness = window(app());
+    harness.state_mut().execute("ui.dismissReminder", json!({"all": true})).unwrap();
+    harness.state_mut().execute("ui.backstage", json!({"value": true, "page": "options"})).unwrap();
+    harness.run_steps(3);
+    assert!(harness.query_by_label_contains("Show week numbers").is_some());
+    // Neither the button nor the section's heading (File's list of pages is painted, not labelled).
+    assert!(harness.query_by_label("Signatures…").is_none());
+    assert!(harness.query_by_label("Signatures").is_none());
+    assert!(crate::backstage::PAGES.iter().any(|(page, ..)| *page == "signatures"));
+    harness.state_mut().execute("ui.backstage", json!({"value": true, "page": "signatures"})).unwrap();
+    harness.run_steps(3);
+    assert_eq!(harness.state().ui.backstage_page, "signatures");
+}
+
 /// File › Info for a Microsoft account: what comes after its card (the download choice, the link
 /// to connect the calendar) is laid out below the card, never over it or over each other (#121).
 #[test]

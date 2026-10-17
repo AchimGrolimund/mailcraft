@@ -2293,6 +2293,7 @@ dependencies = [
  "mailcraft-engine",
  "mailcraft-model",
  "mailcraft-net",
+ "mailcraft-proto",
  "mailcraft-time",
  "mailcraft-ui-egui",
  "pollster 0.4.0",

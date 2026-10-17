@@ -139,6 +139,13 @@ impl MailApp {
                 Err(e) => errors.push(e.to_string()),
             }
         }
+        // The owner's sign-in was refused (run out, taken back, #124): signing in again is theirs
+        // to do, from their own account's Send/Receive.
+        if result.sign_in_refused && !result.consent_needed {
+            errors.push(
+                tl!("The sign-in of the account this shared mailbox is opened through was refused: sign in again with Send/Receive").to_string(),
+            );
+        }
         let mut asking = false;
         if result.consent_needed {
             self.session.sync_status.clear();
