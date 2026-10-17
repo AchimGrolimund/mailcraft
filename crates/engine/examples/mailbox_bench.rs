@@ -304,10 +304,49 @@ fn split(mailbox: &Mailbox, dir: &Path) -> Result<(), String> {
     use mailcraft_engine::store;
     println!("\nThe mailbox file with its content folder (mailbox.mailcraft + mailbox.mailcraft.blobs/)");
     let path = dir.join("mailbox.mailcraft");
-    let (first, took) = timed(|| store::save(&path, mailbox));
-    let first = first?;
-    println!("  first save (an old single file becoming this form): {}", ms(took));
-    println!("      {} content files, {}; mailbox file {}", first.blobs, mb(first.blob_bytes), mb(first.bytes));
+    // Before R6.3 the window copied the mailbox each time it handed it to the saver (every few
+    // seconds until it heard back), and, closed or told to Save or Open while the saver was at
+    // the first save, saved in place: that took its turn after the saver's, so the window waited
+    // for all of a first save. Timed here as a first save in place, into a folder of its own.
+    let (copy, copied) = timed(|| mailbox.clone());
+    drop(copy);
+    let aside = dir.join("in-place");
+    std::fs::create_dir_all(&aside).map_err(|e| e.to_string())?;
+    let (saved, in_place) = timed(|| store::save(&aside.join("mailbox.mailcraft"), mailbox));
+    saved?;
+    let _ = std::fs::remove_dir_all(&aside);
+    println!("  before: a first save in place {}   <- the window waited for this (closing, Save, Open)", ms(in_place));
+    println!("          and copied the mailbox each time it handed it over: {}", ms(copied).trim());
+    // The first save, in the background as the desktop app does it (R6.3): what the window
+    // waits for is handing the mailbox over; how far the saver has got is looked at meanwhile.
+    let saver = store::Saver::spawn(|| {}).map_err(|e| e.to_string())?;
+    let started = Instant::now();
+    let (_, handed) = timed(|| saver.submit(&path, mailbox, 1));
+    let (mut looks, mut slowest, mut said) = (0u32, Duration::ZERO, Instant::now());
+    loop {
+        let (progress, look) = timed(|| saver.progress());
+        looks += 1;
+        slowest = slowest.max(look);
+        let Some(p) = progress else { break };
+        if said.elapsed() >= Duration::from_secs(30) {
+            println!("      after {:>6.1} s: {:?} {} of {}", started.elapsed().as_secs_f64(), p.stage, p.done, p.total);
+            said = Instant::now();
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let took = started.elapsed();
+    for report in saver.reports() {
+        report.result?;
+    }
+    drop(saver);
+    println!("  first save (an old single file becoming this form), in the background: {}", ms(took));
+    println!(
+        "      the window waits {} to hand it over, at most {} for each of {looks} looks at the progress",
+        ms(handed).trim(),
+        ms(slowest).trim()
+    );
+    let (bytes, files) = dir_size(&store::blob_dir(&path));
+    println!("      {files} content files, {}; mailbox file {}", mb(bytes), mb(std::fs::metadata(&path).map_or(0, |m| m.len())));
 
     let mut s = Session::new(mailbox.clone());
     let ids: Vec<u64> = s.mailbox.messages.keys().copied().collect();
@@ -353,7 +392,7 @@ fn split(mailbox: &Mailbox, dir: &Path) -> Result<(), String> {
     // What the window waits for when a background thread does the writing.
     let saver = store::Saver::spawn(|| {}).map_err(|e| e.to_string())?;
     flip(&mut s, 30)?;
-    let (_, handed) = timed(|| saver.submit(&path, s.mailbox.clone(), 1));
+    let (_, handed) = timed(|| saver.submit(&path, &s.mailbox, 1));
     let (_, flushed) = timed(|| saver.flush());
     println!("  in the background: the window waits {}; written {} later", ms(handed).trim(), ms(flushed).trim());
     for report in saver.reports() {

@@ -526,6 +526,9 @@ impl Default for UiState {
     }
 }
 
+/// How long a save runs before the status bar says how far it has got ([`MailApp::saving_text`]).
+const SAVING_SHOWN_AFTER_MS: u64 = 700;
+
 /// UI-level commands (`ui.*`): id, label, location, params. They change the window, not the
 /// mailbox, and are listed with the engine's commands in command search and `engine.commands`.
 pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
@@ -865,6 +868,27 @@ pub struct MailApp {
     /// When the draft being written was last saved by itself (ms; 0: not since it was opened).
     draft_saved_at: f64,
     saved_rev: u64,
+    /// How far the background saver has got with what it was handed, as of this frame (`None`:
+    /// nothing waiting or being written).
+    pub(crate) save_progress: Option<mailcraft_engine::io::SaveProgress>,
+    /// The window was asked to close while a save was still to be written: the state it was
+    /// asked to close with (the session's `rev`), which closes it once written
+    /// ([`MailApp::close_requested`]). A download that goes on meanwhile changes the mailbox
+    /// every page: those later states are `save_on_exit`'s.
+    pub(crate) closing_after_save: Option<u64>,
+    /// What closing waited for is written: the next close request goes through.
+    close_ready: bool,
+    /// What closing waited for couldn't be written (the status bar said why): the window stayed
+    /// open, and the next close request goes through without waiting again, until a save works.
+    close_anyway: bool,
+    /// File › New or File › Open, asked for while the saver had the open mailbox to write: it
+    /// runs once the saver is done with the file ([`MailApp::through_saver`]).
+    pub(crate) after_save: Option<(String, Value)>,
+    /// What became of the last command that waited for a save (`ui.inspect`'s `saving.last`): an
+    /// agent that was answered `"pending": "save"` learns here whether it ran.
+    pub(crate) after_save_outcome: Option<Value>,
+    /// The command that waited for a save is running now: it isn't deferred again.
+    running_after_save: bool,
     /// The egui context, once the first frame has run (background work wakes the UI with it).
     pub(crate) ctx: Option<egui::Context>,
     /// The file dialog the host is showing, and what its answer is for ([`files`]).
@@ -968,6 +992,13 @@ impl MailApp {
             last_autosave: 0.0,
             draft_saved_at: 0.0,
             saved_rev,
+            save_progress: None,
+            closing_after_save: None,
+            close_ready: false,
+            close_anyway: false,
+            after_save: None,
+            after_save_outcome: None,
+            running_after_save: false,
             ctx: None,
             file_dialog: None,
             pending_open: None,
@@ -1115,6 +1146,9 @@ impl MailApp {
         } else {
             None
         };
+        if let Some(r) = self.through_saver(id, &params) {
+            return r;
+        }
         let r = self.session.run(id, &params).map_err(|e| e.to_string());
         // Asked for the reminders: their window comes up, due or not.
         if r.is_ok() && id == "view.reminders" {
@@ -2422,8 +2456,58 @@ impl MailApp {
     }
 
     fn autosave_tick(&mut self, ctx: &egui::Context) {
-        self.collect_saves();
-        if !self.autosave || self.session.rev() == self.saved_rev {
+        // How far the saver has got is looked at before what it reports: when it has nothing
+        // left, whatever it wrote is among the reports read next.
+        if let Some(saver) = &self.services.saver {
+            self.save_progress = saver.progress();
+            // The saver wakes the window when a state is written; how far it has got in between
+            // is looked at a few times a second.
+            if self.save_progress.is_some() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            }
+        }
+        let saved_before = self.saved_rev;
+        let failed = self.collect_saves();
+        if self.saved_rev > saved_before {
+            // Saving works again: closing waits for it again.
+            self.close_anyway = false;
+        }
+        let free = self.save_progress.is_none();
+        if let Some(e) = &failed {
+            // Closing waited for a save that failed: the window stays open (the status bar says
+            // why) rather than closing by itself later, and is closed by the next close request.
+            if self.closing_after_save.take().is_some() {
+                self.close_anyway = true;
+            }
+            // So does File › New or File › Open, as the command itself would have.
+            if let Some((id, _)) = self.after_save.take() {
+                let error = format!("the mailbox couldn't be saved first, so it stays open ({e})");
+                self.after_save_outcome = Some(json!({"command": id, "ok": false, "error": error}));
+            }
+        }
+        // Closing waited for the state it was asked to close with: written (a download going on
+        // meanwhile has changed the mailbox since, and `save_on_exit` writes that), or nothing is
+        // left to write.
+        if let Some(target) = self.closing_after_save
+            && (self.saved_rev >= target || free)
+        {
+            self.closing_after_save = None;
+            self.close_ready = true;
+            self.quit_requested = true;
+        }
+        // File › New or File › Open runs once the saver is done with the file (it is handed
+        // nothing newer meanwhile, below), writing what changed since itself. Run any earlier,
+        // it would wait for the file and give up.
+        if free && let Some((id, params)) = self.after_save.take() {
+            self.running_after_save = true;
+            let r = self.run(&id, params);
+            self.running_after_save = false;
+            self.after_save_outcome = Some(match r {
+                Ok(result) => json!({"command": id, "ok": true, "result": result}),
+                Err(error) => json!({"command": id, "ok": false, "error": error}),
+            });
+        }
+        if !self.autosave || self.session.rev() == self.saved_rev || self.after_save.is_some() {
             return;
         }
         // From the first change on, whatever replaces the mailbox (File › Open, File › New)
@@ -2441,10 +2525,11 @@ impl MailApp {
         let result = if let Some(persist) = &self.services.persist {
             mailcraft_engine::io::write_mailbox(&self.session.mailbox).and_then(|bytes| persist(&bytes))
         } else if let (Some(saver), Some(path)) = (&self.services.saver, &self.session.path) {
-            // A snapshot costs next to nothing (the items are shared). Writing it is the saver's
-            // business; `collect_saves` hears how it went. Handing in a state that is already on
-            // its way changes nothing, so asking again until then is fine.
-            saver.submit(path, self.session.mailbox.clone(), rev);
+            // A snapshot costs next to nothing (the items are shared), and is only taken of a
+            // state not already on its way. Writing it is the saver's business, all of it on its
+            // own thread however large the mailbox; `collect_saves` hears how it went. Asking
+            // again until then changes nothing.
+            saver.submit(path, &self.session.mailbox, rev);
             ctx.request_repaint_after(std::time::Duration::from_millis(1000));
             return;
         } else if self.session.path.is_some() {
@@ -2461,12 +2546,11 @@ impl MailApp {
         }
     }
 
-    /// What the background saver got done since the last look ([`Services::saver`]).
-    fn collect_saves(&mut self) {
-        let reports = match &self.services.saver {
-            Some(saver) => saver.reports(),
-            None => return,
-        };
+    /// What the background saver got done since the last look ([`Services::saver`]). Returns
+    /// why the open mailbox's last state handed in couldn't be written, if it couldn't.
+    fn collect_saves(&mut self) -> Option<String> {
+        let reports = self.services.saver.as_ref()?.reports();
+        let mut failed = None;
         for report in reports {
             // About a mailbox that isn't the one open any more: nothing to tell the owner.
             if self.session.path.as_deref() != Some(report.path.as_path()) {
@@ -2487,9 +2571,98 @@ impl MailApp {
                     self.status(i18n::fmt(tl!("Couldn't save the mailbox: {error}"), &[("error", &e)]));
                     // Tried again in ten seconds rather than three: a full disk needs a moment.
                     self.last_autosave = now_ms() + 7000.0;
+                    failed = Some(e);
                 }
             }
         }
+        failed
+    }
+
+    /// With a background saver keeping the mailbox file, what writes that file doesn't do it on
+    /// the window's thread, where it would wait for whatever the saver is in the middle of (the
+    /// first save after a large download) and then do the writing itself: Save hands the mailbox
+    /// to the saver as the timer does, and New or Open, which write what is unsaved first, hand
+    /// it over and run once it is written, the window going on meanwhile. `None`: the command
+    /// runs as it is.
+    fn through_saver(&mut self, id: &str, params: &Value) -> Option<Result<Value, String>> {
+        let (Some(saver), Some(path)) = (&self.services.saver, &self.session.path) else { return None };
+        let rev = self.session.rev();
+        match id {
+            // Where it is kept. (Saved to another file, which keeps it from then on, it is written
+            // there and then, as before.)
+            "file.save" if params.get("path").and_then(Value::as_str).is_none_or(|p| std::path::Path::new(p) == path) => {
+                saver.submit(path, &self.session.mailbox, rev);
+                Some(Ok(json!({"path": path.to_string_lossy(), "background": true})))
+            }
+            "file.new" | "file.open" if !self.running_after_save => {
+                if rev != self.saved_rev {
+                    saver.submit(path, &self.session.mailbox, rev);
+                } else if saver.progress().is_none() {
+                    return None;
+                }
+                // Asked again meanwhile: the newer request takes the place of the older.
+                if let Some((before, _)) = self.after_save.replace((id.to_string(), params.clone())) {
+                    self.after_save_outcome = Some(json!({"command": before, "ok": false, "error": format!("{id} was asked for instead")}));
+                } else {
+                    self.after_save_outcome = None;
+                }
+                Some(Ok(json!({"pending": "save"})))
+            }
+            _ => None,
+        }
+    }
+
+    /// How saving is going, for `ui.inspect`: how far the saver has got (`null`: nothing waiting or
+    /// being written), whether closing waits for it, the command that waits for it (`file.new`,
+    /// `file.open`), and what became of the last one that did.
+    pub fn saving_inspect(&self) -> Value {
+        use mailcraft_engine::io::SaveStage;
+        let progress = self.save_progress.map(|p| {
+            let stage = match p.stage {
+                SaveStage::Waiting => "waiting",
+                SaveStage::Messages => "messages",
+                SaveStage::Content => "content",
+                SaveStage::Sweeping => "sweeping",
+            };
+            json!({"stage": stage, "done": p.done, "total": p.total, "millis": p.millis})
+        });
+        json!({
+            "progress": progress,
+            "closing": self.closing_after_save.is_some(),
+            "pending": self.after_save.as_ref().map(|(id, _)| id),
+            "last": self.after_save_outcome,
+        })
+    }
+
+    /// What the status bar says of a save that is taking a while (the first after a large
+    /// download): how far it has got. Nothing for a save of a moment, unless something waits
+    /// for it (closing the window, File › Open).
+    pub fn saving_text(&self) -> Option<String> {
+        use mailcraft_engine::io::SaveStage;
+        let p = self.save_progress?;
+        let waited_for = self.closing_after_save.is_some() || self.after_save.is_some();
+        // Tidying the content folder is nothing to tell, unless something waits for it.
+        if !waited_for && (p.millis < SAVING_SHOWN_AFTER_MS || p.stage == SaveStage::Sweeping) {
+            return None;
+        }
+        let (done, total) = (p.done.to_string(), p.total.to_string());
+        let text = match p.stage {
+            SaveStage::Messages if p.total > 0 => {
+                i18n::fmt(tl!("Saving the mailbox… {done} of {total} messages"), &[("done", &done), ("total", &total)])
+            }
+            SaveStage::Content if p.total > 0 => {
+                i18n::fmt(tl!("Saving the mailbox… writing {done} of {total} bodies and attachments"), &[("done", &done), ("total", &total)])
+            }
+            SaveStage::Sweeping => tl!("Tidying the mailbox's content folder…").to_string(),
+            _ => tl!("Saving the mailbox…").to_string(),
+        };
+        Some(if self.closing_after_save.is_some() {
+            i18n::fmt(tl!("{saving} · MailCraft closes when it is done"), &[("saving", &text)])
+        } else if self.after_save.is_some() {
+            i18n::fmt(tl!("{saving} · the other mailbox opens when it is done"), &[("saving", &text)])
+        } else {
+            text
+        })
     }
 
     /// Inject synthetic input events from the control channel (one pointer event per frame).
@@ -2582,6 +2755,10 @@ impl MailApp {
     /// The window's close button. MailCraft saves by itself, so closing only waits for a message
     /// being written: `false` keeps the window open and asks about it.
     pub fn close_requested(&mut self) -> bool {
+        // What closing waited for being written lets this one close request through, and no
+        // later one: held below by a question, the close the owner asks for next waits again for
+        // whatever the saver is at by then.
+        let (ready, anyway) = (std::mem::take(&mut self.close_ready), std::mem::take(&mut self.close_anyway));
         if self.session.compose.as_ref().is_some_and(|c| c.dirty) {
             self.dialog = dialogs::Dialog::open("discardDraft", self, &json!({"then": "quit"}));
             return false;
@@ -2590,22 +2767,62 @@ impl MailApp {
         if windows::hold_quit(self) {
             return false;
         }
+        // What closing waited for is written, or couldn't be (the owner was told): it closes.
+        if ready || anyway {
+            return true;
+        }
+        // What is still to be written (the first save after a large download can take minutes)
+        // is written with the window still there, saying how far it has got; it closes when that
+        // is done. Asked again meanwhile, it goes on waiting, saying so: closing then would leave
+        // the last changes unwritten, for `save_on_exit` waits a while at most.
+        if let (Some(saver), Some(path)) = (&self.services.saver, &self.session.path) {
+            if self.closing_after_save.is_some() {
+                self.quit_requested = false;
+                return false;
+            }
+            let rev = self.session.rev();
+            let unsaved = self.autosave && rev != self.saved_rev;
+            if unsaved {
+                saver.submit(path, &self.session.mailbox, rev);
+            }
+            if unsaved || saver.progress().is_some() {
+                self.closing_after_save = Some(rev);
+                self.quit_requested = false;
+                return false;
+            }
+        }
         true
     }
 
     /// The window is going away: write the changes the timer hadn't got to yet, and wait for
-    /// whatever is still being written. `Err` says why the mailbox couldn't be saved.
+    /// whatever is still being written, for a while at most (the window waited for the long save
+    /// already, [`MailApp::close_requested`]: what is left is what changed since, a short one).
+    /// `Err` says why the mailbox couldn't be saved.
     pub fn save_on_exit(&mut self) -> Result<(), String> {
+        let unsaved = self.autosave && self.session.path.is_some() && (self.session.dirty || self.session.rev() != self.saved_rev);
+        if let (Some(saver), Some(path)) = (&self.services.saver, &self.session.path) {
+            // Through the saver too, never in place: a save in place would wait out whatever the
+            // saver is in the middle of, for as long as that takes. The newest state goes in, an
+            // older one still waiting gives way to it, and the wait for both is bounded.
+            let rev = self.session.rev();
+            if unsaved {
+                saver.submit(path, &self.session.mailbox, rev);
+            }
+            saver.flush();
+            let failed = self.collect_saves();
+            if unsaved && self.saved_rev < rev {
+                return Err(failed
+                    .unwrap_or_else(|| "it was still being written when MailCraft stopped waiting; the file is as the last save left it".into()));
+            }
+            return Ok(());
+        }
         let mut result = Ok(());
-        if self.autosave && self.session.path.is_some() && (self.session.dirty || self.session.rev() != self.saved_rev) {
+        if unsaved {
             // In place: this is the newest state, and an older one still waiting gives way to it.
             result = self.session.run("file.save", &json!({})).map(|_| ()).map_err(|e| e.to_string());
             if result.is_ok() {
                 self.saved_rev = self.session.rev();
             }
-        }
-        if let Some(saver) = &self.services.saver {
-            saver.flush();
         }
         result
     }

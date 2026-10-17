@@ -944,16 +944,16 @@ fn the_saver_writes_in_the_background_coalesces_and_flushes() {
     let held = shared(&path);
     let gate = lock(&held.state);
     let t = Instant::now();
-    saver.submit(&path, mb.clone(), 1);
+    saver.submit(&path, &mb, 1);
     until(|| lock(&saver.queue.jobs).writing.is_some());
     let mut states = vec![mb.clone()];
     for rev in 2..=5 {
         mb.message_mut(ids[rev as usize]).unwrap().read = true;
-        saver.submit(&path, mb.clone(), rev);
+        saver.submit(&path, &mb, rev);
         states.push(mb.clone());
     }
     // The same state again (the window asks until it hears back) changes nothing.
-    saver.submit(&path, mb.clone(), 5);
+    saver.submit(&path, &mb, 5);
     assert!(t.elapsed() < Duration::from_secs(5));
     assert!(followed(&path) && saver.reports().is_empty() && !path.exists());
     {
@@ -977,10 +977,10 @@ fn the_saver_writes_in_the_background_coalesces_and_flushes() {
     // A state that gets to the disk after a newer one was written by somebody else (the Save
     // command, quitting) is dropped rather than written over it.
     let mut gate = lock(&held.state);
-    saver.submit(&path, states[0].clone(), 6);
+    saver.submit(&path, &states[0], 6);
     until(|| lock(&saver.queue.jobs).writing.is_some());
     mb.message_mut(ids[0]).unwrap().read = true;
-    write_index(&mut gate, &path, &mb).unwrap();
+    write_index(&mut gate, &path, &mb, &held.progress).unwrap();
     gate.newest = next_seq();
     drop(gate);
     saver.flush();
@@ -988,7 +988,7 @@ fn the_saver_writes_in_the_background_coalesces_and_flushes() {
     assert!(whole(&path) == mb);
     // Whichever of a save in the background and one in place comes first, the newer state stays.
     for rev in 7..12 {
-        saver.submit(&path, states[(rev % 5) as usize].clone(), rev);
+        saver.submit(&path, &states[(rev % 5) as usize], rev);
         mb.message_mut(ids[6]).unwrap().read ^= true;
         save(&path, &mb).unwrap();
         saver.flush();
@@ -1001,6 +1001,150 @@ fn the_saver_writes_in_the_background_coalesces_and_flushes() {
     let queue = saver.queue.clone();
     drop(saver);
     until(|| Arc::strong_count(&queue) == 1);
+}
+
+#[test]
+fn a_large_first_save_runs_in_the_background_says_how_far_it_has_got_and_is_whole() {
+    let tmp = Temp::new("progress");
+    let path = tmp.file();
+    let mb = mailbox(240);
+    // A slow disk: every step of saving this file takes a few milliseconds more.
+    shared(&path).progress.pause_ms.store(5, Ordering::Relaxed);
+    let saver = Saver::spawn(|| {}).unwrap();
+    assert_eq!(saver.progress(), None);
+
+    // Handing the mailbox in takes no time however long the writing takes, and handing the same
+    // state in again (the window asks every few seconds until it hears back) copies nothing.
+    let t = Instant::now();
+    saver.submit(&path, &mb, 1);
+    for _ in 0..50 {
+        saver.submit(&path, &mb, 1);
+    }
+    assert!(t.elapsed() < Duration::from_millis(500), "{:?}", t.elapsed());
+    assert!(lock(&saver.queue.jobs).waiting.len() <= 1);
+
+    // Meanwhile it says how far it has got: through the messages, then the content files.
+    let mut seen = Vec::new();
+    let t = Instant::now();
+    while let Some(p) = saver.progress() {
+        assert!(t.elapsed() < Duration::from_secs(60), "the save never ended");
+        assert!(p.done <= p.total);
+        seen.push(p);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let midway = |stage: SaveStage| seen.iter().any(|p| p.stage == stage && p.done > 0 && p.done < p.total);
+    assert!(midway(SaveStage::Messages) && midway(SaveStage::Content), "{seen:?}");
+    assert!(seen.iter().filter(|p| p.stage == SaveStage::Messages).all(|p| p.total == 240));
+    // The time the save has been at it only grows. A sweep that follows it is timed from its own
+    // start (review of R6.3: counting it in failed this under load).
+    let saving: Vec<&SaveProgress> = seen.iter().filter(|p| p.stage != SaveStage::Sweeping).collect();
+    assert!(saving.windows(2).all(|w| w[1].millis >= w[0].millis || w[1].stage == SaveStage::Waiting), "{seen:?}");
+    assert!(seen.iter().skip_while(|p| p.stage != SaveStage::Sweeping).all(|p| p.stage == SaveStage::Sweeping), "{seen:?}");
+    // And the file is whole.
+    assert_eq!(saver.reports(), [SaveReport { path: path.clone(), rev: 1, result: Ok(()) }]);
+    assert!(whole(&path) == mb);
+}
+
+#[test]
+fn a_sweep_keeps_the_saver_busy_until_it_is_done() {
+    // Review of R6.3: a sweep holds the file from start to end, as a save does. Had the saver
+    // said nothing was going on meanwhile, the window would have run a File › Open that waited
+    // for it into the sweep, given up after two seconds, and the Open would have been lost.
+    let tmp = Temp::new("sweep-busy");
+    let path = tmp.file();
+    save(&path, &mailbox(4)).unwrap();
+    let saver = Saver::spawn(|| {}).unwrap();
+    assert_eq!(saver.progress(), None);
+
+    // A sweep of a large content folder, held here at its start: busy, and says what it is at.
+    let held = shared(&path);
+    let gate = lock(&held.state);
+    saver.sweep_later(&path);
+    let p = saver.progress().unwrap();
+    assert_eq!((p.stage, p.done, p.total), (SaveStage::Sweeping, 0, 0));
+    let t = Instant::now();
+    while lock(&saver.queue.jobs).sweeping.is_none() {
+        assert!(t.elapsed() < Duration::from_secs(10), "the sweep never began");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(saver.progress().map(|p| p.stage), Some(SaveStage::Sweeping));
+    assert!(saver.progress().unwrap().millis >= 20);
+
+    // Done: free again, and the file can be written straight away.
+    drop(gate);
+    let t = Instant::now();
+    while saver.progress().is_some() {
+        assert!(t.elapsed() < Duration::from_secs(10), "the sweep never ended");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(save_within(&path, &mailbox(5), Duration::ZERO).is_ok());
+}
+
+#[test]
+fn handing_in_a_state_copies_the_mailbox_without_the_saver_waiting() {
+    // Review of R6.3: the copy of what is handed in is made without the queue's lock, and a
+    // state already on its way is neither copied nor queued twice.
+    let tmp = Temp::new("submit-lock");
+    let path = tmp.file();
+    let saver = Saver::spawn(|| {}).unwrap();
+    // The file is held here, so the first state taken waits to be written and the queue can be
+    // looked at meanwhile.
+    let held = shared(&path);
+    let gate = lock(&held.state);
+    let (one, two) = (mailbox(3), mailbox(6));
+    saver.submit(&path, &one, 1);
+    let t = Instant::now();
+    while lock(&saver.queue.jobs).writing.is_none() {
+        assert!(t.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    // The state being written isn't queued again; a newer one waits its turn, and a newer one
+    // still takes its place, once.
+    saver.submit(&path, &one, 1);
+    assert!(lock(&saver.queue.jobs).waiting.is_empty(), "the state being written was queued again");
+    saver.submit(&path, &one, 2);
+    saver.submit(&path, &two, 3);
+    saver.submit(&path, &two, 3);
+    {
+        let jobs = lock(&saver.queue.jobs);
+        assert_eq!(jobs.waiting.iter().map(|j| j.rev).collect::<Vec<_>>(), [3]);
+        assert!(jobs.waiting.first().is_some_and(|j| j.mailbox == two));
+    }
+    drop(gate);
+    saver.flush();
+    let revs: Vec<u64> = saver.reports().iter().map(|r| r.rev).collect();
+    assert_eq!(revs, [1, 3]);
+    assert!(whole(&path) == two);
+}
+
+#[test]
+fn replacing_the_mailbox_does_not_wait_out_a_save_in_the_background() {
+    let tmp = Temp::new("busy");
+    let path = tmp.file();
+    save(&path, &mailbox(4)).unwrap();
+    let mut s = Session::new(open(&path).unwrap().mailbox);
+    s.path = Some(path.clone());
+    let id = first_with(&s.mailbox, |m| !m.read);
+    s.run("mail.markRead", &json!({"id": id})).unwrap();
+    let changed = s.mailbox.clone();
+    let saver = Saver::spawn(|| {}).unwrap();
+    saver.follow(&path);
+
+    // The file is busy for a long while (held here, as a long save or a sweep of a large content
+    // folder holds it): File › New gives up after a moment, and the mailbox stays open as it is.
+    // (The window doesn't even ask while its saver is at it: it runs the command afterwards.)
+    let held = shared(&path);
+    let gate = lock(&held.state);
+    let t = Instant::now();
+    let error = s.run("file.new", &json!({})).unwrap_err().to_string();
+    assert!(t.elapsed() < Duration::from_secs(10));
+    assert!(error.contains("still being saved"), "{error}");
+    assert!(s.mailbox == changed && s.path.as_deref() == Some(path.as_path()));
+    drop(gate);
+    // Once it is done, the same goes through, and writes the last changes first.
+    s.run("file.new", &json!({})).unwrap();
+    assert!(open(&path).unwrap().mailbox == changed);
 }
 
 #[test]
@@ -1029,14 +1173,14 @@ fn a_save_that_fails_is_reported_leaves_the_file_and_works_when_tried_again() {
     assert!(whole(&path) == old);
     // Through the saver: the window hears why, and the file is as it was.
     let saver = Saver::spawn(|| {}).unwrap();
-    saver.submit(&path, new.clone(), 1);
+    saver.submit(&path, &new, 1);
     saver.flush();
     let reports = saver.reports();
     assert!(matches!(reports.as_slice(), [SaveReport { rev: 1, result: Err(e), .. }] if e.contains("content file")), "{reports:?}");
     assert_eq!(fs::read(&path).unwrap(), on_disk);
     // Handed in again once the trouble is over (the window does that), it goes through.
     fs::remove_dir_all(&blocked).unwrap();
-    saver.submit(&path, new.clone(), 1);
+    saver.submit(&path, &new, 1);
     saver.flush();
     assert_eq!(saver.reports(), [SaveReport { path: path.clone(), rev: 1, result: Ok(()) }]);
     assert!(whole(&path) == new);

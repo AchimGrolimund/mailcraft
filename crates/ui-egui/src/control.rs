@@ -114,6 +114,7 @@ pub fn inspect(app: &mut MailApp, ctx: &egui::Context) -> Value {
         "title": app.title_stem(),
         "dirty": app.session.dirty,
         "syncing": app.syncing(),
+        "saving": app.saving_inspect(),
         "status": app.status_msg.as_ref().map(|(m, _)| m.clone()),
         "textSelection": crate::reading::selection_inspect(app, ctx),
         "perf": {"frameMs": app.frame_ms},

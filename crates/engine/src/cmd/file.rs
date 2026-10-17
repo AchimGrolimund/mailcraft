@@ -33,8 +33,10 @@ pub fn specs() -> Vec<CommandSpec> {
 
 /// Before another mailbox takes this one's place. Where a host keeps the mailbox file up to date
 /// by itself (the desktop app's background saver), what it hasn't written yet is written now:
-/// replacing the mailbox must not lose the changes that fall between two saves. Anywhere else,
-/// leaving a mailbox unsaved is the caller's business, as it always was.
+/// replacing the mailbox must not lose the changes that fall between two saves. That host's
+/// window doesn't wait out a long save the saver is in the middle of (the first after a large
+/// download): the mailbox stays open and says so. Anywhere else, leaving a mailbox unsaved is the
+/// caller's business, as it always was.
 #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
 fn settle(s: &Session) -> Result<(), crate::CmdError> {
     #[cfg(not(target_arch = "wasm32"))]
@@ -42,11 +44,16 @@ fn settle(s: &Session) -> Result<(), crate::CmdError> {
         if let Some(path) = &s.path
             && crate::store::followed(path)
         {
-            crate::store::save(path, &s.mailbox).map_err(|e| fail(format!("the mailbox couldn't be saved first, so it stays open ({e})")))?;
+            crate::store::save_within(path, &s.mailbox, SETTLE_WAIT)
+                .map_err(|e| fail(format!("the mailbox couldn't be saved first, so it stays open ({e})")))?;
         }
     }
     Ok(())
 }
+
+/// How long [`settle`] waits for a save in the background to be done with the file.
+#[cfg(not(target_arch = "wasm32"))]
+const SETTLE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn new(s: &mut Session, v: &Value) -> CmdResult {
     settle(s)?;
