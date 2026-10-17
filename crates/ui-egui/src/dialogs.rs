@@ -50,8 +50,8 @@ pub enum Dialog {
     DiscardDraft {
         then: String,
     },
-    /// Lines to read and copy: what went wrong in the last Send/Receive (`syncProblems`), what
-    /// a check of the calendar connection came to (`calendarCheck`).
+    /// Lines to read and copy: what a check of the calendar connection came to
+    /// (`calendarCheck`). (What went wrong in a Send/Receive is in Send/Receive Progress.)
     Report {
         /// What `ui.inspect` calls it.
         name: &'static str,
@@ -172,13 +172,6 @@ impl Dialog {
             "about" if params.get("tab").and_then(Value::as_str) == Some("contributors") => Dialog::About(AboutTab::Contributors),
             "about" => Dialog::About(AboutTab::About),
             "contributors" => Dialog::About(AboutTab::Contributors),
-            "syncProblems" => {
-                let lines = app.sync_problem_lines();
-                if lines.is_empty() {
-                    return None;
-                }
-                Dialog::Report { name: "syncProblems", title: tl!("Send/Receive Problems").to_string(), lines }
-            }
             // An item that repeats is asked about before it opens: just this one, or the series?
             "editEvent" if opening_question(app, params).is_some() => {
                 Dialog::Confirm { command: "calendar.edit".to_string(), params: json!({}), ask: opening_question(app, params)? }

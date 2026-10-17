@@ -1319,8 +1319,6 @@ fn send_receive_problems_can_be_read_afterwards() {
     let id =
         a.execute("account.add", json!({"email": "avery@mail.example", "incoming": {"host": "imap.mail.example"}})).unwrap()["id"].as_u64().unwrap();
     assert!(!a.has_sync_problems());
-    assert!(a.execute("ui.dialog", json!({"name": "syncProblems"})).is_err() || a.dialog.is_none(), "nothing to show yet");
-    a.dialog = None;
 
     a.execute("ui.sync", json!({"account": id, "password": "pw"})).unwrap();
     a.poll_sync();
@@ -1329,9 +1327,11 @@ fn send_receive_problems_can_be_read_afterwards() {
     assert!(lines[0].starts_with("avery@mail.example"), "{lines:?}");
     assert!(lines.iter().any(|l| l.contains("SmtpClientAuthentication is disabled")));
     assert!(lines.iter().all(|l| l.chars().count() < 700), "a server's megabyte of text is cut");
-    // The whole of it in a window, which lays out.
-    a.execute("ui.dialog", json!({"name": "syncProblems"})).unwrap();
-    assert!(matches!(&a.dialog, Some(crate::dialogs::Dialog::Report { lines, .. }) if lines.len() == 3));
+    // The whole of it under the account's row in Send/Receive Progress, which lays out.
+    assert_eq!(a.execute("ui.dialog", json!({"name": "syncProblems"})).unwrap(), json!({"panel": "syncProgress"}));
+    assert!(a.dialog.is_none() && a.sync_panel.as_ref().is_some_and(|p| p.to_problem));
+    let rows = crate::sync_panel::rows(&a);
+    assert_eq!((rows.len(), rows[0].problems.len(), rows[0].line()), (1, 2, "2 problems".to_string()));
     let mut a = frames(a, (1280.0, 800.0), 3);
 
     // A run that goes through clears them.
@@ -1355,9 +1355,10 @@ fn microsoft_graph_sends_and_brings_the_calendar_before_the_mail() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex, mpsc};
 
+    use mailcraft_engine::cmd::sync_progress::RunState;
     use mailcraft_model::FolderKind;
     use mailcraft_model::remote::{ContactsDownload, EventsDownload, RemoteContact, RemoteEvent};
-    use mailcraft_model::sync::{SyncRequest, SyncResult, Tokens};
+    use mailcraft_model::sync::{SyncPhase, SyncRequest, SyncResult, Tokens};
 
     // What Graph was asked (outbox, directory, had a token) and what the mail server was asked to send.
     let asked: Arc<Mutex<Vec<(usize, bool, bool)>>> = Default::default();
@@ -1433,9 +1434,16 @@ fn microsoft_graph_sends_and_brings_the_calendar_before_the_mail() {
     assert_eq!(a.execute("compose.send", json!({})).unwrap()["queued"], true);
     assert_eq!(a.execute("ui.sync", json!({"account": id})).unwrap()["pending"], "graph");
     assert!(!a.enabled("ui.sync"), "one run at a time");
+    // Send/Receive Progress: sending first, through Microsoft.
+    let row = |a: &MailApp| a.session.sync_progress.accounts.iter().find(|r| r.account == id).cloned().unwrap();
+    assert_eq!((row(&a).state, row(&a).phase), (RunState::Running, Some(SyncPhase::Sending)));
     settle(&mut a);
     assert_eq!(*asked.lock().unwrap(), [(1, true, false)]);
     assert_eq!(*smtp.lock().unwrap(), [0], "what Graph sent is not sent again by the mail server");
+    // What Graph sent is part of the run, not the end of it: the mail server's leg comes after,
+    // in the same row, which counts the message as sent by this run (not one kept from before).
+    let r = row(&a);
+    assert_eq!((r.state, r.sent, r.kept, a.session.sync_progress.accounts.len()), (RunState::Done, 1, false, 1));
     let (outbox, sent) =
         (a.session.mailbox.folder_of_kind(id, FolderKind::Outbox).unwrap(), a.session.mailbox.folder_of_kind(id, FolderKind::Sent).unwrap());
     assert_eq!((a.session.mailbox.count(outbox), a.session.mailbox.count(sent)), (0, 1));
@@ -1446,6 +1454,7 @@ fn microsoft_graph_sends_and_brings_the_calendar_before_the_mail() {
     // Soon after, with nothing to send: a Send/Receive the owner asked for still brings the days
     // of the calendar that are on screen (not the wide stretch, nor the contacts).
     assert_eq!(a.execute("ui.sync", json!({"account": id})).unwrap()["pending"], "graph");
+    assert_eq!(row(&a).phase, Some(SyncPhase::CalendarAndContacts));
     settle(&mut a);
     assert_eq!(*asked.lock().unwrap(), [(1, true, false), (0, false, true)]);
     // One that started by itself goes straight to the mail: the calendar keeps itself current.

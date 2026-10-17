@@ -42,6 +42,7 @@ mod reminders;
 pub mod ribbon;
 pub mod scheduling;
 mod signatures;
+mod sync_panel;
 pub mod tasks_view;
 pub mod theme;
 pub mod updates;
@@ -54,7 +55,7 @@ use std::sync::mpsc::Receiver;
 
 use mailcraft_engine::Session;
 use mailcraft_model::Id;
-use mailcraft_model::sync::{SyncRequest, SyncResult, Tokens};
+use mailcraft_model::sync::{SyncPhase, SyncRequest, SyncResult, Tokens};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -863,6 +864,8 @@ pub struct MailApp {
     /// What went wrong in each account's last Send/Receive, until a run of it goes through:
     /// the account, its name, when, and the lines.
     sync_problems: Vec<(Id, String, String, Vec<String>)>,
+    /// Send/Receive Progress, when it is open ([`sync_panel`]).
+    pub(crate) sync_panel: Option<sync_panel::Panel>,
     /// Messages and appointments opened in windows of their own ([`windows`]).
     pub(crate) windows: windows::Windows,
     /// Pictures from the web: which messages may show them, and the ones on their way.
@@ -953,6 +956,7 @@ impl MailApp {
             hit: Default::default(),
             reminders: Default::default(),
             sync_problems: Vec::new(),
+            sync_panel: None,
             windows: Default::default(),
             remote_pictures: Default::default(),
             text_selection: Default::default(),
@@ -1173,9 +1177,16 @@ impl MailApp {
             },
             "ui.dialog" => {
                 let Some(name) = s("name") else { return Some(Err("missing `name`".into())) };
+                // Send/Receive Progress is a panel in the window, not a dialog; the problems are
+                // in it, under each account.
+                if let Some(panel) = sync_panel::Panel::named(name) {
+                    self.sync_panel = Some(panel);
+                    return Some(Ok(json!({"panel": "syncProgress"})));
+                }
                 match dialogs::open_dialog(self, name, p) {
                     Some(d) => {
                         self.dialog = Some(d);
+                        self.sync_panel = None;
                         Ok(json!({"dialog": name}))
                     }
                     None => Err(format!("can't open the \"{name}\" dialog now")),
@@ -1183,6 +1194,7 @@ impl MailApp {
             }
             "ui.closeDialog" => {
                 self.dialog = None;
+                self.sync_panel = None;
                 Ok(json!({}))
             }
             "ui.theme" => match s("value").and_then(theme::Appearance::from_code) {
@@ -1277,6 +1289,18 @@ impl MailApp {
                 self.services.sync_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                 self.pause_fetch();
                 self.sync_queue.clear();
+                // (Send/Receive Progress: the accounts still to go are stopped with it.)
+                let waiting: Vec<Id> = self
+                    .session
+                    .sync_progress
+                    .accounts
+                    .iter()
+                    .filter(|r| r.state == mailcraft_engine::cmd::sync_progress::RunState::Waiting)
+                    .map(|r| r.account)
+                    .collect();
+                for account in waiting {
+                    self.session.sync_progress.end(account, true);
+                }
                 self.session.sync_status = tl!("Stopping…").to_string();
                 Ok(json!({"cancelling": true}))
             }
@@ -1501,6 +1525,9 @@ impl MailApp {
                 let mut all = self.server_accounts().into_iter();
                 let first = all.next().ok_or_else(|| tl!("No account is connected to a mail server (File › Add Account)").to_string())?;
                 self.sync_queue = all.map(|a| (a, quiet)).collect();
+                // One run of them all, in this order: the rest wait their turn.
+                let round: Vec<Id> = std::iter::once(first).chain(self.sync_queue.iter().map(|(a, _)| *a)).collect();
+                self.session.sync_progress.begin(&round);
                 first
             }
         };
@@ -1570,6 +1597,8 @@ impl MailApp {
                     };
                     self.session.sync_status =
                         if ask.outbox.is_empty() { tl!("Updating the calendar and contacts…") } else { tl!("Sending…") }.to_string();
+                    let phase = if ask.outbox.is_empty() { SyncPhase::CalendarAndContacts } else { SyncPhase::Sending };
+                    self.session.sync_progress.phase(account, phase);
                     if let Some(graph) = &self.services.graph {
                         self.graph_rx = Some((account, quiet, directory, graph(ask)));
                     }
@@ -1659,6 +1688,10 @@ impl MailApp {
         self.services.sync_cancel.store(false, std::sync::atomic::Ordering::Relaxed);
         self.graph_pieces = Some(taken);
         self.graph_problems.clear();
+        // The calendar and contacts come after the mail: its last piece doesn't end the run.
+        if ask.directory || ask.calendar.is_some() || ask.changes.is_some() {
+            self.session.sync_progress.hold(account);
+        }
         self.graph_rx = Some((account, quiet, directory, graph(ask)));
         self.session.sync_status = tl!("Sending and receiving…").to_string();
         Ok(json!({"started": true, "account": account, "graph": true}))
@@ -1720,11 +1753,14 @@ impl MailApp {
             return;
         }
         if let Some((account, quiet)) = self.sync_queue.pop_front() {
-            if !quiet || self.can_sync_quietly(account) {
-                let _ = self.start_sync(&json!({"account": account, "quiet": quiet}));
+            // An account that would have to ask, or can't start, is left out of the run.
+            let started = (!quiet || self.can_sync_quietly(account)) && self.start_sync(&json!({"account": account, "quiet": quiet})).is_ok();
+            if !started {
+                self.session.sync_progress.leave_out(account);
             }
             return;
         }
+        self.settle_progress();
         let minutes = f64::from(self.session.prefs.sync_minutes);
         let now = now_ms();
         // Something made here waits to go out (a message to send, a read mark, a move): it
@@ -1741,6 +1777,8 @@ impl MailApp {
                 }
             }
             if !self.sync_queue.is_empty() {
+                let round: Vec<Id> = self.sync_queue.iter().map(|(a, _)| *a).collect();
+                self.session.sync_progress.begin(&round);
                 return;
             }
         }
@@ -1749,6 +1787,30 @@ impl MailApp {
         }
         self.last_auto_sync = now;
         self.sync_queue = self.server_accounts().into_iter().map(|a| (a, true)).collect();
+        let round: Vec<Id> = self.sync_queue.iter().map(|(a, _)| *a).collect();
+        if !round.is_empty() {
+            self.session.sync_progress.begin(&round);
+        }
+    }
+
+    /// Nothing of a Send/Receive is under way or waiting to start, but Send/Receive Progress
+    /// still has accounts running or waiting (a run that ended without its last piece, a sign-in
+    /// or a password that came to nothing): the run is over, and what never started is left out.
+    fn settle_progress(&mut self) {
+        use mailcraft_engine::cmd::sync_progress::RunState;
+        if !self.session.sync_progress.running() || !self.sync_queue.is_empty() || self.syncing() || self.graph_rx.is_some() {
+            return;
+        }
+        let rows: Vec<(Id, RunState)> = self.session.sync_progress.accounts.iter().map(|r| (r.account, r.state)).collect();
+        for (account, state) in rows {
+            match state {
+                RunState::Waiting => {
+                    self.session.sync_progress.leave_out(account);
+                }
+                RunState::Running => self.session.sync_progress.end(account, false),
+                RunState::Done | RunState::Stopped => {}
+            }
+        }
     }
 
     /// Whether the owner still has to allow sending, calendar and contacts through Microsoft for
@@ -1797,6 +1859,10 @@ impl MailApp {
                 return;
             }
             self.graph_pieces = None;
+            // The mail is in; the calendar and contacts come next.
+            if self.session.sync_progress.holding(account) {
+                self.session.sync_progress.phase(account, SyncPhase::CalendarAndContacts);
+            }
         }
         let Some((_, _, _, rx)) = &self.graph_rx else { return };
         let mut result = match rx.try_recv() {
@@ -1854,13 +1920,22 @@ impl MailApp {
             self.graph_checked.insert(account, now_ms());
         }
         if !result.sent.is_empty() {
-            let sent = mailcraft_model::sync::SyncResult { account, sent: result.sent.clone(), filed: result.sent.clone(), ..Default::default() };
+            // (A piece of the run, not the end of it: the mail server's leg comes next, and
+            // Send/Receive Progress counts what was sent with what that brings.)
+            let sent = mailcraft_model::sync::SyncResult {
+                account,
+                sent: result.sent.clone(),
+                filed: result.sent.clone(),
+                partial: !kept_in_step,
+                ..Default::default()
+            };
             if let Err(e) = mailcraft_engine::cmd::account::apply_sync(&mut self.session, sent) {
                 errors.push(e.to_string());
             }
         }
         // An account kept in step through Graph: its folders, and the run is over (no IMAP leg).
         if kept_in_step {
+            self.session.sync_progress.end(account, false);
             errors.append(&mut self.graph_problems);
             // No token for the mail: Microsoft wants the owner's say-so for it, or the sign-in has
             // run out. There is no IMAP leg to ask instead, so the owner is asked here (#124).
@@ -1903,6 +1978,7 @@ impl MailApp {
         self.note_sync_problems(account, &errors, false);
         let skip: Vec<Id> = result.sent.iter().chain(&result.held).copied().collect();
         if let Err(e) = self.start_sync(&json!({"account": account, "quiet": quiet, "afterGraph": true, "skip": skip})) {
+            self.session.sync_progress.end(account, false);
             self.session.sync_status.clear();
             self.status(e);
         }
@@ -2498,6 +2574,8 @@ impl MailApp {
         // Windows of their own (a message, an appointment), before the shortcuts: Escape closes
         // the one in front where they are inside this window.
         windows::show(self, &ctx);
+        // Escape closes Send/Receive Progress before anything else hears it.
+        sync_panel::escape(self, &ctx);
         // Shortcuts first, so the frame shows what the key did.
         keys::global_shortcuts(self, &ctx);
         if self.ui.backstage {
@@ -2518,6 +2596,7 @@ impl MailApp {
                 mailcraft_engine::Module::Tasks => tasks_view::show(self, ui),
             });
         }
+        sync_panel::show(self, &ctx);
         dialogs::show(self, &ctx);
         reminders::show(self, &ctx);
         // Over everything: what an agent wants that needs the owner.
