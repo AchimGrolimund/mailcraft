@@ -314,18 +314,86 @@ impl WireParts {
 struct Stamp {
     len: u64,
     modified: Option<SystemTime>,
+    /// The SHA-256 of every byte of it as read or written here, when that is known: for a file
+    /// whose time says it changed although nobody wrote it (a network share whose times come
+    /// late, or a folder kept in step by another program), which is then still this program's.
+    sum: Option<ring::digest::Context>,
 }
 
 impl Stamp {
-    /// The file as it is now, if it is still `len` bytes long (what was read or written of it).
-    fn of(path: &Path, len: u64) -> Option<Stamp> {
+    /// The file as it is now, if it is still `len` bytes long (what was read or written of it),
+    /// with what its bytes were (`sum`), when that is known.
+    fn of(path: &Path, len: u64, sum: Option<ring::digest::Context>) -> Option<Stamp> {
         let meta = fs::metadata(path).ok()?;
-        (meta.len() == len).then(|| Stamp { len, modified: meta.modified().ok() })
+        (meta.len() == len).then(|| Stamp { len, modified: meta.modified().ok(), sum })
     }
 
     /// The file is still the one this was taken of.
     fn still(&self, path: &Path) -> bool {
         fs::metadata(path).is_ok_and(|m| m.len() == self.len && m.modified().ok() == self.modified)
+    }
+
+    /// [`Stamp::still`], or, when only its time says otherwise, its bytes are still the ones this
+    /// was taken of (read through to know; then the time is taken as it is now).
+    fn ours(&mut self, path: &Path) -> bool {
+        if self.still(path) {
+            return true;
+        }
+        let Some(sum) = &self.sum else { return false };
+        let Ok(meta) = fs::metadata(path) else { return false };
+        if meta.len() != self.len {
+            return false;
+        }
+        let same = sum_of(path).is_ok_and(|(len, now)| len == self.len && now.as_ref() == sum.clone().finish().as_ref());
+        if same {
+            self.modified = meta.modified().ok();
+        }
+        same
+    }
+}
+
+/// The SHA-256 of the file at `path`, and how many bytes it has, read through in pieces.
+fn sum_of(path: &Path) -> std::io::Result<(u64, ring::digest::Digest)> {
+    let mut r = Summed::new(fs::File::open(path)?);
+    std::io::copy(&mut r, &mut std::io::sink())?;
+    Ok((r.len, r.sum.finish()))
+}
+
+/// What is read through it, or written, is summed (SHA-256) as it goes.
+struct Summed<T> {
+    inner: T,
+    sum: ring::digest::Context,
+    len: u64,
+}
+
+impl<T> Summed<T> {
+    fn new(inner: T) -> Summed<T> {
+        Summed { inner, sum: ring::digest::Context::new(&ring::digest::SHA256), len: 0 }
+    }
+
+    fn took(&mut self, bytes: &[u8]) {
+        self.sum.update(bytes);
+        self.len = self.len.saturating_add(bytes.len() as u64);
+    }
+}
+
+impl<T: std::io::Read> std::io::Read for Summed<T> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.took(buf.get(..n).unwrap_or(&[]));
+        Ok(n)
+    }
+}
+
+impl<T: std::io::Write> std::io::Write for Summed<T> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.took(buf.get(..n).unwrap_or(&[]));
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
     }
 }
 
@@ -815,23 +883,29 @@ impl Opened {
     /// read: for the host to show (a status line, the CLI's output), not only to log.
     pub fn notice(&self) -> Option<String> {
         let mut said = Vec::new();
-        let plural = |n: u32, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
         if self.lost_records > 0 {
-            said.push(format!(
-                "{} of the mailbox file damaged and left out; mail missing from it is fetched again from its server at the next Send/Receive",
-                plural(self.lost_records, "item (a message, contact, event or task) is", "items (messages, contacts, events or tasks) are")
-            ));
+            said.push(if self.lost_records == 1 {
+                "1 item of the mailbox file (a message, contact, event or task) was damaged and left out".to_string()
+            } else {
+                format!("{} items of the mailbox file (messages, contacts, events or tasks) were damaged and left out", self.lost_records)
+            });
+            said.push("any mail missing because of it is fetched again from its server at the next Send/Receive".into());
         }
         if self.lost_saves > 0 {
-            said.push(format!(
-                "{} of the mailbox file damaged, or after a damaged one, and left out, so the changes they made are missing",
-                plural(self.lost_saves, "save is", "saves are")
-            ));
+            said.push(if self.lost_saves == 1 {
+                "1 save of the mailbox file was damaged, or came after a damaged one, and was left out, so the changes it made are missing"
+                    .to_string()
+            } else {
+                format!(
+                    "{} saves of the mailbox file were damaged, or came after a damaged one, and were left out, so the changes they made are missing",
+                    self.lost_saves
+                )
+            });
         } else if self.unfinished > 0 && self.lost_records == 0 {
-            said.push(format!("the last {} bytes of the mailbox file aren't a finished save and were left out", self.unfinished));
+            said.push(format!("{} bytes of the mailbox file aren't part of a finished save and were left out", self.unfinished));
         }
         if !said.is_empty() {
-            said.push("the file as it was is kept beside it the next time the mailbox is saved".into());
+            said.push("the file as it was will be kept beside it the next time the mailbox is saved".into());
         }
         if self.unavailable > 0 {
             said.push(format!("{} bodies or attachments are missing from the mailbox's content folder, or damaged", self.unavailable));
@@ -913,7 +987,9 @@ pub fn open(path: &Path) -> Result<Opened, String> {
     if unavailable > 0 {
         log::warn!("{show}: {unavailable} bodies or attachments are missing from {} or damaged", blob_dir(&file).display());
     }
-    st.stamp = Stamp::of(&file, bytes.len() as u64);
+    let mut sum = ring::digest::Context::new(&ring::digest::SHA256);
+    sum.update(&bytes);
+    st.stamp = Stamp::of(&file, bytes.len() as u64, Some(sum));
     st.loaded = loaded_unless_retired(&mailbox);
     st.legacy = Some(version.max(1));
     Ok(Opened { mailbox, split, unavailable, unfinished: 0, lost_saves: 0, lost_records: 0 })
@@ -950,7 +1026,10 @@ fn open_index(st: &mut State, file: &Path, len: u64) -> Result<Opened, String> {
         return Err(format!("the mailbox file is larger than {} GB", MAX_INDEX >> 30));
     }
     let f = fs::File::open(file).map_err(|e| e.to_string())?;
-    let replayed = index::replay(std::io::BufReader::with_capacity(1 << 20, f), len)?;
+    let mut summed = Summed::new(std::io::BufReader::with_capacity(1 << 20, f));
+    let replayed = index::replay(&mut summed, len)?;
+    // What its bytes are, when all of them were read.
+    let sum = (summed.len == len).then_some(summed.sum);
     let (rest, rest_sum) = replayed.rest.ok_or("this mailbox file is damaged (it has no mailbox record)")?;
     let mut mailbox: Mailbox = serde_json::from_slice(&rest).map_err(|e| format!("this mailbox file is damaged ({e})"))?;
     let rest_fp = (rest_sum, index::FRAME + rest.len() as u64);
@@ -1078,7 +1157,7 @@ fn open_index(st: &mut State, file: &Path, len: u64) -> Result<Opened, String> {
     for m in disk.messages.values() {
         hold(&mut st.live, &m.parts);
     }
-    st.stamp = Stamp::of(file, len);
+    st.stamp = Stamp::of(file, len, sum);
     st.disk = Some(disk);
     st.loaded = loaded_unless_retired(&mailbox);
     Ok(Opened { mailbox, split: true, unavailable, unfinished, lost_saves: replayed.lost_saves, lost_records: replayed.lost_records })
@@ -1696,7 +1775,7 @@ fn write_index(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Saved, 
 fn write_index_once(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Saved, String> {
     // Somebody else wrote the file since: what it names now is theirs to say, and what it named
     // before may be swept any time. What they wrote is kept aside before it is written over.
-    let ours = st.stamp.as_ref().is_some_and(|s| s.still(path));
+    let ours = st.stamp.as_mut().is_some_and(|s| s.ours(path));
     let changed = st.stamp.is_some() && !ours && path.exists();
     if !ours {
         st.live.clear();
@@ -1752,7 +1831,11 @@ fn write_index_once(st: &mut State, path: &Path, mailbox: &Mailbox) -> Result<Sa
         st.stamp = None;
         return Err(e.to_string());
     }
-    st.stamp = Stamp::of(path, d.len);
+    let sum = st.stamp.take().and_then(|s| s.sum).map(|mut sum| {
+        sum.update(&group);
+        sum
+    });
+    st.stamp = Stamp::of(path, d.len, sum);
     st.disk = Some(d);
     saved.bytes = group.len() as u64;
     Ok(saved)
@@ -1787,19 +1870,15 @@ const DAMAGED: &str = "damaged-";
 const CHANGED: &str = "changed-";
 const FORMAT: &str = "format";
 
-/// Damaged or changed mailbox files kept aside beside one, of each kind: when another is kept,
-/// the oldest beyond these go (and with them what only they named, at the next sweep).
-const KEEP_ASIDE: usize = 5;
-
 /// Write the mailbox file at `path` whole: the rest of the mailbox and every item, closed by one
 /// commit, to a temporary file renamed over once the content it names is on disk. A file that
 /// ends in what isn't a finished save, or that somebody else wrote, is kept aside first, unread
 /// bytes and all, or nothing is written; so is a file of an earlier form, the first time this
 /// form takes its place ([`Keep`]).
 fn compact(st: &mut State, path: &Path, mailbox: &Mailbox, keep: Option<Keep>) -> Result<Saved, String> {
-    let keep = keep.map(|k| (k, k.name()));
+    let keep = keep.map(Keep::name);
     let rest = rest_json(mailbox)?;
-    let mut out = AtomicFile::create(path).map_err(io_error)?;
+    let mut out = Summed::new(AtomicFile::create(path).map_err(io_error)?);
     out.write_all(&index::header()).map_err(io_error)?;
     let (rest_size, rest_fp) = index::rest(&mut out, &rest).map_err(io_error)?;
     let mut d = Disk::new((rest_fp, rest_size));
@@ -1830,26 +1909,19 @@ fn compact(st: &mut State, path: &Path, mailbox: &Mailbox, keep: Option<Keep>) -
     let mut saved = Saved::default();
     write_content(path, &wanted, &mut saved)?;
     drop(wanted);
-    if let Some((kind, (what, needed))) = keep {
+    if let Some((what, needed)) = keep {
         match keep_aside(path, &what) {
-            Ok(aside) => {
-                log::info!("the mailbox file as it was is kept as {}", aside.display());
-                let family = match kind {
-                    Keep::Damaged => Some(DAMAGED),
-                    Keep::Changed => Some(CHANGED),
-                    Keep::Legacy(_) => None,
-                };
-                if let Some(family) = family {
-                    prune_kept_aside(path, family, KEEP_ASIDE);
-                }
-            }
+            // Never removed by this program: each may be the only copy of what it holds (saves
+            // left out, another writer's changes); the owner removes them.
+            Ok(aside) => log::info!("the mailbox file as it was is kept as {}", aside.display()),
             Err(e) if needed => return Err(format!("the mailbox file couldn't be kept aside before it is written again ({e})")),
             Err(e) => log::warn!("the mailbox file as it was couldn't be kept aside ({e})"),
         }
     }
-    out.commit().map_err(io_error)?;
+    let Summed { inner, sum, len } = out;
+    inner.commit().map_err(io_error)?;
     st.live = live;
-    st.stamp = Stamp::of(path, d.len);
+    st.stamp = Stamp::of(path, d.len, (len == d.len).then_some(sum));
     st.legacy = None;
     saved.bytes = d.len;
     saved.compacted = true;
@@ -1940,35 +2012,6 @@ fn kept_aside(file: &Path, families: &[&str]) -> Vec<PathBuf> {
         .filter(|e| e.file_name().to_str().is_some_and(|n| prefixes.iter().any(|p| n.starts_with(p.as_str()))))
         .map(|e| e.path())
         .collect()
-}
-
-/// When a file kept aside was, by its name (`<prefix><seconds>`, or `-<n>` after it when that
-/// was taken), for ordering: unknown is oldest.
-fn kept_when(path: &Path, prefix: &str) -> (u64, u32) {
-    let after = path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix(prefix)).unwrap_or("");
-    let (secs, n) = after.split_once('-').unwrap_or((after, "1"));
-    (secs.parse().unwrap_or(0), n.parse().unwrap_or(0))
-}
-
-/// Remove the oldest files of one family kept aside beside `file` beyond the newest `keep`. Only
-/// files of that family are touched; one that can't be removed stays.
-fn prune_kept_aside(file: &Path, family: &str, keep: usize) {
-    let mut all = kept_aside(file, &[family]);
-    if all.len() <= keep {
-        return;
-    }
-    let prefix = format!("{}.{family}", file.file_name().and_then(|n| n.to_str()).unwrap_or(""));
-    all.sort_by_key(|p| kept_when(p, &prefix));
-    let extra = all.len().saturating_sub(keep);
-    for old in all.into_iter().take(extra) {
-        // Only a plain file of ours: a link or a folder by that name is somebody else's.
-        if fs::symlink_metadata(&old).is_ok_and(|m| m.is_file()) {
-            match fs::remove_file(&old) {
-                Ok(()) => log::info!("{} was kept aside the longest and is removed", old.display()),
-                Err(e) => log::warn!("{} couldn't be removed ({e})", old.display()),
-            }
-        }
-    }
 }
 
 /// Every content name that appears anywhere in the bytes `r` gives (a `"`, 64 lowercase hex
