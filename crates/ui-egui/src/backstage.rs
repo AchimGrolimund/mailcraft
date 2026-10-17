@@ -466,10 +466,6 @@ fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     }
     crate::reading::invitation_options(app, ui);
     time_zones(app, ui, &prefs);
-    section(ui, tl!("Signatures"), t);
-    if ui.button(tl!("Signatures…")).clicked() {
-        let _ = app.run("ui.backstage", json!({"value": true, "page": "signatures"}));
-    }
 }
 
 /// The time zone the calendar is shown in, and a second one for its time bar, each with a label

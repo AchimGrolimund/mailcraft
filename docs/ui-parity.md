@@ -1,6 +1,6 @@
 # Interface parity
 
-> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-15 · **Change:** minor (About ▸ Contributors, D2; Copy Diagnostics in the title bar, D1) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-17 · **Change:** patch (#122: Signatures once in File; About ▸ Contributors, D2; Copy Diagnostics in the title bar, D1) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
 
 How the window compares with the target's. The look is the Craft apps' own (WordCraft's design
 tokens, type rungs and ribbon widgets, with MailCraft's teal accent); the *arrangement* is the one
@@ -85,3 +85,4 @@ High-DPI is handled by egui; multi-window, system tray, notifications and badges
 | 2026-10-15 | minor | Rich signatures with a logo (R4.5): File › Signatures, font and colour in the composer, pictures drawn in the editor |
 | 2026-10-15 | minor | Copy Diagnostics in the title bar (D1): a pill beside the account picture runs Help › Copy Diagnostics |
 | 2026-10-15 | minor | About ▸ Contributors (D2): a Contributors tab in the About window; File › About › Show Contributors |
+| 2026-10-17 | patch | Signatures appear once in File (#122): their own page; File › Options no longer has a Signatures section |
