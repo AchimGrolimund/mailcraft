@@ -966,6 +966,10 @@ impl MailApp {
     pub fn apply_prefs(&mut self, ui: UiState) {
         self.ui = ui;
         self.ui.backstage = false;
+        // As in Outlook, a run starts on Home, and File on Info: where the owner last was isn't
+        // where they want to start.
+        self.ui.tab = "Home".into();
+        self.ui.backstage_page = "info".into();
         self.ui.folder_pane_width = if self.ui.folder_pane_width.is_finite() { self.ui.folder_pane_width.clamp(150.0, 500.0) } else { 230.0 };
         self.ui.list_width = if self.ui.list_width.is_finite() { self.ui.list_width.clamp(240.0, 900.0) } else { 380.0 };
         self.ui.collapsed_folders.truncate(10_000);
@@ -1112,6 +1116,9 @@ impl MailApp {
             "ui.tab" => {
                 let Some(tab) = s("tab") else { return Some(Err("missing `tab`".into())) };
                 if tab == "File" {
+                    if !self.ui.backstage {
+                        self.ui.backstage_page = "info".into();
+                    }
                     self.ui.backstage = true;
                 } else if ribbon::tabs(self).contains(&tab) {
                     self.ui.tab = tab.to_string();
@@ -1123,7 +1130,12 @@ impl MailApp {
                 Ok(json!({"tab": self.ui.tab}))
             }
             "ui.backstage" => {
+                let was_open = self.ui.backstage;
                 self.ui.backstage = b("value").unwrap_or(!self.ui.backstage);
+                // As in Outlook, File opens on Info; a page is kept only while it stays open.
+                if self.ui.backstage && !was_open {
+                    self.ui.backstage_page = "info".into();
+                }
                 if let Some(page) = s("page") {
                     if !backstage::PAGES.iter().any(|(code, _, _)| *code == page) {
                         return Some(Err(format!("no File page \"{page}\"")));
