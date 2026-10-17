@@ -41,6 +41,7 @@ pub mod reading;
 mod reminders;
 pub mod ribbon;
 pub mod scheduling;
+mod shared_mailboxes;
 mod signatures;
 pub mod tasks_view;
 pub mod theme;
@@ -280,6 +281,11 @@ pub struct SignInRequest {
     /// With `graph`: ask also for reading and changing mail (`Mail.ReadWrite`), for an account kept
     /// in step through Microsoft Graph (R3).
     pub mail_write: bool,
+    /// With `graph`: ask for reading the shared mailboxes the owner was given Full Access to
+    /// (`Mail.ReadWrite.Shared`, #70) as well, by itself: the owner opened one and it is to be
+    /// read. Never with a sign-in of any other kind. A no that is not the owner's to change is
+    /// answered as for the Favorites ([`favorites_sync::NEEDS_APPROVAL`]…).
+    pub shared: bool,
 }
 
 /// What the host needs to check an account's calendar connection ([`Services::check_calendar`]).
@@ -426,6 +432,8 @@ struct SigningIn {
     /// Nobody asked for it (a Send/Receive that started by itself).
     quiet: bool,
     account: Id,
+    /// For reading this shared mailbox, which is read once it is had (#70).
+    shared: Option<Id>,
     rx: Receiver<Result<Tokens, String>>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -779,6 +787,16 @@ pub struct MailApp {
     favorites: favorites_sync::FavoritesSync,
     /// The next sign-in for Microsoft Graph also asks for the Favorites' permissions.
     favorites_next: bool,
+    /// The next sign-in for Microsoft Graph asks for reading shared mailboxes too, for this
+    /// shared mailbox, which is read once it is had ([`shared_mailboxes`], #70).
+    shared_next: Option<Id>,
+    /// Shared mailboxes whose server won't let the owner in, and why (no Full Access, no such
+    /// mailbox…): shown as No access, and not read again by a Send/Receive that started by
+    /// itself, only by one the owner asks for (#70).
+    shared_refused: std::collections::HashMap<Id, mailcraft_model::sync::SharedRefusal>,
+    /// Shared mailboxes just added in Add Shared Mailbox whose Inbox hasn't been read yet: kept
+    /// only once it has been, and removed again when it can't be (#70).
+    shared_checking: std::collections::HashSet<Id>,
     /// The next sign-in asks for mail alone (account setup's "mail only").
     mail_only_next: bool,
     /// A sign-in the host is waiting on (the owner is in the browser).
@@ -934,6 +952,9 @@ impl MailApp {
             calendar: Default::default(),
             favorites: Default::default(),
             favorites_next: false,
+            shared_next: None,
+            shared_refused: Default::default(),
+            shared_checking: Default::default(),
             mail_only_next: false,
             signing_in: None,
             setup_sign_in: None,
@@ -1434,6 +1455,7 @@ impl MailApp {
     ) -> Result<(), String> {
         let mail_only = std::mem::take(&mut self.mail_only_next);
         let favorites = std::mem::take(&mut self.favorites_next) && graph;
+        let shared = self.shared_next.take().filter(|_| graph);
         if self.signing_in.is_some() || self.approving() {
             return Err(tl!("Finish signing in first (your browser is waiting)").to_string());
         }
@@ -1455,9 +1477,10 @@ impl MailApp {
             // An account kept in step through Graph needs its mail read and changed there too.
             mail_write: graph
                 && (account == 0 || self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft)),
+            shared: shared.is_some(),
         };
         let rx = sign_in(request);
-        self.signing_in = Some(SigningIn { graph, favorites, quiet, account, rx, cancel });
+        self.signing_in = Some(SigningIn { graph, favorites, quiet, account, shared, rx, cancel });
         self.session.sync_status = waiting.to_string();
         Ok(())
     }
@@ -1642,6 +1665,10 @@ impl MailApp {
         if self.services.graph.is_none() {
             return Err(tl!("This build can't connect to Microsoft").to_string());
         }
+        // A shared mailbox is read with its owner's sign-in, at its own address (#70).
+        if self.session.mailbox.account(account).is_some_and(|a| a.is_shared()) {
+            return self.start_shared_mail(account, quiet);
+        }
         let owner = self.session.mailbox.account(account).cloned().ok_or_else(|| tl!("The account is gone").to_string())?;
         let oauth = owner.oauth.clone().ok_or_else(|| tl!("This account has no sign-in with Microsoft").to_string())?;
         let address = owner.email.clone();
@@ -1705,7 +1732,9 @@ impl MailApp {
     }
 
     fn server_accounts(&self) -> Vec<Id> {
-        self.session.mailbox.accounts.iter().filter(|a| a.kind.has_server()).map(|a| a.id).collect()
+        // (A shared mailbox only while they are being tested, #70.)
+        let on = self.session.shared_mailboxes;
+        self.session.mailbox.accounts.iter().filter(|a| a.kind.has_server() && (on || !a.is_shared())).map(|a| a.id).collect()
     }
 
     /// How much of `account` waits to go to its server: mail in the Outbox, and changes made here
@@ -1721,6 +1750,12 @@ impl MailApp {
     /// Whether a Send/Receive for `account` can go ahead without asking anybody anything: its
     /// password or sign-in is at hand, in memory or with the operating system.
     fn can_sync_quietly(&self, account: Id) -> bool {
+        // A shared mailbox the server wouldn't open waits for the owner to ask (#70); one that
+        // can be read is read with its owner's sign-in.
+        if self.shared_refused.contains_key(&account) {
+            return false;
+        }
+        let account = self.session.mailbox.owner_of(account).map_or(account, |owner| owner.id);
         let Some(a) = self.session.mailbox.account(account) else { return false };
         if a.oauth.is_some() {
             let kept = self.tokens.get(&account).is_some_and(|t| t.fresh(mailcraft_time::now()) || !t.refresh.is_empty());
@@ -1818,6 +1853,10 @@ impl MailApp {
                 if !piece.pages.is_empty() {
                     self.fetching.wake();
                 }
+                // A shared mailbox the server won't open for the owner (#70).
+                if let Some(why) = piece.refused {
+                    self.shared_refused.insert(account, why);
+                }
                 match mailcraft_engine::cmd::graph_mail::apply_graph_mail(&mut self.session, piece) {
                     Ok(said) => {
                         let errors =
@@ -1843,6 +1882,10 @@ impl MailApp {
         };
         self.graph_rx = None;
         let after_sign_in = self.graph_after_sign_in.take() == Some(account);
+        // A shared mailbox's run is its mail alone (#70).
+        if self.session.mailbox.account(account).is_some_and(|a| a.is_shared()) {
+            return self.finish_shared_mail(account, quiet, result);
+        }
         // The Favorites as Outlook has them, when they came along ([`favorites_sync`]).
         self.take_in_favorites(account, &mut result);
         let address = self.session.mailbox.account(account).map(|a| a.email.clone()).unwrap_or_default();
@@ -1997,6 +2040,7 @@ impl MailApp {
         };
         let (account, for_graph, for_favorites) = (waiting.account, waiting.graph, waiting.favorites);
         let asked_for = !waiting.quiet;
+        let for_shared = waiting.shared;
         self.signing_in = None;
         // A day at most, whatever the provider said; a sign-in is asked for again after.
         let now = mailcraft_time::now();
@@ -2012,6 +2056,10 @@ impl MailApp {
             self.session.sync_status.clear();
             self.setup_sign_in = Some(answer);
             return;
+        }
+        // For reading a shared mailbox (#70): it is read now, or why not is said.
+        if let Some(shared) = for_shared {
+            return self.shared_signed_in(shared, account, answer);
         }
         let address = self.session.mailbox.account(account).map(|a| a.email.clone()).unwrap_or_default();
         // The owner picks who signs in on the page: it has to be this account. Somebody else's

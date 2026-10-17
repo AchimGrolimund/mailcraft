@@ -82,6 +82,7 @@ use mailcraft_model::remote::{
     EventsDownload, EventsUpload, EventsUploaded, FreeBusy, FreeBusyAsk, MAX_BUSY, MAX_CONTACTS, MAX_EVENT_OPS, MAX_EVENTS, MAX_REMOTE_CALENDARS,
     MAX_REMOTE_CATEGORIES, MAX_SCHEDULE_STRETCH, MAX_SCHEDULES, PersonSchedule, RemoteCalendar, RemoteContact, RemoteEvent, RemoteEventKind,
 };
+use mailcraft_model::sync::SharedRefusal;
 use mailcraft_model::{
     Address, Attendee, Category, Freq, Importance, Labeled, Message, OnlineMeeting, OnlineProvider, PostalAddress, Recurrence, Response,
     ResponseOptions, Rgb, ShowAs,
@@ -322,6 +323,20 @@ struct Graph<'a> {
     /// The ground rules of a mailbox's mail ([`pace`]): its gate, who is waiting, and how a
     /// request is asked again. `None`: one try, as it always was.
     pace: Option<Pace>,
+    /// Whose mailbox the mail is asked of: `/me`, the owner of the token; or `/users/{address}`,
+    /// a shared mailbox the owner may open (#70, [`Graph::of_shared`]).
+    mailbox: String,
+}
+
+/// What stands in an address of Graph's for a shared mailbox (#70): `/users/{address}`, the
+/// address checked to be a plain one first ([`mailcraft_model::mailbox_address`]), so that it
+/// names that mailbox and nothing else. Its `@` stays as it is (a path may have one), and
+/// anything of the local part that isn't a letter, a digit or `-._~` is written as `%XX`.
+pub(crate) fn shared_mailbox_path(address: &str) -> Result<String, NetError> {
+    let refused = || NetError::Proto(ProtoError::Protocol("that isn't an address a shared mailbox can be opened at".into()));
+    let address = mailcraft_model::mailbox_address(address).ok_or_else(refused)?;
+    let (local, domain) = address.split_once('@').ok_or_else(refused)?;
+    Ok(format!("/users/{}@{}", http::encode(local), http::encode(domain)))
 }
 
 /// What [`Graph::call`] goes by.
@@ -329,6 +344,20 @@ struct Pace {
     gate: std::sync::Arc<pace::Gate>,
     priority: pace::Priority,
     retry: pace::Retry,
+}
+
+/// Why a shared mailbox won't be opened, when an answer of Graph's says so by its own code (#70):
+/// a 403 `ErrorAccessDenied`, a 404 `ErrorInvalidUser`, or `MailboxNotEnabledForRESTAPI` (and
+/// its twin `MailboxNotSupportedForRESTAPI`). Any other code (a quota, a consent, a folder that
+/// isn't there) is none of these.
+pub(crate) fn shared_refusal(status: u64, body: &Value) -> Option<SharedRefusal> {
+    let code = body.get("error").and_then(|error| error.get("code")).and_then(Value::as_str).unwrap_or("");
+    match (status, code) {
+        (_, "MailboxNotEnabledForRESTAPI" | "MailboxNotSupportedForRESTAPI") => Some(SharedRefusal::NotThroughGraph),
+        (403, "ErrorAccessDenied") => Some(SharedRefusal::NoAccess),
+        (404, "ErrorInvalidUser") => Some(SharedRefusal::NoMailbox),
+        _ => None,
+    }
 }
 
 /// What `Prefer` asks for of the ids in every answer to the Graph code of mail.
@@ -346,7 +375,7 @@ impl<'a> Graph<'a> {
         if token.is_empty() || token.len() > MAX_TOKEN || !token.bytes().all(|b| b.is_ascii_graphic()) {
             return Err(NetError::Proto(ProtoError::Auth("there is no sign-in to show Microsoft Graph".into())));
         }
-        Ok(Graph { base: Url::parse(base)?, token, immutable: false, pace: None })
+        Ok(Graph { base: Url::parse(base)?, token, immutable: false, pace: None, mailbox: "/me".into() })
     }
 
     /// Graph for a Microsoft account's mail (R3): every request asks for immutable ids, goes
@@ -403,6 +432,31 @@ impl<'a> Graph<'a> {
                 other => return other,
             }
         }
+    }
+
+    /// The same Graph, asking for the mail of the shared mailbox at `address` instead of the
+    /// owner's own, when there is one (#70): `/users/{address}/…` for `/me/…`.
+    fn of_shared(self, address: Option<&str>) -> Result<Graph<'a>, NetError> {
+        match address {
+            None => Ok(self),
+            Some(address) => Ok(Graph { mailbox: shared_mailbox_path(address)?, ..self }),
+        }
+    }
+
+    /// Whether the mail asked for is a shared mailbox's.
+    fn shared(&self) -> bool {
+        self.mailbox != "/me"
+    }
+
+    /// `rest` of the mailbox the mail is asked of, as a path of Graph v1.0: `/v1.0/me{rest}`, or
+    /// `/v1.0/users/{address}{rest}` for a shared mailbox.
+    fn mail_path(&self, rest: &str) -> String {
+        format!("/v1.0{}{rest}", self.mailbox)
+    }
+
+    /// The same, as a request of a `$batch` names it (without the version).
+    fn batch_path(&self, rest: &str) -> String {
+        format!("{}{rest}", self.mailbox)
     }
 
     /// `path` (with its query) on Graph.
@@ -467,6 +521,13 @@ impl<'a> Graph<'a> {
     /// The error for an answer that isn't the one hoped for. `sent` is what went to Graph besides
     /// the token: none of it may come back in the error.
     fn refusal(&self, doing: Doing, reply: &Reply, sent: &str) -> NetError {
+        // A shared mailbox that won't let the owner in says so by Graph's code (#70).
+        if self.shared() && matches!(doing, Doing::Folders | Doing::Mail) {
+            let body = serde_json::from_slice::<Value>(&reply.body).unwrap_or(Value::Null);
+            if let Some(why) = shared_refusal(u64::from(reply.status), &body) {
+                return NetError::SharedRefused(why);
+            }
+        }
         refusal(doing, reply, &[self.token, sent], mailcraft_time::now())
     }
 

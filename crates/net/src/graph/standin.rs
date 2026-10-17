@@ -49,6 +49,10 @@
 //!   ([`Configuration::Denied`], [`State::folders_denied`]), entries for folders that are gone
 //!   or belong to another mailbox, entries that are no folders, and a document that is anything
 //!   at all ([`State::configuration_document`]).
+//! - **Other mailboxes** (#70). `/v1.0/users/{address}/mailFolders…` and
+//!   `/users/{address}/messages/{id}/$value` answer a shared mailbox's folders and mail as `/me`
+//!   answers the owner's ([`State::add_other`]); 403 when the owner wasn't given Full Access to
+//!   it, 404 for an address it doesn't know.
 //! - **Messages.** A folder's message delta in pages, with next and delta links, `@removed`,
 //!   replays, forgotten and reset links, and a message's MIME (`$value`): [`messages`]. Changes
 //!   of a message (read, flag, categories, importance, extended properties), move, copy and
@@ -218,6 +222,34 @@ pub struct Favorite {
     pub folder_id: String,
 }
 
+/// A mailbox other than the owner's (#70: a shared mailbox, `support@`), answered at
+/// `/v1.0/users/{address}/mailFolders…` and `/v1.0/users/{address}/messages/{id}/$value` as the
+/// owner's own is at `/me/…`: its own folders, messages and rounds of delta. Its ids are made as
+/// the owner's are, so the same id may name a message in each.
+#[derive(Clone, Debug, Default)]
+pub struct OtherMailbox {
+    pub address: String,
+    /// The owner of the token was given Full Access to it; otherwise every question about it is
+    /// answered 403 (`ErrorAccessDenied`), as Exchange does.
+    pub full_access: bool,
+    /// What every question about it is answered instead, when set: a status and Graph's code
+    /// (a 403 `ErrorQuotaExceeded`, a 404 `MailboxNotEnabledForRESTAPI`…), to tell 403s apart.
+    pub refusing: Option<(u16, &'static str)>,
+    pub folders: Vec<MailFolder>,
+    pub mailbox: Mail,
+}
+
+/// The special folders every mailbox has under its top, by their names and well-known names.
+const SPECIAL_FOLDERS: [(&str, &str); 7] = [
+    ("Inbox", "inbox"),
+    ("Drafts", "drafts"),
+    ("Sent Items", "sentitems"),
+    ("Deleted Items", "deleteditems"),
+    ("Junk Email", "junkemail"),
+    ("Archive", "archive"),
+    ("Outbox", "outbox"),
+];
+
 /// Whether the mailbox has the cached configuration of Outlook on the web, and may be asked.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Configuration {
@@ -325,6 +357,12 @@ pub struct State {
     pub prefixes: (String, String),
     /// The messages of every folder, and the rounds of their delta ([`messages`]).
     pub mailbox: Mail,
+    /// The mailboxes other than the owner's that it knows (#70); any other address is 404
+    /// (`ErrorInvalidUser`).
+    pub others: Vec<OtherMailbox>,
+    /// Whose mailbox is being answered for: empty for the owner's (`me`), else
+    /// `users/{address}` as the links it writes name it.
+    at: String,
     /// Requests to carry out and then lose the answer to, one each: a method and an address,
     /// `*` for any one piece of it (`POST /v1.0/me/messages`, `PUT /upload/*`).
     pub lose_next: Vec<String>,
@@ -792,6 +830,73 @@ impl State {
         let parent = parent.map(str::to_string).unwrap_or_else(|| self.well_known("msgfolderroot"));
         self.folders.push(MailFolder { id: id.clone(), name: name.to_string(), parent, ..Default::default() });
         id
+    }
+
+    /// Another mailbox at `address`, with the top and the special folders every mailbox has and
+    /// no mail (#70); `full_access` says whether the owner of the token may open it.
+    pub fn add_other(&mut self, address: &str, full_access: bool) {
+        let owners = std::mem::take(&mut self.folders);
+        self.made += 1;
+        let top = MailFolder {
+            id: format!("AQMkAGV4YW1wbGUtb3JnLXNoYXJlZC1tYWlsYm94AC4AAAOTW-9DHtGRL6dO2oHcvR30QEAWHZz4qn_RpOZa83i5jHVGgAACAQ{:04}AAAA=", self.made),
+            name: "Top of Information Store".into(),
+            parent: "AQMkAGV4YW1wbGUtb3JnLXNoYXJlZC1tYWlsYm94AC4AAAOTW-9DHtGRL6dO2oHcvR30QEAWHZz4qn_RpOZa83i5jHVGgAACAQEAAAA=".into(),
+            well_known: "msgfolderroot".into(),
+            ..Default::default()
+        };
+        self.folders.push(top);
+        for (name, well_known) in SPECIAL_FOLDERS {
+            let id = self.add_folder(name, None);
+            if let Some(folder) = self.folders.iter_mut().find(|folder| folder.id == id) {
+                folder.well_known = well_known.into();
+            }
+        }
+        let folders = std::mem::replace(&mut self.folders, owners);
+        self.others.push(OtherMailbox { address: address.to_string(), full_access, refusing: None, folders, mailbox: Mail::default() });
+    }
+
+    /// The other mailbox at `address` (#70), to set up and to look at.
+    pub fn other(&mut self, address: &str) -> Option<&mut OtherMailbox> {
+        self.others.iter_mut().find(|other| other.address.eq_ignore_ascii_case(address))
+    }
+
+    /// Whose mailbox the links it writes name: `me`, or `users/{address}` (#70).
+    fn whose(&self) -> &str {
+        if self.at.is_empty() { "me" } else { &self.at }
+    }
+
+    /// `/v1.0/users/{user}/…`: another mailbox, answered as the owner's own is, with its folders
+    /// and its mail in their place for as long as it takes (#70).
+    fn of_user(&mut self, asked: &Asked, method: &str, user: &str, rest: &[&str]) -> Result<Answer, Refusal> {
+        let Some(at) = self.others.iter().position(|other| other.address.eq_ignore_ascii_case(user)) else {
+            return Err(refuse(404, "ErrorInvalidUser", format!("The requested user '{user}' is invalid.")));
+        };
+        let Some(other) = self.others.get_mut(at) else { return Err(not_found()) };
+        if let Some((status, code)) = other.refusing {
+            return Err(refuse(status, code, "Refused, as asked."));
+        }
+        if !other.full_access {
+            return Err(refuse(403, "ErrorAccessDenied", "Access is denied. Check credentials and try again."));
+        }
+        let (mut folders, mut mailbox) = (std::mem::take(&mut other.folders), std::mem::take(&mut other.mailbox));
+        std::mem::swap(&mut self.folders, &mut folders);
+        std::mem::swap(&mut self.mailbox, &mut mailbox);
+        let (local, domain) = user.split_once('@').unwrap_or((user, ""));
+        self.at = format!("users/{}@{}", crate::http::encode(local), crate::http::encode(domain));
+        let answer = match rest {
+            ["mailFolders"] => self.mail_folders(asked, method, None, &[]),
+            ["mailFolders", folder, rest @ ..] => self.mail_folders(asked, method, Some(folder), rest),
+            ["messages", id, "$value"] if method == "GET" => self.message_value(id),
+            [first, ..] => Err(refuse(400, "BadRequest", format!("Resource not found for the segment '{first}'."))),
+            [] => Err(refuse(405, "MethodNotAllowed", "The method is not allowed on this resource.")),
+        };
+        self.at.clear();
+        std::mem::swap(&mut self.folders, &mut folders);
+        std::mem::swap(&mut self.mailbox, &mut mailbox);
+        if let Some(other) = self.others.get_mut(at) {
+            (other.folders, other.mailbox) = (folders, mailbox);
+        }
+        answer
     }
 
     /// The id of the folder that answers to a well-known name (`inbox`, `msgfolderroot`…);
@@ -1714,6 +1819,10 @@ impl State {
             (_, ["v1.0", "me", "mailFolders"]) => self.mail_folders(asked, method, None, &[]),
             (_, ["v1.0", "me", "mailFolders", folder, rest @ ..]) => self.mail_folders(asked, method, Some(folder), rest),
             (_, ["v1.0", "me", rest @ ..]) => self.me(asked, method, rest),
+            (_, ["v1.0", "users", user, rest @ ..]) => {
+                let user = user.to_string();
+                self.of_user(asked, method, &user, rest)
+            }
             (_, [first, ..]) => Err(refuse(400, "BadRequest", format!("Resource not found for the segment '{first}'."))),
             _ => Err(refuse(400, "BadRequest", "Resource not found.")),
         }
@@ -2161,16 +2270,7 @@ impl StandIn {
             ..Default::default()
         };
         state.folders.push(top);
-        let special = [
-            ("Inbox", "inbox"),
-            ("Drafts", "drafts"),
-            ("Sent Items", "sentitems"),
-            ("Deleted Items", "deleteditems"),
-            ("Junk Email", "junkemail"),
-            ("Archive", "archive"),
-            ("Outbox", "outbox"),
-        ];
-        for (name, well_known) in special {
+        for (name, well_known) in SPECIAL_FOLDERS {
             let id = state.add_folder(name, None);
             if let Some(folder) = state.folders.iter_mut().find(|folder| folder.id == id) {
                 folder.well_known = well_known.into();

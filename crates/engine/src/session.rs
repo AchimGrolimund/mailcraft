@@ -534,6 +534,9 @@ pub struct Session {
     pub clock: Clock,
     /// What the last synchronisation reported, for the status bar.
     pub sync_status: String,
+    /// Send/Receive Progress: the run under way, or the last one, account by account. Kept up
+    /// to date by `sync.apply` and `sync.applyGraph`; in memory only, never saved.
+    pub sync_progress: crate::cmd::sync_progress::SyncProgress,
     /// Messages kept in step through Graph, by server id: kept between the pages of a run.
     pub(crate) graph_index: crate::cmd::graph_down::ServerIndex,
     /// Messages being moved out of a Microsoft account that were whole in the mailbox file when
@@ -549,6 +552,11 @@ pub struct Session {
     /// instead of writing one itself ([`crate::cmd::graph_switch::prepare_backup`]). Set only by
     /// the window once the copy is on disk, never by a command's params. Never saved.
     pub graph_switch_backup: Option<(Id, PathBuf)>,
+    /// Shared mailboxes may be added and read (#70): the switch for testing, off until changes
+    /// in them go up, so that no owner is asked for a shared mailbox's permission by a build that
+    /// only reads one. Set by the host (`MAILCRAFT_SHARED_MAILBOXES=1`), never by a command's
+    /// params. Never saved.
+    pub shared_mailboxes: bool,
     history: Vec<Undo>,
     redo: Vec<Undo>,
     /// What the last undo or redo couldn't do there (a delete for good, a message sent).
@@ -615,11 +623,13 @@ impl Session {
             dirty: false,
             clock,
             sync_status: String::new(),
+            sync_progress: Default::default(),
             graph_index: Default::default(),
             saved_whole: Default::default(),
             graph_said: Vec::new(),
             agent: None,
             graph_switch_backup: None,
+            shared_mailboxes: false,
             history: Vec::new(),
             redo: Vec::new(),
             undo_said: Vec::new(),
