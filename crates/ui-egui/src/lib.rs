@@ -119,6 +119,11 @@ pub struct Services {
     /// Desktop: write the mailbox file on a background thread, so the window never waits for the
     /// disk. Without one (tests, scripts) the mailbox is saved in place through `file.save`.
     pub saver: Option<Box<dyn mailcraft_engine::io::BackgroundSave>>,
+    /// Desktop: write a copy of the mailbox to a file (as one file that holds everything) on a
+    /// background thread: the copy kept before an account switches to Microsoft Graph, which can
+    /// take a while for a large mailbox. Without one (tests, scripts) the copy is written in
+    /// place by `account.graphSwitch`.
+    pub write_copy: Option<Box<dyn Fn(std::path::PathBuf, mailcraft_model::Mailbox) -> Receiver<Result<(), String>>>>,
     /// Desktop: download one picture a message refers to on the web, on a background thread,
     /// once the owner has asked for that message's pictures ([`reading::remote`]). The address
     /// is the message's own choice: the host checks where it leads before going there, takes
@@ -812,6 +817,9 @@ pub struct MailApp {
     /// Accounts switching to Microsoft Graph for which the switch was tried since their last
     /// Send/Receive ([`graph_switch`]).
     graph_switch_tried: std::collections::HashSet<Id>,
+    /// The copy of the mailbox being written before an account switches to Microsoft Graph
+    /// ([`graph_switch`]): the window shows that it is working until it is done.
+    pub(crate) graph_switch_copy: Option<graph_switch::Copying>,
     /// Accounts whose waiting switch was offered "Switch without Them" in this run.
     graph_switch_waiting_shown: std::collections::HashSet<Id>,
     /// Send/Receive by itself when the app starts and every few minutes (on by default; how often
@@ -921,6 +929,7 @@ impl MailApp {
             offer_graph_switch: false,
             graph_switch_shown: Default::default(),
             graph_switch_tried: Default::default(),
+            graph_switch_copy: None,
             graph_switch_waiting_shown: Default::default(),
             auto_sync: true,
             last_auto_sync: 0.0,
@@ -2210,6 +2219,7 @@ impl MailApp {
         if std::mem::take(&mut self.offer_setup) && self.dialog.is_none() && self.needs_setup() {
             self.dialog = dialogs::Dialog::open("account", self, &json!({}));
         }
+        self.poll_graph_switch_copy();
         self.tick_graph_switch();
         let _ = files::poll(self);
         files::drain_inbox(self);
