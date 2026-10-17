@@ -13,6 +13,11 @@
 //!   after every Send/Receive of the account, so a switch that waits while offline goes ahead
 //!   by itself once a run gets through). Then the account's first Send/Receive through Graph
 //!   starts, and the status bar says where the copy of the mailbox from before is.
+//! - **The copy first, off the window's thread.** Where the host can write files in the
+//!   background (`Services::write_copy`), the copy of the mailbox is written there while the page
+//!   says so with a spinner, and the engine's switch runs once it is on disk; a copy that can't be
+//!   written changes nothing, and the account stays on IMAP. Elsewhere `account.graphSwitch`
+//!   writes it itself.
 
 use egui::vec2;
 use mailcraft_model::{GraphSwitch, Id};
@@ -23,6 +28,14 @@ use crate::dialogs::{Dialog, button_row, window};
 use crate::i18n::fmt;
 use crate::theme::semibold;
 use crate::widgets::primary_button;
+
+/// The copy of the mailbox being written before `account` switches (`answer`), at `path`.
+pub(crate) struct Copying {
+    account: Id,
+    answer: String,
+    path: std::path::PathBuf,
+    rx: std::sync::mpsc::Receiver<Result<(), String>>,
+}
 
 /// The account's address, as the page and the status bar name it.
 fn address(app: &MailApp, account: Id) -> String {
@@ -87,6 +100,9 @@ fn switch_waits(app: &MailApp, account: Id) -> bool {
 
 /// Draw the page for `account`. `true` when it is done with (answered, or closed).
 pub(crate) fn show(app: &mut MailApp, ctx: &egui::Context, account: Id) -> bool {
+    if app.graph_switch_copy.as_ref().is_some_and(|c| c.account == account) {
+        return show_copying(app, ctx, account);
+    }
     if switch_waits(app, account) {
         return show_waiting(app, ctx, account);
     }
@@ -125,9 +141,38 @@ pub(crate) fn show(app: &mut MailApp, ctx: &egui::Context, account: Id) -> bool 
         if let Err(e) = app.switch_to_graph(account, answer) {
             app.status(e);
         }
-        return true;
+        // While the copy is written, the page stays to say so.
+        return !copying(app, account);
     }
     !open
+}
+
+fn copying(app: &MailApp, account: Id) -> bool {
+    app.graph_switch_copy.as_ref().is_some_and(|c| c.account == account)
+}
+
+/// The page while the copy of the mailbox is written: a spinner, and what is happening. Closing
+/// it doesn't stop anything; the status bar says when the switch is made.
+fn show_copying(app: &mut MailApp, ctx: &egui::Context, account: Id) -> bool {
+    let whose = address(app, account);
+    let open = window(ctx, tl!("Switch to Microsoft Graph"), 520.0, |ui| {
+        ui.horizontal(|ui| {
+            ui.add(egui::Spinner::new().size(18.0));
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(tl!("Saving a copy of your mailbox before the switch…")).font(semibold(13.0)));
+        });
+        ui.add_space(4.0);
+        ui.add(
+            egui::Label::new(fmt(
+                tl!("A large mailbox takes a while. {account} switches to Microsoft Graph as soon as the copy is saved; nothing has changed yet."),
+                &[("account", &whose)],
+            ))
+            .wrap(),
+        );
+    });
+    // The spinner turns while the copy is written.
+    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    !open || !copying(app, account)
 }
 
 /// The page for a switch that waits: Keep Waiting, or Switch without Them.
@@ -157,7 +202,7 @@ fn show_waiting(app: &mut MailApp, ctx: &egui::Context, account: Id) -> bool {
             if let Err(e) = app.switch_to_graph(account, "switchWithout") {
                 app.status(e);
             }
-            true
+            !copying(app, account)
         }
         Some(_) => true,
         None => !open,
@@ -166,7 +211,38 @@ fn show_waiting(app: &mut MailApp, ctx: &egui::Context, account: Id) -> bool {
 
 impl MailApp {
     fn graph_switch_busy(&self) -> bool {
-        self.syncing() || self.graph_running() || self.signing_in.is_some() || self.approving()
+        self.syncing() || self.graph_running() || self.signing_in.is_some() || self.approving() || self.graph_switch_copy.is_some()
+    }
+
+    /// Each frame: the copy of the mailbox written before a switch is done (the switch is made)
+    /// or couldn't be written (nothing changes, and the status bar says why).
+    pub(crate) fn poll_graph_switch_copy(&mut self) {
+        let Some(c) = &self.graph_switch_copy else { return };
+        let done = match c.rx.try_recv() {
+            Ok(done) => done,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(tl!("it stopped unexpectedly").to_string()),
+        };
+        let Some(c) = self.graph_switch_copy.take() else { return };
+        // The page that said the copy was being saved has said all it had to.
+        if matches!(self.dialog, Some(Dialog::GraphSwitch { account }) if account == c.account) {
+            self.dialog = None;
+        }
+        let whose = address(self, c.account);
+        match done {
+            Ok(()) => {
+                self.session.graph_switch_backup = Some((c.account, c.path));
+                if let Err(e) = self.switch_now(c.account, &c.answer) {
+                    self.status(e);
+                }
+                self.session.graph_switch_backup = None;
+            }
+            Err(e) => {
+                log::warn!("the copy of the mailbox before the switch to Microsoft Graph couldn't be written: {e}");
+                let why = mailcraft_engine::cmd::graph_switch::copy_failed(&e);
+                self.status(fmt(tl!("{account} couldn't switch to Microsoft Graph: {why}"), &[("account", &whose), ("why", &why)]));
+            }
+        }
     }
 
     /// Each frame, when nothing else is on screen: a switch that waits goes ahead once nothing
@@ -220,8 +296,38 @@ impl MailApp {
         }
     }
 
-    /// The owner's answer for `account`: `switch` or `later`.
+    /// The owner's answer for `account`: `switch`, `switchWithout` or `later`. Where the switch
+    /// would be made now and the host can write files in the background, the copy of the mailbox
+    /// is written there first ([`MailApp::poll_graph_switch_copy`] makes the switch after it).
     pub(crate) fn switch_to_graph(&mut self, account: Id, answer: &str) -> Result<Value, String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if answer != "later" {
+            if self.graph_switch_copy.is_some() {
+                return Err(tl!("A copy of the mailbox is being saved for a switch already: wait for it to finish.").to_string());
+            }
+            let now = answer == "switchWithout" || mailcraft_engine::cmd::graph_switch::waiting(&self.session, account) == 0;
+            let on_imap = self.session.mailbox.account(account).is_some_and(|a| a.on_imap_with_microsoft());
+            if now
+                && on_imap
+                && let Some(write) = &self.services.write_copy
+            {
+                let whose = address(self, account);
+                let (path, copy) = mailcraft_engine::cmd::graph_switch::prepare_backup(&self.session, account)
+                    .map_err(|e| fmt(tl!("{account} couldn't switch to Microsoft Graph: {why}"), &[("account", &whose), ("why", &e.to_string())]))?;
+                let rx = write(path.clone(), copy);
+                self.graph_switch_copy = Some(Copying { account, answer: answer.to_string(), path, rx });
+                if self.dialog.is_none() {
+                    self.dialog = Some(Dialog::GraphSwitch { account });
+                }
+                self.status(tl!("Saving a copy of your mailbox before the switch…"));
+                return Ok(json!({"account": account, "saving": true}));
+            }
+        }
+        self.switch_now(account, answer)
+    }
+
+    /// The engine's switch for `account`, as the owner answered.
+    fn switch_now(&mut self, account: Id, answer: &str) -> Result<Value, String> {
         let whose = address(self, account);
         let said = self.execute("account.graphSwitch", json!({"account": account, "answer": answer}));
         let said = said.map_err(|e| fmt(tl!("{account} couldn't switch to Microsoft Graph: {why}"), &[("account", &whose), ("why", &e)]))?;
