@@ -237,3 +237,151 @@ fn a_shared_mailbox_and_its_link_to_its_owner_survive_a_save_and_a_reopen() {
     assert_eq!(opened.messages.values().filter(|m| m.account == shared).count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- where it shows: search, unread counts, Favorites (#70, second slice) ----
+
+/// Messages in the folder `folder` (by its server id) of a mailbox, all with the one subject, the
+/// first `unread` of them unread.
+fn mail_in(account: Id, email: &str, folder: &str, ids: &[&str], subject: &str, unread: usize) -> GraphMailResult {
+    let messages = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| GraphMessage {
+            server: ServerMessage { id: (*id).into(), folder: folder.into(), read: i >= unread, ..Default::default() },
+            subject: subject.into(),
+            sent: 1_791_900_000 + i as i64,
+            received: 1_791_900_000 + i as i64,
+            ..Default::default()
+        })
+        .collect();
+    let page = MessagePage {
+        folder: folder.into(),
+        messages,
+        link: format!("https://graph.example.org/delta?$deltatoken={folder}"),
+        caught_up: true,
+        ..Default::default()
+    };
+    GraphMailResult { account, email: email.into(), pages: vec![page], whole: true, ..Default::default() }
+}
+
+/// An owner and a shared mailbox whose servers use the same ids for other messages: in each, two
+/// in the Inbox with the subject "Quarterly figures" (one unread in the owner's, both in the
+/// shared mailbox's) and one in its Deleted Items with that subject too.
+fn two_mailboxes() -> (Session, Id, Id) {
+    let (mut s, _, owner) = session();
+    let shared = add(&mut s, json!({"address": SHARED})).unwrap();
+    for (account, email, unread) in [(owner, OWNER, 1), (shared, SHARED, 2)] {
+        apply_graph_mail(&mut s, listing(account, email)).unwrap();
+        apply_graph_mail(&mut s, mail_in(account, email, "in", &["AAkA1", "AAkA2"], "Quarterly figures", unread)).unwrap();
+        apply_graph_mail(&mut s, mail_in(account, email, "de", &["AAkA9"], "Quarterly figures", 1)).unwrap();
+    }
+    (s, owner, shared)
+}
+
+fn found(s: &mut Session, query: &str, scope: &str) -> Vec<Id> {
+    s.run("view.search", &json!({"query": query, "scope": scope})).unwrap();
+    s.rows().iter().map(|r| r.id).collect()
+}
+
+#[test]
+fn a_search_of_all_mailboxes_takes_in_a_shared_mailbox_and_one_of_its_folder_stays_there() {
+    let (mut s, owner, shared) = two_mailboxes();
+    let (mine, theirs) = (s.mailbox.folder_by_server(owner, "in").unwrap(), s.mailbox.folder_by_server(shared, "in").unwrap());
+    let account_of = |s: &Session, ids: &[Id]| -> Vec<Id> {
+        let mut out: Vec<Id> = ids.iter().filter_map(|id| s.mailbox.message(*id)).map(|m| m.account).collect();
+        out.sort_unstable();
+        out
+    };
+    // All Mailboxes: both Inboxes, the same server ids two messages each; no Deleted Items.
+    let all = found(&mut s, "quarterly", "everywhere");
+    assert_eq!(account_of(&s, &all), [owner, owner, shared, shared]);
+    assert!(all.iter().filter_map(|id| s.mailbox.message(*id)).all(|m| m.folder == mine || m.folder == theirs));
+    // The folder in view: the shared mailbox's Inbox is its own, and the owner's is his.
+    s.run("folder.select", &json!({"id": theirs})).unwrap();
+    let here = found(&mut s, "quarterly", "folder");
+    assert_eq!(account_of(&s, &here), [shared, shared]);
+    s.run("folder.select", &json!({"id": mine})).unwrap();
+    let here = found(&mut s, "quarterly", "folder");
+    assert_eq!(account_of(&s, &here), [owner, owner]);
+    // And one that reads what is unread finds each mailbox's own.
+    let unread = found(&mut s, "quarterly is:unread", "everywhere");
+    assert_eq!(account_of(&s, &unread), [owner, shared, shared]);
+}
+
+#[test]
+fn unread_is_counted_for_each_mailbox_and_never_added_to_its_owners() {
+    let (mut s, owner, shared) = two_mailboxes();
+    let (mine, theirs) = (s.mailbox.folder_by_server(owner, "in").unwrap(), s.mailbox.folder_by_server(shared, "in").unwrap());
+    assert_eq!((s.mailbox.unread_count(mine), s.mailbox.unread_count(theirs)), (1, 2));
+    let listed = s.run("folder.list", &json!({})).unwrap();
+    let entry = |id: Id| listed["accounts"].as_array().unwrap().iter().find(|a| a["id"] == id).unwrap().clone();
+    // Its Inbox and its Deleted Items: its own, on its own entry.
+    assert_eq!((entry(owner)["unread"].as_u64(), entry(shared)["unread"].as_u64()), (Some(2), Some(3)));
+    assert_eq!(entry(shared)["sharedOf"], owner);
+    assert!(entry(owner).get("sharedOf").is_none());
+    let inbox = |a: &serde_json::Value| a["folders"].as_array().unwrap().iter().find(|f| f["kind"] == "inbox").unwrap()["unread"].clone();
+    assert_eq!((inbox(&entry(owner)), inbox(&entry(shared))), (json!(1), json!(2)));
+    // A conversation is its mailbox's: the same subject in both is two rows, each its own count.
+    s.run("view.conversations", &json!({"value": true})).unwrap();
+    s.run("view.search", &json!({"query": "quarterly", "scope": "everywhere"})).unwrap();
+    let rows = s.rows();
+    assert_eq!(rows.len(), 2);
+    let mut counts: Vec<(Id, usize, usize)> =
+        rows.iter().map(|r| (s.mailbox.message(r.id).map_or(0, |m| m.account), r.members.len(), r.unread)).collect();
+    counts.sort_unstable();
+    assert_eq!(counts, [(owner, 2, 1), (shared, 2, 2)]);
+}
+
+#[test]
+fn a_shared_mailboxs_folders_are_favourites_kept_here_whatever_its_owners_come_from() {
+    let (mut s, owner, shared) = two_mailboxes();
+    let (mine, theirs) = (s.mailbox.folder_by_server(owner, "in").unwrap(), s.mailbox.folder_by_server(shared, "in").unwrap());
+    // Added without any: Outlook doesn't put a shared mailbox's Inbox among the Favorites.
+    assert!(!crate::cmd::folder::favorites(&s).contains(&theirs));
+    // The owner's Favorites are Outlook's list, read from his server.
+    s.mailbox.set_server_favorites(owner, Some(vec![mine]));
+    assert!(crate::cmd::folder::favorites_from_server(&s, owner) && !crate::cmd::folder::favorites_from_server(&s, shared));
+    let before = graph_mail_request(&s, shared).unwrap();
+    assert_eq!(s.run("folder.favorite", &json!({"id": theirs})).unwrap()["favorite"], true);
+    // Outlook's for his own first, then those marked here (the local account's Inbox, then the
+    // shared mailbox's).
+    let listed = crate::cmd::folder::favorites(&s);
+    assert_eq!((listed.first(), listed.last()), (Some(&mine), Some(&theirs)), "{listed:?}");
+    let shown = s.run("view.favorites", &json!({})).unwrap();
+    assert_eq!(shown["favorites"].as_array().and_then(|all| all.last()).map(|f| f["account"].clone()), Some(json!(shared)));
+    // The owner's own are still changed in Outlook alone.
+    let other = s.mailbox.folder_by_server(owner, "de").unwrap();
+    assert!(s.run("folder.favorite", &json!({"id": other})).unwrap_err().to_string().contains("Outlook"));
+    // Nothing of it is for any server: the shared mailbox's run asks for what it asked before.
+    let after = graph_mail_request(&s, shared).unwrap();
+    assert_eq!(serde_json::to_value(&before).unwrap(), serde_json::to_value(&after).unwrap());
+    assert!(after.changes.is_empty() && after.messages.is_empty() && after.drafts.is_empty() && after.sends.is_empty());
+    let own = graph_mail_request(&s, owner).unwrap();
+    assert!(own.changes.is_empty() && own.messages.is_empty(), "nor the owner's: {own:?}");
+    // Undone and done again.
+    assert!(s.undo());
+    assert!(!crate::cmd::folder::favorites(&s).contains(&theirs));
+    s.run("folder.favorite", &json!({"id": theirs, "value": true})).unwrap();
+    // With the owner's own Favorites shown instead, his and the shared mailbox's marks show.
+    s.run("view.favorites", &json!({"own": true})).unwrap();
+    let listed = crate::cmd::folder::favorites(&s);
+    assert!(listed.contains(&theirs) && listed.contains(&mine), "{listed:?}");
+}
+
+#[test]
+fn a_shared_mailboxs_favourite_and_its_link_to_its_owner_survive_a_save_and_a_reopen() {
+    let (mut s, owner, shared) = two_mailboxes();
+    let theirs = s.mailbox.folder_by_server(shared, "in").unwrap();
+    s.run("folder.favorite", &json!({"id": theirs, "value": true})).unwrap();
+    let dir = std::env::temp_dir().join(format!("mailcraft-shared-fav-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("shared.mailcraft");
+    crate::store::save(&path, &s.mailbox).unwrap();
+    let mut opened = Session::at(crate::store::open(&path).unwrap().mailbox, 0, 0);
+    opened.shared_mailboxes = true;
+    assert_eq!(opened.mailbox.owner_of(shared).map(|o| o.id), Some(owner));
+    assert!(crate::cmd::folder::favorites(&opened).contains(&theirs));
+    assert_eq!(found(&mut opened, "quarterly", "everywhere").len(), 4);
+    let _ = std::fs::remove_dir_all(&dir);
+}

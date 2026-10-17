@@ -377,7 +377,8 @@ fn search_bar(app: &mut MailApp, ui: &mut Ui, found: usize) {
     let scope = if app.session.view.scope == mailcraft_engine::Scope::Everywhere {
         tl!("All Mailboxes").to_string()
     } else {
-        app.session.mailbox.folder(app.session.view.folder).map(|f| f.name.clone()).unwrap_or_default()
+        // (A shared mailbox's folder with the mailbox it is in, #70.)
+        app.session.mailbox.folder(app.session.view.folder).map(|f| crate::nav::folder_label(&app.session.mailbox, f)).unwrap_or_default()
     };
     let said = match found {
         0 => crate::i18n::fmt(tl!("No results in {scope}"), &[("scope", &scope)]),
