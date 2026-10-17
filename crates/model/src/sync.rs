@@ -995,11 +995,35 @@ pub struct GraphMailResult {
     /// The owner stopped the run (Cancel) after the page in hand: the next one goes on from there.
     #[serde(skip_serializing_if = "is_false")]
     pub stopped: bool,
-    /// For a shared mailbox: the server won't let the owner of the token open it (no Full
-    /// Access, or no such mailbox). Said plainly in `errors`; a host doesn't ask again by itself
-    /// until the owner does.
-    #[serde(skip_serializing_if = "is_false")]
-    pub denied: bool,
+    /// For a shared mailbox: why the server won't open it for the owner of the token, by Graph's
+    /// own code ([`SharedRefusal`]). A host doesn't ask again by itself until the owner does.
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub refused: Option<SharedRefusal>,
+}
+
+/// Why Microsoft won't open a shared mailbox for the owner of the token (#70), told apart by
+/// Graph's own error code rather than by the status alone: a 403 for a quota or a missing
+/// consent is none of these.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SharedRefusal {
+    /// `ErrorAccessDenied`: the owner has no Full Access to it (never had, or it was taken away).
+    NoAccess,
+    /// `ErrorInvalidUser`: there is no mailbox at the address.
+    NoMailbox,
+    /// `MailboxNotEnabledForRESTAPI`: the mailbox can't be reached through Microsoft Graph.
+    NotThroughGraph,
+}
+
+impl SharedRefusal {
+    /// What it is, in words that name no mailbox (they may reach a log).
+    pub fn said(self) -> &'static str {
+        match self {
+            SharedRefusal::NoAccess => "Microsoft won't open this shared mailbox for you: you need Full Access to it",
+            SharedRefusal::NoMailbox => "Microsoft has no mailbox at this address",
+            SharedRefusal::NotThroughGraph => "this mailbox can't be reached through Microsoft Graph (MailboxNotEnabledForRESTAPI)",
+        }
+    }
 }
 
 impl GraphMailResult {
@@ -1017,7 +1041,7 @@ impl GraphMailResult {
         self.busy_for = piece.busy_for.or(self.busy_for);
         self.pages.extend(piece.pages);
         (self.partial, self.whole, self.stopped) = (piece.partial, piece.whole, piece.stopped);
-        self.denied |= piece.denied;
+        self.refused = piece.refused.or(self.refused);
         if piece.progress.is_some() {
             self.progress = piece.progress;
         }

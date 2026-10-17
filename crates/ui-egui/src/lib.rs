@@ -781,9 +781,13 @@ pub struct MailApp {
     /// The next sign-in for Microsoft Graph asks for reading shared mailboxes too, for this
     /// shared mailbox, which is read once it is had ([`shared_mailboxes`], #70).
     shared_next: Option<Id>,
-    /// Shared mailboxes whose server won't let the owner in (no Full Access): not read again by
-    /// a Send/Receive that started by itself, only by one the owner asks for (#70).
-    shared_denied: std::collections::HashSet<Id>,
+    /// Shared mailboxes whose server won't let the owner in, and why (no Full Access, no such
+    /// mailbox…): shown as No access, and not read again by a Send/Receive that started by
+    /// itself, only by one the owner asks for (#70).
+    shared_refused: std::collections::HashMap<Id, mailcraft_model::sync::SharedRefusal>,
+    /// Shared mailboxes just added in Add Shared Mailbox whose Inbox hasn't been read yet: kept
+    /// only once it has been, and removed again when it can't be (#70).
+    shared_checking: std::collections::HashSet<Id>,
     /// The next sign-in asks for mail alone (account setup's "mail only").
     mail_only_next: bool,
     /// A sign-in the host is waiting on (the owner is in the browser).
@@ -918,7 +922,8 @@ impl MailApp {
             favorites: Default::default(),
             favorites_next: false,
             shared_next: None,
-            shared_denied: Default::default(),
+            shared_refused: Default::default(),
+            shared_checking: Default::default(),
             mail_only_next: false,
             signing_in: None,
             setup_sign_in: None,
@@ -1683,7 +1688,9 @@ impl MailApp {
     }
 
     fn server_accounts(&self) -> Vec<Id> {
-        self.session.mailbox.accounts.iter().filter(|a| a.kind.has_server()).map(|a| a.id).collect()
+        // (A shared mailbox only while they are being tested, #70.)
+        let on = self.session.shared_mailboxes;
+        self.session.mailbox.accounts.iter().filter(|a| a.kind.has_server() && (on || !a.is_shared())).map(|a| a.id).collect()
     }
 
     /// How much of `account` waits to go to its server: mail in the Outbox, and changes made here
@@ -1701,7 +1708,7 @@ impl MailApp {
     fn can_sync_quietly(&self, account: Id) -> bool {
         // A shared mailbox the server wouldn't open waits for the owner to ask (#70); one that
         // can be read is read with its owner's sign-in.
-        if self.shared_denied.contains(&account) {
+        if self.shared_refused.contains_key(&account) {
             return false;
         }
         let account = self.session.mailbox.owner_of(account).map_or(account, |owner| owner.id);
@@ -1803,8 +1810,8 @@ impl MailApp {
                     self.fetching.wake();
                 }
                 // A shared mailbox the server won't open for the owner (#70).
-                if piece.denied {
-                    self.shared_denied.insert(account);
+                if let Some(why) = piece.refused {
+                    self.shared_refused.insert(account, why);
                 }
                 match mailcraft_engine::cmd::graph_mail::apply_graph_mail(&mut self.session, piece) {
                     Ok(said) => {

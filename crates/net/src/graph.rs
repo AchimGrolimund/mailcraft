@@ -82,6 +82,7 @@ use mailcraft_model::remote::{
     EventsDownload, EventsUpload, EventsUploaded, FreeBusy, FreeBusyAsk, MAX_BUSY, MAX_CONTACTS, MAX_EVENT_OPS, MAX_EVENTS, MAX_REMOTE_CALENDARS,
     MAX_REMOTE_CATEGORIES, MAX_SCHEDULE_STRETCH, MAX_SCHEDULES, PersonSchedule, RemoteCalendar, RemoteContact, RemoteEvent, RemoteEventKind,
 };
+use mailcraft_model::sync::SharedRefusal;
 use mailcraft_model::{
     Address, Attendee, Category, Freq, Importance, Labeled, Message, OnlineMeeting, OnlineProvider, PostalAddress, Recurrence, Response,
     ResponseOptions, Rgb, ShowAs,
@@ -345,11 +346,19 @@ struct Pace {
     retry: pace::Retry,
 }
 
-/// What a shared mailbox that won't let the owner of the token in is said to have done (#70).
-pub(crate) const SHARED_DENIED: &str =
-    "Microsoft won't open this shared mailbox for you: you need Full Access to it, which an administrator of your organisation gives";
-/// And one that Graph has no mailbox for at that address.
-pub(crate) const SHARED_MISSING: &str = "Microsoft has no mailbox at this address that you can open";
+/// Why a shared mailbox won't be opened, when an answer of Graph's says so by its own code (#70):
+/// a 403 `ErrorAccessDenied`, a 404 `ErrorInvalidUser`, or `MailboxNotEnabledForRESTAPI` (and
+/// its twin `MailboxNotSupportedForRESTAPI`). Any other code (a quota, a consent, a folder that
+/// isn't there) is none of these.
+pub(crate) fn shared_refusal(status: u64, body: &Value) -> Option<SharedRefusal> {
+    let code = body.get("error").and_then(|error| error.get("code")).and_then(Value::as_str).unwrap_or("");
+    match (status, code) {
+        (_, "MailboxNotEnabledForRESTAPI" | "MailboxNotSupportedForRESTAPI") => Some(SharedRefusal::NotThroughGraph),
+        (403, "ErrorAccessDenied") => Some(SharedRefusal::NoAccess),
+        (404, "ErrorInvalidUser") => Some(SharedRefusal::NoMailbox),
+        _ => None,
+    }
+}
 
 /// What `Prefer` asks for of the ids in every answer to the Graph code of mail.
 const IMMUTABLE_IDS: &str = "IdType=\"ImmutableId\"";
@@ -512,9 +521,12 @@ impl<'a> Graph<'a> {
     /// The error for an answer that isn't the one hoped for. `sent` is what went to Graph besides
     /// the token: none of it may come back in the error.
     fn refusal(&self, doing: Doing, reply: &Reply, sent: &str) -> NetError {
-        // A shared mailbox that won't let the owner in says so in its own words (#70).
-        if self.shared() && reply.status == 403 && matches!(doing, Doing::Folders | Doing::Mail) {
-            return NetError::Forbidden(format!("{SHARED_DENIED}{}", code_of(&reply.body, &[self.token, sent])));
+        // A shared mailbox that won't let the owner in says so by Graph's code (#70).
+        if self.shared() && matches!(doing, Doing::Folders | Doing::Mail) {
+            let body = serde_json::from_slice::<Value>(&reply.body).unwrap_or(Value::Null);
+            if let Some(why) = shared_refusal(u64::from(reply.status), &body) {
+                return NetError::SharedRefused(why);
+            }
         }
         refusal(doing, reply, &[self.token, sent], mailcraft_time::now())
     }

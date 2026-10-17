@@ -504,7 +504,7 @@ pub fn folder_pane(app: &mut MailApp, ui: &mut Ui) {
                 .into_iter()
                 .map(|a| {
                     let rows = if folded.contains(&a.id) { Vec::new() } else { visible(&app.session.mailbox, &folded, a.id) };
-                    (a.id, a.name.clone(), rows)
+                    (a.id, heading_name(app, a), rows)
                 })
                 .collect();
             // The folder in view is highlighted once: under Favorites when it shows there, unless
@@ -543,6 +543,12 @@ pub fn folder_pane(app: &mut MailApp, ui: &mut Ui) {
         });
     });
     app.ui.folder_pane_width = shown.response.rect.width();
+}
+
+/// What an account's heading in the folder pane says: its name, and for a shared mailbox
+/// Microsoft won't open for the owner, No access (#70; the mail already here stays readable).
+pub(crate) fn heading_name(app: &MailApp, a: &mailcraft_model::Account) -> String {
+    if app.shared_refused.contains_key(&a.id) { format!("{} · {}", a.name, tl!("No access")) } else { a.name.clone() }
 }
 
 #[cfg(test)]

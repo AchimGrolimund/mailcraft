@@ -523,6 +523,11 @@ pub struct Session {
     /// instead of writing one itself ([`crate::cmd::graph_switch::prepare_backup`]). Set only by
     /// the window once the copy is on disk, never by a command's params. Never saved.
     pub graph_switch_backup: Option<(Id, PathBuf)>,
+    /// Shared mailboxes may be added and read (#70): the switch for testing, off until changes
+    /// in them go up, so that no owner is asked for a shared mailbox's permission by a build that
+    /// only reads one. Set by the host (`MAILCRAFT_SHARED_MAILBOXES=1`), never by a command's
+    /// params. Never saved.
+    pub shared_mailboxes: bool,
     history: Vec<Undo>,
     redo: Vec<Undo>,
     /// What the last undo or redo couldn't do there (a delete for good, a message sent).
@@ -556,6 +561,7 @@ impl Session {
             graph_said: Vec::new(),
             agent: None,
             graph_switch_backup: None,
+            shared_mailboxes: false,
             history: Vec::new(),
             redo: Vec::new(),
             undo_said: Vec::new(),

@@ -64,7 +64,13 @@ pub fn graph_mail_request(s: &Session, account: Id) -> Result<GraphMailRequest, 
     if a.kind != AccountKind::Microsoft {
         return Err(fail(format!("{} isn't kept in step through Microsoft Graph", a.name)));
     }
-    let shared = shared_mailbox(&s.mailbox, account)?;
+    let shared = shared_mailbox(s, account)?;
+    // A shared mailbox is read, and nothing of it goes up yet (#70, first slice): what is changed
+    // in it here waits on this computer ([`unpushed`] counts it), and nothing meant for it can
+    // reach the owner's own mailbox.
+    if shared {
+        return Ok(GraphMailRequest { account, email: a.email.clone(), shared, links: links(&s.mailbox, account), ..Default::default() });
+    }
     Ok(GraphMailRequest {
         account,
         email: a.email.clone(),
@@ -81,8 +87,12 @@ pub fn graph_mail_request(s: &Session, account: Id) -> Result<GraphMailRequest, 
 /// Whether `account` is a shared mailbox (#70), read with its owner's sign-in at
 /// `/users/{address}/…`; refused when it is one that can't be read (its owner is gone, or its
 /// address isn't one a request may name).
-fn shared_mailbox(mb: &Mailbox, account: Id) -> Result<bool, CmdError> {
+fn shared_mailbox(s: &Session, account: Id) -> Result<bool, CmdError> {
+    let mb = &s.mailbox;
     let Some(a) = mb.account(account).filter(|a| a.is_shared()) else { return Ok(false) };
+    if !s.shared_mailboxes {
+        return Err(fail(super::shared::SWITCHED_OFF));
+    }
     if mb.owner_of(account).is_none() {
         return Err(fail(format!("{} is a shared mailbox whose account is gone: remove it and add it again", a.name)));
     }
@@ -189,7 +199,7 @@ pub fn graph_fetch_request(s: &Session, account: Id, message: Option<Id>, most: 
         }
         None => graph_down::fetch_queue(&s.mailbox, account, most.clamp(1, 100)),
     };
-    let shared = shared_mailbox(&s.mailbox, account)?;
+    let shared = shared_mailbox(s, account)?;
     Ok(GraphFetchRequest { account, email: a.email.clone(), shared, ids, background: message.is_none() })
 }
 

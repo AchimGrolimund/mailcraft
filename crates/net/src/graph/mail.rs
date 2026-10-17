@@ -140,9 +140,9 @@ pub(crate) fn sync_folders_with(base: &str, token: &str, request: &GraphMailRequ
         }
         // A shared mailbox the owner may not open (#70): said as it is, and not asked again by
         // itself.
-        if let (true, NetError::Forbidden(why)) = (request.shared, e) {
-            out.denied = true;
-            out.errors.push(format!("{why}."));
+        if let NetError::SharedRefused(why) = e {
+            out.refused = Some(*why);
+            out.errors.push(format!("{}.", why.said()));
             return;
         }
         out.errors.push(format!("Couldn't bring the folders in step with Microsoft: {e}"));
@@ -155,6 +155,25 @@ pub(crate) fn sync_folders_with(base: &str, token: &str, request: &GraphMailRequ
             return out;
         }
     };
+    // Nothing goes up to a shared mailbox in this first slice (#70): it is read, and what is
+    // changed in it here waits on this computer. (The engine asks for nothing of the kind; a
+    // request that does is not believed.)
+    let writes = !(request.changes.is_empty() && request.messages.is_empty() && request.drafts.is_empty() && request.sends.is_empty());
+    if graph.shared() {
+        if writes {
+            out.errors.push("What was changed in a shared mailbox waits on this computer: it isn't sent to Microsoft yet.".into());
+        }
+        match listing(&graph, &known) {
+            Ok(listing) => out.listing = Some(listing),
+            Err((listing, e)) => {
+                stop(&mut out, &e);
+                if !e.is_refused_sign_in() {
+                    out.listing = Some(listing);
+                }
+            }
+        }
+        return out;
+    }
     // What was changed here goes up first: the listing then shows the server after it.
     let mut made: HashMap<u64, String> = HashMap::new();
     for change in request.changes.iter().take(MAX_FOLDER_CHANGES) {
@@ -277,7 +296,14 @@ fn well_known(graph: &Graph<'_>) -> Result<Known, NetError> {
         for one in said.iter().take(BATCH_SIZE * 2) {
             let n = one.get("id").and_then(Value::as_str).and_then(|n| n.parse::<usize>().ok());
             let Some(slot) = n.and_then(|n| answers.get_mut(n)) else { continue };
-            *slot = match one.get("status").and_then(Value::as_u64) {
+            let status = one.get("status").and_then(Value::as_u64);
+            // A shared mailbox that isn't to be opened says so in every answer (#70).
+            if graph.shared()
+                && let Some(why) = super::shared_refusal(status.unwrap_or(0), one.get("body").unwrap_or(&Value::Null))
+            {
+                return Err(NetError::SharedRefused(why));
+            }
+            *slot = match status {
                 Some(200) => one.get("body").map(|body| id_of(text(body, "id"))).filter(Option::is_some),
                 // The mailbox has no such folder (an Archive, say).
                 Some(404) => Some(None),
@@ -291,6 +317,11 @@ fn well_known(graph: &Graph<'_>) -> Result<Known, NetError> {
     for ((name, _), slot) in WELL_KNOWN.iter().zip(answers.iter_mut()).filter(|(_, slot)| slot.is_none()) {
         let url = graph.url(&format!("{}/{name}?{select}", folders(graph)));
         let reply = graph.call(Kind::Read, &url, "GET", &[], None, ASK_TIMEOUT, MAX_PAGE)?;
+        if graph.shared()
+            && let Some(why) = super::shared_refusal(u64::from(reply.status), &serde_json::from_slice::<Value>(&reply.body).unwrap_or(Value::Null))
+        {
+            return Err(NetError::SharedRefused(why));
+        }
         *slot = match reply.status {
             200 => {
                 let json = serde_json::from_slice::<Value>(&reply.body).unwrap_or(Value::Null);
@@ -313,7 +344,7 @@ fn well_known(graph: &Graph<'_>) -> Result<Known, NetError> {
     if known.root.is_empty() {
         // For a shared mailbox, that is Graph having no mailbox there for the owner (#70).
         if graph.shared() {
-            return Err(NetError::Forbidden(super::SHARED_MISSING.into()));
+            return Err(NetError::SharedRefused(mailcraft_model::sync::SharedRefusal::NoMailbox));
         }
         return Err(nonsense("Microsoft Graph didn't say where the top of the mailbox is"));
     }

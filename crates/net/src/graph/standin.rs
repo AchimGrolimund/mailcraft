@@ -232,6 +232,9 @@ pub struct OtherMailbox {
     /// The owner of the token was given Full Access to it; otherwise every question about it is
     /// answered 403 (`ErrorAccessDenied`), as Exchange does.
     pub full_access: bool,
+    /// What every question about it is answered instead, when set: a status and Graph's code
+    /// (a 403 `ErrorQuotaExceeded`, a 404 `MailboxNotEnabledForRESTAPI`…), to tell 403s apart.
+    pub refusing: Option<(u16, &'static str)>,
     pub folders: Vec<MailFolder>,
     pub mailbox: Mail,
 }
@@ -849,7 +852,7 @@ impl State {
             }
         }
         let folders = std::mem::replace(&mut self.folders, owners);
-        self.others.push(OtherMailbox { address: address.to_string(), full_access, folders, mailbox: Mail::default() });
+        self.others.push(OtherMailbox { address: address.to_string(), full_access, refusing: None, folders, mailbox: Mail::default() });
     }
 
     /// The other mailbox at `address` (#70), to set up and to look at.
@@ -869,6 +872,9 @@ impl State {
             return Err(refuse(404, "ErrorInvalidUser", format!("The requested user '{user}' is invalid.")));
         };
         let Some(other) = self.others.get_mut(at) else { return Err(not_found()) };
+        if let Some((status, code)) = other.refusing {
+            return Err(refuse(status, code, "Refused, as asked."));
+        }
         if !other.full_access {
             return Err(refuse(403, "ErrorAccessDenied", "Access is denied. Check credentials and try again."));
         }

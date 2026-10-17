@@ -2059,6 +2059,10 @@ fn hostile_params_never_panic() {
         }}),
     ];
     let mut s = session();
+    // Shared mailboxes switched on, under a Microsoft account, so that their commands get past
+    // the door (#70).
+    s.shared_mailboxes = true;
+    let _ = s.run("account.add", &json!({"email": "owner@example.org", "kind": "microsoft"}));
     let ids: Vec<&'static str> = s.registry.all().iter().map(|c| c.id).collect();
     for round in 0..2 {
         for id in &ids {

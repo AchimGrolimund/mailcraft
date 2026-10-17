@@ -8,12 +8,37 @@
 //! shared mailbox does), and never with a sign-in of any other kind. The refresh token that
 //! comes back is the owner's, kept as his; the access token is the shared mailbox's, in memory,
 //! for fetching its messages whole. A server that won't open the mailbox for the owner says so,
-//! and the mailbox is not read again by a run that started by itself until the owner asks.
+//! by Graph's code: the mailbox shows No access, the mail already here stays, and it is not read
+//! again by a run that started by itself until the owner asks.
+//!
+//! Add Shared Mailbox checks the address at once (S1): the mailbox is added, its Inbox read by
+//! its first run, and it is kept only when that worked; otherwise it is removed again and the
+//! dialog says why. Only while shared mailboxes are being tested
+//! ([`mailcraft_engine::Session::shared_mailboxes`]).
 
-use mailcraft_model::Id;
+use mailcraft_model::sync::SharedRefusal;
+use mailcraft_model::{Account, AccountKind, Directory, FolderKind, Id};
 use serde_json::{Value, json};
 
+use crate::dialogs::Dialog;
 use crate::{GraphRequest, GraphResult, MailApp, Tokens};
+
+/// Whether `a` is an account a shared mailbox may be opened under: a Microsoft account kept in
+/// step through Graph, of a work or school (not a personal Microsoft account, which has none),
+/// and no shared mailbox itself.
+pub(crate) fn can_open_shared(a: &Account) -> bool {
+    a.kind == AccountKind::Microsoft && !a.is_shared() && a.oauth.as_ref().is_none_or(|oauth| oauth.directory != Directory::Personal)
+}
+
+/// What the owner is told when Microsoft won't open the shared mailbox at `address` (S1).
+fn refused_words(why: SharedRefusal, address: &str) -> String {
+    let words = match why {
+        SharedRefusal::NoAccess => tl!("You don't have access to {address}. If access was just given, try again in an hour."),
+        SharedRefusal::NoMailbox => tl!("There's no mailbox at {address}."),
+        SharedRefusal::NotThroughGraph => tl!("The mailbox at {address} can't be reached through Microsoft Graph."),
+    };
+    crate::i18n::fmt(words, &[("address", address)])
+}
 
 impl MailApp {
     /// A Send/Receive of the shared mailbox `account`: its folders and mail, with its owner's
@@ -26,7 +51,10 @@ impl MailApp {
             .owner_of(account)
             .cloned()
             .ok_or_else(|| tl!("This shared mailbox's account is gone: remove the shared mailbox and add it again").to_string())?;
-        if quiet && self.shared_denied.contains(&account) {
+        if !self.session.shared_mailboxes {
+            return Err(tl!(mailcraft_engine::cmd::shared::SWITCHED_OFF).to_string());
+        }
+        if quiet && self.shared_refused.contains_key(&account) {
             return Err(tl!("Microsoft won't open this shared mailbox for you: Send/Receive tries again").to_string());
         }
         let oauth = owner.oauth.clone().ok_or_else(|| tl!("This account has no sign-in with Microsoft").to_string())?;
@@ -34,6 +62,10 @@ impl MailApp {
         let kept = self.tokens.get(&owner.id).or(self.graph_tokens.get(&owner.id)).map(|t| t.refresh.clone()).filter(|r| !r.is_empty());
         let refresh = kept.or_else(|| self.remembered("refresh", &address)).unwrap_or_default();
         if refresh.is_empty() {
+            // Being added: the owner's own sign-in comes first, by itself.
+            if self.shared_checking.contains(&account) {
+                return Err(crate::i18n::fmt(tl!("Sign in to {owner} first (Send/Receive), then add the shared mailbox."), &[("owner", &address)]));
+            }
             if quiet {
                 return Err(format!("{} {address}", tl!("Use Send/Receive to sign in to")));
             }
@@ -68,7 +100,7 @@ impl MailApp {
         self.graph_problems.clear();
         // Asked for: the owner wants to know whether the server opens it now.
         if !quiet {
-            self.shared_denied.remove(&account);
+            self.shared_refused.remove(&account);
         }
         self.graph_rx = Some((account, quiet, false, graph(ask)));
         self.session.sync_status = tl!("Sending and receiving…").to_string();
@@ -96,8 +128,8 @@ impl MailApp {
             self.graph_tokens.insert(account, Tokens { expires_at: tokens.expires_at.clamp(now, now.saturating_add(86_400)), ..tokens });
         }
         if let Some(mail) = result.mail.take() {
-            if mail.denied {
-                self.shared_denied.insert(account);
+            if let Some(why) = mail.refused {
+                self.shared_refused.insert(account, why);
             }
             match mailcraft_engine::cmd::graph_mail::apply_graph_mail(&mut self.session, mail) {
                 Ok(taken) => {
@@ -107,15 +139,44 @@ impl MailApp {
                 Err(e) => errors.push(e.to_string()),
             }
         }
+        let mut asking = false;
         if result.consent_needed {
             self.session.sync_status.clear();
             if quiet {
                 errors.push(tl!("Reading shared mailboxes needs your permission: use Send/Receive").to_string());
-            } else if let Err(e) = self.begin_shared_sign_in(account) {
-                errors.push(e);
+            } else {
+                match self.begin_shared_sign_in(account) {
+                    Ok(()) => asking = true,
+                    Err(e) => errors.push(e),
+                }
             }
         }
         errors.dedup();
+        // Being added: kept when its Inbox was read, else removed again with the reason (S1).
+        if !asking && self.shared_checking.contains(&account) {
+            let mb = &self.session.mailbox;
+            let read = mb.folder_of_kind(account, FolderKind::Inbox).and_then(|f| mb.folder(f)).is_some_and(|f| f.server.is_some());
+            let address = mb.account(account).map(|a| a.email.trim().to_string()).unwrap_or_default();
+            let outcome = match (read, self.shared_refused.get(&account)) {
+                (true, _) => Ok(()),
+                (false, Some(why)) => Err(refused_words(*why, &address)),
+                (false, None) => Err(match errors.first() {
+                    Some(first) => format!("{} {first}", crate::i18n::fmt(tl!("{address} couldn't be opened:"), &[("address", &address)])),
+                    None => crate::i18n::fmt(tl!("{address} couldn't be opened."), &[("address", &address)]),
+                }),
+            };
+            self.finish_shared_check(account, outcome);
+        }
+        // Access taken away: the mail already here stays, and what waits here is named (S6).
+        if let Some(why) = self.shared_refused.get(&account).copied().filter(|_| self.session.mailbox.account(account).is_some()) {
+            let waiting = self.waiting_to_go(account);
+            if waiting > 0 {
+                errors.push(crate::i18n::fmt(
+                    tl!("{why}. {n} changes made in it here wait on this computer."),
+                    &[("why", why.said()), ("n", &waiting.to_string())],
+                ));
+            }
+        }
         if let Some(first) = errors.first() {
             self.session.sync_status = first.clone();
         } else if !result.consent_needed {
@@ -139,15 +200,14 @@ impl MailApp {
     }
 
     /// The owner answered on Microsoft's page about shared mailboxes: with the tokens, the shared
-    /// mailbox is read now; without, why not is said.
+    /// mailbox is read now; without, why not is said (and one being added isn't kept).
     pub(crate) fn shared_signed_in(&mut self, shared: Id, owner: Id, answer: Result<Tokens, String>) {
         self.session.sync_status.clear();
         let address = self.session.mailbox.account(owner).map(|a| a.email.clone()).unwrap_or_default();
-        match answer {
-            // The owner picks who signs in on the page: it has to be the account it is opened through.
-            Ok(tokens) if !tokens.email.is_empty() && !tokens.email.trim().eq_ignore_ascii_case(address.trim()) => {
-                self.status(format!("{} {} {} {address}", tl!("You signed in as"), tokens.email, tl!("but this account is")));
-            }
+        let refused = match answer {
+            // The owner picks who signs in on the page: it has to be the account it is opened
+            // through. Somebody else's tokens are neither used nor remembered (#103).
+            Ok(tokens) if self.signed_in_as_other(owner, &tokens) => Some(self.status_msg.as_ref().map(|(said, _)| said.clone()).unwrap_or_default()),
             Ok(tokens) => {
                 if !tokens.refresh.is_empty() {
                     self.remember("refresh", &address, &tokens.refresh);
@@ -156,14 +216,71 @@ impl MailApp {
                     }
                 }
                 self.graph_tokens.insert(shared, tokens);
-                if let Err(e) = self.start_sync(&json!({"account": shared})) {
-                    self.status(e);
-                }
+                self.start_sync(&json!({"account": shared})).err()
             }
             Err(e) if e == crate::favorites_sync::NEEDS_APPROVAL => {
-                self.status(tl!("Your organisation's administrator has to approve reading shared mailboxes once: File › Info"));
+                Some(tl!("Your organisation's administrator has to approve reading shared mailboxes once: File › Info").to_string())
             }
-            Err(e) => self.status(format!("{}: {e}", tl!("Shared mailboxes weren't allowed"))),
+            Err(e) => Some(format!("{}: {e}", tl!("Shared mailboxes weren't allowed"))),
+        };
+        if let Some(said) = refused {
+            if self.shared_checking.contains(&shared) {
+                self.finish_shared_check(shared, Err(said));
+            } else {
+                self.status(said);
+            }
+        }
+    }
+
+    /// Add Shared Mailbox: read the shared mailbox `shared`, just added, to see whether it is to
+    /// be kept ([`MailApp::finish_shared_check`]). When the run can't start, it is removed again.
+    pub(crate) fn begin_shared_check(&mut self, shared: Id) -> Result<(), String> {
+        self.shared_checking.insert(shared);
+        match self.start_sync(&json!({"account": shared})) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                self.drop_shared_check(shared);
+                Err(e)
+            }
+        }
+    }
+
+    /// A shared mailbox being added that isn't to be kept: removed again, with what was kept for
+    /// it in memory. (Not undoable by itself: it was never there for the owner.)
+    pub(crate) fn drop_shared_check(&mut self, shared: Id) {
+        self.shared_checking.remove(&shared);
+        self.shared_refused.remove(&shared);
+        self.graph_tokens.remove(&shared);
+        if self.session.mailbox.account(shared).is_some_and(Account::is_shared) {
+            let _ = self.execute("account.removeSharedMailbox", json!({"id": shared}));
+        }
+    }
+
+    /// What reading a shared mailbox being added came to: kept and the dialog closed, or removed
+    /// again and the reason said in the dialog (or the status bar, when the dialog is gone).
+    pub(crate) fn finish_shared_check(&mut self, shared: Id, outcome: Result<(), String>) {
+        if !self.shared_checking.contains(&shared) {
+            return;
+        }
+        let ours = matches!(&self.dialog, Some(Dialog::SharedMailbox { checking: Some(id), .. }) if *id == shared);
+        match outcome {
+            Ok(()) => {
+                self.shared_checking.remove(&shared);
+                if ours {
+                    self.dialog = None;
+                }
+            }
+            Err(said) => {
+                self.drop_shared_check(shared);
+                self.session.sync_status.clear();
+                match &mut self.dialog {
+                    Some(Dialog::SharedMailbox { checking, error, .. }) if ours => {
+                        *checking = None;
+                        *error = said;
+                    }
+                    _ => self.status(said),
+                }
+            }
         }
     }
 }

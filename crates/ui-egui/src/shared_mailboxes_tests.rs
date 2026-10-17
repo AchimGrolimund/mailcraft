@@ -40,7 +40,8 @@ fn tokens(access: &str, refresh: &str) -> Tokens {
 /// A window with a Microsoft account signed in this session, and hosts that note what they are
 /// asked and answer what `answers` holds, in turn.
 fn window() -> (MailApp, Id, Answers, Jobs, SignIns) {
-    let session = Session::empty();
+    let mut session = Session::empty();
+    session.shared_mailboxes = true;
     let mut app = MailApp::new(session, Services::default());
     app.autosave = false;
     let owner = app.execute("account.add", json!({"email": OWNER, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
@@ -52,7 +53,11 @@ fn window() -> (MailApp, Id, Answers, Jobs, SignIns) {
         let (tx, rx) = mpsc::channel();
         let (answer, pieces) = to_answer.lock().unwrap().pop_front().unwrap_or_default();
         if let Some(to) = &req.mail_pieces {
-            for piece in pieces {
+            for mut piece in pieces {
+                // (A piece that names no account is for the one asked about.)
+                if piece.account == 0 {
+                    piece.account = req.account.id;
+                }
                 to.send(piece).unwrap();
             }
         }
@@ -124,7 +129,7 @@ fn a_shared_mailbox_the_server_wont_open_waits_for_the_owner_to_ask() {
     let refused = GraphMailResult {
         account: shared,
         email: SHARED.into(),
-        denied: true,
+        refused: Some(mailcraft_model::sync::SharedRefusal::NoAccess),
         errors: vec!["Microsoft won't open this shared mailbox for you: you need Full Access to it.".into()],
         ..Default::default()
     };
@@ -132,21 +137,21 @@ fn a_shared_mailbox_the_server_wont_open_waits_for_the_owner_to_ask() {
     app.execute("ui.sync", json!({"account": shared})).unwrap();
     app.poll_graph();
     assert!(app.session.sync_status.contains("Full Access"), "{}", app.session.sync_status);
-    assert!(app.shared_denied.contains(&shared) && !app.can_sync_quietly(shared));
+    assert!(app.shared_refused.contains_key(&shared) && !app.can_sync_quietly(shared));
     // A run that starts by itself doesn't ask again; the owner's own does.
     assert!(app.execute("ui.sync", json!({"account": shared, "quiet": true})).is_err());
     assert_eq!(jobs.lock().unwrap().len(), 1);
     app.execute("ui.sync", json!({"account": shared})).unwrap();
     app.poll_graph();
     assert_eq!(jobs.lock().unwrap().len(), 2);
-    assert!(!app.shared_denied.contains(&shared), "it opened this time");
+    assert!(!app.shared_refused.contains_key(&shared), "it opened this time");
     assert!(sign_ins.lock().unwrap().is_empty(), "nobody was sent to a sign-in page");
     no_imap();
 }
 
 #[test]
 fn the_add_shared_mailbox_dialog_collects_the_address_and_runs_the_command() {
-    let (mut app, owner, _, jobs, _) = window();
+    let (mut app, owner, answers, jobs, _) = window();
     // Nothing to open it under: a local account can't have one.
     let local = app.execute("account.add", json!({"email": "ada@example.org"})).unwrap()["id"].as_u64().unwrap();
     assert!(app.execute("ui.dialog", json!({"name": "sharedMailbox", "account": local})).is_err());
@@ -179,12 +184,169 @@ fn the_add_shared_mailbox_dialog_collects_the_address_and_runs_the_command() {
     if let Some(crate::dialogs::Dialog::SharedMailbox { address, .. }) = h.state_mut().dialog.as_mut() {
         *address = SHARED.into();
     }
+    // Its Inbox is read, and then it is kept.
+    answers.lock().unwrap().push_back((GraphResult::default(), vec![inbox_read(SHARED)]));
     h.key_press(egui::Key::Enter);
-    h.run_steps(2);
-    assert!(h.state().dialog.is_none());
+    h.run_steps(4);
+    assert!(h.state().dialog.is_none(), "{:?}", h.state().dialog.as_ref().map(|d| d.name()));
     let added = h.state().session.mailbox.accounts.iter().find(|a| a.email == SHARED).map(|a| (a.id, a.shared_of));
+    assert!(h.state().shared_checking.is_empty());
     let (id, of) = added.unwrap();
     assert_eq!(of, Some(owner));
     assert!(jobs.lock().unwrap().iter().any(|(account, ..)| *account == id), "read at once");
     no_imap();
+}
+
+/// A run of a shared mailbox's that read its Inbox: the folders, by the account's address. (The
+/// account's id is the one the run was for: the window's fake host fills it in.)
+fn inbox_read(email: &str) -> GraphMailResult {
+    let listing = mailcraft_model::sync::FolderListing {
+        folders: vec![mailcraft_model::sync::GraphFolder { id: "in".into(), name: "Inbox".into(), kind: FolderKind::Inbox, ..Default::default() }],
+        complete: true,
+    };
+    GraphMailResult { email: email.into(), listing: Some(listing), ..Default::default() }
+}
+
+/// Add Shared Mailbox with `address` under `owner`, as the dialog does, the window's hosts
+/// answering its first run with `pieces`. The dialog, after.
+fn add_in_dialog(app: &mut MailApp, answers: &Answers, owner: Id, address: &str, pieces: Vec<GraphMailResult>) {
+    answers.lock().unwrap().push_back((GraphResult::default(), pieces));
+    app.execute("ui.dialog", json!({"name": "sharedMailbox", "account": owner})).unwrap();
+    if let Some(crate::dialogs::Dialog::SharedMailbox { address: typed, .. }) = app.dialog.as_mut() {
+        *typed = address.into();
+    }
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx);
+    let mut out = ctx.run_ui(egui::RawInput { events: vec![enter()], ..Default::default() }, |ui| crate::dialogs::show(app, &ui.ctx().clone()));
+    out.textures_delta.clear();
+}
+
+fn enter() -> egui::Event {
+    egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
+}
+
+#[test]
+fn add_shared_mailbox_keeps_only_a_mailbox_whose_inbox_could_be_read() {
+    use mailcraft_model::sync::SharedRefusal;
+    let (mut app, owner, answers, jobs, sign_ins) = window();
+    for (why, said) in [
+        (SharedRefusal::NoAccess, "You don't have access to support@example.org. If access was just given, try again in an hour."),
+        (SharedRefusal::NoMailbox, "There's no mailbox at support@example.org."),
+        (SharedRefusal::NotThroughGraph, "can't be reached through Microsoft Graph"),
+    ] {
+        let refused = GraphMailResult { email: SHARED.into(), refused: Some(why), errors: vec![format!("{}.", why.said())], ..Default::default() };
+        add_in_dialog(&mut app, &answers, owner, SHARED, vec![refused]);
+        // Being checked: the dialog stays, and says so.
+        assert!(matches!(&app.dialog, Some(crate::dialogs::Dialog::SharedMailbox { checking: Some(_), .. })));
+        app.poll_graph();
+        // Nothing is added, and the dialog says why, in the owner's words.
+        assert!(app.session.mailbox.accounts.iter().all(|a| a.email != SHARED), "{why:?}");
+        assert!(app.shared_checking.is_empty() && app.shared_refused.is_empty());
+        match &app.dialog {
+            Some(crate::dialogs::Dialog::SharedMailbox { checking: None, error, .. }) => assert!(error.contains(said), "{error}"),
+            _ => panic!("the dialog stays open"),
+        }
+        app.dialog = None;
+    }
+    // A run that brings nothing back (offline, say) doesn't keep it either.
+    add_in_dialog(&mut app, &answers, owner, SHARED, Vec::new());
+    app.poll_graph();
+    assert!(app.session.mailbox.accounts.iter().all(|a| a.email != SHARED));
+    app.dialog = None;
+    // Called off while it is checked: not kept.
+    add_in_dialog(&mut app, &answers, owner, SHARED, vec![inbox_read(SHARED)]);
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx);
+    let escape = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+    let mut out = ctx.run_ui(egui::RawInput { events: vec![escape], ..Default::default() }, |ui| crate::dialogs::show(&mut app, &ui.ctx().clone()));
+    out.textures_delta.clear();
+    assert!(app.dialog.is_none() && app.session.mailbox.accounts.iter().all(|a| a.email != SHARED));
+    app.poll_graph();
+    assert!(app.session.mailbox.accounts.iter().all(|a| a.email != SHARED), "an answer that comes after adds nothing");
+    // Read: kept, and the dialog closes.
+    add_in_dialog(&mut app, &answers, owner, SHARED, vec![inbox_read(SHARED)]);
+    app.poll_graph();
+    let kept = app.session.mailbox.accounts.iter().find(|a| a.email == SHARED).map(|a| a.id).unwrap();
+    assert!(app.dialog.is_none() && app.shared_checking.is_empty());
+    assert!(app.session.mailbox.folder_by_server(kept, "in").is_some());
+    assert!(
+        jobs.lock().unwrap().iter().all(|(_, _, mail, ..)| mail.as_ref().is_some_and(|m| m.shared && m.messages.is_empty() && m.drafts.is_empty()))
+    );
+    assert!(sign_ins.lock().unwrap().is_empty());
+    no_imap();
+}
+
+#[test]
+fn a_shared_mailbox_microsoft_wont_open_shows_no_access_and_keeps_its_mail() {
+    let (mut app, _, answers, _, _) = window();
+    let shared = app.execute("account.addSharedMailbox", json!({"address": SHARED})).unwrap()["id"].as_u64().unwrap();
+    answers.lock().unwrap().push_back((GraphResult::default(), vec![inbox_read(SHARED)]));
+    app.execute("ui.sync", json!({"account": shared})).unwrap();
+    app.poll_graph();
+    let inbox = app.session.mailbox.folder_by_server(shared, "in").unwrap();
+    let mut kept = mailcraft_model::Message { folder: inbox, subject: "Kept".into(), ..Default::default() };
+    kept.account = shared;
+    let id = app.session.mailbox.add_message(kept).unwrap();
+    // A change made in it here, which waits.
+    app.execute("folder.new", json!({"parent": inbox, "name": "Ours"})).unwrap();
+    // Access is taken away.
+    let refused = GraphMailResult {
+        email: SHARED.into(),
+        refused: Some(mailcraft_model::sync::SharedRefusal::NoAccess),
+        errors: vec!["Microsoft won't open this shared mailbox for you: you need Full Access to it.".into()],
+        ..Default::default()
+    };
+    answers.lock().unwrap().push_back((GraphResult::default(), vec![refused]));
+    app.execute("ui.sync", json!({"account": shared})).unwrap();
+    app.poll_graph();
+    assert!(app.session.mailbox.account(shared).is_some() && app.session.mailbox.message(id).is_some(), "never removed by itself");
+    assert!(app.shared_refused.contains_key(&shared));
+    assert!(app.sync_problem_lines().iter().any(|l| l.contains("wait on this computer")), "{:?}", app.sync_problem_lines());
+    // The folder pane says No access on its heading, in both themes.
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1280.0, 800.0)).build_ui_state(
+        |ui, app: &mut MailApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    for theme in [crate::theme::Appearance::Light, crate::theme::Appearance::Dark] {
+        h.state_mut().ui.theme = theme;
+        h.run_steps(3);
+    }
+    let a = h.state().session.mailbox.account(shared).cloned().unwrap();
+    assert!(crate::nav::heading_name(h.state(), &a).ends_with("No access"));
+    no_imap();
+}
+
+#[test]
+fn shared_mailboxes_are_offered_only_where_they_can_be_and_only_while_switched_on() {
+    let (mut app, owner, _, _, _) = window();
+    // A personal Microsoft account has none.
+    if let Ok(a) = app.session.mailbox.account_mut(owner) {
+        a.oauth = Some(mailcraft_model::OAuth { directory: mailcraft_model::Directory::Personal, ..Default::default() });
+    }
+    assert!(app.execute("ui.dialog", json!({"name": "sharedMailbox", "account": owner})).is_err() || app.dialog.is_none());
+    if let Ok(a) = app.session.mailbox.account_mut(owner) {
+        a.oauth = Some(mailcraft_model::OAuth { directory: mailcraft_model::Directory::Organisation, ..Default::default() });
+    }
+    app.session.shared_mailboxes = false;
+    assert!(app.execute("ui.dialog", json!({"name": "sharedMailbox", "account": owner})).is_err() || app.dialog.is_none());
+    app.session.shared_mailboxes = true;
+    app.execute("ui.dialog", json!({"name": "sharedMailbox", "account": owner})).unwrap();
+    assert!(app.dialog.is_some());
+}
+
+#[test]
+fn removing_a_shared_mailbox_asks_first_and_names_what_waits() {
+    let (mut app, _, _, _, _) = window();
+    let shared = app.execute("account.addSharedMailbox", json!({"address": SHARED})).unwrap()["id"].as_u64().unwrap();
+    let inbox = app.session.mailbox.folder_of_kind(shared, FolderKind::Inbox).unwrap();
+    app.execute("folder.new", json!({"parent": inbox, "name": "Ours"})).unwrap();
+    let ask = crate::dialogs::confirmation(&app, "account.removeSharedMailbox", &json!({"id": shared})).unwrap();
+    assert!(ask.text.contains(SHARED) && ask.text.contains("hasn't reached the server"), "{}", ask.text);
+    // Through the window's own run, it is asked and not removed until the yes.
+    let _ = app.run("account.removeSharedMailbox", json!({"id": shared}));
+    assert!(matches!(app.dialog, Some(crate::dialogs::Dialog::Confirm { .. })) && app.session.mailbox.account(shared).is_some());
 }

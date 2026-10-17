@@ -7,7 +7,9 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use mailcraft_model::FolderKind;
-use mailcraft_model::sync::{GraphFetchRequest, GraphLink, GraphMailRequest, GraphMailResult};
+use mailcraft_model::sync::{
+    DraftUp, FolderChange, GraphFetchRequest, GraphLink, GraphMailRequest, GraphMailResult, MessageChange, SendUp, SharedRefusal,
+};
 
 use super::whole_run;
 use crate::graph::pace::{Gate, Retry};
@@ -45,7 +47,7 @@ fn a_shared_mailbox_is_read_at_its_own_address_with_the_owners_token() {
 
     let pieces = run(&server, &request(SHARED, Vec::new()));
     let last = pieces.last().unwrap();
-    assert!(!last.partial && last.whole && !last.denied && last.errors.is_empty(), "{:?}", last.errors);
+    assert!(!last.partial && last.whole && last.refused.is_none() && last.errors.is_empty(), "{:?}", last.errors);
     let listing = pieces.iter().find_map(|p| p.listing.as_ref()).unwrap();
     assert!(listing.complete);
     let inbox = listing.folders.iter().find(|f| f.kind == FolderKind::Inbox).unwrap();
@@ -97,8 +99,9 @@ fn a_shared_mailbox_without_full_access_is_said_plainly_and_not_asked_again_and_
     let pieces = run(&server, &request(SHARED, Vec::new()));
     assert_eq!(pieces.len(), 1, "no mail is asked for");
     let only = &pieces[0];
-    assert!(only.denied && only.listing.is_none() && only.pages.is_empty());
-    assert!(only.errors.iter().any(|e| e.contains("Full Access") && e.contains("administrator")), "{:?}", only.errors);
+    assert!(only.refused == Some(SharedRefusal::NoAccess) && only.listing.is_none() && only.pages.is_empty());
+    assert!(only.errors.iter().any(|e| e.contains("Full Access")), "{:?}", only.errors);
+    assert!(only.errors.iter().all(|e| !e.contains(SHARED)), "no address in what may be logged: {:?}", only.errors);
     // A refusal is not asked again: the batch, and the one question it left open.
     let requests = server.state().requests.clone();
     let direct: Vec<_> = requests.iter().filter(|r| r.path.join("/") != "v1.0/$batch").collect();
@@ -107,7 +110,85 @@ fn a_shared_mailbox_without_full_access_is_said_plainly_and_not_asked_again_and_
     // An address the server has no mailbox for.
     server.state().requests.clear();
     let pieces = run(&server, &request("nobody@example.org", Vec::new()));
-    assert!(pieces[0].denied && pieces[0].errors.iter().any(|e| e.contains("no mailbox at this address")), "{:?}", pieces[0].errors);
+    assert!(
+        pieces[0].refused == Some(SharedRefusal::NoMailbox) && pieces[0].errors.iter().any(|e| e.contains("no mailbox at this address")),
+        "{:?}",
+        pieces[0].errors
+    );
+}
+
+#[test]
+fn a_403_is_told_apart_by_graphs_code_not_by_its_status() {
+    let server = StandIn::start().unwrap();
+    server.state().add_other(SHARED, true);
+    // Not reachable through Graph: said as such.
+    server.state().other(SHARED).unwrap().refusing = Some((404, "MailboxNotEnabledForRESTAPI"));
+    let pieces = run(&server, &request(SHARED, Vec::new()));
+    assert_eq!(pieces[0].refused, Some(SharedRefusal::NotThroughGraph), "{:?}", pieces[0].errors);
+    assert!(pieces[0].errors.iter().any(|e| e.contains("MailboxNotEnabledForRESTAPI")), "{:?}", pieces[0].errors);
+    // A 403 that is a quota, or a consent, is no "no access": the mailbox isn't left alone for it.
+    for code in ["ErrorQuotaExceeded", "Authorization_RequestDenied"] {
+        server.state().other(SHARED).unwrap().refusing = Some((403, code));
+        let pieces = run(&server, &request(SHARED, Vec::new()));
+        assert!(pieces[0].refused.is_none() && !pieces[0].errors.is_empty() && pieces[0].listing.is_none(), "{code}: {:?}", pieces[0]);
+    }
+}
+
+#[test]
+fn nothing_meant_for_a_shared_mailbox_reaches_the_owners_mailbox_or_goes_up() {
+    let server = StandIn::start().unwrap();
+    server.state().add_other(SHARED, true);
+    let theirs = other_folder(&server, "inbox");
+    let ids = server.state().other(SHARED).unwrap().mailbox.generate(&theirs, 3, NOW);
+    // The owner's mailbox has the same ids: a change sent to `/me` would land on its messages.
+    let mine = server.state().well_known("inbox");
+    server.state().mailbox.generate(&mine, 3, NOW);
+    let own_before: Vec<(String, bool, String)> = {
+        let state = server.state();
+        let mut all: Vec<_> = state.mailbox.messages.iter().map(|(id, m)| (id.clone(), m.read, format!("{m:?}"))).collect();
+        all.sort();
+        all
+    };
+    let deleted = other_folder(&server, "deleteditems");
+    // A request that asks for every kind of change (the engine asks for none of them for a
+    // shared mailbox): a folder, a flag, a move, a draft and a message to send.
+    let mut asked = request(SHARED, Vec::new());
+    asked.changes = vec![FolderChange::Create { folder: 70, name: "Ours".into(), parent: String::new(), parent_folder: None }];
+    asked.messages = vec![
+        MessageChange::Update { message: 1, id: ids[0].clone(), read: Some(true), flag: None, categories: None, importance: None },
+        MessageChange::Move { message: 2, id: ids[1].clone(), to: deleted.clone(), to_folder: None },
+    ];
+    asked.drafts = vec![DraftUp { message: 3, marker: "mailcraft-70".into(), subject: Some("Draft".into()), ..Default::default() }];
+    asked.sends = vec![SendUp { message: 4, ..Default::default() }];
+    let pieces = run(&server, &asked);
+    let all = pieces.iter().fold(GraphMailResult::default(), |mut all, piece| {
+        all.absorb(piece.clone());
+        all
+    });
+    assert!(all.changes.is_empty() && all.messages.is_empty() && all.drafts.is_empty() && all.sent.is_empty(), "{all:?}");
+    assert!(all.errors.iter().any(|e| e.contains("waits on this computer")), "{:?}", all.errors);
+    assert!(all.listing.is_some(), "it is still read");
+    for r in server.state().requests.iter() {
+        let path = r.path.join("/");
+        assert!(!path.starts_with("v1.0/me") && !path.contains("/me/"), "{} {path}", r.method);
+        assert!(r.method == "GET" || path == "v1.0/$batch", "nothing is written: {} {path}", r.method);
+    }
+    // And the batches only read.
+    assert!(
+        server
+            .state()
+            .requests
+            .iter()
+            .filter(|r| r.path.join("/") == "v1.0/$batch")
+            .all(|r| !r.body.contains("\"PATCH\"") && !r.body.contains("\"DELETE\"") && !r.body.contains("/me/"))
+    );
+    let own_after: Vec<(String, bool, String)> = {
+        let state = server.state();
+        let mut all: Vec<_> = state.mailbox.messages.iter().map(|(id, m)| (id.clone(), m.read, format!("{m:?}"))).collect();
+        all.sort();
+        all
+    };
+    assert_eq!(own_before, own_after, "the owner's messages are as they were");
 }
 
 #[test]

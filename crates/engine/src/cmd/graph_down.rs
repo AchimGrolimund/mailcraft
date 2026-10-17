@@ -255,7 +255,7 @@ pub fn fetch_queue(mb: &Mailbox, account: Id, most: usize) -> Vec<String> {
 }
 
 fn fetch_queue_of_account(mb: &Mailbox, account: Id, most: usize) -> Vec<String> {
-    let limit = mb.account(account).and_then(|a| a.download_in_full.limit());
+    let limit = keeps_whole(mb, account);
     let mut waiting: Vec<(i64, &str)> = mb
         .messages
         .values()
@@ -278,7 +278,7 @@ fn fetch_queue_of_account(mb: &Mailbox, account: Id, most: usize) -> Vec<String>
 /// How many messages of `account` aren't fetched, and how many of those are larger than its
 /// "Download messages in full" (they wait until they are opened).
 pub fn not_fetched(mb: &Mailbox, account: Id) -> (usize, usize) {
-    let limit = mb.account(account).and_then(|a| a.download_in_full.limit());
+    let limit = keeps_whole(mb, account);
     mb.messages.values().filter(|m| m.account == account && m.unfetched).fold((0, 0), |(all, large), m| {
         let size = m.server.as_ref().map_or(0, |s| s.size);
         (all + 1, large + usize::from(limit.is_some_and(|limit| size > limit)))
@@ -325,6 +325,14 @@ pub fn take_fetched(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, id: 
         }
     }
     true
+}
+
+/// How large a message of `account` is fetched whole in the background: its own Download
+/// messages in full, and for a shared mailbox its owner's (#70: it keeps as much mail as its
+/// owner's account does; there is no setting of its own).
+fn keeps_whole(mb: &Mailbox, account: Id) -> Option<u64> {
+    let a = mb.owner_of(account).or(mb.account(account))?;
+    a.download_in_full.limit()
 }
 
 #[cfg(test)]

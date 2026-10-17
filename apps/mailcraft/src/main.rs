@@ -152,6 +152,17 @@ fn log_dir() -> Option<PathBuf> {
     Some(prefs_path()?.parent()?.join("logs"))
 }
 
+/// The switch for testing shared mailboxes through Microsoft Graph (#70):
+/// `MAILCRAFT_SHARED_MAILBOXES=1`. Off, Add Shared Mailbox isn't offered and none is read, so
+/// that nobody is asked for a shared mailbox's permission by a build that only reads one.
+fn shared_mailboxes_switch() -> bool {
+    let on = std::env::var("MAILCRAFT_SHARED_MAILBOXES").is_ok_and(|value| value.trim() == "1");
+    if on {
+        log::info!("shared mailboxes may be added and read (MAILCRAFT_SHARED_MAILBOXES=1, for testing)");
+    }
+    on
+}
+
 /// Runs without preferences (`MAILCRAFT_NO_PREFS`, agents' test runs) neither read nor write them,
 /// and keep their mailbox in memory only.
 fn prefs_enabled() -> bool {
@@ -1037,6 +1048,7 @@ fn main() -> eframe::Result {
             let (mailbox, path, unavailable) = first_mailbox(sample, mailbox_path);
             let (file_dialog, dialogs) = file_dialogs::hook(&cc.egui_ctx);
             let mut session = Session::new(mailbox);
+            session.shared_mailboxes = shared_mailboxes_switch();
             let kept = path.is_some();
             session.path = path;
             // A run that keeps its mailbox and its settings keeps downloaded pictures too.

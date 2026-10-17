@@ -15,6 +15,7 @@ const SHARED: &str = "support@example.org";
 /// A session with a Microsoft account kept in step through Graph, and a local one; their ids.
 fn session() -> (Session, Id, Id) {
     let mut s = Session::empty();
+    s.shared_mailboxes = true;
     let local = s.run("account.add", &json!({"email": "ada@example.org"})).unwrap()["id"].as_u64().unwrap();
     let owner = s.run("account.add", &json!({"email": OWNER, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     (s, local, owner)
@@ -78,6 +79,7 @@ fn a_shared_mailbox_is_added_under_a_microsoft_account_and_removed_again() {
 #[test]
 fn the_last_account_is_not_removed_with_its_shared_mailboxes() {
     let mut s = Session::empty();
+    s.shared_mailboxes = true;
     let owner = s.run("account.add", &json!({"email": OWNER, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     let shared = add(&mut s, json!({"address": SHARED})).unwrap();
     assert!(s.run("account.remove", &json!({"id": owner})).unwrap_err().to_string().contains("last account"));
@@ -150,4 +152,67 @@ fn a_shared_mailbox_keeps_its_address_and_its_owners_sign_in() {
     s.run("account.edit", &json!({"id": shared, "name": "Support", "kind": "imap", "incoming": {"host": "imap.example.org"}})).ok();
     let a = s.mailbox.account(shared).unwrap();
     assert_eq!((a.kind, a.incoming.is_none(), a.oauth.is_none(), a.shared_of.is_some()), (AccountKind::Microsoft, true, true, true));
+}
+
+#[test]
+fn what_is_changed_in_a_shared_mailbox_waits_here_and_nothing_of_it_is_asked_to_go_up() {
+    let (mut s, _, owner) = session();
+    let shared = add(&mut s, json!({"address": SHARED})).unwrap();
+    apply_graph_mail(&mut s, listing(shared, SHARED)).unwrap();
+    apply_graph_mail(&mut s, page(shared, SHARED, &["AAkA1", "AAkA2"])).unwrap();
+    // The owner's mailbox has the same ids: what goes up for one must never name the other's.
+    apply_graph_mail(&mut s, listing(owner, OWNER)).unwrap();
+    apply_graph_mail(&mut s, page(owner, OWNER, &["AAkA1"])).unwrap();
+    let theirs: Vec<Id> = s.mailbox.messages.values().filter(|m| m.account == shared).map(|m| m.id).collect();
+    s.run("mail.markRead", &json!({"ids": theirs})).unwrap();
+    s.run("mail.flag", &json!({"id": theirs[0]})).unwrap();
+    let inbox = s.mailbox.folder_of_kind(shared, FolderKind::Inbox).unwrap();
+    s.run("folder.new", &json!({"parent": inbox, "name": "Ours"})).unwrap();
+    s.view.folder = inbox;
+    let asked = graph_mail_request(&s, shared).unwrap();
+    assert!(asked.shared && asked.changes.is_empty() && asked.messages.is_empty() && asked.drafts.is_empty() && asked.sends.is_empty(), "{asked:?}");
+    assert!(!asked.links.is_empty(), "it is still read from where it got to");
+    // They wait here, counted, and are still there for when changes go up.
+    assert!(crate::cmd::graph_mail::unpushed(&s, shared) >= 3, "{}", crate::cmd::graph_mail::unpushed(&s, shared));
+    // The owner's own changes are the owner's alone.
+    let own = graph_mail_request(&s, owner).unwrap();
+    assert!(own.messages.is_empty() && own.changes.is_empty(), "{own:?}");
+}
+
+#[test]
+fn shared_mailboxes_are_off_until_they_are_switched_on_for_testing() {
+    let (mut s, _, _) = session();
+    let shared = add(&mut s, json!({"address": SHARED})).unwrap();
+    s.shared_mailboxes = false;
+    assert!(add(&mut s, json!({"address": "sales@example.org"})).unwrap_err().contains("MAILCRAFT_SHARED_MAILBOXES"));
+    assert!(graph_mail_request(&s, shared).is_err() && graph_fetch_request(&s, shared, None, 10).is_err());
+    // What was opened while they were on can still be closed.
+    s.run("account.removeSharedMailbox", &json!({"id": shared})).unwrap();
+}
+
+#[test]
+fn a_shared_mailbox_keeps_as_much_mail_whole_as_its_owners_account() {
+    let (mut s, _, owner) = session();
+    let shared = add(&mut s, json!({"address": SHARED})).unwrap();
+    apply_graph_mail(&mut s, listing(shared, SHARED)).unwrap();
+    apply_graph_mail(&mut s, page(shared, SHARED, &["AAkA1"])).unwrap();
+    // Each message is 30 MB: over the owner's 10 MB, under its Everything.
+    let theirs: Vec<Id> = s.mailbox.messages.values().filter(|m| m.account == shared).map(|m| m.id).collect();
+    for id in theirs {
+        if let Some(server) = s.mailbox.message_mut(id).ok().and_then(|m| m.server.as_mut()) {
+            server.size = 30 << 20;
+        }
+    }
+    // (A file may say anything of the shared mailbox's own: it isn't what counts.)
+    if let Ok(a) = s.mailbox.account_mut(shared) {
+        a.download_in_full = mailcraft_model::DownloadInFull::Everything;
+    }
+    assert!(graph_fetch_request(&s, shared, None, 10).unwrap().ids.is_empty());
+    if let Ok(a) = s.mailbox.account_mut(owner) {
+        a.download_in_full = mailcraft_model::DownloadInFull::Everything;
+    }
+    if let Ok(a) = s.mailbox.account_mut(shared) {
+        a.download_in_full = mailcraft_model::DownloadInFull::UpTo10Mb;
+    }
+    assert_eq!(graph_fetch_request(&s, shared, None, 10).unwrap().ids, ["AAkA1"]);
 }

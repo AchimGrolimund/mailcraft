@@ -121,11 +121,13 @@ fn info(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
             s.as_ref().map(|s| format!("{}{}", s.host, if s.security == Security::None { tl!(" (not encrypted)") } else { "" }))
         };
         let detail = match a.kind {
+            AccountKind::Microsoft if a.is_shared() && app.shared_refused.contains_key(&a.id) => {
+                tl!("Shared mailbox · No access: Microsoft won't open it for you. Send/Receive tries again").to_string()
+            }
             AccountKind::Microsoft if a.is_shared() => match &owner {
-                Some(owner) => crate::i18n::fmt(
-                    tl!("Shared mailbox · opened with {owner}'s sign-in · read through Microsoft Graph (testing)"),
-                    &[("owner", owner)],
-                ),
+                Some(owner) => {
+                    crate::i18n::fmt(tl!("Shared mailbox · opened with {owner}'s sign-in · read only for now (testing)"), &[("owner", owner)])
+                }
                 None => tl!("Shared mailbox · the account it was opened through is gone: remove it").to_string(),
             },
             AccountKind::Local => tl!("On this device only: no mail server").to_string(),
@@ -181,12 +183,14 @@ fn info(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
         {
             let _ = app.run("account.remove", json!({"id": a.id}));
         }
-        // Which messages are kept whole on this computer (R3.2).
-        if a.kind == AccountKind::Microsoft {
+        // Which messages are kept whole on this computer (R3.2); a shared mailbox keeps as much
+        // as its owner's account (#70).
+        if a.kind == AccountKind::Microsoft && !a.is_shared() {
             download_in_full(app, ui, a);
         }
         // A mailbox of the organisation that the owner was given Full Access to (#70).
-        if a.kind == AccountKind::Microsoft && !a.is_shared() {
+        // (Not for a personal Microsoft account, which has none; only while they are being tested.)
+        if app.session.shared_mailboxes && crate::shared_mailboxes::can_open_shared(a) {
             ui.horizontal(|ui| {
                 ui.add_space(12.0);
                 let link = ui.link(tl!("Add Shared Mailbox…")).on_hover_text(tl!(
