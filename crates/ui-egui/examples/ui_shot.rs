@@ -29,6 +29,8 @@
 //! security"` (and it fixes a security problem), `"same"` (the running version), or `"fails"`.
 //! And a Graph job (`{"host": {"graph": …}}`): `"consent"` (Microsoft wants the owner's
 //! permission first) or `"refused"` (it refused the sign-in); anything else answers with nothing.
+//! With a stand-in host, the copy of the mailbox kept before a switch to Microsoft Graph is never
+//! finished, so the switch's page keeps saying that it is being saved.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -59,6 +61,8 @@ struct Host {
     /// address it was for.
     sign_ins: Vec<(String, Sender<Result<Tokens, String>>)>,
     approvals: Vec<Sender<AdminConsentAnswer>>,
+    /// Copies of the mailbox being "written": never finished (see the header).
+    copies: Vec<Sender<Result<(), String>>>,
 }
 
 impl Host {
@@ -136,7 +140,7 @@ fn stand_in(host: &Arc<Mutex<Host>>) -> Services {
         let _ = tx.send(answer);
         rx
     }
-    let (signing, approving, updating, graphing) = (host.clone(), host.clone(), host.clone(), host.clone());
+    let (signing, approving, updating, graphing, copying) = (host.clone(), host.clone(), host.clone(), host.clone(), host.clone());
     Services {
         microsoft_client_id: "11111111-2222-3333-4444-555555555555".into(),
         lookup_mx: Some(Box::new(|_| answered(Ok(vec!["example-org.mail.protection.outlook.com".to_string()])))),
@@ -173,6 +177,13 @@ fn stand_in(host: &Arc<Mutex<Host>>) -> Services {
             answered(GraphResult { account: request.account.id, consent_needed, sign_in_refused, ..Default::default() })
         })),
         sync: Some(Box::new(|request| answered(SyncResult { account: request.account.id, ..Default::default() }))),
+        write_copy: Some(Box::new(move |_, _| {
+            let (tx, rx) = channel();
+            if let Ok(mut host) = copying.lock() {
+                host.copies.push(tx);
+            }
+            rx
+        })),
         update_check: Some(Box::new(move |_| {
             let found = updating.lock().map(|host| host.update.clone()).unwrap_or_default();
             let (version, security) = match found.split_once(' ') {

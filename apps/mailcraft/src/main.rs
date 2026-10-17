@@ -793,6 +793,7 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
     let approval_ctx = ctx.clone();
     let fetch_ctx = ctx.clone();
     let update_ctx = ctx.clone();
+    let copy_ctx = ctx.clone();
     let (sync_ctx, sign_in_ctx, graph_ctx, mx_ctx, test_ctx) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone(), ctx);
     let sync_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel = sync_cancel.clone();
@@ -835,6 +836,11 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
         })),
         test_account: Some(Box::new(move |account, secret| {
             background(&test_ctx, "account check", move || mailcraft_net::test_account(&account, &secret).map_err(|e| e.to_string()))
+        })),
+        // The copy of the mailbox kept before an account switches to Microsoft Graph: a large
+        // mailbox takes a while to write, and the window shows a spinner meanwhile (#118).
+        write_copy: Some(Box::new(move |path, mailbox| {
+            background(&copy_ctx, "mailbox copy", move || mailcraft_engine::store::save_single(&path, &mailbox).map(|_| ()))
         })),
         // A picture a message keeps on the web, once the owner asked for that message's pictures.
         // The address is the message's choice, so `fetch` checks where it leads before it goes

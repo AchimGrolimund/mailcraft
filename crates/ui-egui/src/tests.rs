@@ -1708,3 +1708,24 @@ fn imported_mail_for_a_microsoft_account_stays_in_a_local_folder_and_says_why() 
     assert_eq!(said, "Microsoft doesn't let a mail program put received mail into your mailbox; it stays in a local folder.");
     assert_ne!(a.session.mailbox.message(imported).unwrap().folder, inbox);
 }
+
+/// File › Info for a Microsoft account: what comes after its card (the download choice, the link
+/// to connect the calendar) is laid out below the card, never over it or over each other (#121).
+#[test]
+fn info_account_card_keeps_what_follows_below_it() {
+    use egui_kittest::kittest::Queryable;
+    let mut a = app();
+    if let Some(acc) = a.session.mailbox.accounts.first_mut() {
+        acc.kind = mailcraft_model::AccountKind::Microsoft;
+    }
+    a.execute("ui.backstage", json!({"value": true, "page": "info"})).unwrap();
+    let mut h = window(a);
+    h.run_steps(3);
+    let rect = |n: egui_kittest::Node<'_>| n.rect();
+    let settings = rect(h.get_by_label("Settings"));
+    let download = rect(h.get_by_label_contains("Download messages in full"));
+    // The card is 58 pt, and Settings sits in its middle: the download line starts below the
+    // card's bottom edge, with the page's spacing between them.
+    let card_bottom = settings.center().y + 29.0;
+    assert!(download.min.y >= card_bottom + 8.0, "download {download:?} under the card ending at {card_bottom}");
+}

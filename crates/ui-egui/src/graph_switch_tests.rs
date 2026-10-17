@@ -344,3 +344,73 @@ fn after_signing_in_the_mail_run_goes_ahead() {
     assert_eq!(asked.lock().unwrap().len(), 2);
     assert!(!status(&h).starts_with("Signed in, but"), "what the last run said is over: {}", status(&h));
 }
+
+/// A host that writes the copy in the background: the test says when it is done, and how.
+type Done = Arc<Mutex<Option<(std::path::PathBuf, mailcraft_model::Mailbox, mpsc::Sender<Result<(), String>>)>>>;
+
+fn copying_host(app: &mut MailApp) -> Done {
+    let pending: Done = Arc::default();
+    let kept = pending.clone();
+    app.services.write_copy = Some(Box::new(move |path, mailbox| {
+        let (tx, rx) = mpsc::channel();
+        *kept.lock().unwrap() = Some((path, mailbox, tx));
+        rx
+    }));
+    pending
+}
+
+/// While the copy of the mailbox is written (off the window's thread), the page says so with a
+/// spinner and nothing has changed; the switch is made once the copy is on disk (#118).
+#[test]
+fn the_page_says_the_copy_is_being_saved_and_the_switch_waits_for_it() {
+    let (mut app, account, dir) = app("copying");
+    let pending = copying_host(&mut app);
+    let mut h = window(app);
+    click(&mut h, "Switch");
+    assert_eq!(page(&h), Some("graphSwitch"));
+    assert!(says(&h, "Saving a copy of your mailbox before the switch…"));
+    assert!(h.state().session.mailbox.account(account).unwrap().on_imap_with_microsoft(), "nothing changes before the copy is saved");
+    assert!(h.state_mut().switch_to_graph(account, "switch").is_err(), "one copy at a time");
+    h.run_steps(4);
+    assert!(says(&h, "Saving a copy of your mailbox before the switch…"));
+    // The host writes it, and says so.
+    let (path, mailbox, tx) = pending.lock().unwrap().take().unwrap();
+    assert_eq!(path, dir.join("mailbox (backup 2026-10-14).mailcraft"));
+    assert_eq!(mailbox.account(account).map(|a| a.graph_switch), Some(GraphSwitch::NotAsked));
+    mailcraft_engine::store::save_single(&path, &mailbox).unwrap();
+    tx.send(Ok(())).unwrap();
+    h.run_steps(6);
+    assert_eq!(page(&h), None);
+    assert_eq!(h.state().session.mailbox.account(account).unwrap().kind, AccountKind::Microsoft);
+    assert!(status(&h).contains("mailbox (backup 2026-10-14).mailcraft"), "{}", status(&h));
+    // The engine took that copy and wrote no other.
+    assert!(!dir.join("mailbox (backup 2026-10-14, 2).mailcraft").exists());
+    assert!(h.state().session.graph_switch_backup.is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A copy that can't be written changes nothing: the account stays on IMAP, and the status bar
+/// says why.
+#[test]
+fn a_copy_that_cant_be_written_leaves_the_account_on_imap() {
+    let (mut app, account, dir) = app("copy-fails");
+    let pending = copying_host(&mut app);
+    let mut h = window(app);
+    click(&mut h, "Switch");
+    let (_, _, tx) = pending.lock().unwrap().take().unwrap();
+    tx.send(Err("No space left on device".into())).unwrap();
+    h.run_steps(6);
+    assert_eq!(page(&h), None);
+    let a = h.state().session.mailbox.account(account).unwrap();
+    assert!(a.on_imap_with_microsoft());
+    assert_ne!(a.graph_switch, GraphSwitch::Switching);
+    assert!(status(&h).contains("couldn't be written, so nothing was changed (No space left on device)"), "{}", status(&h));
+    // A host that gave up says as much.
+    let pending = copying_host(h.state_mut());
+    h.state_mut().switch_to_graph(account, "switch").unwrap();
+    drop(pending.lock().unwrap().take());
+    h.run_steps(6);
+    assert!(h.state().session.mailbox.account(account).unwrap().on_imap_with_microsoft());
+    assert!(status(&h).contains("stopped unexpectedly"), "{}", status(&h));
+    let _ = std::fs::remove_dir_all(&dir);
+}

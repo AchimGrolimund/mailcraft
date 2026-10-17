@@ -119,6 +119,11 @@ pub struct Services {
     /// Desktop: write the mailbox file on a background thread, so the window never waits for the
     /// disk. Without one (tests, scripts) the mailbox is saved in place through `file.save`.
     pub saver: Option<Box<dyn mailcraft_engine::io::BackgroundSave>>,
+    /// Desktop: write a copy of the mailbox to a file (as one file that holds everything) on a
+    /// background thread: the copy kept before an account switches to Microsoft Graph, which can
+    /// take a while for a large mailbox. Without one (tests, scripts) the copy is written in
+    /// place by `account.graphSwitch`.
+    pub write_copy: Option<Box<dyn Fn(std::path::PathBuf, mailcraft_model::Mailbox) -> Receiver<Result<(), String>>>>,
     /// Desktop: download one picture a message refers to on the web, on a background thread,
     /// once the owner has asked for that message's pictures ([`reading::remote`]). The address
     /// is the message's own choice: the host checks where it leads before going there, takes
@@ -818,6 +823,9 @@ pub struct MailApp {
     /// Accounts switching to Microsoft Graph for which the switch was tried since their last
     /// Send/Receive ([`graph_switch`]).
     graph_switch_tried: std::collections::HashSet<Id>,
+    /// The copy of the mailbox being written before an account switches to Microsoft Graph
+    /// ([`graph_switch`]): the window shows that it is working until it is done.
+    pub(crate) graph_switch_copy: Option<graph_switch::Copying>,
     /// Accounts whose waiting switch was offered "Switch without Them" in this run.
     graph_switch_waiting_shown: std::collections::HashSet<Id>,
     /// Send/Receive by itself when the app starts and every few minutes (on by default; how often
@@ -928,6 +936,7 @@ impl MailApp {
             offer_graph_switch: false,
             graph_switch_shown: Default::default(),
             graph_switch_tried: Default::default(),
+            graph_switch_copy: None,
             graph_switch_waiting_shown: Default::default(),
             auto_sync: true,
             last_auto_sync: 0.0,
@@ -973,6 +982,10 @@ impl MailApp {
     pub fn apply_prefs(&mut self, ui: UiState) {
         self.ui = ui;
         self.ui.backstage = false;
+        // As in Outlook, a run starts on Home, and File on Info: where the owner last was isn't
+        // where they want to start.
+        self.ui.tab = "Home".into();
+        self.ui.backstage_page = "info".into();
         self.ui.folder_pane_width = if self.ui.folder_pane_width.is_finite() { self.ui.folder_pane_width.clamp(150.0, 500.0) } else { 230.0 };
         self.ui.list_width = if self.ui.list_width.is_finite() { self.ui.list_width.clamp(240.0, 900.0) } else { 380.0 };
         self.ui.collapsed_folders.truncate(10_000);
@@ -1119,6 +1132,9 @@ impl MailApp {
             "ui.tab" => {
                 let Some(tab) = s("tab") else { return Some(Err("missing `tab`".into())) };
                 if tab == "File" {
+                    if !self.ui.backstage {
+                        self.ui.backstage_page = "info".into();
+                    }
                     self.ui.backstage = true;
                 } else if ribbon::tabs(self).contains(&tab) {
                     self.ui.tab = tab.to_string();
@@ -1130,7 +1146,12 @@ impl MailApp {
                 Ok(json!({"tab": self.ui.tab}))
             }
             "ui.backstage" => {
+                let was_open = self.ui.backstage;
                 self.ui.backstage = b("value").unwrap_or(!self.ui.backstage);
+                // As in Outlook, File opens on Info; a page is kept only while it stays open.
+                if self.ui.backstage && !was_open {
+                    self.ui.backstage_page = "info".into();
+                }
                 if let Some(page) = s("page") {
                     if !backstage::PAGES.iter().any(|(code, _, _)| *code == page) {
                         return Some(Err(format!("no File page \"{page}\"")));
@@ -2272,6 +2293,7 @@ impl MailApp {
         if std::mem::take(&mut self.offer_setup) && self.dialog.is_none() && self.needs_setup() {
             self.dialog = dialogs::Dialog::open("account", self, &json!({}));
         }
+        self.poll_graph_switch_copy();
         self.tick_graph_switch();
         let _ = files::poll(self);
         files::drain_inbox(self);
