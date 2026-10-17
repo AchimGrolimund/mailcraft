@@ -315,6 +315,8 @@ pub fn take_fetched(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, id: 
     m.body = read.body;
     m.attachments = read.attachments;
     m.headers = read.headers;
+    // What it is now is all of it: nothing the mailbox kept on disk of its preview is its body.
+    m.kept = None;
     m.unfetched = false;
     // A draft as the server has it now: what a change made here is worked out from.
     if m.draft {
@@ -385,5 +387,18 @@ mod tests {
         let m = mb.message(id).unwrap();
         assert_eq!((m.subject.as_str(), m.body.text.trim(), m.from.email.as_str()), ("The whole of it", "All of the text.", "kit@example.org"));
         assert!(!m.unfetched && m.read && m.flag == FlagStatus::Flagged && m.folder == folder && m.server.as_ref().unwrap().id == "AAkA1");
+    }
+
+    #[test]
+    fn a_message_fetched_whole_is_not_given_back_what_was_kept_on_disk_of_its_preview() {
+        let (mut mb, account, _) = mailbox();
+        let id = mb.messages.values().find(|m| m.subject == "Preview 1").unwrap().id;
+        // Its preview's HTML is on disk, not in memory (R6.1).
+        let stale = mailcraft_model::ContentRef { sha256: [7; 32], len: 40 };
+        mb.message_mut(id).unwrap().kept = Some(Box::new(mailcraft_model::KeptBody { html: Some(stale), ..Default::default() }));
+        let mime = b"From: Kit <kit@example.org>\r\nSubject: Plain\r\nContent-Type: text/plain\r\n\r\nOnly text.\r\n";
+        assert!(take_fetched(&mut mb, &mut ServerIndex::default(), account, "AAkA1", mime));
+        let m = mb.message(id).unwrap();
+        assert!(m.kept.is_none() && !m.body_is_kept() && m.body.html.is_none(), "{:?}", m.kept);
     }
 }

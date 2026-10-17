@@ -12,7 +12,7 @@ fn a(name: &str, email: &str) -> Address {
 }
 
 fn file(name: &str, mime: &str, data: &[u8]) -> Attachment {
-    Attachment { name: name.into(), mime: mime.into(), content_id: String::new(), inline: false, data: Arc::new(data.to_vec()) }
+    Attachment { name: name.into(), mime: mime.into(), content_id: String::new(), inline: false, data: Arc::new(data.to_vec()), kept: None }
 }
 
 fn picture(name: &str, mime: &str, content_id: &str, data: &[u8]) -> Attachment {
@@ -408,6 +408,7 @@ fn attachment() -> impl Strategy<Value = Attachment> {
         content_id,
         inline,
         data: Arc::new(data),
+        kept: None,
     })
 }
 
@@ -471,6 +472,7 @@ fn message() -> impl Strategy<Value = Message> {
             incomplete: false,
             server_draft: None,
             held: String::new(),
+            kept: None,
         },
     )
 }

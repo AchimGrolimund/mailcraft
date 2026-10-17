@@ -120,10 +120,14 @@ pub fn write_mailbox(mb: &Mailbox) -> Result<Vec<u8>, String> {
 }
 
 /// Open a mailbox file by path: one self-contained file, or a file with its content folder
-/// beside it (`crate::store`).
+/// beside it (`crate::store`), with every body and attachment in memory: what comes back is the
+/// whole mailbox, to use without its file. A program that works on the mailbox opens it with
+/// `store::open` instead and reads what stays on disk when it wants it (`Session::content`).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn open_path(path: &std::path::Path) -> Result<Mailbox, String> {
-    crate::store::open(path).map(|opened| opened.mailbox)
+    let mut mailbox = crate::store::open(path)?.mailbox;
+    crate::store::load_all(path, &mut mailbox)?;
+    Ok(mailbox)
 }
 
 /// A host's way of keeping a mailbox file up to date without whoever changed the mailbox waiting
@@ -141,6 +145,20 @@ pub trait BackgroundSave {
     /// Wait until nothing handed in is waiting or being written (the program is closing).
     fn flush(&self);
 }
+
+/// Where a host gets the content of a mailbox that isn't in memory: the attachments, and the
+/// bodies of mail older than the memory the mailbox was given when it was opened, which the
+/// desktop's `store` keeps in the content folder beside the mailbox file ([`ContentRef`]). The
+/// engine asks for a part when something needs its bytes ([`Session::content`]); nothing is
+/// fetched for a message nobody looks at. The browser keeps every mailbox in memory and has no
+/// source.
+pub trait ContentSource: Send + Sync {
+    /// The bytes kept under `r` for the mailbox file at `mailbox`, checked against the length and
+    /// SHA-256 the reference names (anything else is "missing or damaged", never bytes).
+    fn fetch(&self, mailbox: &std::path::Path, r: &ContentRef) -> Result<std::sync::Arc<Vec<u8>>, String>;
+}
+
+pub use mailcraft_model::ContentRef;
 
 /// How writing one state of a mailbox went ([`BackgroundSave::reports`]).
 #[derive(Clone, Debug, PartialEq, Eq)]

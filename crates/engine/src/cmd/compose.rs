@@ -122,9 +122,24 @@ fn new(s: &mut Session, v: &Value) -> CmdResult {
     Ok(json!({"composing": true}))
 }
 
+/// The message a command answers, forwards or opens again, whole: its body and its files in
+/// memory, fetched from where the mailbox keeps them when they weren't (`Session::content`).
 fn source_message(s: &Session, v: &Value) -> Result<Message, CmdError> {
     let id = p::id(v, "id").or(s.sel.focus()).ok_or_else(|| fail("select a message first"))?;
-    s.mailbox.message(id).cloned().ok_or_else(|| fail(format!("no message with id {id}")))
+    if s.mailbox.message(id).is_none() {
+        return Err(fail(format!("no message with id {id}")));
+    }
+    s.loaded_message(id).map(|m| Message::clone(&m))
+}
+
+/// The message a reply answers, with what the reply quotes of it in memory: its body and the
+/// pictures its HTML shows (`Session::loaded_for_reply`); its other files stay where they are.
+fn reply_source(s: &Session, v: &Value) -> Result<Message, CmdError> {
+    let id = p::id(v, "id").or(s.sel.focus()).ok_or_else(|| fail("select a message first"))?;
+    if s.mailbox.message(id).is_none() {
+        return Err(fail(format!("no message with id {id}")));
+    }
+    s.loaded_for_reply(id).map(|m| Message::clone(&m))
 }
 
 /// `RE: subject`, unless it already starts that way.
@@ -207,7 +222,11 @@ fn shown_pictures(m: &Message, html: &str) -> Vec<Attachment> {
 }
 
 fn respond(s: &mut Session, v: &Value, mode: ComposeMode) -> CmdResult {
-    let m = source_message(s, v)?;
+    // A forward carries every file; a reply only quotes the text and the pictures it shows.
+    let m = match mode {
+        ComposeMode::Forward => source_message(s, v)?,
+        _ => reply_source(s, v)?,
+    };
     let mine: Vec<String> = s.mailbox.accounts.iter().map(|a| a.email.to_lowercase()).filter(|e| !e.is_empty()).collect();
     let is_mine = |a: &Address| mine.contains(&a.email.to_lowercase());
     let (to, cc) = match mode {
@@ -595,6 +614,7 @@ fn attachments_of(c: &Compose, message_id: &str) -> Vec<Attachment> {
             content_id: signature_cid(p, message_id),
             inline: true,
             data: p.data.clone(),
+            kept: None,
         }));
     }
     if c.format == BodyFormat::Html
@@ -665,7 +685,9 @@ fn send(s: &mut Session, _: &Value) -> CmdResult {
 
 fn save_draft(s: &mut Session, _: &Value) -> CmdResult {
     let c = s.compose.clone().ok_or_else(|| fail("no message is being written"))?;
-    let old = c.draft.and_then(|d| s.mailbox.message(d).cloned());
+    // Whole, so that what the server had of it is worked out from its real content (R6.1); as it
+    // is when that can't be read.
+    let old = c.draft.and_then(|d| s.loaded_message(d).ok().map(|m| Message::clone(&m)).or_else(|| s.mailbox.message(d).cloned()));
     let mut m = build_as(s, &c, false, old.as_ref().map(|o| o.message_id.as_str()).filter(|id| !id.is_empty()))?;
     m.draft = true;
     m.folder = s.mailbox.folder_of_kind(m.account, FolderKind::Drafts).ok_or_else(|| fail("this account has no Drafts folder"))?;
