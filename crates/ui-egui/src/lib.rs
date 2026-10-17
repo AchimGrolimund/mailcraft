@@ -2707,6 +2707,10 @@ impl MailApp {
     /// The window's close button. MailCraft saves by itself, so closing only waits for a message
     /// being written: `false` keeps the window open and asks about it.
     pub fn close_requested(&mut self) -> bool {
+        // What closing waited for being written lets this one close request through, and no
+        // later one: held below by a question, the close the owner asks for next waits again for
+        // whatever the saver is at by then.
+        let (ready, anyway) = (std::mem::take(&mut self.close_ready), std::mem::take(&mut self.close_anyway));
         if self.session.compose.as_ref().is_some_and(|c| c.dirty) {
             self.dialog = dialogs::Dialog::open("discardDraft", self, &json!({"then": "quit"}));
             return false;
@@ -2716,7 +2720,7 @@ impl MailApp {
             return false;
         }
         // What closing waited for is written, or couldn't be (the owner was told): it closes.
-        if self.close_ready || self.close_anyway {
+        if ready || anyway {
             return true;
         }
         // What is still to be written (the first save after a large download can take minutes)

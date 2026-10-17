@@ -325,6 +325,53 @@ fn a_save_that_fails_while_closing_keeps_the_window_open_until_closed_again() {
 }
 
 #[test]
+fn a_close_held_by_a_question_waits_for_the_saver_again_next_time() {
+    // Review of R6.3: what closing waited for being written let every later close through, so a
+    // close held by "discard the draft?" and asked for again later skipped the wait for a save
+    // the saver was in the middle of by then.
+    let tmp = Temp::new("close-held");
+    let path = tmp.0.join("mailbox.mailcraft");
+    let ctx = egui::Context::default();
+    let script = Arc::new(Scripted::default());
+    let mut app = app(&path, Box::new(Handle(script.clone())));
+    let busy = SaveProgress { stage: SaveStage::Messages, done: 10, total: 200_000, millis: 30_000 };
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    let rev = app.session.rev();
+    *script.progress.lock().unwrap() = Some(busy);
+    assert!(!app.close_requested());
+    // Meanwhile a message is being written, and something is typed into it.
+    app.session.run("mail.new", &json!({})).unwrap();
+    app.session.compose.as_mut().unwrap().dirty = true;
+    // Written: the window would close, but the draft is asked about and the owner keeps it.
+    *script.progress.lock().unwrap() = None;
+    script.answers.lock().unwrap().push(SaveReport { path: path.clone(), rev, result: Ok(()) });
+    app.logic(&ctx);
+    assert!(app.quit_requested);
+    assert!(!app.close_requested(), "the draft is asked about");
+    app.quit_requested = false;
+    app.dialog = None;
+    app.session.compose = None;
+    // Later, the saver is in the middle of a long save again: closing waits for it again.
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    *script.progress.lock().unwrap() = Some(busy);
+    assert!(!app.close_requested(), "a later close skipped the wait for the saver");
+    assert_eq!(app.saving_inspect()["closing"], json!(true));
+    // A failed save lets the next close through, and only the next.
+    let rev = app.session.rev();
+    *script.progress.lock().unwrap() = None;
+    script.answers.lock().unwrap().push(SaveReport { path: path.clone(), rev, result: Err("the disk is full".into()) });
+    app.logic(&ctx);
+    app.session.run("mail.new", &json!({})).unwrap();
+    app.session.compose.as_mut().unwrap().dirty = true;
+    assert!(!app.close_requested(), "the draft is asked about");
+    app.session.compose = None;
+    *script.progress.lock().unwrap() = Some(busy);
+    assert!(!app.close_requested(), "a failure long ago let a later close skip the wait");
+}
+
+#[test]
 fn save_new_and_open_never_write_on_the_window_while_the_saver_is_busy() {
     // The saver is in the middle of a save that takes minutes (it never finishes here): nothing
     // the window does writes the file itself or waits for the disk.

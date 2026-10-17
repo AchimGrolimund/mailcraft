@@ -1035,7 +1035,11 @@ fn a_large_first_save_runs_in_the_background_says_how_far_it_has_got_and_is_whol
     let midway = |stage: SaveStage| seen.iter().any(|p| p.stage == stage && p.done > 0 && p.done < p.total);
     assert!(midway(SaveStage::Messages) && midway(SaveStage::Content), "{seen:?}");
     assert!(seen.iter().filter(|p| p.stage == SaveStage::Messages).all(|p| p.total == 240));
-    assert!(seen.windows(2).all(|w| w[1].millis >= w[0].millis || w[1].stage == SaveStage::Waiting));
+    // The time the save has been at it only grows. A sweep that follows it is timed from its own
+    // start (review of R6.3: counting it in failed this under load).
+    let saving: Vec<&SaveProgress> = seen.iter().filter(|p| p.stage != SaveStage::Sweeping).collect();
+    assert!(saving.windows(2).all(|w| w[1].millis >= w[0].millis || w[1].stage == SaveStage::Waiting), "{seen:?}");
+    assert!(seen.iter().skip_while(|p| p.stage != SaveStage::Sweeping).all(|p| p.stage == SaveStage::Sweeping), "{seen:?}");
     // And the file is whole.
     assert_eq!(saver.reports(), [SaveReport { path: path.clone(), rev: 1, result: Ok(()) }]);
     assert!(whole(&path) == mb);
