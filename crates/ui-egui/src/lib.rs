@@ -2633,25 +2633,36 @@ impl MailApp {
     }
 }
 
+/// What the owner is told when part of the mailbox file was damaged and left out as it opened.
+pub fn damaged_mailbox_notice() -> String {
+    tl!("Part of the mailbox file is damaged and was left out, so some recent changes may be missing. The file as it was is kept beside it the next time the mailbox is saved.").to_string()
+}
+
 /// What the status bar says after a command the user ran, when it is worth saying.
 fn feedback(id: &str, v: &Value) -> Option<String> {
     let n = |k: &str| v.get(k).and_then(Value::as_u64);
     let plural = |n: u64, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
     match id {
         "compose.send" if v.get("queued").and_then(Value::as_bool) == Some(true) => Some(tl!("In the Outbox: it is on its way").to_string()),
-        // A mailbox whose content folder lost something still opens; say how much is missing.
+        // A mailbox whose content folder lost something still opens; say how much is missing. A
+        // mailbox file damaged part of the way opens as far as it can be read: that is said first.
         "file.open" => {
-            let lost = n("unavailable").filter(|c| *c > 0).map(|c| {
-                format!(
-                    "{} {}",
-                    plural(c, tl!("part of a message"), tl!("parts of messages")),
-                    tl!("couldn't be read from the mailbox's content folder")
-                )
-            });
+            let damaged = ["lostSaves", "unfinished", "lostRecords"].into_iter().any(|k| n(k).is_some_and(|c| c > 0));
+            let lost = if damaged {
+                Some(damaged_mailbox_notice())
+            } else {
+                n("unavailable").filter(|c| *c > 0).map(|c| {
+                    format!(
+                        "{} {}",
+                        plural(c, tl!("part of a message"), tl!("parts of messages")),
+                        tl!("couldn't be read from the mailbox's content folder")
+                    )
+                })
+            };
             // A mailbox whose Favorites were read another way than Microsoft Graph: said once.
             let graph = n("favoritesNowGraph").filter(|c| *c > 0).map(|_| tl!(favorites_sync::FAVORITES_NOW_GRAPH).to_string());
             match (lost, graph) {
-                (Some(lost), Some(graph)) => Some(format!("{lost}. {graph}")),
+                (Some(lost), Some(graph)) => Some(format!("{}. {graph}", lost.trim_end_matches('.'))),
                 (lost, graph) => lost.or(graph),
             }
         }

@@ -55,8 +55,9 @@ USAGE:
 /// keeps it, with its messages' content in the folder `<file>.blobs` beside it.
 fn open(path: &str) -> Result<Session, String> {
     let opened = mailcraft_engine::store::open(std::path::Path::new(path))?;
-    if opened.unavailable > 0 {
-        eprintln!("warning: {path}: {} bodies or attachments are missing from its content folder, or damaged", opened.unavailable);
+    // Whatever of it couldn't be read: damaged saves left out, missing content.
+    if let Some(notice) = opened.notice() {
+        eprintln!("warning: {path}: {notice}");
     }
     let mut s = Session::new(opened.mailbox);
     s.path = Some(path.into());
@@ -612,7 +613,7 @@ mod tests {
         let kept = file("kept.mailcraft");
         run(&strings(&["import", &kept, &eml])).unwrap();
         assert!(std::path::Path::new(&format!("{kept}.blobs")).is_dir());
-        assert!(!std::fs::read_to_string(&kept).unwrap().contains("Line 150 of a long message"));
+        assert!(!String::from_utf8_lossy(&std::fs::read(&kept).unwrap()).contains("Line 150 of a long message"));
         let s = open(&kept).unwrap();
         let wrote = long.replace("\r\n", "\n");
         let text = |s: &Session| s.mailbox.messages.values().next().unwrap().body.text.replace("\r\n", "\n");

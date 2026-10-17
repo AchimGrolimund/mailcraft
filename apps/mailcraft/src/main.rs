@@ -894,29 +894,36 @@ fn build_sha() -> &'static str {
     option_env!("MAILCRAFT_BUILD_SHA").map(|s| s.get(..8).unwrap_or(s)).unwrap_or("dev")
 }
 
-/// The mailbox to start with, the file it is kept in (none for the sample, or without prefs) and
-/// how many bodies and attachments couldn't be read back from the content folder beside it.
-fn first_mailbox(sample: bool, chosen: Option<PathBuf>) -> (Mailbox, Option<PathBuf>, usize) {
+/// The mailbox to start with, the file it is kept in (none for the sample, or without prefs),
+/// how many bodies and attachments couldn't be read back from the content folder beside it, and
+/// whether part of the mailbox file itself was damaged and left out.
+fn first_mailbox(sample: bool, chosen: Option<PathBuf>) -> (Mailbox, Option<PathBuf>, usize, bool) {
     let now = mailcraft_time::now();
     if sample {
-        return (mailcraft_engine::sample::mailbox(now, mailcraft_time::local_offset_minutes(now)), None, 0);
+        return (mailcraft_engine::sample::mailbox(now, mailcraft_time::local_offset_minutes(now)), None, 0, false);
     }
     let ours = chosen.is_none();
     let path = chosen.or_else(|| default_mailbox_path().filter(|_| prefs_enabled()));
-    let Some(path) = path else { return (Mailbox::with_local_account("", ""), None, 0) };
+    let Some(path) = path else { return (Mailbox::with_local_account("", ""), None, 0, false) };
     if !path.exists() {
         // A first start: the settings folder has to be there for the mailbox to be saved in it.
         if ours && let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        return (Mailbox::with_local_account("", ""), Some(path), 0);
+        return (Mailbox::with_local_account("", ""), Some(path), 0, false);
     }
     match mailcraft_engine::store::open(&path) {
-        Ok(opened) => (opened.mailbox, Some(path), opened.unavailable),
+        Ok(opened) => {
+            if let Some(notice) = opened.notice() {
+                log::warn!("{}: {notice}", path.display());
+            }
+            let damaged = opened.lost_saves > 0 || opened.unfinished > 0 || opened.lost_records > 0;
+            (opened.mailbox, Some(path), opened.unavailable, damaged)
+        }
         Err(e) => {
             // Never write over a mailbox that couldn't be read: start empty, keep nothing, say why.
             log::error!("{e}");
-            (Mailbox::with_local_account("", ""), None, 0)
+            (Mailbox::with_local_account("", ""), None, 0, false)
         }
     }
 }
@@ -1034,7 +1041,7 @@ fn main() -> eframe::Result {
         "MailCraft",
         options,
         Box::new(move |cc| {
-            let (mailbox, path, unavailable) = first_mailbox(sample, mailbox_path);
+            let (mailbox, path, unavailable, damaged) = first_mailbox(sample, mailbox_path);
             let (file_dialog, dialogs) = file_dialogs::hook(&cc.egui_ctx);
             let mut session = Session::new(mailbox);
             let kept = path.is_some();
@@ -1047,7 +1054,9 @@ fn main() -> eframe::Result {
             if let Some(path) = &app.session.path {
                 app.services.saver = background_saver(&cc.egui_ctx, path);
             }
-            if unavailable > 0 {
+            if damaged {
+                app.status(mailcraft_ui_egui::damaged_mailbox_notice());
+            } else if unavailable > 0 {
                 app.status(format!("{unavailable} bodies or attachments are missing from the mailbox's content folder, or damaged."));
             }
             // A mailbox whose Outlook Favorites were read another way than Microsoft Graph, which
