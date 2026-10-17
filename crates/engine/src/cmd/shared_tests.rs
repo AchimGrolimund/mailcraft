@@ -216,3 +216,24 @@ fn a_shared_mailbox_keeps_as_much_mail_whole_as_its_owners_account() {
     }
     assert_eq!(graph_fetch_request(&s, shared, None, 10).unwrap().ids, ["AAkA1"]);
 }
+
+#[test]
+fn a_shared_mailbox_and_its_link_to_its_owner_survive_a_save_and_a_reopen() {
+    let (mut s, _, owner) = session();
+    let shared = add(&mut s, json!({"address": SHARED})).unwrap();
+    apply_graph_mail(&mut s, listing(shared, SHARED)).unwrap();
+    apply_graph_mail(&mut s, page(shared, SHARED, &["AAkA1"])).unwrap();
+    let dir = std::env::temp_dir().join(format!("mailcraft-shared-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("shared.mailcraft");
+    crate::store::save(&path, &s.mailbox).unwrap();
+    // Saved again after a change, as the log of records has it, then opened afresh.
+    crate::store::save(&path, &s.mailbox).unwrap();
+    let opened = crate::store::open(&path).unwrap().mailbox;
+    assert_eq!(opened.account(shared).and_then(|a| a.shared_of), Some(owner));
+    assert_eq!(opened.owner_of(shared).map(|o| o.id), Some(owner));
+    assert!(opened.folder_by_server(shared, "in").is_some());
+    assert_eq!(opened.messages.values().filter(|m| m.account == shared).count(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
