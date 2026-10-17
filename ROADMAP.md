@@ -2,7 +2,7 @@
 
 **Stage: early alpha** · next: beta, as the project defines it, by the roadmap reset
 
-> **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-17 · **Change:** minor (#120: Send/Receive Progress; R6.3: the first save after a large download in the background, with progress; R6.1: attachments and older bodies stay on disk; R6: the mailbox file is a log of records; v0.4.3 prepared; R7.3: told when a new version is out; #103: a sign-in as someone else is asked about, never taken silently; R1: docs cleanup, no citations of private plans, releasing and contributing as they are, a revision history here; R3.7: the switch from IMAP to Graph, no switch for testing; R1: quitting on macOS through craft-quit; R3.5: undo for Microsoft accounts kept in step through Graph; R3.6: imported mail for a Microsoft account goes to a local folder; R3.4.2: sending through Graph, held messages, R3.4 done; R3.4.1: drafts up through Graph; R3.3 follow-up: a refused delete for good is put back at once; R3.3.2: message changes up through Graph, R3.3 done; R3.3.1: changes of messages in the Graph stand-in; R1: CodeQL triage, logs carry no addresses; D2: About ▸ Contributors; v0.4.1: MCP agents get only what the owner allows; R1: security hardening; R3.2.3: messages fetched whole; R3.2.2: mail down through Graph; v0.4.0; R3.2.1: messages in the Graph stand-in; D1: Copy Diagnostics in the title bar; R4.5: rich signatures with a logo; R3.1: Graph folders behind the switch for testing; R5: sign-ins remembered on Linux; R2: Exchange Web Services removed; R4: rich-text compose; R4.2: the rich-text editor) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+> **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-17 · **Change:** minor (After beta: features ranked; #120: Send/Receive Progress; R6.3: the first save after a large download in the background, with progress; R6.1: attachments and older bodies stay on disk; R6: the mailbox file is a log of records; v0.4.3 prepared; R7.3: told when a new version is out; #103: a sign-in as someone else is asked about, never taken silently; R1: docs cleanup, no citations of private plans, releasing and contributing as they are, a revision history here; R3.7: the switch from IMAP to Graph, no switch for testing; R1: quitting on macOS through craft-quit; R3.5: undo for Microsoft accounts kept in step through Graph; R3.6: imported mail for a Microsoft account goes to a local folder; R3.4.2: sending through Graph, held messages, R3.4 done; R3.4.1: drafts up through Graph; R3.3 follow-up: a refused delete for good is put back at once; R3.3.2: message changes up through Graph, R3.3 done; R3.3.1: changes of messages in the Graph stand-in; R1: CodeQL triage, logs carry no addresses; D2: About ▸ Contributors; v0.4.1: MCP agents get only what the owner allows; R1: security hardening; R3.2.3: messages fetched whole; R3.2.2: mail down through Graph; v0.4.0; R3.2.1: messages in the Graph stand-in; D1: Copy Diagnostics in the title bar; R4.5: rich signatures with a logo; R3.1: Graph folders behind the switch for testing; R5: sign-ins remembered on Linux; R2: Exchange Web Services removed; R4: rich-text compose; R4.2: the rich-text editor) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
 
 MailCraft aims for complete parity with Microsoft Outlook, then goes further on speed, openness,
 privacy and agent control. This page is the summary; the assessment is
@@ -46,6 +46,28 @@ steps R1–R8 (tracked in
 [#2](https://github.com/UCS-Care-Group/mailcraft/issues/2)): hygiene; Exchange Web Services removed;
 Microsoft Graph for mail; rich-text replies; sign-ins remembered on Linux; message bodies read
 when needed; system notifications and Copy diagnostics; then a beta run with testers.
+
+## After beta
+
+Not scheduled; in the order of how much each matters to someone leaving Outlook. Each is a
+shortfall in [`docs/gaps.md`](docs/gaps.md).
+
+1. New mail the moment it arrives on IMAP accounts (IDLE), not at the next run (gap 2).
+2. Undo Send and Delay Delivery, with an Outbox that also holds mail written offline (gap 17).
+3. Calendars and contacts beyond Microsoft (CalDAV, CardDAV, subscribed calendars) and Google
+   accounts (gaps 3, 5).
+4. Microsoft To Do, with My Day and flagged mail; the organisation's directory, and LDAP, when
+   addressing (gap 17).
+5. Focused Inbox kept in step with Outlook; Automatic Replies; rules kept on the server (gap 17).
+6. Snooze, Sweep, Ignore and Clean Up Conversation, Search Folders, Quick Steps (gap 17).
+7. Read receipts, one-click unsubscribe, attachments inside `winmail.dat`, Forward as Attachment
+   (gap 17).
+8. Warnings about a sender (failed authentication, a name that hides another address, outside the
+   organisation, a link that goes somewhere other than it says) and Report Phishing (gap 17).
+9. Search that goes on to the server for mail not on this computer (rough edges).
+10. Shared and delegated calendars with their permissions, free/busy across the organisation, rooms
+    (gaps 9, 17).
+11. Spell checking while writing (gap 7).
 
 ## Progress log
 
@@ -111,6 +133,7 @@ when needed; system notifications and Copy diagnostics; then a beta run with tes
 
 | Date | Change |
 |---|---|
+| 2026-10-17 | After beta: the features to come, ranked |
 | 2026-10-17 | #120: Send/Receive Progress; R6: the mailbox file is a log of records (format 3) |
 | 2026-10-16 | v0.4.3 prepared; R7.3, #103, R3.7, #114, #99 and fixes; releases counted to v0.4.2 |
 | 2026-10-16 | R1 docs cleanup: no citations of private plans or decision records, the beta checklist row no longer points at nothing, seven releases; this revision history added |
