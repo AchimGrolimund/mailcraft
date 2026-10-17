@@ -41,7 +41,7 @@ use mailcraft_time::{DateTime, Timestamp};
 use serde_json::{Map, Value, json};
 
 use super::super::pace::Kind;
-use super::super::{BATCH, BATCH_SIZE, Doing, Graph, IMMUTABLE_IDS, MAX_BATCH, WRITE_TIMEOUT, code_of, text};
+use super::super::{BATCH, BATCH_SIZE, Doing, Graph, IMMUTABLE_IDS, MAX_BATCH, WRITE_TIMEOUT, logged_code, text};
 use super::id_of;
 
 use crate::NetError;
@@ -136,11 +136,20 @@ fn flag_body(flag: &FlagUp) -> Value {
     };
     body.insert("flagStatus".into(), json!(status));
     if flag.status == FlagStatus::Flagged {
-        // A due date goes with a start (Graph's rule); none takes the due date away.
-        if let Some(start) = flag.start {
-            body.insert("startDateTime".into(), date_time(start));
+        // A due date goes only with a start: "to set the due date, you must also specify the
+        // startDateTime; otherwise, you get a 400 Bad Request" (Graph's followupFlag). And a start
+        // goes only with a due date: Microsoft 365 answers a start with a `dueDateTime` of `null`
+        // (or none) 400, and takes the same with the due date at the start (Outlook's own flags
+        // carry both). Without a start, `null` takes a due date away.
+        match flag.start {
+            Some(start) => {
+                body.insert("startDateTime".into(), date_time(start));
+                body.insert("dueDateTime".into(), date_time(flag.due.unwrap_or(start)));
+            }
+            None => {
+                body.insert("dueDateTime".into(), Value::Null);
+            }
         }
-        body.insert("dueDateTime".into(), flag.due.filter(|_| flag.start.is_some()).map_or(Value::Null, date_time));
     }
     if let (FlagStatus::Complete, Some(done)) = (flag.status, flag.completed) {
         body.insert("completedDateTime".into(), date_time(done));
@@ -209,7 +218,7 @@ impl Up<'_, '_, '_> {
         if !self.graph.shared() {
             return false;
         }
-        let code = code_of(body.to_string().as_bytes(), &[self.graph.token]);
+        let code = logged_code(body.to_string().as_bytes(), &[self.graph.token]);
         if let Some(why) = super::super::shared_refusal(u64::from(status), body) {
             log::info!("graph changes: in a shared mailbox, {what} was refused (status {status}{code}); the changes wait here");
             self.denied.get_or_insert(why);
@@ -230,7 +239,7 @@ impl Up<'_, '_, '_> {
             return true;
         }
         let Some(outcome) = refusal(status) else { return false };
-        let code = code_of(body.to_string().as_bytes(), &[self.graph.token]);
+        let code = logged_code(body.to_string().as_bytes(), &[self.graph.token]);
         log::info!("graph changes: {what} was refused (status {status}{code})");
         self.settle(at, outcome);
         true
@@ -413,6 +422,7 @@ impl Up<'_, '_, '_> {
             if let Some(flag) = flag {
                 body.insert("flag".into(), flag_body(flag));
             }
+            // (A due date filled in at the start comes back with the folder's next delta.)
             sent.insert(at, (merged, flag.clone()));
             patches.push(Sub { at, method: "PATCH", url: self.graph.batch_path(&format!("/messages/{id}")), body: Some(Value::Object(body)) });
         }
@@ -614,7 +624,7 @@ impl Up<'_, '_, '_> {
             } else if self.held_back(status, &body, "a delete of a message") {
                 // Waits here, delete and all.
             } else if refused_for_good && matches!(self.changes.get(sub.at), Some(MessageChange::Delete { .. })) {
-                let code = code_of(body.to_string().as_bytes(), &[self.graph.token]);
+                let code = logged_code(body.to_string().as_bytes(), &[self.graph.token]);
                 log::info!("graph changes: a delete of a message was refused (status {status}{code}); it is read to be put back");
                 let query = http::form(&[("$select", super::down::FIELDS), ("$expand", super::down::SIZE)]);
                 looks.push((Sub { method: "GET", url: format!("{}?{query}", sub.url), body: None, ..sub }, status));
