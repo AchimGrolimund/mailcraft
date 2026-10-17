@@ -2,7 +2,10 @@
 //! its sign-in at their own address, and kept apart from it. (Against the Graph stand-in:
 //! `crates/net/src/graph/mail/shared_tests.rs`.)
 
-use mailcraft_model::sync::{FolderListing, GraphFolder, GraphMailResult, GraphMessage, MessagePage, ServerMessage};
+use mailcraft_model::sync::{
+    FolderChange, FolderListing, GraphFolder, GraphMailResult, GraphMessage, MessageChange, MessageChangeDone, MessageOutcome, MessagePage,
+    ServerMessage,
+};
 use mailcraft_model::{AccountKind, FolderKind, Id};
 use serde_json::json;
 
@@ -154,29 +157,125 @@ fn a_shared_mailbox_keeps_its_address_and_its_owners_sign_in() {
     assert_eq!((a.kind, a.incoming.is_none(), a.oauth.is_none(), a.shared_of.is_some()), (AccountKind::Microsoft, true, true, true));
 }
 
-#[test]
-fn what_is_changed_in_a_shared_mailbox_waits_here_and_nothing_of_it_is_asked_to_go_up() {
+/// A shared mailbox and its owner's, each with its Inbox and Deleted Items and the same ids
+/// ("AAkA1"…, "in", "de"): what goes up for one must never name the other's.
+fn both() -> (Session, Id, Id) {
     let (mut s, _, owner) = session();
     let shared = add(&mut s, json!({"address": SHARED})).unwrap();
     apply_graph_mail(&mut s, listing(shared, SHARED)).unwrap();
     apply_graph_mail(&mut s, page(shared, SHARED, &["AAkA1", "AAkA2"])).unwrap();
-    // The owner's mailbox has the same ids: what goes up for one must never name the other's.
     apply_graph_mail(&mut s, listing(owner, OWNER)).unwrap();
     apply_graph_mail(&mut s, page(owner, OWNER, &["AAkA1"])).unwrap();
-    let theirs: Vec<Id> = s.mailbox.messages.values().filter(|m| m.account == shared).map(|m| m.id).collect();
+    (s, owner, shared)
+}
+
+fn theirs(s: &Session, shared: Id) -> Vec<Id> {
+    let mut all: Vec<Id> = s.mailbox.messages.values().filter(|m| m.account == shared).map(|m| m.id).collect();
+    all.sort_unstable();
+    all
+}
+
+#[test]
+fn what_is_changed_in_a_shared_mailbox_goes_up_in_its_own_request_and_never_in_its_owners() {
+    let (mut s, owner, shared) = both();
+    let theirs = theirs(&s, shared);
     s.run("mail.markRead", &json!({"ids": theirs})).unwrap();
     s.run("mail.flag", &json!({"id": theirs[0]})).unwrap();
     let inbox = s.mailbox.folder_of_kind(shared, FolderKind::Inbox).unwrap();
     s.run("folder.new", &json!({"parent": inbox, "name": "Ours"})).unwrap();
     s.view.folder = inbox;
     let asked = graph_mail_request(&s, shared).unwrap();
-    assert!(asked.shared && asked.changes.is_empty() && asked.messages.is_empty() && asked.drafts.is_empty() && asked.sends.is_empty(), "{asked:?}");
-    assert!(!asked.links.is_empty(), "it is still read from where it got to");
-    // They wait here, counted, and are still there for when changes go up.
-    assert!(crate::cmd::graph_mail::unpushed(&s, shared) >= 3, "{}", crate::cmd::graph_mail::unpushed(&s, shared));
-    // The owner's own changes are the owner's alone.
+    assert!(asked.shared && asked.email == SHARED);
+    assert_eq!(asked.messages.len(), 2, "{asked:?}");
+    assert!(asked.messages.iter().all(|c| matches!(c, MessageChange::Update { read: Some(true), .. })));
+    assert!(matches!(asked.changes.as_slice(), [FolderChange::Create { parent, .. }] if parent == "in"), "{:?}", asked.changes);
+    // No drafts and nothing sent from it yet (mail written there goes from its owner).
+    assert!(asked.drafts.is_empty() && asked.sends.is_empty());
+    // The owner's own request has none of them.
     let own = graph_mail_request(&s, owner).unwrap();
-    assert!(own.messages.is_empty() && own.changes.is_empty(), "{own:?}");
+    assert!(!own.shared && own.messages.is_empty() && own.changes.is_empty(), "{own:?}");
+}
+
+#[test]
+fn delete_in_a_shared_mailbox_goes_to_its_own_deleted_items_and_undo_is_another_change() {
+    let (mut s, owner, shared) = both();
+    let one = theirs(&s, shared)[0];
+    let their_deleted = s.mailbox.folder_of_kind(shared, FolderKind::Deleted).unwrap();
+    let my_deleted = s.mailbox.folder_of_kind(owner, FolderKind::Deleted).unwrap();
+    s.run("mail.delete", &json!({"ids": [one]})).unwrap();
+    assert_eq!(s.mailbox.message(one).map(|m| (m.folder, m.account)), Some((their_deleted, shared)));
+    assert_eq!(s.mailbox.messages_in(my_deleted).count(), 0);
+    let asked = graph_mail_request(&s, shared).unwrap();
+    let [change @ MessageChange::Move { to, .. }] = asked.messages.as_slice() else { panic!("{:?}", asked.messages) };
+    assert_eq!(to, "de", "its own Deleted Items, by its own id");
+    assert!(graph_mail_request(&s, owner).unwrap().messages.is_empty());
+    // It reached the server; undo moves it back with the next run.
+    let outcome = MessageOutcome::Done { categories: None, flag: None, folder: "de".into(), id: String::new() };
+    let done = GraphMailResult {
+        account: shared,
+        email: SHARED.into(),
+        messages: vec![MessageChangeDone { change: change.clone(), outcome, there: None }],
+        ..Default::default()
+    };
+    apply_graph_mail(&mut s, done).unwrap();
+    assert!(graph_mail_request(&s, shared).unwrap().messages.is_empty());
+    s.run("edit.undo", &json!({})).unwrap();
+    let inbox = s.mailbox.folder_of_kind(shared, FolderKind::Inbox).unwrap();
+    assert_eq!(s.mailbox.message(one).map(|m| m.folder), Some(inbox));
+    let back = graph_mail_request(&s, shared).unwrap().messages;
+    assert!(matches!(back.as_slice(), [MessageChange::Move { to, .. }] if to == "in"), "{back:?}");
+    assert!(graph_mail_request(&s, owner).unwrap().messages.is_empty());
+
+    // Deleted for good: the delete goes to its server, by its own id.
+    s.run("mail.deletePermanently", &json!({"ids": [one]})).unwrap();
+    let gone = graph_mail_request(&s, shared).unwrap().messages;
+    assert!(gone.iter().any(|c| matches!(c, MessageChange::Delete { id } if id == "AAkA1")), "{gone:?}");
+    assert!(graph_mail_request(&s, owner).unwrap().messages.is_empty());
+}
+
+#[test]
+fn mail_doesnt_move_or_copy_between_a_shared_mailbox_and_another_mailbox() {
+    let (mut s, owner, shared) = both();
+    let one = theirs(&s, shared)[0];
+    let mine = s.mailbox.messages.values().find(|m| m.account == owner).map(|m| m.id).unwrap();
+    let (my_inbox, their_inbox) =
+        (s.mailbox.folder_of_kind(owner, FolderKind::Inbox).unwrap(), s.mailbox.folder_of_kind(shared, FolderKind::Inbox).unwrap());
+    let before = s.mailbox.clone();
+    for (ids, folder) in [(one, my_inbox), (mine, their_inbox)] {
+        for command in ["mail.move", "mail.copy"] {
+            let e = s.run(command, &json!({"ids": [ids], "folder": folder})).unwrap_err().to_string();
+            assert!(e.contains("only within one mailbox"), "{command}: {e}");
+        }
+    }
+    // Between two shared mailboxes too.
+    let other = add(&mut s, json!({"address": "sales@example.org"})).unwrap();
+    apply_graph_mail(&mut s, listing(other, "sales@example.org")).unwrap();
+    let their_other = s.mailbox.folder_of_kind(other, FolderKind::Inbox).unwrap();
+    let e = s.run("mail.move", &json!({"ids": [one], "folder": their_other})).unwrap_err().to_string();
+    assert!(e.contains("only within one mailbox"), "{e}");
+    assert_eq!(s.mailbox.message(one), before.message(one));
+    assert_eq!(s.mailbox.message(mine), before.message(mine));
+    assert!(graph_mail_request(&s, shared).unwrap().messages.is_empty() && graph_mail_request(&s, owner).unwrap().messages.is_empty());
+}
+
+#[test]
+fn moved_out_of_a_shared_mailbox_its_copy_there_goes_once_it_is_safe_here() {
+    let (mut s, owner, shared) = both();
+    let one = theirs(&s, shared)[0];
+    let local = s.mailbox.accounts.iter().find(|a| a.kind == AccountKind::Local).map(|a| a.id).unwrap();
+    let kept = s.mailbox.folder_of_kind(local, FolderKind::Inbox).unwrap();
+    s.run("mail.move", &json!({"ids": [one], "folder": kept})).unwrap();
+    let m = s.mailbox.message(one).unwrap();
+    assert_eq!((m.account, m.moving_out.as_ref().map(|o| (o.account, o.id.as_str()))), (local, Some((shared, "AAkA1"))));
+    // Not fetched whole yet: nothing is removed there.
+    s.mailbox.message_mut(one).unwrap().unfetched = true;
+    assert!(graph_mail_request(&s, shared).unwrap().messages.is_empty());
+    // Whole and saved: the shared mailbox's copy goes, in its own request alone.
+    s.mailbox.message_mut(one).unwrap().unfetched = false;
+    s.note_saved();
+    let asked = graph_mail_request(&s, shared).unwrap().messages;
+    assert!(matches!(asked.as_slice(), [MessageChange::MovedOut { id, .. }] if id == "AAkA1"), "{asked:?}");
+    assert!(graph_mail_request(&s, owner).unwrap().messages.is_empty());
 }
 
 #[test]
