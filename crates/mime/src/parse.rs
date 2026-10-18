@@ -465,7 +465,7 @@ mod tests {
             "iVBORw0KGgo=",
             "--rel--",
         ]));
-        assert_eq!(m.body.text, "Logo:\n\n[Our logo]");
+        assert_eq!(m.body.text, "Logo: [Our logo]");
         assert_eq!(m.attachments.len(), 1);
         let logo = &m.attachments[0];
         assert_eq!(
