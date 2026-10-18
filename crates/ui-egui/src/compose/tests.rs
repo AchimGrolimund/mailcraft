@@ -557,3 +557,75 @@ fn a_long_to_line_takes_a_click_at_its_end() {
     type_in(&mut h, "Thanks");
     assert!(plain(&h).contains("Thanks"));
 }
+
+/// What a message being written opens as, for [`picks_then_types_in_the_body`].
+#[derive(Clone, Copy, Debug)]
+enum Opened {
+    New,
+    /// A reply to a message in plain text: the original is quoted in the body.
+    Reply,
+    /// A reply to, and a forward of, a message in HTML: the original is shown below the body.
+    ReplyHtml,
+    ForwardHtml,
+}
+
+/// Picks an address from the suggestions under a recipient line (`line`: To, Cc, Bcc) with the
+/// mouse or the keys, then clicks the body and types.
+fn picks_then_types_in_the_body(opened: Opened, line: usize, mouse: bool) {
+    use egui_kittest::kittest::Queryable;
+    let mut a = app();
+    let html = |a: &MailApp| a.session.mailbox.messages.values().find(|m| m.body.html.is_some()).map(|m| m.id).unwrap();
+    let plain_one = |a: &MailApp| a.session.mailbox.messages.values().find(|m| m.body.html.is_none()).map(|m| m.id).unwrap();
+    match opened {
+        Opened::New => a.execute("mail.new", json!({})).map(drop).unwrap(),
+        Opened::Reply => a.execute("mail.reply", json!({"id": plain_one(&a)})).map(drop).unwrap(),
+        Opened::ReplyHtml => a.execute("mail.reply", json!({"id": html(&a)})).map(drop).unwrap(),
+        Opened::ForwardHtml => a.execute("mail.forward", json!({"id": html(&a)})).map(drop).unwrap(),
+    }
+    a.compose_bcc = true;
+    let mut h = window(a);
+    let quoted = matches!(opened, Opened::ReplyHtml | Opened::ForwardHtml);
+    assert_eq!(h.state().session.compose.as_ref().unwrap().quote.is_some(), quoted, "{opened:?}");
+    // The original below is laid out whole before anything is clicked.
+    h.run_steps(10);
+    // The search box, then To, Cc, Bcc.
+    let at = h.query_all_by_role(egui::accesskit::Role::TextInput).nth(1 + line).map(|n| n.rect()).unwrap();
+    click(&mut h, at.center());
+    key_with(&mut h, Modifiers::COMMAND, Key::A);
+    key(&mut h, Key::Backspace);
+    type_in(&mut h, "ma");
+    let value = |h: &Window| {
+        let c = h.state().session.compose.as_ref().unwrap();
+        [&c.to, &c.cc, &c.bcc][line].clone()
+    };
+    if mouse {
+        // The first suggestion, just under the line.
+        click(&mut h, egui::pos2(at.min.x + 30.0, at.max.y + 2.0 + 4.0 + 13.0));
+    } else {
+        key(&mut h, Key::ArrowDown);
+        key(&mut h, Key::Enter);
+    }
+    let picked = value(&h);
+    assert!(picked.contains('@') && picked.ends_with("; "), "{opened:?} {line} {mouse}: picked {picked:?}");
+    assert!(!editor::has_focus(&h.ctx));
+    let body = h.state().hit.rect("composeBody", 0).unwrap();
+    click(&mut h, egui::pos2(body.min.x + 20.0, body.min.y + 10.0));
+    assert!(editor::has_focus(&h.ctx), "{opened:?} {line} {mouse}: the body has the keyboard");
+    type_in(&mut h, "Typed after a pick");
+    assert!(plain(&h).contains("Typed after a pick"), "{opened:?} {line} {mouse}");
+    assert_eq!(value(&h), picked);
+}
+
+/// After an address was picked from the suggestions, a click in the body gives it the keyboard
+/// again. Under a reply or forward in HTML, the original shown below the body sensed the pointer
+/// over the whole view, the body too, and took that click: the body never got the keyboard back.
+#[test]
+fn the_body_takes_typing_after_an_address_was_picked() {
+    for opened in [Opened::New, Opened::Reply, Opened::ReplyHtml, Opened::ForwardHtml] {
+        for line in 0..3 {
+            for mouse in [true, false] {
+                picks_then_types_in_the_body(opened, line, mouse);
+            }
+        }
+    }
+}
