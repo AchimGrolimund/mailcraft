@@ -699,6 +699,10 @@ fn file_sent(mb: &mut Mailbox, account: Id, result: &SyncResult) -> usize {
     };
     let mut moved = 0;
     for id in &result.sent {
+        // The server took it: what it answers or forwards is marked so now (#154).
+        if mb.message(*id).is_some_and(|m| m.account == account) {
+            mb.mark_answered(*id);
+        }
         if mb.message(*id).is_some_and(|m| m.account == account && m.folder == outbox) && mb.move_message(*id, sent_items).is_ok() {
             moved += 1;
         }
