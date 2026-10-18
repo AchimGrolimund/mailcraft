@@ -19,6 +19,7 @@
 mod apple_events;
 #[cfg(test)]
 mod approval_flow;
+mod browser;
 #[cfg(test)]
 mod calendar_flow;
 mod clipboard;
@@ -88,6 +89,8 @@ impl eframe::App for App {
         if let Some(pos) = ctx.input(|i| take_rescue(&mut self.1, i.viewport())) {
             ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
         }
+        // Pages to open, with the browser brought in front (`browser`).
+        open_pages(ctx, frame);
         // Leaving (the close button, Quit, the Dock): a message being written asks first, then
         // the platform's own way out (`quit`). Last in `logic`, which runs while minimized too.
         quit::on_frame(ctx, &mut self.0);
@@ -98,6 +101,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.0.ui(ui);
         self.3.show(frame);
+        open_pages(ui.ctx(), frame);
     }
     fn on_exit(&mut self) {
         save_prefs(&self.0);
@@ -271,17 +275,112 @@ fn microsoft_client_id() -> String {
 }
 
 /// Open one of Microsoft's pages in the system's browser: whether a browser could be started.
-/// (The same call the window's own links end in; made here so that a browser that can't be
-/// started is known of, instead of leaving the owner looking at a page that waits.) The address
-/// is not for the log: it names who is signing in.
+/// (Made here, rather than through the window's own links, so that a browser that can't be
+/// started is known of, instead of leaving the owner looking at a page that waits.) On Linux and
+/// FreeBSD the window hands the browser its activation token, so that it comes in front
+/// (`browser`). The address is not for the log: it names who is signing in.
 fn open_in_browser(url: &str) -> bool {
-    match webbrowser::open(url) {
-        Ok(()) => true,
-        Err(e) => {
-            log::warn!("couldn't start a browser for Microsoft's page ({:?})", e.kind());
-            false
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    if let Some(browser) = BROWSER.get() {
+        return browser.open_and_wait(url);
+    }
+    browser::system_open(url)
+}
+
+/// The pages waiting for the window's activation token (`browser`), set once before the window opens.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+static BROWSER: std::sync::OnceLock<browser::Browser<winit::event_loop::AsyncRequestSerial>> = std::sync::OnceLock::new();
+
+/// The links the window followed in this frame, and the pages asked for since the last: each
+/// asks winit for an activation token, and opens when it comes (`WithTokens`) or is overdue.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn open_pages(ctx: &egui::Context, frame: &eframe::Frame) {
+    use winit::platform::startup_notify::WindowExtStartupNotify as _;
+    let Some(browser) = BROWSER.get() else { return };
+    browser.follow(browser::take_links(ctx));
+    let window = frame.winit_window();
+    let mut request = || window.and_then(|w| w.request_activation_token().ok());
+    if let Some(next) = browser.pump(&mut request, std::time::Instant::now()) {
+        ctx.request_repaint_after(next);
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+fn open_pages(_ctx: &egui::Context, _frame: &eframe::Frame) {}
+
+/// eframe's own handling of winit's events, and the activation tokens the window asked for
+/// (`open_pages`), which eframe would drop, handed to the pages waiting for them.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+struct WithTokens<'a>(eframe::EframeWinitApplication<'a>);
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+impl winit::application::ApplicationHandler<eframe::UserEvent> for WithTokens<'_> {
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        self.0.resumed(event_loop);
+    }
+    fn window_event(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        window_id: winit::window::WindowId,
+        event: winit::event::WindowEvent,
+    ) {
+        match event {
+            winit::event::WindowEvent::ActivationTokenDone { serial, token } => {
+                if let Some(browser) = BROWSER.get() {
+                    browser.token_arrived(&serial, token.into_raw());
+                }
+            }
+            event => self.0.window_event(event_loop, window_id, event),
         }
     }
+    fn new_events(&mut self, event_loop: &winit::event_loop::ActiveEventLoop, cause: winit::event::StartCause) {
+        self.0.new_events(event_loop, cause);
+    }
+    fn user_event(&mut self, event_loop: &winit::event_loop::ActiveEventLoop, event: eframe::UserEvent) {
+        self.0.user_event(event_loop, event);
+    }
+    fn device_event(&mut self, event_loop: &winit::event_loop::ActiveEventLoop, device_id: winit::event::DeviceId, event: winit::event::DeviceEvent) {
+        self.0.device_event(event_loop, device_id, event);
+    }
+    fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        self.0.about_to_wait(event_loop);
+    }
+    fn suspended(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        self.0.suspended(event_loop);
+    }
+    fn exiting(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        self.0.exiting(event_loop);
+    }
+    fn memory_warning(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        self.0.memory_warning(event_loop);
+    }
+}
+
+/// Run the window: on Linux and FreeBSD on an event loop of our own, so that the activation
+/// tokens reach `WithTokens`; elsewhere as eframe runs it.
+fn run_window(options: eframe::NativeOptions, creator: eframe::AppCreator<'_>) -> eframe::Result {
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        let _ = BROWSER.set(browser::Browser::new(std::sync::Arc::new(browser::Desktop)));
+        let event_loop = winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event().build()?;
+        // eframe keeps a start-up failure to itself on this path: the app is only created once
+        // the window is, so a loop that ends without having created it failed to start.
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = started.clone();
+        let creator: eframe::AppCreator<'_> = Box::new(move |cc| {
+            seen.store(true, std::sync::atomic::Ordering::Relaxed);
+            creator(cc)
+        });
+        let mut app = WithTokens(eframe::create_native("MailCraft", options, creator, &event_loop));
+        event_loop.run_app(&mut app)?;
+        if started.load(std::sync::atomic::Ordering::Relaxed) {
+            Ok(())
+        } else {
+            Err(eframe::Error::AppCreation("the window couldn't be started (see the log)".into()))
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+    eframe::run_native("MailCraft", options, creator)
 }
 
 /// Sign an account's owner in: quietly with what was kept from last time when there is any, on
@@ -1132,10 +1231,13 @@ fn main() -> eframe::Result {
     let apple_events = apple_events::AppleEvents::install();
     #[cfg(target_os = "macos")]
     let apple_events = &apple_events;
-    eframe::run_native(
-        "MailCraft",
+    run_window(
         options,
         Box::new(move |cc| {
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            if let Some(browser) = BROWSER.get() {
+                browser.set_window(&cc.egui_ctx);
+            }
             let (mailbox, path, unavailable, damaged) = first_mailbox(sample, mailbox_path);
             let (file_dialog, dialogs) = file_dialogs::hook(&cc.egui_ctx);
             let mut session = Session::new(mailbox);

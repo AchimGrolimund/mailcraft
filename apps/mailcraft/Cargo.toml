@@ -71,6 +71,11 @@ zbus-secret-service-keyring-store = { version = "1", features = ["rt-async-io-cr
 # and the wlroots compositors have); where it isn't offered (GNOME), arboard falls back to the
 # X11 clipboard through XWayland.
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control", "image-data"] }
+# A program started from MailCraft (the browser, for a sign-in or a link) only comes in front
+# when it is handed an activation token (xdg-activation under Wayland, startup notification under
+# X11), which the window asks winit for and winit hands back as a window event that eframe drops
+# (`browser.rs`). Already in the tree: eframe runs on it; the same version and features.
+winit = { version = "0.30", default-features = false, features = ["wayland", "x11"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd = { workspace = true }
