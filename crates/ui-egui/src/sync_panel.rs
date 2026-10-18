@@ -395,7 +395,11 @@ mod tests {
     }
 
     fn window(app: MailApp, height: f32) -> Harness<'static, MailApp> {
-        let mut harness = Harness::builder().with_size(egui::vec2(1280.0, height)).build_ui_state(
+        window_sized(app, 1280.0, height)
+    }
+
+    fn window_sized(app: MailApp, width: f32, height: f32) -> Harness<'static, MailApp> {
+        let mut harness = Harness::builder().with_size(egui::vec2(width, height)).build_ui_state(
             |ui, app: &mut MailApp| {
                 let ctx = ui.ctx().clone();
                 app.logic(&ctx);
@@ -526,6 +530,91 @@ mod tests {
         h.state_mut().run("ui.dialog", json!({"name": "syncProgress"})).unwrap();
         h.state_mut().run("ui.dialog", json!({"name": "goToDate"})).unwrap();
         assert!(h.state().sync_panel.is_none());
+    }
+
+    /// What the status bar shows of the run: a label and how far, or words.
+    fn bar(h: &Harness<'static, MailApp>) -> Option<(String, f32)> {
+        match crate::chrome::sync_shown(h.state()) {
+            crate::chrome::SyncShown::Bar { label, fraction } => Some((label, fraction)),
+            _ => None,
+        }
+    }
+
+    /// While a run goes on, the status bar fills a bar under a label that changes only from one
+    /// account to the next, never the name of each folder as it goes by; a click on it still
+    /// opens Send/Receive Progress; Stop says so; once it is over, what it came to is in words.
+    #[test]
+    fn the_status_bar_fills_a_bar_instead_of_naming_each_folder() {
+        let (mut a, ids, pipe) = app();
+        a.execute("ui.sync", json!({"account": ids[0]})).unwrap();
+        let step = |stage, folder: &str, done, total| SyncResult {
+            account: ids[0],
+            partial: true,
+            step: Some(SyncStep::new(stage, folder, done, total)),
+            ..Default::default()
+        };
+        send(&pipe, step(SyncStage::Checking, "Inbox", 1, 4));
+        let mut h = window(a, 800.0);
+        let name = h.state().session.mailbox.account(ids[0]).unwrap().name.clone();
+        let (label, first) = bar(&h).expect("a bar while the run goes on");
+        assert_eq!(label, format!("Updating {name}"));
+        let (track, status) = (h.state().hit.rect("syncBar", 0).unwrap(), h.state().hit.rect("syncStatus", 0).unwrap());
+        assert!(status.contains_rect(track), "the bar is what a click opens the progress from");
+        assert!(track.width() >= 60.0 && track.height() <= 8.0, "{track:?}");
+        let mut last = first;
+        for piece in
+            [step(SyncStage::Reading, "Inbox", 40, 80), step(SyncStage::Checking, "Archive", 2, 4), step(SyncStage::Reading, "Archive", 5, 10)]
+        {
+            send(&pipe, piece);
+            h.run_steps(3);
+            let (label, now) = bar(&h).unwrap();
+            assert_eq!(label, format!("Updating {name}"), "steady, whatever folder it is at");
+            assert!(!label.contains("Archive") && now > last, "{now} after {last}");
+            last = now;
+        }
+        // A click shows Send/Receive Progress, as the words did.
+        let status = h.state().hit.rect("syncStatus", 0).unwrap();
+        click_at(&mut h, status.center());
+        assert!(h.state().sync_panel.is_some());
+        escape(&mut h);
+        // Stop: the bar says it is stopping, and the run's end says what it came to in words.
+        h.state_mut().run("ui.cancelSync", json!({})).unwrap();
+        h.run_steps(2);
+        assert_eq!(bar(&h).map(|(label, _)| label), Some("Stopping…".to_string()));
+        send(&pipe, SyncResult { account: ids[0], stopped: true, ..Default::default() });
+        h.run_steps(3);
+        assert!(bar(&h).is_none() && h.state().hit.rect("syncBar", 0).is_none());
+        assert!(matches!(crate::chrome::sync_shown(h.state()), crate::chrome::SyncShown::Text(_)));
+        assert!(h.state().hit.rect("syncStatus", 0).is_some(), "the words open it too");
+    }
+
+    /// A round of several accounts fills one bar, account by account, and a long problem in a
+    /// narrow window ends in an ellipsis rather than running over what is at the bar's left.
+    #[test]
+    fn a_round_fills_one_bar_and_long_words_keep_to_their_room() {
+        let (mut a, ids, pipe) = app();
+        a.execute("ui.sync", json!({})).unwrap();
+        assert_eq!(a.session.sync_progress.fraction(), Some(0.0));
+        send(&pipe, mail(&a, ids[0], &[1], false));
+        a.poll_sync();
+        a.auto_sync();
+        let mut h = window(a, 700.0);
+        let (label, fraction) = bar(&h).expect("the round goes on");
+        assert!((fraction - 1.0 / 3.0).abs() < 0.05, "one account of three: {fraction}");
+        assert!(label == "Send/Receive" || label.starts_with("Updating "), "{label}");
+        h.state_mut().run("ui.cancelSync", json!({})).unwrap();
+        send(&pipe, SyncResult { account: ids[1], stopped: true, ..Default::default() });
+        h.run_steps(4);
+
+        // 1100 wide: a long problem and a message at the left.
+        let mut h = window_sized(app().0, 1100.0, 700.0);
+        h.state_mut().session.sync_status = "Couldn't connect to imap.mail.example: the server closed the connection before it said hello, which usually means the port or the security setting is wrong".repeat(2);
+        h.state_mut().status("Moved 3 messages to the folder called Projects that you made last week, and marked them read");
+        h.run_steps(3);
+        let said = h.state().hit.rect("syncStatus", 0).unwrap();
+        let left = h.state().hit.rect("statusMessage", 0).unwrap();
+        assert!(left.max.x < said.min.x, "{left:?} runs into {said:?}");
+        assert!(said.min.x >= 0.0 && said.max.x <= 1100.0);
     }
 
     /// `syncProblems` opens the panel at the first problem, however far down its account is.

@@ -6,7 +6,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use mailcraft_model::sync::{Deleted, FlagsPushed, FolderDelta, FolderState, Moved, RemoteFlags, RemoteOp, SyncRequest, SyncResult, summary_line};
+use mailcraft_model::sync::{
+    Deleted, FlagsPushed, FolderDelta, FolderState, Moved, RemoteFlags, RemoteOp, SyncRequest, SyncResult, SyncStage, summary_line,
+};
 use mailcraft_model::{
     Account, AccountKind, Directory, FlagStatus, Folder, FolderKind, Id, Mailbox, Message, OAuth, OAuthProvider, Pending, Security, Server,
     clean_name,
@@ -548,8 +550,17 @@ pub fn apply_sync_part(s: &mut Session, run: &mut SyncTotals, mut result: SyncRe
     let (partial, stopped) = (result.partial, result.stopped);
     let pushed = result.pushed_count();
     let (counts, sent) = if result.has_news() { take_in_news(s, account, &mut result) } else { (Counts::default(), 0) };
-    let piece =
-        Piece { step: result.step.as_ref().map(sync_progress::imap_step), new: counts.new, sent, problems: &result.errors, last: !partial, stopped };
+    // Looking at a folder says which of how many it is.
+    let folders = result.step.as_ref().filter(|step| step.stage == SyncStage::Checking).map(|step| (step.done, step.total));
+    let piece = Piece {
+        step: result.step.as_ref().map(sync_progress::imap_step),
+        folders,
+        new: counts.new,
+        sent,
+        problems: &result.errors,
+        last: !partial,
+        stopped,
+    };
     s.sync_progress.take(account, piece);
     run.new += counts.new;
     run.sent += sent;
