@@ -1,6 +1,6 @@
 # Releasing MailCraft
 
-> **Last reviewed:** 2026-10-16 · **Last updated:** 2026-10-16 · **Change:** minor (the status as it is: releases published by the workflows; no riscv64 build; pinned build tools, build provenance; signing in the protected `release` environment; draft releases) · **Status:** releases v0.1.0 to v0.4.2 were built and published by `release.yml` and `package.yml` on GitHub's runners, for every platform in the table below; none is signed yet (gap #18).
+> **Last reviewed:** 2026-10-18 · **Last updated:** 2026-10-18 · **Change:** minor (MailCraft's own release signature: `SHA256SUMS.txt.sig`, the `MAILCRAFT_RELEASE_KEY` secret, `cargo xtask release-key`) · **Status:** releases v0.1.0 to v0.4.2 were built and published by `release.yml` and `package.yml` on GitHub's runners, for every platform in the table below; none is signed yet (gap #18), neither by the operating systems' signatures nor by MailCraft's own (no release key is set yet).
 
 The canonical recipe is [craftrules `release/playbook.md`](https://github.com/storytold/craftrules/blob/main/release/playbook.md);
 this file has the MailCraft specifics. The scripts in `packaging/` are WordCraft's with MailCraft's
@@ -45,6 +45,36 @@ draft, run in it, and only for a pushed version tag. Without the secrets the bui
 (ad-hoc on macOS) and the scripts say so, so forks still build. None is set yet, so every
 release so far is unsigned. There is no riscv64 Linux build, and no Flathub manifest is published.
 
+## The release signature (`SHA256SUMS.txt.sig`)
+
+Besides the operating systems' signatures, every release is signed by MailCraft itself: the job
+that makes the draft signs `SHA256SUMS.txt` with an ed25519 key and puts the signature beside it
+as `SHA256SUMS.txt.sig` (64 bytes in base64, one line). A copy of MailCraft that updates itself
+takes a downloaded file only when that signature verifies by one of the two public keys it carries
+(`RELEASE_KEYS` in `crates/net/src/update.rs`: the key in use and a spare), the file's SHA-256 is
+the one the signed list gives for its name, and its version is newer than the running one. Until
+the program carries real keys, it downloads nothing.
+
+- **Making the keys (once):** `cargo xtask release-key new <folder>` writes two private keys,
+  `mailcraft-release-key-in-use.pkcs8.b64` and `mailcraft-release-key-spare.pkcs8.b64` (base64
+  PKCS#8, readable by their owner only), and prints the two public keys. It never writes over
+  keys that are there. Keep both private keys offline, in two places; the spare is never used
+  until the key in use is lost or stolen.
+- **The secret:** the key in use goes into the `release` environment as `MAILCRAFT_RELEASE_KEY`
+  (Settings › Environments › release › Environment secrets, or
+  `gh secret set MAILCRAFT_RELEASE_KEY --env release < mailcraft-release-key-in-use.pkcs8.b64`),
+  and nowhere else. The public keys go into `RELEASE_KEYS`; they are not secret.
+- **Signing:** `packaging/sign-sums.sh <folder>` runs `cargo xtask release-key sign
+  <folder>/SHA256SUMS.txt` with the key from the environment (built from the checkout with the
+  locked crates: no tool is downloaded). The key is never printed; the step names the public key
+  it signed with. Without the secret (a fork, a dry run) it says "unsigned" and the run goes on:
+  such a release has no `.sig`, and no copy of MailCraft installs it by itself.
+- **Checking by hand:** the signature is a plain ed25519 signature over the bytes of
+  `SHA256SUMS.txt`; any ed25519 tool verifies it with the public key from `RELEASE_KEYS`.
+- **A lost or stolen key:** a release signed with the spare that drops the old key from
+  `RELEASE_KEYS` (and adds a new spare), said loudly in its notes. Copies that never install that
+  release go on trusting the old key.
+
 Every file of a release also gets a build provenance attestation (`actions/attest-build-provenance`):
 a signed statement, kept by GitHub outside the release, of the workflow run and commit that made
 it. Check a download with `gh attestation verify <file> -R UCS-Care-Group/mailcraft`.
@@ -60,8 +90,9 @@ wasm-bindgen version in `package.yml` follows the one in `Cargo.lock`. To move a
 its version and its sha256 together, taken from the file itself.
 
 Dry run: `gh workflow run release.yml --ref <branch>` builds everything on any branch, unsigned,
-and keeps the files as workflow artifacts (FreeBSD only when asked for: it is slow). A dry run
-names no environment, is given no secrets and publishes nothing.
+and keeps the files as workflow artifacts (FreeBSD only when asked for: it is slow), and their
+`SHA256SUMS.txt` as `dry-run-sums` (the signing step says "unsigned"). A dry run names no
+environment, is given no secrets and publishes nothing.
 
 ## ArtCraft Launcher
 
@@ -144,6 +175,7 @@ and in the Flatpak (which is granted `org.freedesktop.secrets` for it).
 
 | Date | Change |
 |---|---|
+| 2026-10-18 | MailCraft's own release signature: `SHA256SUMS.txt.sig` made in the `release` environment with `MAILCRAFT_RELEASE_KEY`, `cargo xtask release-key new` and `sign`, `packaging/sign-sums.sh`; the dry run's checksums |
 | 2026-10-16 | Status as it is: v0.1.0 to v0.4.1 published by `release.yml` and `package.yml`, unsigned; riscv64 and the Flathub manifest out of the table (neither is built); what the runners check on every release |
 | 2026-10-16 | Signing secrets in the protected `release` environment, used only for a pushed version tag; dry runs unsigned with no secrets; the workflow makes a draft that a maintainer publishes |
 | 2026-10-16 | Pinned build tools (version and sha256) and build provenance for every release file |
