@@ -2,71 +2,337 @@
 //!
 //! Icons are designed on a 20×20 grid in two colours: line work (`c`) and an accent (`a`).
 
-use egui::{Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, pos2, vec2};
+use egui::epaint::{Mesh, TextShape};
+use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 
+/// Draws on the 20-unit grid of one icon, fitted to the screen's pixels.
+///
+/// Everything is worked out in device pixels: the grid's origin is a whole pixel, a stroke is a
+/// whole number of pixels wide (one unit, and never less than one pixel), a straight stroke runs
+/// down the middle of a row or column of pixels, and the edges of a fill lie between pixels. So
+/// a 20 pt icon at 100 % is drawn in one-pixel lines that are sharp, not two grey half-lines.
 struct Pen<'a> {
     p: &'a Painter,
-    r: Rect,
+    /// Device pixels per point.
+    ppp: f32,
+    /// The grid's (0, 0), in device pixels.
+    o: Pos2,
+    /// Device pixels per grid unit.
+    k: f32,
+    /// The stroke's width in device pixels.
+    w: f32,
     c: Color32,
     a: Color32,
-    w: f32,
 }
 
-impl Pen<'_> {
-    fn s(&self) -> f32 {
-        self.r.width().min(self.r.height()) / 20.0
+/// A line being drawn, in device pixels, from straight pieces and curves.
+struct Path {
+    pts: Vec<Pos2>,
+    /// The last piece was an arc, whose end the next straight piece keeps to.
+    after_arc: bool,
+}
+
+impl<'a> Pen<'a> {
+    fn new(p: &'a Painter, r: Rect, c: Color32, a: Color32) -> Option<Self> {
+        let ppp = p.pixels_per_point();
+        let size = r.width().min(r.height());
+        if !(size > 0.0 && size.is_finite() && ppp > 0.0 && ppp.is_finite()) {
+            return None;
+        }
+        let k = size * ppp / 20.0;
+        let corner = r.center() - vec2(size, size) / 2.0;
+        let o = pos2((corner.x * ppp).round(), (corner.y * ppp).round());
+        Some(Pen { p, ppp, o, k, w: k.round().max(1.0), c, a })
     }
+    /// One grid unit in points.
+    fn s(&self) -> f32 {
+        self.k / self.ppp
+    }
+    /// A grid point in device pixels, as it falls.
+    fn d(&self, x: f32, y: f32) -> Pos2 {
+        pos2(self.o.x + x * self.k, self.o.y + y * self.k)
+    }
+    /// A device-pixel coordinate moved to where a stroke of this width is sharp: the middle of a
+    /// pixel for an odd width, the line between two for an even one.
+    fn sv(&self, v: f32) -> f32 {
+        if self.w as i32 % 2 == 1 { (v - 0.5).round() + 0.5 } else { v.round() }
+    }
+    /// A grid point for a stroke, in device pixels, snapped.
+    fn sp(&self, x: f32, y: f32) -> Pos2 {
+        let q = self.d(x, y);
+        pos2(self.sv(q.x), self.sv(q.y))
+    }
+    /// A grid point for the edge of a fill, in device pixels: on the line between pixels.
+    fn fp(&self, x: f32, y: f32) -> Pos2 {
+        let q = self.d(x, y);
+        pos2(q.x.round(), q.y.round())
+    }
+    /// Device pixels to points.
+    fn out(&self, q: Pos2) -> Pos2 {
+        pos2(q.x / self.ppp, q.y / self.ppp)
+    }
+    /// A grid point in points (not snapped).
     fn pt(&self, x: f32, y: f32) -> Pos2 {
-        let s = self.s();
-        let o = self.r.center() - vec2(10.0 * s, 10.0 * s);
-        pos2(o.x + x * s, o.y + y * s)
+        self.out(self.d(x, y))
     }
     fn stroke(&self, c: Color32) -> Stroke {
-        Stroke::new(self.w * self.s(), c)
+        Stroke::new(self.w / self.ppp, c)
     }
+    /// Stroke a line given in device pixels. Its ends and its corners are round: a stroke of
+    /// one pixel is too thin to show it, a wider one has a dot of its width at each.
+    fn stroke_px(&self, pts: &[Pos2], closed: bool, c: Color32) {
+        if pts.len() < 2 {
+            return;
+        }
+        let v: Vec<Pos2> = pts.iter().map(|q| self.out(*q)).collect();
+        if self.w >= 2.0 && c.a() == 255 {
+            let r = self.w / 2.0 / self.ppp;
+            let n = v.len();
+            for (i, q) in v.iter().enumerate() {
+                let end = !closed && (i == 0 || i + 1 == n);
+                let corner = || {
+                    let (Some(a), Some(b)) = (v.get((i + n - 1) % n), v.get((i + 1) % n)) else { return false };
+                    let (d1, d2) = (*q - *a, *b - *q);
+                    let (l1, l2) = (d1.length(), d2.length());
+                    l1 > 0.0 && l2 > 0.0 && d1.dot(d2) / (l1 * l2) < 0.94
+                };
+                if end || ((closed || (i > 0 && i + 1 < n)) && corner()) {
+                    self.p.circle_filled(*q, r, c);
+                }
+            }
+        }
+        self.p.add(if closed { Shape::closed_line(v, self.stroke(c)) } else { Shape::line(v, self.stroke(c)) });
+    }
+    /// A polyline of straight strokes, its corners sharp.
     fn line(&self, pts: &[(f32, f32)]) {
         self.line_c(pts, self.c);
     }
     fn line_c(&self, pts: &[(f32, f32)], c: Color32) {
-        let v: Vec<Pos2> = pts.iter().map(|&(x, y)| self.pt(x, y)).collect();
-        self.p.add(Shape::line(v, self.stroke(c)));
+        let v: Vec<Pos2> = pts.iter().map(|&(x, y)| self.sp(x, y)).collect();
+        self.stroke_px(&v, false, c);
     }
+    /// A closed outline, its corners sharp.
     fn closed(&self, pts: &[(f32, f32)], c: Color32) {
-        let v: Vec<Pos2> = pts.iter().map(|&(x, y)| self.pt(x, y)).collect();
-        self.p.add(Shape::closed_line(v, self.stroke(c)));
+        let v: Vec<Pos2> = pts.iter().map(|&(x, y)| self.sp(x, y)).collect();
+        self.stroke_px(&v, true, c);
     }
-    /// A filled convex polygon.
-    fn fill(&self, pts: &[(f32, f32)], c: Color32) {
-        let v: Vec<Pos2> = pts.iter().map(|&(x, y)| self.pt(x, y)).collect();
-        self.p.add(Shape::convex_polygon(v, c, Stroke::NONE));
+    /// A polyline whose corners are rounded with radius `r` units (a box's one unit).
+    fn rounded(&self, pts: &[(f32, f32)], closed: bool, r: f32, c: Color32) {
+        let v: Vec<Pos2> = pts.iter().map(|&(x, y)| self.sp(x, y)).collect();
+        self.stroke_px(&round_corners(&v, closed, r * self.k), closed, c);
     }
+    /// A box, its corners rounded by one unit.
     fn rect(&self, x0: f32, y0: f32, x1: f32, y1: f32, c: Color32) {
-        self.p.rect_stroke(Rect::from_min_max(self.pt(x0, y0), self.pt(x1, y1)), 1.0, self.stroke(c), egui::StrokeKind::Middle);
+        self.rounded(&[(x0, y0), (x1, y0), (x1, y1), (x0, y1)], true, 1.0, c);
+    }
+    /// A filled box, its edges between pixels; its corners rounded by `r` units.
+    fn frect_r(&self, x0: f32, y0: f32, x1: f32, y1: f32, r: f32, c: Color32) {
+        let (a, b) = (self.out(self.fp(x0, y0)), self.out(self.fp(x1, y1)));
+        let rect = Rect::from_min_max(a, b);
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        let radius = (r * self.s()).min(rect.width().min(rect.height()) / 2.0);
+        self.p.rect_filled(rect, radius, c);
     }
     fn frect(&self, x0: f32, y0: f32, x1: f32, y1: f32, c: Color32) {
-        self.p.rect_filled(Rect::from_min_max(self.pt(x0, y0), self.pt(x1, y1)), 0.5, c);
+        self.frect_r(x0, y0, x1, y1, 0.0, c);
+    }
+    /// A filled convex polygon, its corners on whole pixels.
+    fn fill(&self, pts: &[(f32, f32)], c: Color32) {
+        let v: Vec<Pos2> = pts.iter().map(|&(x, y)| self.out(self.fp(x, y))).collect();
+        self.p.add(Shape::convex_polygon(v, c, Stroke::NONE));
+    }
+    /// A filled polygon that every corner of can be seen from `centre` (a flag, a star, a
+    /// plane): one mesh, so its inside has no seams, with its outline stroked over the mesh's
+    /// hard edge in the same colour.
+    fn fill_shape(&self, centre: (f32, f32), pts: &[(f32, f32)], c: Color32) {
+        let v: Vec<Pos2> = pts.iter().map(|&(x, y)| self.sp(x, y)).collect();
+        let mut mesh = Mesh::default();
+        mesh.colored_vertex(self.out(self.d(centre.0, centre.1)), c);
+        for q in &v {
+            mesh.colored_vertex(self.out(*q), c);
+        }
+        let n = v.len() as u32;
+        for i in 0..n {
+            mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+        }
+        self.p.add(Shape::mesh(mesh));
+        self.stroke_px(&v, true, c);
+    }
+    /// Where a circle centred at (`x`, `y`) of radius `r` units is drawn: its centre snapped for
+    /// a stroke, its radius a whole number of pixels.
+    fn arc_geom(&self, x: f32, y: f32, r: f32) -> (Pos2, f32) {
+        let q = self.d(x, y);
+        (pos2(self.sv(q.x), self.sv(q.y)), (r * self.k).round().max(1.0))
     }
     fn circle(&self, x: f32, y: f32, r: f32, c: Color32) {
-        self.p.circle_stroke(self.pt(x, y), r * self.s(), self.stroke(c));
+        let (q, rr) = self.arc_geom(x, y, r);
+        self.p.circle_stroke(self.out(q), rr / self.ppp, self.stroke(c));
     }
+    /// A dot. A tiny one sits on a pixel; a bigger one has its edge between pixels.
     fn fcircle(&self, x: f32, y: f32, r: f32, c: Color32) {
-        self.p.circle_filled(self.pt(x, y), r * self.s(), c);
+        let q = self.d(x, y);
+        let rr = r * self.k;
+        let (q, rr) = if rr >= 1.25 { (pos2(q.x.round(), q.y.round()), rr.round()) } else { (pos2(q.x.floor() + 0.5, q.y.floor() + 0.5), rr.max(0.6)) };
+        self.p.circle_filled(self.out(q), rr / self.ppp, c);
     }
-    fn text(&self, x: f32, y: f32, size: f32, t: &str, c: Color32, bold: bool) {
-        let font = if bold { crate::theme::semibold(size * self.s()) } else { FontId::proportional(size * self.s()) };
-        self.p.text(self.pt(x, y), egui::Align2::CENTER_CENTER, t, font, c);
-    }
-    /// An arc of a circle from `from` to `to` degrees (0 = east, clockwise).
+    /// An arc of a circle from `from` to `to` degrees (0 = east, clockwise; either way round).
     fn arc(&self, x: f32, y: f32, r: f32, from: f32, to: f32, c: Color32) {
-        let steps = 14;
+        self.path().a(self, x, y, r, from, to).draw(self, c);
+    }
+    /// An ellipse, or an arc of one, from `from` to `to` degrees (all curve, so not snapped but
+    /// for its centre).
+    #[allow(clippy::too_many_arguments)]
+    fn ellipse_arc(&self, x: f32, y: f32, rx: f32, ry: f32, from: f32, to: f32, c: Color32) {
+        let steps = (((to - from).abs() / 360.0) * (rx.max(ry) * self.k * 3.0)).clamp(8.0, 64.0) as usize;
+        let q = self.d(x, y);
+        let centre = pos2(self.sv(q.x), self.sv(q.y));
+        let (rx, ry) = ((rx * self.k).round().max(1.0), (ry * self.k).round().max(1.0));
         let v: Vec<Pos2> = (0..=steps)
             .map(|i| {
-                let a = (from + (to - from) * i as f32 / steps as f32).to_radians();
-                self.pt(x + r * a.cos(), y + r * a.sin())
+                let t = (from + (to - from) * i as f32 / steps as f32).to_radians();
+                centre + vec2(rx * t.cos(), ry * t.sin())
             })
             .collect();
-        self.p.add(Shape::line(v, self.stroke(c)));
+        self.stroke_px(&v, false, c);
     }
+    fn path(&self) -> Path {
+        Path { pts: Vec::new(), after_arc: false }
+    }
+    /// Text in the interface's semibold face, centred on (`x`, `y`), `size` units high, turned
+    /// clockwise by `angle` radians.
+    #[allow(clippy::too_many_arguments)]
+    fn text(&self, x: f32, y: f32, size: f32, t: &str, c: Color32, angle: f32) {
+        let font: FontId = crate::theme::semibold(size * self.s());
+        let galley = self.p.layout_no_wrap(t.to_string(), font, c);
+        let at = self.pt(x, y) - galley.size() / 2.0;
+        self.p.add(Shape::Text(TextShape::new(at, galley, c).with_angle_and_anchor(angle, Align2::CENTER_CENTER)));
+    }
+    /// An open arrowhead (a chevron) with its tip at `tip` (device pixels), pointing at `dir`
+    /// degrees, its arms `len` units long.
+    fn head_px(&self, tip: Pos2, dir: f32, len: f32, c: Color32) {
+        let arm = |turn: f32| {
+            let t = (dir + 180.0 + turn).to_radians();
+            let q = tip + vec2(t.cos(), t.sin()) * len * self.k;
+            pos2(self.sv(q.x), self.sv(q.y))
+        };
+        self.stroke_px(&[arm(-45.0), tip, arm(45.0)], false, c);
+    }
+    fn head(&self, x: f32, y: f32, dir: f32, len: f32, c: Color32) {
+        self.head_px(self.sp(x, y), dir, len, c);
+    }
+}
+
+impl Path {
+    /// Start at a grid point.
+    fn m(mut self, pen: &Pen<'_>, x: f32, y: f32) -> Self {
+        self.pts.push(pen.sp(x, y));
+        self.after_arc = false;
+        self
+    }
+    /// A straight piece to a grid point. After an arc it keeps to the arc's end along the axis it
+    /// nearly shares, so the join has no kink.
+    fn l(mut self, pen: &Pen<'_>, x: f32, y: f32) -> Self {
+        let mut q = pen.sp(x, y);
+        if self.after_arc
+            && let Some(prev) = self.pts.last()
+        {
+            if (q.x - prev.x).abs() < 1.5 {
+                q.x = prev.x;
+            }
+            if (q.y - prev.y).abs() < 1.5 {
+                q.y = prev.y;
+            }
+        }
+        self.pts.push(q);
+        self.after_arc = false;
+        self
+    }
+    /// An arc from `from` to `to` degrees (0 = east, clockwise), joined to what came before. The
+    /// point before it moves onto the arc's start along the axis it nearly shares.
+    #[allow(clippy::too_many_arguments)]
+    fn a(mut self, pen: &Pen<'_>, x: f32, y: f32, r: f32, from: f32, to: f32) -> Self {
+        let (centre, rr) = pen.arc_geom(x, y, r);
+        let at = |deg: f32| {
+            let t = deg.to_radians();
+            centre + vec2(rr * t.cos(), rr * t.sin())
+        };
+        let start = at(from);
+        if let Some(last) = self.pts.last_mut() {
+            if (last.x - start.x).abs() < 1.5 {
+                last.x = start.x;
+            }
+            if (last.y - start.y).abs() < 1.5 {
+                last.y = start.y;
+            }
+        }
+        let steps = (((to - from).abs() / 360.0) * rr * 3.0).clamp(4.0, 64.0) as usize;
+        for i in 0..=steps {
+            self.pts.push(at(from + (to - from) * i as f32 / steps as f32));
+        }
+        self.after_arc = true;
+        self
+    }
+    /// A cubic curve from where the line is to the grid point (`x`, `y`).
+    fn c(mut self, pen: &Pen<'_>, c1: (f32, f32), c2: (f32, f32), x: f32, y: f32) -> Self {
+        let Some(&p0) = self.pts.last() else { return self.m(pen, x, y) };
+        let (p1, p2, p3) = (pen.d(c1.0, c1.1), pen.d(c2.0, c2.1), pen.sp(x, y));
+        let steps = ((p3 - p0).length() / 1.5).clamp(6.0, 32.0) as usize;
+        for i in 1..=steps {
+            let t = i as f32 / steps as f32;
+            let u = 1.0 - t;
+            let q = p0.to_vec2() * (u * u * u) + p1.to_vec2() * (3.0 * u * u * t) + p2.to_vec2() * (3.0 * u * t * t) + p3.to_vec2() * (t * t * t);
+            self.pts.push(q.to_pos2());
+        }
+        self.after_arc = false;
+        self
+    }
+    fn first(&self) -> Option<Pos2> {
+        self.pts.first().copied()
+    }
+    fn last(&self) -> Option<Pos2> {
+        self.pts.last().copied()
+    }
+    fn draw(&self, pen: &Pen<'_>, c: Color32) {
+        pen.stroke_px(&self.pts, false, c);
+    }
+    fn draw_closed(&self, pen: &Pen<'_>, c: Color32) {
+        pen.stroke_px(&self.pts, true, c);
+    }
+}
+
+/// Round a polyline's corners (device pixels) with radius `r` pixels.
+fn round_corners(pts: &[Pos2], closed: bool, r: f32) -> Vec<Pos2> {
+    let n = pts.len();
+    if r < 0.5 || n < 3 {
+        return pts.to_vec();
+    }
+    let mut out = Vec::with_capacity(n * 5);
+    for (i, &v) in pts.iter().enumerate() {
+        if !closed && (i == 0 || i + 1 == n) {
+            out.push(v);
+            continue;
+        }
+        let (Some(&prev), Some(&next)) = (pts.get((i + n - 1) % n), pts.get((i + 1) % n)) else { continue };
+        let (d1, d2): (Vec2, Vec2) = (prev - v, next - v);
+        let (l1, l2) = (d1.length(), d2.length());
+        if l1 < 0.01 || l2 < 0.01 {
+            out.push(v);
+            continue;
+        }
+        let t = r.min(l1 / 2.0).min(l2 / 2.0);
+        let (p1, p2) = (v + d1 / l1 * t, v + d2 / l2 * t);
+        for s in 0..=4 {
+            let u = s as f32 / 4.0;
+            let q = p1.to_vec2() * ((1.0 - u) * (1.0 - u)) + v.to_vec2() * (2.0 * u * (1.0 - u)) + p2.to_vec2() * (u * u);
+            out.push(q.to_pos2());
+        }
+    }
+    out
+}
+
+impl Pen<'_> {
     /// An envelope: a box with its flap.
     fn envelope(&self, x0: f32, y0: f32, x1: f32, y1: f32, c: Color32) {
         self.rect(x0, y0, x1, y1, c);
@@ -118,7 +384,7 @@ impl Pen<'_> {
 
 /// Paint icon `name` into `r`. `c` is the line colour; the accent comes from the theme.
 pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
-    let pen = Pen { p, r, c, a: accent, w: 1.25 };
+    let Some(pen) = Pen::new(p, r, c, accent) else { return };
     let a = accent;
     let red = Color32::from_rgb(0xD1, 0x3B, 0x3B);
     let yellow = Color32::from_rgb(0xD9, 0xA4, 0x0C);
@@ -302,7 +568,7 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
             pen.line_c(&[(5.0, 5.0), (15.0, 15.0)], k);
             pen.line_c(&[(15.0, 5.0), (5.0, 15.0)], k);
         }
-        "tentative" => pen.text(10.0, 10.0, 15.0, "?", c, true),
+        "tentative" => pen.text(10.0, 10.0, 15.0, "?", c, 0.0),
         // Modules and navigation
         "calendar" | "appointment" => {
             pen.calendar(c);
@@ -362,7 +628,7 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
             match name {
                 "meetingRequest" => pen.line_c(&[(5.5, 10.0), (10.0, 13.6), (14.5, 10.0)], c),
                 "meetingAccepted" => pen.check(10.0, 12.2, 0.95, green),
-                "meetingTentative" => pen.text(10.0, 12.2, 9.5, "?", c, true),
+                "meetingTentative" => pen.text(10.0, 12.2, 9.5, "?", c, 0.0),
                 // Called off: struck through.
                 "meetingCancelled" => pen.line_c(&[(3.5, 17.0), (16.5, 6.0)], red),
                 _ => {
@@ -503,7 +769,7 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
         }
         "help" => {
             pen.circle(10.0, 10.0, 7.0, a);
-            pen.text(10.0, 10.2, 11.0, "?", c, true);
+            pen.text(10.0, 10.2, 11.0, "?", c, 0.0);
         }
         "print" => {
             pen.rect(6.0, 3.0, 14.0, 7.0, c);
@@ -557,7 +823,7 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
         "responseOptions" => {
             pen.check(5.5, 6.5, 0.8, green);
             pen.line(&[(10.0, 6.5), (17.0, 6.5)]);
-            pen.text(5.5, 13.5, 9.5, "?", a, true);
+            pen.text(5.5, 13.5, 9.5, "?", a, 0.0);
             pen.line(&[(10.0, 13.5), (17.0, 13.5)]);
         }
         // The world with its meridians, and the hour a place on it has.
@@ -599,7 +865,7 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
         }
         "tick" => pen.check(10.0, 10.5, 1.5, c),
         // Formatting the text of a message being written
-        "bold" => pen.text(10.0, 10.3, 15.0, "B", c, true),
+        "bold" => pen.text(10.0, 10.3, 15.0, "B", c, 0.0),
         "italic" => {
             pen.line(&[(11.8, 4.0), (8.2, 16.0)]);
             pen.line(&[(9.0, 4.0), (14.5, 4.0)]);
@@ -612,15 +878,15 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
             pen.line_c(&[(4.5, 17.0), (15.5, 17.0)], a);
         }
         "fontSize" => {
-            pen.text(7.5, 10.5, 15.0, "A", c, false);
-            pen.text(15.5, 12.5, 9.0, "A", c, false);
+            pen.text(7.5, 10.5, 15.0, "A", c, 0.0);
+            pen.text(15.5, 12.5, 9.0, "A", c, 0.0);
         }
         "font" => {
-            pen.text(7.0, 10.5, 14.0, "A", c, false);
-            pen.text(14.5, 12.0, 10.0, "a", a, false);
+            pen.text(7.0, 10.5, 14.0, "A", c, 0.0);
+            pen.text(14.5, 12.0, 10.0, "a", a, 0.0);
         }
         "fontColor" => {
-            pen.text(10.0, 8.5, 13.0, "A", c, false);
+            pen.text(10.0, 8.5, 13.0, "A", c, 0.0);
             pen.frect(3.5, 15.0, 16.5, 18.0, a);
         }
         "bullets" => {
@@ -631,7 +897,7 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
         }
         "numbering" => {
             for (y, n) in [(5.0, "1"), (10.0, "2"), (15.0, "3")] {
-                pen.text(4.5, y, 6.0, n, a, true);
+                pen.text(4.5, y, 6.0, n, a, 0.0);
                 pen.line(&[(8.0, y), (17.0, y)]);
             }
         }
@@ -645,11 +911,11 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
             link(8.5, 17.5, a);
         }
         "clearFormatting" => {
-            pen.text(8.0, 9.5, 13.0, "A", c, false);
+            pen.text(8.0, 9.5, 13.0, "A", c, 0.0);
             pen.line_c(&[(10.5, 17.0), (17.0, 10.5)], red);
             pen.line_c(&[(10.5, 10.5), (17.0, 17.0)], red);
         }
-        "formatHtml" => pen.text(10.0, 10.0, 8.5, "</>", c, true),
+        "formatHtml" => pen.text(10.0, 10.0, 8.5, "</>", c, 0.0),
         "increaseIndent" | "decreaseIndent" => {
             pen.line(&[(3.0, 4.0), (17.0, 4.0)]);
             pen.line(&[(9.5, 8.0), (17.0, 8.0)]);
@@ -670,7 +936,7 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
         _ => {
             pen.rect(3.5, 3.5, 16.5, 16.5, c);
             let letter: String = name.chars().next().map(|ch| ch.to_uppercase().collect()).unwrap_or_default();
-            pen.text(10.0, 10.3, 9.5, &letter, c, true);
+            pen.text(10.0, 10.3, 9.5, &letter, c, 0.0);
         }
     }
 }
