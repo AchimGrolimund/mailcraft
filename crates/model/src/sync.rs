@@ -11,8 +11,10 @@ use mailcraft_time::Timestamp;
 
 mod drafts;
 mod progress;
+mod search;
 pub use drafts::*;
 pub use progress::*;
+pub use search::*;
 
 /// A folder as the mailbox knows it, for the server side to continue from.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -28,6 +28,7 @@ pub mod people;
 mod quote_tests;
 pub mod remote;
 pub mod rules;
+pub mod search_server;
 pub mod shared;
 pub mod signature;
 #[cfg(test)]
@@ -71,6 +72,7 @@ pub fn registry() -> Registry {
     v.extend(graph_send::specs());
     v.extend(remote::specs());
     v.extend(sync_progress::specs());
+    v.extend(search_server::specs());
     Registry::new(v)
 }
 

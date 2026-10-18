@@ -54,6 +54,8 @@
 //!   `/users/{address}/sendMail` answer a shared mailbox's folders, drafts, sending and
 //!   mail as `/me` answers the owner's, its changes made in it alone ([`State::add_other`]); 403 when the owner wasn't given Full Access to
 //!   it, 404 for an address it doesn't know.
+//! - **Search** (R6.2). `$search` on `/me/messages` and `/me/mailFolders/{id}/messages` (and a
+//!   shared mailbox's), as the reference has it for messages: [`search`].
 //! - **Messages.** A folder's message delta in pages, with next and delta links, `@removed`,
 //!   replays, forgotten and reset links, and a message's MIME (`$value`): [`messages`]. Changes
 //!   of a message (read, flag, categories, importance, extended properties), move, copy and
@@ -73,6 +75,7 @@
 mod changes;
 mod drafts;
 mod messages;
+mod search;
 mod send;
 
 pub use changes::Fault;
@@ -372,6 +375,11 @@ pub struct State {
     pub lose_next: Vec<String>,
     /// What it sent, in order ([`send`]).
     pub sent: Vec<Sent>,
+    /// What every search of messages is answered with instead (a status and Graph's code), when
+    /// set ([`search`]).
+    pub search_refused: Option<(u16, &'static str)>,
+    /// How many searches of messages it answered.
+    pub searches: usize,
     /// The `Location` header of the answer being made, when it has one.
     location: Option<String>,
     /// The answer being made when it isn't JSON: its type and its body.
@@ -908,6 +916,7 @@ impl State {
             ["mailFolders"] => self.mail_folders(asked, method, None, &[]),
             ["mailFolders", folder, rest @ ..] => self.mail_folders(asked, method, Some(folder), rest),
             ["messages", id, "$value"] if method == "GET" => self.message_value(id),
+            ["messages"] if method == "GET" && asked.param("$search").is_some() => self.search_messages(asked, None),
             // Its drafts made, changed and sent, and its mail sent, there alone: the copy in its
             // own Sent Items (#70, slice 4). (A large attachment's upload is the owner's only.)
             ["messages"] if method == "POST" => self.create_message(asked),
@@ -1087,6 +1096,7 @@ impl State {
             }
             ("POST", Some(named), ["move"]) => self.folder_move(asked, named),
             ("GET", Some(named), ["messages", "delta"]) => self.message_delta(asked, named),
+            ("GET", Some(named), ["messages"]) if asked.param("$search").is_some() => self.search_messages(asked, Some(named)),
             ("GET", Some(named), ["messages"]) => self.folder_messages(asked, named),
             (_, Some(named), ["messages", id, action @ ..]) if action.len() <= 1 => {
                 self.mail_folder(named)?;
@@ -1907,6 +1917,7 @@ impl State {
                 self.page(asked, vec![group])
             }
             ["messages"] if method == "POST" => self.create_message(asked),
+            ["messages"] if method == "GET" && asked.param("$search").is_some() => self.search_messages(asked, None),
             ["sendMail"] if method == "POST" => self.send_mail(asked),
             ["messages", id, "send"] if method == "POST" => self.send_draft(asked, id),
             ["messages", id, "$value"] if method == "GET" => self.message_value(id),

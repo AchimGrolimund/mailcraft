@@ -14,6 +14,8 @@ use serde_json::json;
 use crate::theme::{Tokens, paint_clipped, regular, semibold};
 use crate::{MailApp, icons};
 
+mod server_rows;
+
 /// What a drag out of the message list carries: the messages to file in the folder they are
 /// let go over (`nav::folder_row` takes them).
 pub(crate) struct MessageDrag(pub Vec<Id>);
@@ -451,9 +453,15 @@ fn list(app: &mut MailApp, ui: &mut Ui) {
         };
         paint_clipped(ui.painter(), pos2(r.min.x + 10.0, r.min.y + 4.0), r.width() - 20.0, &text, regular(11.5), t.text_dim);
     }
+    let row_h = row_height(app.session.prefs.preview_lines);
+    // Below the local results of a search: More results on the server, and what came (R6.2).
+    let searching = !app.session.view.search.trim().is_empty();
+    let local: std::collections::HashSet<Id> =
+        if searching { rows.iter().flat_map(|r| r.members.iter().copied()).collect() } else { Default::default() };
+    let below = if searching { server_rows::height(app, &local, row_h) } else { 0.0 };
     if rows.is_empty() {
         let r = ui.available_rect_before_wrap();
-        let msg = if !app.session.view.search.trim().is_empty() {
+        let msg = if searching {
             tl!("Nothing matches the search.")
         } else if app.session.view.filter != Filter::All {
             tl!("Nothing matches this filter.")
@@ -461,9 +469,18 @@ fn list(app: &mut MailApp, ui: &mut Ui) {
             tl!("Nothing here yet.")
         };
         ui.painter().text(pos2(r.center().x, r.min.y + 60.0), Align2::CENTER_CENTER, msg, regular(12.5), t.text_dim);
+        if below > 0.0 {
+            let room = Rect::from_min_max(pos2(r.min.x, r.min.y + 90.0), r.max);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(room), |ui| {
+                egui::ScrollArea::vertical().id_salt("message_list_server").auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
+                    let (area, _) = ui.allocate_exact_size(vec2(ui.available_width(), below), Sense::hover());
+                    let width = (area.width() - SCROLL_LANE).max(0.0);
+                    server_rows::show(app, ui, &local, area.min.x, area.min.y, width, row_h, viewport.translate(area.min.to_vec2()));
+                });
+            });
+        }
         return;
     }
-    let row_h = row_height(app.session.prefs.preview_lines);
     // Where each row starts: rows are the same height, group headings add theirs.
     let mut tops = Vec::with_capacity(rows.len());
     let mut y = 0.0f32;
@@ -474,7 +491,8 @@ fn list(app: &mut MailApp, ui: &mut Ui) {
         tops.push(y);
         y += row_h;
     }
-    let total = y;
+    let rows_end = y;
+    let total = y + below;
     let reveal = std::mem::take(&mut app.reveal_selection);
     let focus = app.session.sel.focus();
     let outer = ui.available_rect_before_wrap();
@@ -526,6 +544,9 @@ fn list(app: &mut MailApp, ui: &mut Ui) {
                     ui.scroll_to_rect(rect, None);
                 }
                 message_row(app, ui, row, rect);
+            }
+            if below > 0.0 {
+                server_rows::show(app, ui, &local, origin.x, origin.y + rows_end, width, row_h, viewport.translate(origin.to_vec2()));
             }
         });
     if arrows {

@@ -92,6 +92,8 @@ impl Access {
 }
 
 const SAFE: &[&str] = &[
+    // A result the servers found for the owner's search, opened (and so fetched) as any message.
+    "search.openServerResult",
     // File: content goes in and out as `data`; a path is refused separately.
     "file.import",
     "file.exportMessage",
@@ -371,6 +373,10 @@ const NEVER: &[&str] = &[
     "sync.applyGraph",
     "sync.graphFetchRequest",
     "sync.applyGraphFetch",
+    // A search of the server goes only on the owner's own click (R6.2).
+    "sync.graphSearchRequest",
+    "sync.applyGraphSearch",
+    "ui.moreResultsOnServer",
     "sync.holdSends",
     "sync.eventChanges",
     "sync.applyEventChanges",

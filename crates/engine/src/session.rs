@@ -569,6 +569,9 @@ pub struct Session {
     /// instead of writing one itself ([`crate::cmd::graph_switch::prepare_backup`]). Set only by
     /// the window once the copy is on disk, never by a command's params. Never saved.
     pub graph_switch_backup: Option<(Id, PathBuf)>,
+    /// More results on the server for the search in view (R6.2): what was asked of the servers
+    /// and what they found, never in the mailbox. Never saved.
+    pub server_search: crate::cmd::search_server::ServerSearch,
     /// Shared mailboxes may be added and read (#70): the switch for testing, off until changes
     /// in them go up, so that no owner is asked for a shared mailbox's permission by a build that
     /// only reads one. Set by the host (`MAILCRAFT_SHARED_MAILBOXES=1`), never by a command's
@@ -685,6 +688,7 @@ impl Session {
             graph_said: Vec::new(),
             agent: None,
             graph_switch_backup: None,
+            server_search: Default::default(),
             shared_mailboxes: false,
             history: Vec::new(),
             redo: Vec::new(),
