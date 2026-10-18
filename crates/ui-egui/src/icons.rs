@@ -1,6 +1,7 @@
 //! MailCraft's icon set, drawn in code (original artwork; no external icon assets).
 //!
-//! Icons are designed on a 20×20 grid in two colours: line work (`c`) and an accent (`a`).
+//! Icons are designed on a 20×20 grid in one stroke: ink (`c`), an accent (`a`) on the one part
+//! that is the action or the changed state, and a few theme colours for state marks.
 
 use egui::epaint::{Mesh, TextShape};
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
@@ -174,7 +175,8 @@ impl<'a> Pen<'a> {
     fn fcircle(&self, x: f32, y: f32, r: f32, c: Color32) {
         let q = self.d(x, y);
         let rr = r * self.k;
-        let (q, rr) = if rr >= 1.25 { (pos2(q.x.round(), q.y.round()), rr.round()) } else { (pos2(q.x.floor() + 0.5, q.y.floor() + 0.5), rr.max(0.6)) };
+        let (q, rr) =
+            if rr >= 1.25 { (pos2(q.x.round(), q.y.round()), rr.round()) } else { (pos2(q.x.floor() + 0.5, q.y.floor() + 0.5), rr.max(0.6)) };
         self.p.circle_filled(self.out(q), rr / self.ppp, c);
     }
     /// An arc of a circle from `from` to `to` degrees (0 = east, clockwise; either way round).
@@ -288,9 +290,6 @@ impl Path {
         self.after_arc = false;
         self
     }
-    fn first(&self) -> Option<Pos2> {
-        self.pts.first().copied()
-    }
     fn last(&self) -> Option<Pos2> {
         self.pts.last().copied()
     }
@@ -332,619 +331,759 @@ fn round_corners(pts: &[Pos2], closed: bool, r: f32) -> Vec<Pos2> {
     out
 }
 
+/// The shapes several icons share.
 impl Pen<'_> {
+    /// A box with its bottom-right corner left open for a modifier (the "new" plus, a badge):
+    /// nothing of it comes within a unit of the modifier's zone (12–18 both ways).
+    fn cut_box(&self, x0: f32, y0: f32, x1: f32, y1: f32, c: Color32) {
+        self.rounded(&[(x1, 10.0), (x1, y0), (x0, y0), (x0, y1), (10.0, y1)], false, 1.0, c);
+    }
+    /// An envelope's flap, from its top corners to the middle.
+    fn flap(&self, x0: f32, y0: f32, x1: f32, y1: f32, c: Color32) {
+        self.line_c(&[(x0 + 1.0, y0 + 1.0), ((x0 + x1) / 2.0, y0 + (y1 - y0) * 0.5), (x1 - 1.0, y0 + 1.0)], c);
+    }
     /// An envelope: a box with its flap.
     fn envelope(&self, x0: f32, y0: f32, x1: f32, y1: f32, c: Color32) {
         self.rect(x0, y0, x1, y1, c);
-        let mid = (x0 + x1) / 2.0;
-        self.line_c(&[(x0, y0 + 0.4), (mid, y0 + (y1 - y0) * 0.55), (x1, y0 + 0.4)], c);
+        self.flap(x0, y0, x1, y1, c);
     }
-    /// A folder outline.
-    fn folder(&self, c: Color32) {
-        self.closed(&[(2.5, 5.0), (8.0, 5.0), (9.5, 7.0), (17.5, 7.0), (17.5, 15.5), (2.5, 15.5)], c);
+    /// The one "new" modifier: a plus in the accent, bottom right.
+    fn new_plus(&self) {
+        self.line_c(&[(12.5, 15.0), (17.5, 15.0)], self.a);
+        self.line_c(&[(15.0, 12.5), (15.0, 17.5)], self.a);
     }
-    /// A tray (inbox, outbox).
-    fn tray(&self, c: Color32) {
-        self.closed(&[(3.0, 11.0), (5.5, 5.0), (14.5, 5.0), (17.0, 11.0), (17.0, 15.5), (3.0, 15.5)], c);
-        self.line_c(&[(3.0, 11.0), (7.0, 11.0), (8.0, 13.0), (12.0, 13.0), (13.0, 11.0), (17.0, 11.0)], c);
+    /// A cross in the modifier's zone.
+    fn badge_x(&self, c: Color32) {
+        self.line_c(&[(12.5, 12.5), (17.5, 17.5)], c);
+        self.line_c(&[(17.5, 12.5), (12.5, 17.5)], c);
     }
-    /// A bin.
-    fn bin(&self, c: Color32) {
-        self.line_c(&[(4.0, 6.0), (16.0, 6.0)], c);
-        self.line_c(&[(8.0, 6.0), (8.0, 4.0), (12.0, 4.0), (12.0, 6.0)], c);
-        self.line_c(&[(5.5, 6.0), (6.3, 16.5), (13.7, 16.5), (14.5, 6.0)], c);
+    /// A tick in the modifier's zone.
+    fn badge_check(&self, c: Color32) {
+        self.line_c(&[(12.0, 15.0), (14.25, 17.25), (18.0, 12.75)], c);
     }
-    /// A calendar page with its binding.
-    fn calendar(&self, c: Color32) {
-        self.rect(3.0, 4.5, 17.0, 16.5, c);
-        self.frect(3.0, 4.5, 17.0, 7.5, self.a);
-        self.line_c(&[(6.5, 3.0), (6.5, 5.5)], c);
-        self.line_c(&[(13.5, 3.0), (13.5, 5.5)], c);
-    }
-    /// A head and shoulders.
-    fn person(&self, x: f32, y: f32, k: f32, c: Color32) {
-        self.circle(x, y - 3.2 * k, 2.6 * k, c);
-        self.arc(x, y + 5.2 * k, 5.4 * k, 205.0, 335.0, c);
-    }
-    /// A looping arrow (sync, repeat).
-    fn loop_arrows(&self, c: Color32, heads: Color32) {
-        self.arc(10.0, 10.0, 6.0, 200.0, 340.0, c);
-        self.arc(10.0, 10.0, 6.0, 20.0, 160.0, c);
-        self.fill(&[(15.0, 5.2), (18.0, 8.8), (13.6, 9.2)], heads);
-        self.fill(&[(5.0, 14.8), (2.0, 11.2), (6.4, 10.8)], heads);
-    }
+    /// The one tick.
     fn check(&self, x: f32, y: f32, k: f32, c: Color32) {
-        self.line_c(&[(x - 3.5 * k, y), (x - 1.0 * k, y + 2.6 * k), (x + 3.8 * k, y - 3.0 * k)], c);
+        self.line_c(&[(x - 3.5 * k, y), (x - 1.0 * k, y + 2.5 * k), (x + 3.75 * k, y - 3.0 * k)], c);
     }
     fn plus(&self, x: f32, y: f32, k: f32, c: Color32) {
         self.line_c(&[(x - k, y), (x + k, y)], c);
         self.line_c(&[(x, y - k), (x, y + k)], c);
     }
+    /// A folder, whole or with its corner open for a modifier.
+    fn folder(&self, cut: bool, c: Color32) {
+        if cut {
+            self.rounded(&[(17.5, 10.0), (17.5, 6.5), (9.5, 6.5), (7.5, 4.5), (2.5, 4.5), (2.5, 15.5), (10.0, 15.5)], false, 1.0, c);
+        } else {
+            self.rounded(&[(2.5, 4.5), (7.5, 4.5), (9.5, 6.5), (17.5, 6.5), (17.5, 15.5), (2.5, 15.5)], true, 1.0, c);
+        }
+    }
+    /// A tray with its well, open at the top (the Inbox, the Outbox).
+    fn tray(&self, c: Color32) {
+        self.rounded(&[(2.5, 10.5), (2.5, 15.5), (17.5, 15.5), (17.5, 10.5)], false, 1.0, c);
+        self.line_c(&[(2.5, 10.5), (6.5, 10.5), (7.5, 12.5), (12.5, 12.5), (13.5, 10.5), (17.5, 10.5)], c);
+    }
+    /// A bracket open at the top, that something goes into or comes out of.
+    fn bracket(&self, c: Color32) {
+        self.rounded(&[(3.5, 11.5), (3.5, 16.5), (16.5, 16.5), (16.5, 11.5)], false, 1.0, c);
+    }
+    /// A bin's lid and handle; `tilted` when it is lifted.
+    fn lid(&self, tilted: bool, c: Color32) {
+        if tilted {
+            self.line_c(&[(3.5, 6.0), (15.5, 2.5)], c);
+        } else {
+            self.line_c(&[(3.0, 5.5), (17.0, 5.5)], c);
+            self.rounded(&[(7.5, 5.5), (7.5, 3.0), (12.5, 3.0), (12.5, 5.5)], false, 1.0, c);
+        }
+    }
+    /// A calendar page: its binding and a line under its header. `cut` leaves its corner open.
+    fn calendar(&self, cut: bool, c: Color32) {
+        if cut {
+            self.cut_box(2.5, 4.5, 17.5, 16.5, c);
+        } else {
+            self.rect(2.5, 4.5, 17.5, 16.5, c);
+        }
+        self.line_c(&[(2.5, 8.0), (17.5, 8.0)], c);
+        self.line_c(&[(6.5, 2.5), (6.5, 5.5)], c);
+        self.line_c(&[(13.5, 2.5), (13.5, 5.5)], c);
+    }
+    /// A head and shoulders: the head at (`x`, `hy`) of radius `hr`; the shoulders an arc round
+    /// (`x`, `sy`) of radius `sr`, from `from` to `to` degrees.
+    #[allow(clippy::too_many_arguments)]
+    fn person(&self, x: f32, hy: f32, hr: f32, sy: f32, sr: f32, from: f32, to: f32, c: Color32) {
+        self.circle(x, hy, hr, c);
+        self.arc(x, sy, sr, from, to, c);
+    }
+    /// A question mark of strokes, `s` times the size of one 10 units high, centred on (x, y).
+    fn question(&self, x: f32, y: f32, s: f32, c: Color32) {
+        self.path().a(self, x, y - 2.25 * s, 2.75 * s, 180.0, 405.0).l(self, x, y + 1.0 * s).l(self, x, y + 2.0 * s).draw(self, c);
+        self.fcircle(x, y + 4.25 * s, 0.9 * s, c);
+    }
+    /// A line through grid points that are all curve (not snapped), turned by `turn` degrees
+    /// round the middle of the grid.
+    fn curve(&self, pts: &[(f32, f32)], turn: f32, c: Color32) {
+        let (sin, cos) = turn.to_radians().sin_cos();
+        let v: Vec<Pos2> = pts
+            .iter()
+            .map(|&(x, y)| {
+                let (dx, dy) = (x - 10.0, y - 10.0);
+                self.d(10.0 + dx * cos - dy * sin, 10.0 + dx * sin + dy * cos)
+            })
+            .collect();
+        self.stroke_px(&v, false, c);
+    }
+    /// Little boxes in a grid of `cols` by `rows` inside (`x0`, `y0`)–(`x1`, `y1`), each a whole
+    /// number of pixels with a gap of a stroke's width between them: the days of a calendar
+    /// view. The one at `lit` is in `hi`, the others in `c`.
+    #[allow(clippy::too_many_arguments)]
+    fn cells(&self, (x0, y0, x1, y1): (f32, f32, f32, f32), cols: u32, rows: u32, lit: (u32, u32), c: Color32, hi: Color32) {
+        let (a, b) = (self.fp(x0, y0), self.fp(x1, y1));
+        let g = self.w;
+        let fit = |len: f32, n: u32| {
+            let n = n.max(1) as f32;
+            let cell = ((len - (n - 1.0) * g) / n).floor().max(1.0);
+            let used = cell * n + (n - 1.0) * g;
+            (cell, ((len - used) / 2.0).floor().max(0.0))
+        };
+        let ((cw, ox), (ch, oy)) = (fit(b.x - a.x, cols), fit(b.y - a.y, rows));
+        for row in 0..rows {
+            for col in 0..cols {
+                let min = pos2(a.x + ox + col as f32 * (cw + g), a.y + oy + row as f32 * (ch + g));
+                let rect = Rect::from_min_size(self.out(min), vec2(cw, ch) / self.ppp);
+                self.p.rect_filled(rect, 0.0, if (col, row) == lit { hi } else { c });
+            }
+        }
+    }
 }
 
-/// Paint icon `name` into `r`. `c` is the line colour; the accent comes from the theme.
+/// Paint icon `name` into `r`, drawn on a 20-unit grid in one stroke.
+///
+/// `c` is the ink. `accent` marks the one part that is the action or the state that changed (a
+/// "new" plus, an arrow that moves something, the dot of what is unread); a few state marks have
+/// their own colours from the theme (a flag, a star, a tick, the categories). When `accent` is
+/// `c` (a disabled button, the module bar), every part is drawn in `c`. Below 16 pt a few icons
+/// leave out the detail that would not hold at that size.
 pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
     let Some(pen) = Pen::new(p, r, c, accent) else { return };
+    let t = crate::theme::Tokens::get(p.ctx());
+    let mono = c == accent;
+    let hue = |h: Color32| if mono { c } else { h };
     let a = accent;
-    let red = Color32::from_rgb(0xD1, 0x3B, 0x3B);
-    let yellow = Color32::from_rgb(0xD9, 0xA4, 0x0C);
-    let green = Color32::from_rgb(0x2E, 0x8B, 0x57);
-    let blue = Color32::from_rgb(0x2F, 0x6F, 0xD0);
-    let soft = a.linear_multiply(0.18);
+    let (red, yellow, green, purple, on_accent) = (hue(t.icon_red), hue(t.icon_yellow), hue(t.icon_green), hue(t.icon_purple), t.on_accent);
+    let size = r.width().min(r.height());
+    let small = size <= 16.5;
+    let tiny = size <= 12.5;
+    let quiet = c.linear_multiply(0.7);
     match name {
         // Mail
-        "mail" | "email" | "unread" | "markUnread" => {
-            pen.envelope(2.5, 5.0, 17.5, 15.0, c);
-            if name.ends_with("nread") {
-                pen.fcircle(16.5, 5.5, 2.6, a);
-            }
+        "mail" | "email" => pen.envelope(2.5, 4.5, 17.5, 15.5, c),
+        "unread" | "markUnread" => {
+            pen.cut_box(2.5, 4.5, 17.5, 15.5, c);
+            pen.flap(2.5, 4.5, 17.5, 15.5, c);
+            pen.fcircle(15.0, 15.0, 2.5, a);
         }
         "new" | "newMail" => {
-            pen.envelope(2.5, 6.0, 15.5, 16.0, c);
-            pen.fcircle(15.5, 5.5, 3.6, a);
-            pen.plus(15.5, 5.5, 2.0, Color32::WHITE);
+            pen.cut_box(2.5, 4.5, 17.5, 15.5, c);
+            pen.flap(2.5, 4.5, 17.5, 15.5, c);
+            pen.new_plus();
         }
         "read" | "markRead" | "toggleRead" => {
-            pen.closed(&[(3.0, 9.0), (10.0, 4.0), (17.0, 9.0), (17.0, 16.5), (3.0, 16.5)], c);
-            pen.line(&[(3.0, 9.0), (10.0, 13.5), (17.0, 9.0)]);
+            pen.rounded(&[(2.5, 8.5), (10.0, 3.5), (17.5, 8.5), (17.5, 16.5), (2.5, 16.5)], true, 1.0, c);
+            pen.line(&[(2.5, 8.5), (10.0, 13.0), (17.5, 8.5)]);
         }
         "markAllRead" => {
-            pen.closed(&[(3.0, 9.0), (10.0, 4.0), (17.0, 9.0), (17.0, 16.5), (3.0, 16.5)], c);
-            pen.check(10.0, 11.5, 1.0, a);
+            pen.rounded(&[(2.5, 8.5), (10.0, 3.5), (17.5, 8.5), (17.5, 16.5), (2.5, 16.5)], true, 1.0, c);
+            pen.check(10.0, 12.0, 0.9, green);
         }
         "reply" => {
-            pen.line_c(&[(8.5, 5.0), (3.5, 10.0), (8.5, 15.0)], a);
-            pen.line_c(&[(3.8, 10.0), (11.0, 10.0), (14.5, 11.5), (16.5, 15.5)], a);
+            let tail = pen.path().m(&pen, 3.5, 8.5).l(&pen, 10.0, 8.5).c(&pen, (13.5, 8.5), (16.5, 11.0), 16.5, 15.5);
+            tail.draw(&pen, c);
+            pen.head(3.5, 8.5, 180.0, 4.0, c);
         }
         "replyAll" => {
-            pen.line_c(&[(7.0, 5.0), (2.0, 10.0), (7.0, 15.0)], c);
-            pen.line_c(&[(11.0, 5.0), (6.0, 10.0), (11.0, 15.0)], a);
-            pen.line_c(&[(6.3, 10.0), (13.0, 10.0), (16.0, 11.5), (17.8, 15.5)], a);
+            let tail = pen.path().m(&pen, 7.0, 8.5).l(&pen, 11.5, 8.5).c(&pen, (14.5, 8.5), (17.0, 11.0), 17.0, 15.5);
+            tail.draw(&pen, c);
+            pen.head(7.0, 8.5, 180.0, 4.0, c);
+            pen.head(2.5, 8.5, 180.0, 4.0, c);
         }
         "forward" => {
-            pen.line_c(&[(11.5, 5.0), (16.5, 10.0), (11.5, 15.0)], a);
-            pen.line_c(&[(16.2, 10.0), (9.0, 10.0), (5.5, 11.5), (3.5, 15.5)], a);
+            let tail = pen.path().m(&pen, 16.5, 8.5).l(&pen, 10.0, 8.5).c(&pen, (6.5, 8.5), (3.5, 11.0), 3.5, 15.5);
+            tail.draw(&pen, c);
+            pen.head(16.5, 8.5, 0.0, 4.0, c);
         }
-        "delete" | "deleted" | "discard" | "deletePermanently" | "remove" => {
-            pen.bin(if name == "deletePermanently" { red } else { c });
-            pen.line(&[(8.4, 9.0), (8.7, 14.0)]);
-            pen.line(&[(11.6, 9.0), (11.3, 14.0)]);
-        }
-        "empty" | "emptyFolder" => {
-            pen.bin(c);
-            pen.line_c(&[(8.0, 9.5), (12.0, 13.5)], red);
-            pen.line_c(&[(12.0, 9.5), (8.0, 13.5)], red);
-        }
-        "archive" => {
-            pen.rect(3.0, 4.0, 17.0, 8.0, c);
-            pen.line(&[(4.5, 8.0), (4.5, 16.0), (15.5, 16.0), (15.5, 8.0)]);
-            pen.line_c(&[(8.0, 11.0), (12.0, 11.0)], a);
-        }
-        "junk" | "notJunk" => {
-            pen.circle(10.0, 10.0, 6.5, if name == "junk" { red } else { c });
-            pen.line_c(&[(5.4, 5.4), (14.6, 14.6)], if name == "junk" { red } else { c });
-            if name == "notJunk" {
-                pen.check(14.5, 14.5, 0.8, green);
+        "delete" | "deleted" | "discard" | "remove" => {
+            pen.lid(false, c);
+            pen.rounded(&[(5.0, 5.5), (5.0, 16.5), (15.0, 16.5), (15.0, 5.5)], false, 1.0, c);
+            if !tiny {
+                pen.line(&[(8.5, 8.5), (8.5, 13.5)]);
+                pen.line(&[(11.5, 8.5), (11.5, 13.5)]);
             }
         }
+        // For good: the bin, and a cross that says so (not its colour alone).
+        "deletePermanently" => {
+            pen.lid(false, c);
+            pen.rounded(&[(5.0, 5.5), (5.0, 16.5), (10.0, 16.5)], false, 1.0, c);
+            pen.line(&[(15.0, 5.5), (15.0, 10.0)]);
+            pen.badge_x(red);
+        }
+        // Emptied: the bin with its lid lifted.
+        "empty" | "emptyFolder" => {
+            pen.lid(true, c);
+            pen.rounded(&[(5.0, 7.5), (5.0, 16.5), (15.0, 16.5), (15.0, 7.5)], false, 1.0, c);
+        }
+        "archive" => {
+            pen.rect(2.5, 3.5, 17.5, 7.5, c);
+            pen.rounded(&[(3.5, 7.5), (3.5, 16.5), (16.5, 16.5), (16.5, 7.5)], false, 1.0, c);
+            pen.line(&[(8.0, 10.5), (12.0, 10.5)]);
+        }
+        "junk" => {
+            pen.circle(10.0, 10.0, 7.0, c);
+            pen.line(&[(5.0, 5.0), (15.0, 15.0)]);
+        }
+        "notJunk" => {
+            pen.arc(8.5, 8.5, 6.0, 66.0, 384.0, c);
+            pen.line(&[(4.5, 4.5), (10.0, 10.0)]);
+            pen.badge_check(green);
+        }
         "move" => {
-            pen.folder(c);
-            pen.line_c(&[(6.5, 11.3), (13.0, 11.3)], a);
-            pen.line_c(&[(10.8, 9.0), (13.2, 11.3), (10.8, 13.6)], a);
+            pen.folder(false, c);
+            pen.line_c(&[(6.0, 11.0), (13.5, 11.0)], a);
+            pen.head(13.5, 11.0, 0.0, 2.75, a);
         }
         "copy" => {
-            pen.rect(3.5, 3.0, 12.5, 14.0, c);
-            pen.frect(7.5, 6.5, 16.5, 17.5, soft);
-            pen.rect(7.5, 6.5, 16.5, 17.5, a);
+            pen.rounded(&[(5.5, 13.5), (2.5, 13.5), (2.5, 2.5), (12.5, 2.5), (12.5, 4.5)], false, 1.0, c);
+            pen.rect(7.5, 6.5, 17.5, 17.5, c);
         }
+        // A swallowtail on its pole: filled when flagged, an outline when not.
         "flag" | "toggleFlag" | "followUp" => {
-            pen.line(&[(5.0, 3.0), (5.0, 17.5)]);
-            pen.fill(&[(5.0, 4.0), (15.5, 4.0), (15.5, 11.0), (5.0, 11.0)], red);
+            pen.fill_shape((8.0, 7.0), &[(4.5, 3.5), (16.0, 3.5), (12.5, 7.5), (16.0, 11.5), (4.5, 11.5)], red);
+            pen.line(&[(4.5, 2.5), (4.5, 17.5)]);
         }
         "clearFlag" => {
-            pen.line(&[(5.0, 3.0), (5.0, 17.5)]);
-            pen.closed(&[(5.0, 4.0), (15.5, 4.0), (15.5, 11.0), (5.0, 11.0)], c);
+            pen.closed(&[(4.5, 3.5), (16.0, 3.5), (12.5, 7.5), (16.0, 11.5), (4.5, 11.5)], c);
+            pen.line(&[(4.5, 2.5), (4.5, 17.5)]);
         }
-        "complete" | "check" | "accept" => pen.check(10.0, 10.5, 1.5, green),
+        "complete" | "check" | "accept" | "tick" => pen.check(10.0, 10.5, 1.5, green),
         "categorize" | "category" | "categories" => {
-            pen.frect(3.5, 3.5, 9.0, 9.0, red);
-            pen.frect(11.0, 3.5, 16.5, 9.0, yellow);
-            pen.frect(3.5, 11.0, 9.0, 16.5, green);
-            pen.frect(11.0, 11.0, 16.5, 16.5, blue);
+            pen.fcircle(6.5, 6.5, 2.75, red);
+            pen.fcircle(13.5, 6.5, 2.75, yellow);
+            pen.fcircle(6.5, 13.5, 2.75, green);
+            pen.fcircle(13.5, 13.5, 2.75, purple);
         }
         "pin" => {
-            pen.fill(&[(7.0, 3.0), (13.0, 3.0), (12.0, 8.5), (8.0, 8.5)], a);
-            pen.line_c(&[(5.5, 9.0), (14.5, 9.0)], a);
-            pen.line(&[(10.0, 9.0), (10.0, 17.5)]);
+            pen.rounded(&[(7.5, 2.5), (12.5, 2.5), (12.0, 8.0), (14.5, 10.5), (5.5, 10.5), (8.0, 8.0)], true, 0.5, c);
+            pen.line(&[(10.0, 10.5), (10.0, 17.5)]);
         }
+        // A message, and an arrow that takes it somewhere.
         "rules" | "createRule" => {
-            pen.envelope(2.5, 3.5, 11.5, 9.5, c);
-            pen.line_c(&[(7.0, 11.5), (7.0, 15.0), (12.5, 15.0)], a);
-            pen.line_c(&[(10.5, 13.0), (12.7, 15.0), (10.5, 17.0)], a);
-            pen.folder_small(13.0, 11.5, c);
+            pen.envelope(2.5, 2.5, 12.5, 9.5, c);
+            pen.rounded(&[(7.5, 11.5), (7.5, 15.0), (16.5, 15.0)], false, 2.0, a);
+            pen.head(16.5, 15.0, 0.0, 2.75, a);
         }
-        "attach" | "attachment" => pen.line(&[
-            (13.0, 5.0),
-            (6.5, 11.5),
-            (6.5, 14.0),
-            (8.5, 16.0),
-            (11.0, 16.0),
-            (16.0, 11.0),
-            (16.0, 8.5),
-            (14.0, 7.0),
-            (9.0, 12.0),
-            (9.5, 13.3),
-        ]),
-        "send" => {
-            pen.fill(&[(3.0, 4.0), (17.5, 10.0), (3.0, 10.0)], a);
-            pen.fill(&[(3.0, 10.0), (17.5, 10.0), (3.0, 16.0)], a.linear_multiply(0.7));
-            pen.line_c(&[(3.0, 10.0), (10.0, 10.0)], Color32::WHITE);
+        // A paper clip on the slant, its ends round.
+        "attach" | "attachment" => {
+            let mut pts = vec![(13.0, 6.0)];
+            let arc = |pts: &mut Vec<(f32, f32)>, cx: f32, cy: f32, r: f32, from: f32, to: f32| {
+                for i in 0..=12 {
+                    let t = (from + (to - from) * i as f32 / 12.0).to_radians();
+                    pts.push((cx + r * t.cos(), cy + r * t.sin()));
+                }
+            };
+            arc(&mut pts, 10.0, 13.5, 3.0, 0.0, 180.0);
+            arc(&mut pts, 8.5, 5.0, 1.5, 180.0, 360.0);
+            pts.push((10.0, 11.5));
+            pen.curve(&pts, 40.0, c);
         }
-        "sent" => {
-            pen.closed(&[(3.0, 4.5), (17.0, 10.0), (3.0, 15.5), (5.5, 10.0)], c);
-            pen.line(&[(5.5, 10.0), (12.0, 10.0)]);
+        // One paper plane: filled when it is the action, an outline for the folder.
+        "send" | "sent" => {
+            let plane = [(2.5, 3.5), (17.5, 10.0), (2.5, 16.5), (5.5, 10.0)];
+            if name == "send" && !mono {
+                pen.fill_shape((8.0, 10.0), &plane, a);
+                pen.line_c(&[(5.5, 10.0), (11.0, 10.0)], on_accent);
+            } else {
+                pen.closed(&plane, c);
+                pen.line(&[(5.5, 10.0), (11.0, 10.0)]);
+            }
         }
         "drafts" | "editDraft" | "edit" | "rename" => {
-            pen.line(&[(4.0, 16.0), (4.5, 12.5), (13.0, 4.0), (16.0, 7.0), (7.5, 15.5), (4.0, 16.0)]);
-            pen.line_c(&[(11.3, 5.7), (14.3, 8.7)], a);
+            pen.closed(&[(3.5, 16.5), (4.25, 12.75), (13.0, 4.0), (16.0, 7.0), (7.25, 15.75)], c);
+            pen.line(&[(11.0, 6.0), (14.0, 9.0)]);
         }
         "inbox" => {
             pen.tray(c);
-            pen.line_c(&[(10.0, 2.5), (10.0, 8.5)], a);
-            pen.line_c(&[(7.8, 6.5), (10.0, 8.8), (12.2, 6.5)], a);
+            pen.line(&[(10.0, 2.5), (10.0, 8.5)]);
+            pen.head(10.0, 8.5, 90.0, 2.75, c);
         }
-        "outbox" | "export" => {
+        "outbox" => {
             pen.tray(c);
-            pen.line_c(&[(10.0, 9.0), (10.0, 3.0)], a);
-            pen.line_c(&[(7.8, 5.2), (10.0, 2.9), (12.2, 5.2)], a);
+            pen.line(&[(10.0, 8.5), (10.0, 2.5)]);
+            pen.head(10.0, 2.5, 270.0, 2.75, c);
         }
-        "import" | "open" => {
-            pen.line(&[(3.5, 12.0), (3.5, 16.0), (16.5, 16.0), (16.5, 12.0)]);
-            pen.line_c(&[(10.0, 3.0), (10.0, 12.0)], a);
-            pen.line_c(&[(6.8, 9.0), (10.0, 12.2), (13.2, 9.0)], a);
+        "import" => {
+            pen.bracket(c);
+            pen.line_c(&[(10.0, 2.5), (10.0, 12.5)], a);
+            pen.head(10.0, 12.5, 90.0, 3.0, a);
         }
-        "folder" | "custom" | "select" => pen.folder(c),
+        "export" => {
+            pen.bracket(c);
+            pen.line_c(&[(10.0, 12.5), (10.0, 2.5)], a);
+            pen.head(10.0, 2.5, 270.0, 3.0, a);
+        }
+        // An open folder.
+        "open" => {
+            pen.rounded(&[(15.5, 9.0), (15.5, 6.5), (9.5, 6.5), (7.5, 4.5), (2.5, 4.5), (2.5, 15.5)], false, 1.0, c);
+            pen.rounded(&[(2.5, 15.5), (5.0, 9.0), (17.5, 9.0), (15.0, 15.5)], true, 0.5, c);
+        }
+        "folder" | "custom" | "select" => pen.folder(false, c),
         "folderNew" | "newFolder" => {
-            pen.folder(c);
-            pen.plus(13.0, 11.3, 2.4, a);
+            pen.folder(true, c);
+            pen.new_plus();
         }
         "favorite" | "star" | "starOn" => {
             let pts =
-                [(10.0, 2.8), (12.1, 7.6), (17.3, 8.1), (13.4, 11.6), (14.5, 16.7), (10.0, 14.0), (5.5, 16.7), (6.6, 11.6), (2.7, 8.1), (7.9, 7.6)];
+                [(10.0, 2.5), (12.1, 7.4), (17.5, 7.9), (13.4, 11.5), (14.6, 16.8), (10.0, 14.0), (5.4, 16.8), (6.6, 11.5), (2.5, 7.9), (7.9, 7.4)];
             if name == "starOn" {
-                for i in 0..5 {
-                    let (tip, l, r) = (pts[i * 2], pts[(i * 2 + 9) % 10], pts[(i * 2 + 1) % 10]);
-                    pen.fill(&[tip, r, (10.0, 10.2), l], yellow);
-                }
+                pen.fill_shape((10.0, 10.2), &pts, yellow);
+            } else {
+                pen.closed(&pts, c);
             }
-            pen.closed(&pts, if name == "starOn" { yellow } else { c });
         }
         // Compose
         "save" | "saveDraft" => {
-            pen.closed(&[(3.5, 3.5), (13.5, 3.5), (16.5, 6.5), (16.5, 16.5), (3.5, 16.5)], c);
-            pen.rect(6.5, 3.5, 12.0, 7.5, c);
-            pen.frect(6.0, 11.0, 14.0, 16.5, soft);
-            pen.rect(6.0, 11.0, 14.0, 16.5, a);
+            pen.rounded(&[(3.5, 3.5), (13.5, 3.5), (16.5, 6.5), (16.5, 16.5), (3.5, 16.5)], true, 1.0, c);
+            pen.rounded(&[(6.5, 3.5), (6.5, 7.5), (12.5, 7.5), (12.5, 3.5)], false, 1.0, c);
+            if !tiny {
+                pen.rounded(&[(6.0, 16.5), (6.0, 11.5), (14.0, 11.5), (14.0, 16.5)], false, 1.0, c);
+            }
         }
         "highImportance" | "importanceHigh" => {
-            pen.frect(9.0, 3.0, 11.0, 12.0, red);
-            pen.fcircle(10.0, 15.5, 1.5, red);
+            pen.frect_r(9.0, 2.5, 11.0, 12.5, 1.0, red);
+            pen.fcircle(10.0, 15.75, 1.25, red);
         }
         "lowImportance" | "importanceLow" => {
-            pen.line_c(&[(10.0, 3.5), (10.0, 15.5)], blue);
-            pen.line_c(&[(5.5, 11.0), (10.0, 15.8), (14.5, 11.0)], blue);
+            pen.line_c(&[(10.0, 3.0), (10.0, 16.5)], a);
+            pen.head(10.0, 16.5, 90.0, 4.5, a);
         }
         "signature" => {
-            pen.line_c(&[(3.0, 13.0), (5.0, 8.0), (7.0, 13.0), (9.0, 9.0), (11.0, 13.0), (14.0, 11.0)], a);
-            pen.line(&[(3.0, 16.5), (17.0, 16.5)]);
-            pen.line(&[(13.5, 8.5), (17.0, 3.5)]);
+            pen.path()
+                .m(&pen, 3.0, 13.0)
+                .c(&pen, (4.0, 7.0), (7.0, 5.5), 7.5, 9.5)
+                .c(&pen, (8.0, 13.5), (9.5, 14.0), 11.0, 10.5)
+                .c(&pen, (12.0, 8.5), (13.0, 10.0), 14.0, 12.0)
+                .c(&pen, (14.5, 13.0), (16.0, 12.5), 17.0, 11.0)
+                .draw(&pen, c);
+            pen.line(&[(2.5, 16.5), (17.5, 16.5)]);
         }
         "checkNames" => {
-            pen.person(8.0, 9.5, 1.0, c);
-            pen.check(15.0, 13.5, 0.9, green);
+            pen.person(7.0, 7.0, 2.75, 17.5, 4.5, 180.0, 360.0, c);
+            pen.badge_check(green);
         }
-        "close" | "decline" | "cancel" => {
+        "close" | "cancel" | "decline" => {
             let k = if name == "decline" { red } else { c };
             pen.line_c(&[(5.0, 5.0), (15.0, 15.0)], k);
             pen.line_c(&[(15.0, 5.0), (5.0, 15.0)], k);
         }
-        "tentative" => pen.text(10.0, 10.0, 15.0, "?", c, 0.0),
+        "tentative" => pen.question(10.0, 10.0, 1.2, c),
         // Modules and navigation
         "calendar" | "appointment" => {
-            pen.calendar(c);
-            for (x, y) in [(6.5, 10.5), (10.0, 10.5), (13.5, 10.5), (6.5, 13.5), (10.0, 13.5)] {
-                pen.fcircle(x, y, 0.9, c);
+            pen.calendar(false, c);
+            if !small {
+                for (x, y) in [(6.5, 11.0), (10.0, 11.0), (13.5, 11.0), (6.5, 14.0), (10.0, 14.0)] {
+                    pen.fcircle(x, y, 0.75, c);
+                }
             }
         }
         "newAppointment" | "newEvent" => {
-            pen.calendar(c);
-            pen.plus(10.0, 12.0, 2.6, a);
+            pen.calendar(true, c);
+            pen.new_plus();
         }
         "today" => {
-            pen.calendar(c);
-            pen.fcircle(10.0, 12.0, 2.3, a);
+            pen.calendar(false, c);
+            pen.frect_r(8.0, 10.0, 12.0, 14.0, 1.0, a);
         }
+        // A view of days: one, the five of a working week, seven, and a month's weeks.
         "day" | "workWeek" | "week" | "month" => {
-            pen.rect(3.0, 4.0, 17.0, 16.0, c);
-            pen.line(&[(3.0, 7.0), (17.0, 7.0)]);
+            pen.rect(2.5, 3.5, 17.5, 16.5, c);
+            pen.line(&[(2.5, 6.5), (17.5, 6.5)]);
+            let inside = (4.0, 8.0, 16.0, 15.0);
             match name {
-                "day" => pen.frect(5.0, 9.0, 15.0, 14.0, a),
-                "workWeek" => {
-                    for i in 0..5 {
-                        let x = 4.4 + i as f32 * 2.4;
-                        pen.frect(x, 8.5, x + 1.6, 14.5, if i == 2 { a } else { c.linear_multiply(0.45) });
-                    }
-                }
-                "week" => {
-                    for i in 0..7 {
-                        let x = 4.1 + i as f32 * 1.75;
-                        pen.frect(x, 8.5, x + 1.1, 14.5, if i == 3 { a } else { c.linear_multiply(0.45) });
-                    }
-                }
-                _ => {
-                    for row in 0..3 {
-                        for col in 0..4 {
-                            let (x, y) = (5.0 + col as f32 * 3.0, 8.4 + row as f32 * 2.5);
-                            pen.frect(x, y, x + 1.6, y + 1.4, if (row, col) == (1, 2) { a } else { c.linear_multiply(0.45) });
-                        }
-                    }
-                }
+                "day" => pen.cells(inside, 1, 3, (0, 1), quiet, a),
+                "workWeek" => pen.cells(inside, 5, 1, (2, 0), quiet, a),
+                "week" => pen.cells((3.0, 8.0, 17.0, 15.0), 7, 1, (3, 0), quiet, a),
+                _ => pen.cells(inside, 3, 3, (1, 1), quiet, a),
             }
         }
-        "people" | "contact" | "account" | "newContact" => {
-            pen.person(10.0, 10.0, 1.15, c);
-            if name == "newContact" {
-                pen.plus(15.5, 5.5, 2.2, a);
-            }
+        "people" | "contact" | "account" => pen.person(10.0, 6.5, 3.0, 17.5, 6.5, 180.0, 360.0, c),
+        "newContact" => {
+            pen.person(7.0, 7.5, 2.75, 17.5, 4.0, 180.0, 360.0, c);
+            pen.new_plus();
         }
-        "meeting" | "newMeeting" | "fromMessage" => {
-            pen.person(7.0, 10.5, 0.85, c);
-            pen.person(13.5, 10.5, 0.85, a);
+        "meeting" | "fromMessage" => {
+            pen.person(7.5, 7.5, 2.75, 17.5, 5.0, 180.0, 360.0, c);
+            pen.person(13.5, 5.5, 2.25, 14.5, 4.0, 250.0, 360.0, c);
+        }
+        "newMeeting" => {
+            pen.person(7.0, 8.0, 2.75, 17.5, 4.0, 180.0, 360.0, c);
+            pen.person(12.5, 5.0, 2.0, 13.0, 3.5, 245.0, 320.0, c);
+            pen.new_plus();
         }
         // A calendar page that came by mail: an invitation (the flap of its envelope), its
         // cancellation, or somebody's answer to one.
         "meetingRequest" | "meetingCancelled" | "meetingAccepted" | "meetingTentative" | "meetingDeclined" => {
-            pen.calendar(c);
+            pen.calendar(false, c);
             match name {
-                "meetingRequest" => pen.line_c(&[(5.5, 10.0), (10.0, 13.6), (14.5, 10.0)], c),
-                "meetingAccepted" => pen.check(10.0, 12.2, 0.95, green),
-                "meetingTentative" => pen.text(10.0, 12.2, 9.5, "?", c, 0.0),
+                "meetingRequest" => pen.line(&[(5.5, 10.5), (10.0, 13.5), (14.5, 10.5)]),
+                "meetingAccepted" => pen.check(10.0, 12.5, 0.85, green),
+                "meetingTentative" => pen.question(10.0, 12.0, 0.55, c),
                 // Called off: struck through.
-                "meetingCancelled" => pen.line_c(&[(3.5, 17.0), (16.5, 6.0)], red),
+                "meetingCancelled" => pen.line_c(&[(4.0, 16.0), (16.0, 6.5)], red),
                 _ => {
-                    pen.line_c(&[(7.3, 9.6), (12.7, 15.0)], red);
-                    pen.line_c(&[(12.7, 9.6), (7.3, 15.0)], red);
+                    pen.line_c(&[(7.5, 10.0), (12.5, 15.0)], red);
+                    pen.line_c(&[(12.5, 10.0), (7.5, 15.0)], red);
                 }
             }
         }
-        "tasks" | "task" | "newTask" => {
+        "tasks" | "task" => {
             pen.rect(3.5, 3.5, 16.5, 16.5, c);
-            pen.check(10.0, 10.3, 1.05, a);
+            pen.check(10.0, 10.5, 1.0, green);
+        }
+        "newTask" => {
+            pen.cut_box(3.5, 3.5, 16.5, 16.5, c);
+            pen.check(9.0, 9.5, 0.9, green);
+            pen.new_plus();
         }
         "next" | "forwardPeriod" => pen.line(&[(7.5, 4.5), (13.0, 10.0), (7.5, 15.5)]),
         "previous" | "back" => pen.line(&[(12.5, 4.5), (7.0, 10.0), (12.5, 15.5)]),
+        // A bell: its dome an arc, its rim, and the clapper below.
         "reminder" | "bell" => {
-            pen.line(&[
-                (4.0, 14.0),
-                (5.5, 12.0),
-                (5.5, 8.5),
-                (7.5, 5.5),
-                (10.0, 4.8),
-                (12.5, 5.5),
-                (14.5, 8.5),
-                (14.5, 12.0),
-                (16.0, 14.0),
-                (4.0, 14.0),
-            ]);
-            pen.line_c(&[(8.5, 16.0), (10.0, 17.0), (11.5, 16.0)], a);
+            pen.path()
+                .m(&pen, 3.5, 14.5)
+                .l(&pen, 5.0, 13.0)
+                .l(&pen, 5.0, 9.0)
+                .a(&pen, 10.0, 9.0, 5.0, 180.0, 360.0)
+                .l(&pen, 15.0, 13.0)
+                .l(&pen, 16.5, 14.5)
+                .draw_closed(&pen, c);
+            pen.line(&[(10.0, 2.5), (10.0, 4.0)]);
+            pen.arc(10.0, 14.5, 2.0, 0.0, 180.0, c);
         }
         "private" | "lock" => {
-            pen.rect(5.0, 9.0, 15.0, 16.5, c);
-            pen.arc(10.0, 9.0, 3.2, 180.0, 360.0, c);
-            pen.fcircle(10.0, 12.7, 1.2, a);
+            pen.rect(4.5, 9.5, 15.5, 16.5, c);
+            pen.path().m(&pen, 7.0, 9.5).l(&pen, 7.0, 6.5).a(&pen, 10.0, 6.5, 3.0, 180.0, 360.0).l(&pen, 13.0, 9.5).draw(&pen, c);
+            if !tiny {
+                pen.fcircle(10.0, 13.0, 1.0, c);
+            }
         }
-        "recurrence" | "repeat" => pen.loop_arrows(c, c),
+        // Again and again: a loop of two halves, each with its head.
+        "recurrence" | "repeat" => {
+            pen.rounded(&[(3.0, 11.5), (3.0, 5.5), (16.0, 5.5)], false, 2.5, c);
+            pen.head(16.0, 5.5, 0.0, 2.5, c);
+            pen.rounded(&[(17.0, 8.5), (17.0, 14.5), (4.0, 14.5)], false, 2.5, c);
+            pen.head(4.0, 14.5, 180.0, 2.5, c);
+        }
         // People's time in rows, and the meeting's own time down across them.
         "scheduling" => {
-            pen.frect(8.5, 3.0, 13.0, 17.0, soft);
-            pen.line_c(&[(8.5, 3.0), (8.5, 17.0)], a);
-            pen.line_c(&[(13.0, 3.0), (13.0, 17.0)], a);
+            pen.line_c(&[(8.5, 2.5), (8.5, 17.5)], a);
+            pen.line_c(&[(12.5, 2.5), (12.5, 17.5)], a);
             pen.frect(2.5, 5.0, 7.0, 7.0, c);
-            pen.frect(14.5, 9.0, 17.5, 11.0, c);
-            pen.frect(3.5, 13.0, 6.0, 15.0, c);
-            pen.frect(14.0, 13.0, 16.0, 15.0, c);
+            pen.frect(14.0, 9.0, 17.5, 11.0, c);
+            pen.frect(3.5, 13.0, 7.0, 15.0, c);
+            pen.frect(14.0, 13.0, 16.5, 15.0, c);
         }
-        "sync" | "request" | "sendReceive" => pen.loop_arrows(c, a),
+        // Two arrows chasing each other round.
+        "sync" | "request" | "sendReceive" => {
+            let top = pen.path().a(&pen, 10.0, 10.0, 6.5, 200.0, 325.0);
+            top.draw(&pen, c);
+            let bottom = pen.path().a(&pen, 10.0, 10.0, 6.5, 20.0, 145.0);
+            bottom.draw(&pen, c);
+            if let (Some(t1), Some(t2)) = (top.last(), bottom.last()) {
+                pen.head_px(t1, 55.0, 3.0, c);
+                pen.head_px(t2, 235.0, 3.0, c);
+            }
+        }
         // Send/Receive Progress: accounts one under another, how far each has got.
         "syncProgress" => {
             for (n, done) in [(0.0, 13.0), (1.0, 8.0), (2.0, 4.5)] {
-                let y = 5.0 + n * 5.0;
-                pen.rect(3.0, y, 17.0, y + 2.5, c);
-                pen.frect(3.0, y, done, y + 2.5, a);
+                let y = 3.5 + n * 5.0;
+                pen.frect_r(2.5, y, done, y + 3.0, 1.0, a);
+                pen.rect(2.5, y, 17.5, y + 3.0, c);
             }
         }
         "showAs" => {
-            pen.rect(3.5, 4.0, 16.5, 16.0, c);
-            pen.frect(3.5, 4.0, 7.0, 16.0, a);
+            pen.frect_r(3.0, 3.0, 7.5, 17.0, 1.0, a);
+            pen.rect(3.5, 3.5, 16.5, 16.5, c);
         }
         // View
         "search" | "find" | "findRelated" => {
-            pen.circle(8.5, 8.5, 5.0, c);
-            pen.line_c(&[(12.3, 12.3), (17.0, 17.0)], a);
+            pen.circle(8.5, 8.5, 5.5, c);
+            pen.line(&[(12.5, 12.5), (17.0, 17.0)]);
         }
-        "filter" => pen.closed(&[(3.0, 4.0), (17.0, 4.0), (11.5, 10.5), (11.5, 16.5), (8.5, 14.8), (8.5, 10.5)], c),
+        "filter" => pen.rounded(&[(2.5, 4.0), (17.5, 4.0), (11.5, 10.5), (11.5, 16.5), (8.5, 14.5), (8.5, 10.5)], true, 0.5, c),
         "readingPane" => {
-            pen.rect(3.0, 4.0, 17.0, 16.0, c);
-            pen.frect(10.5, 4.0, 17.0, 16.0, soft);
-            pen.line_c(&[(10.5, 4.0), (10.5, 16.0)], a);
+            pen.rect(2.5, 3.5, 17.5, 16.5, c);
+            pen.line_c(&[(10.5, 3.5), (10.5, 16.5)], a);
         }
         "folderPane" => {
-            pen.rect(3.0, 4.0, 17.0, 16.0, c);
-            pen.frect(3.0, 4.0, 7.5, 16.0, soft);
-            pen.line_c(&[(7.5, 4.0), (7.5, 16.0)], a);
+            pen.rect(2.5, 3.5, 17.5, 16.5, c);
+            pen.line_c(&[(7.0, 3.5), (7.0, 16.5)], a);
         }
+        // Messages one behind another.
         "conversations" => {
-            pen.envelope(2.5, 3.5, 12.5, 10.0, c);
-            pen.envelope(7.5, 10.0, 17.5, 16.5, a);
+            pen.rounded(&[(5.5, 13.0), (2.5, 13.0), (2.5, 3.5), (13.5, 3.5), (13.5, 6.0)], false, 1.0, c);
+            pen.envelope(6.5, 8.0, 17.5, 16.5, c);
         }
-        // The ribbon: a band under its tabs, with a row of commands in it.
+        // The ribbon: a band under its tabs (the one open in the accent), with a row of commands.
         "ribbon" => {
-            pen.rect(3.0, 7.0, 17.0, 15.0, c);
-            pen.line(&[(4.0, 4.5), (8.0, 4.5)]);
-            pen.line_c(&[(10.0, 4.5), (13.0, 4.5)], c.linear_multiply(0.45));
+            pen.rect(2.5, 7.5, 17.5, 15.5, c);
+            pen.line_c(&[(3.5, 4.5), (7.5, 4.5)], a);
+            pen.line_c(&[(10.0, 4.5), (13.0, 4.5)], quiet);
             for x in [6.5, 10.0, 13.5] {
-                pen.frect(x - 1.0, 10.0, x + 1.0, 12.0, a);
+                pen.frect(x - 1.0, 10.5, x + 1.0, 12.5, c);
             }
         }
         "sort" | "reverseSort" => {
-            pen.line(&[(6.0, 4.0), (6.0, 16.0)]);
-            pen.line(&[(3.5, 6.5), (6.0, 4.0), (8.5, 6.5)]);
-            pen.line_c(&[(14.0, 4.0), (14.0, 16.0)], a);
-            pen.line_c(&[(11.5, 13.5), (14.0, 16.0), (16.5, 13.5)], a);
+            pen.line(&[(6.0, 3.5), (6.0, 16.5)]);
+            pen.head(6.0, 3.5, 270.0, 2.75, c);
+            pen.line(&[(14.0, 3.5), (14.0, 16.5)]);
+            pen.head(14.0, 16.5, 90.0, 2.75, c);
         }
         "previewLines" | "list" => {
             for y in [5.0, 10.0, 15.0] {
-                pen.fcircle(4.0, y, 1.0, a);
-                pen.line(&[(7.0, y), (17.0, y)]);
+                pen.fcircle(4.0, y, 1.0, c);
+                pen.line(&[(7.0, y), (17.5, y)]);
             }
         }
         "reset" => {
-            pen.arc(10.0, 10.0, 6.0, 30.0, 330.0, c);
-            pen.fill(&[(14.0, 4.5), (17.8, 7.5), (13.6, 8.6)], c);
+            // Back the other way round, the head at the top.
+            let ring = pen.path().a(&pen, 10.0, 10.5, 6.5, 240.0, -60.0);
+            ring.draw(&pen, c);
+            if let Some(tip) = ring.last() {
+                pen.head_px(tip, 210.0, 3.0, c);
+            }
         }
-        // Quick access and general
+        // Quick access and general: a U-turn with an open head.
         "undo" => {
-            pen.arc(10.5, 11.0, 5.5, 200.0, 20.0 + 360.0, c);
-            pen.fill(&[(2.6, 6.0), (7.8, 6.6), (4.6, 10.8)], a);
+            let turn = pen.path().m(&pen, 7.0, 15.5).a(&pen, 11.5, 11.5, 4.0, 90.0, -90.0).l(&pen, 3.0, 7.5);
+            turn.draw(&pen, c);
+            if let Some(tip) = turn.last() {
+                pen.head_px(tip, 180.0, 3.5, c);
+            }
         }
         "redo" => {
-            pen.arc(9.5, 11.0, 5.5, 160.0, 340.0, c);
-            pen.fill(&[(17.4, 6.0), (12.2, 6.6), (15.4, 10.8)], a);
+            let turn = pen.path().m(&pen, 13.0, 15.5).a(&pen, 8.5, 11.5, 4.0, 90.0, 270.0).l(&pen, 17.0, 7.5);
+            turn.draw(&pen, c);
+            if let Some(tip) = turn.last() {
+                pen.head_px(tip, 0.0, 3.5, c);
+            }
         }
         "more" => {
             for x in [5.0, 10.0, 15.0] {
-                pen.fcircle(x, 10.0, 1.3, c);
+                pen.fcircle(x, 10.0, 1.25, c);
             }
         }
         "dropdown" => pen.fill(&[(4.5, 7.5), (15.5, 7.5), (10.0, 13.5)], c),
         "expanded" => pen.line(&[(5.0, 7.5), (10.0, 12.5), (15.0, 7.5)]),
         "collapsed" => pen.line(&[(7.5, 5.0), (12.5, 10.0), (7.5, 15.0)]),
         "launcher" => {
-            pen.line(&[(5.0, 15.0), (15.0, 15.0), (15.0, 5.0)]);
-            pen.line(&[(8.0, 8.0), (13.5, 13.5)]);
+            pen.rounded(&[(16.0, 4.0), (16.0, 16.0), (4.0, 16.0)], false, 1.0, c);
+            pen.line(&[(5.5, 5.5), (12.5, 12.5)]);
+            pen.line(&[(12.5, 8.0), (12.5, 12.5), (8.0, 12.5)]);
         }
-        "plus" | "add" => pen.plus(10.0, 10.0, 5.0, c),
-        "minus" => pen.line(&[(5.0, 10.0), (15.0, 10.0)]),
+        "plus" | "add" => pen.plus(10.0, 10.0, 6.0, c),
+        "minus" => pen.line(&[(4.0, 10.0), (16.0, 10.0)]),
+        // Settings: three sliders, each set somewhere else.
         "options" | "settings" => {
-            pen.circle(10.0, 10.0, 3.0, c);
-            for i in 0..8 {
-                let ang = (i as f32 * 45.0).to_radians();
-                pen.line(&[(10.0 + 5.0 * ang.cos(), 10.0 + 5.0 * ang.sin()), (10.0 + 7.2 * ang.cos(), 10.0 + 7.2 * ang.sin())]);
+            for (y, x) in [(4.5, 12.5), (10.0, 6.5), (15.5, 10.5)] {
+                if small {
+                    pen.line(&[(2.5, y), (17.5, y)]);
+                    pen.fcircle(x, y, 2.0, c);
+                } else {
+                    pen.line(&[(2.5, y), (x - 2.0, y)]);
+                    pen.line(&[(x + 2.0, y), (17.5, y)]);
+                    pen.circle(x, y, 2.0, c);
+                }
             }
         }
         "info" | "about" => {
-            pen.circle(10.0, 10.0, 7.0, a);
-            pen.fcircle(10.0, 6.5, 1.0, c);
-            pen.line(&[(10.0, 9.0), (10.0, 14.0)]);
+            pen.circle(10.0, 10.0, 7.5, c);
+            pen.fcircle(10.0, 6.25, 1.0, a);
+            pen.line_c(&[(10.0, 9.0), (10.0, 14.5)], a);
         }
         "help" => {
-            pen.circle(10.0, 10.0, 7.0, a);
-            pen.text(10.0, 10.2, 11.0, "?", c, 0.0);
+            pen.circle(10.0, 10.0, 7.5, c);
+            pen.question(10.0, 9.75, 0.6, a);
         }
         "print" => {
-            pen.rect(6.0, 3.0, 14.0, 7.0, c);
-            pen.rect(3.5, 7.0, 16.5, 13.5, c);
-            pen.frect(6.0, 11.5, 14.0, 17.0, soft);
-            pen.rect(6.0, 11.5, 14.0, 17.0, a);
+            pen.rounded(&[(6.0, 6.5), (6.0, 2.5), (14.0, 2.5), (14.0, 6.5)], false, 1.0, c);
+            pen.rounded(&[(5.5, 13.5), (2.5, 13.5), (2.5, 6.5), (17.5, 6.5), (17.5, 13.5), (14.5, 13.5)], false, 1.0, c);
+            pen.rect(5.5, 10.5, 14.5, 17.5, c);
         }
+        // Light and dark: a disc half filled.
         "theme" => {
-            pen.circle(10.0, 10.0, 6.5, c);
-            pen.p.add(Shape::convex_polygon(
-                (0..=12)
-                    .map(|i| (90.0 + i as f32 * 15.0).to_radians())
-                    .map(|ang: f32| pen.pt(10.0 + 6.5 * ang.cos(), 10.0 + 6.5 * ang.sin()))
-                    .collect(),
-                c,
-                Stroke::NONE,
-            ));
+            pen.circle(10.0, 10.0, 7.0, c);
+            let (centre, rr) = pen.arc_geom(10.0, 10.0, 7.0);
+            let half: Vec<Pos2> = (0..=16)
+                .map(|i| {
+                    let t = (270.0 + i as f32 * 180.0 / 16.0_f32).to_radians();
+                    pen.out(centre + vec2(rr * t.cos(), rr * t.sin()))
+                })
+                .collect();
+            p.add(Shape::convex_polygon(half, c, Stroke::NONE));
         }
         "phone" => {
-            pen.rect(6.0, 3.0, 14.0, 17.0, c);
-            pen.line_c(&[(8.5, 14.5), (11.5, 14.5)], a);
+            pen.rect(5.5, 2.5, 14.5, 17.5, c);
+            pen.line(&[(8.5, 14.5), (11.5, 14.5)]);
         }
-        "web" | "link" => {
-            pen.circle(10.0, 10.0, 6.5, c);
-            pen.line(&[(3.5, 10.0), (16.5, 10.0)]);
-            pen.arc(10.0, 10.0, 6.5, -90.0, 90.0, Color32::TRANSPARENT);
-            pen.line(&[(10.0, 3.5), (7.0, 10.0), (10.0, 16.5), (13.0, 10.0), (10.0, 3.5)]);
+        // The one globe: its outline, the equator and a meridian.
+        "web" | "globe" => {
+            pen.circle(10.0, 10.0, 7.5, c);
+            pen.line(&[(2.5, 10.0), (17.5, 10.0)]);
+            pen.ellipse_arc(10.0, 10.0, 3.0, 7.5, 0.0, 360.0, c);
         }
+        // The one link: two links of a chain and the bar that joins them.
+        "link" | "insertLink" => {
+            pen.path().m(&pen, 8.5, 7.0).l(&pen, 6.0, 7.0).a(&pen, 6.0, 10.0, 3.0, 270.0, 90.0).l(&pen, 8.5, 13.0).draw(&pen, c);
+            pen.path().m(&pen, 11.5, 7.0).l(&pen, 14.0, 7.0).a(&pen, 14.0, 10.0, 3.0, -90.0, 90.0).l(&pen, 11.5, 13.0).draw(&pen, c);
+            pen.line(&[(7.0, 10.0), (13.0, 10.0)]);
+        }
+        // A round pin with its point.
         "address" | "location" => {
-            pen.closed(&[(10.0, 17.0), (5.0, 9.5), (6.0, 5.5), (10.0, 3.5), (14.0, 5.5), (15.0, 9.5)], c);
-            pen.fcircle(10.0, 8.5, 1.8, a);
+            pen.path().m(&pen, 10.0, 17.5).a(&pen, 10.0, 8.0, 5.5, 144.6, 395.4).draw_closed(&pen, c);
+            if small {
+                pen.fcircle(10.0, 8.0, 1.75, c);
+            } else {
+                pen.circle(10.0, 8.0, 2.0, c);
+            }
         }
         "clock" | "time" => {
-            pen.circle(10.0, 10.0, 6.5, c);
-            pen.line_c(&[(10.0, 6.0), (10.0, 10.0), (13.0, 12.0)], a);
+            pen.circle(10.0, 10.0, 7.5, c);
+            pen.line(&[(10.0, 5.5), (10.0, 10.0), (13.0, 12.0)]);
         }
         // A meeting held online: a camera, its lens to the right.
         "onlineMeeting" | "joinMeeting" => {
-            pen.frect(2.5, 6.0, 12.0, 14.0, soft);
-            pen.rect(2.5, 6.0, 12.0, 14.0, c);
-            pen.fill(&[(12.8, 9.2), (17.5, 6.3), (17.5, 13.7), (12.8, 10.8)], a);
+            pen.rect(2.5, 5.5, 12.5, 14.5, c);
+            pen.rounded(&[(14.0, 8.75), (17.5, 6.5), (17.5, 13.5), (14.0, 11.25)], true, 0.5, c);
         }
         // Another time for a meeting: a clock, and an arrow on to a later hour.
         "proposeTime" => {
-            pen.circle(8.0, 9.0, 5.5, c);
-            pen.line(&[(8.0, 5.8), (8.0, 9.0), (10.3, 10.4)]);
-            pen.line_c(&[(10.5, 16.0), (17.0, 16.0)], a);
-            pen.line_c(&[(14.6, 13.7), (17.2, 16.0), (14.6, 18.3)], a);
+            pen.circle(7.5, 7.5, 5.0, c);
+            pen.line(&[(7.5, 4.5), (7.5, 7.5), (9.5, 8.75)]);
+            pen.line_c(&[(10.5, 15.0), (17.5, 15.0)], a);
+            pen.head(17.5, 15.0, 0.0, 2.75, a);
         }
         // What the people invited are asked for: one line ticked, one with a question.
         "responseOptions" => {
-            pen.check(5.5, 6.5, 0.8, green);
-            pen.line(&[(10.0, 6.5), (17.0, 6.5)]);
-            pen.text(5.5, 13.5, 9.5, "?", a, 0.0);
-            pen.line(&[(10.0, 13.5), (17.0, 13.5)]);
+            pen.check(5.0, 6.5, 0.7, green);
+            pen.line(&[(10.0, 6.0), (17.5, 6.0)]);
+            pen.question(5.0, 13.5, 0.5, c);
+            pen.line(&[(10.0, 14.0), (17.5, 14.0)]);
         }
-        // The world with its meridians, and the hour a place on it has.
-        "timeZones" | "globe" => {
-            pen.circle(9.0, 10.0, 6.0, c);
-            pen.line(&[(3.0, 10.0), (15.0, 10.0)]);
-            pen.line(&[(9.0, 4.0), (6.9, 6.6), (6.3, 10.0), (6.9, 13.4), (9.0, 16.0)]);
-            pen.line(&[(9.0, 4.0), (11.1, 6.6), (11.7, 10.0), (11.1, 13.4), (9.0, 16.0)]);
-            pen.fcircle(14.6, 14.6, 3.6, soft);
-            pen.circle(14.6, 14.6, 3.6, a);
-            pen.line_c(&[(14.6, 12.6), (14.6, 14.6), (16.0, 15.4)], a);
+        // The globe, and the hour a place on it has.
+        "timeZones" => {
+            pen.arc(8.5, 8.5, 6.0, 66.0, 384.0, c);
+            pen.line(&[(2.5, 8.5), (14.5, 8.5)]);
+            pen.ellipse_arc(8.5, 8.5, 2.5, 6.0, 0.0, 360.0, c);
+            pen.circle(15.0, 15.0, 2.75, c);
+            if !small {
+                pen.line(&[(15.0, 13.75), (15.0, 15.0), (16.25, 15.75)]);
+            }
         }
         "notes" | "description" => {
-            pen.rect(4.0, 3.0, 16.0, 17.0, c);
+            pen.rect(4.0, 2.5, 16.0, 17.5, c);
             for y in [7.0, 10.0, 13.0] {
                 pen.line(&[(6.5, y), (13.5, y)]);
             }
         }
         // Account setup
         "work" => {
-            pen.rect(3.0, 7.0, 17.0, 16.0, c);
-            pen.line(&[(7.5, 7.0), (7.5, 4.5), (12.5, 4.5), (12.5, 7.0)]);
-            pen.line_c(&[(3.0, 11.0), (8.5, 11.0)], a);
-            pen.line_c(&[(11.5, 11.0), (17.0, 11.0)], a);
-            pen.rect(8.5, 10.0, 11.5, 12.5, a);
+            pen.rect(2.5, 6.5, 17.5, 16.5, c);
+            pen.rounded(&[(7.5, 6.5), (7.5, 3.5), (12.5, 3.5), (12.5, 6.5)], false, 1.0, c);
+            if small {
+                pen.line(&[(2.5, 11.0), (17.5, 11.0)]);
+            } else {
+                pen.line(&[(2.5, 11.0), (8.5, 11.0)]);
+                pen.line(&[(11.5, 11.0), (17.5, 11.0)]);
+                pen.rect(8.5, 10.0, 11.5, 12.5, c);
+            }
         }
         "server" => {
-            for y in [4.0, 11.0] {
+            for y in [3.5, 11.5] {
                 pen.rect(3.5, y, 16.5, y + 5.0, c);
-                pen.fcircle(6.5, y + 2.5, 1.0, a);
+                pen.fcircle(6.5, y + 2.5, 1.0, c);
                 pen.line(&[(10.0, y + 2.5), (14.0, y + 2.5)]);
             }
         }
         "device" => {
-            pen.rect(3.0, 4.0, 17.0, 13.0, c);
-            pen.line(&[(10.0, 13.0), (10.0, 16.0)]);
-            pen.line(&[(6.5, 16.0), (13.5, 16.0)]);
-            pen.frect(5.5, 6.5, 14.5, 10.5, soft);
+            pen.rect(2.5, 3.5, 17.5, 13.5, c);
+            pen.line(&[(10.0, 13.5), (10.0, 16.5)]);
+            pen.line(&[(6.5, 16.5), (13.5, 16.5)]);
         }
-        "tick" => pen.check(10.0, 10.5, 1.5, c),
-        // Formatting the text of a message being written
-        "bold" => pen.text(10.0, 10.3, 15.0, "B", c, 0.0),
-        "italic" => {
-            pen.line(&[(11.8, 4.0), (8.2, 16.0)]);
-            pen.line(&[(9.0, 4.0), (14.5, 4.0)]);
-            pen.line(&[(5.5, 16.0), (11.0, 16.0)]);
-        }
+        // Formatting the text of a message being written: the only letters, all in one face.
+        "bold" => pen.text(10.0, 10.0, 15.0, "B", c, 0.0),
+        "italic" => pen.text(10.0, 10.0, 15.0, "I", c, 0.22),
         "underline" => {
-            pen.line(&[(6.0, 3.5), (6.0, 10.0)]);
-            pen.arc(10.0, 10.0, 4.0, 0.0, 180.0, c);
-            pen.line(&[(14.0, 3.5), (14.0, 10.0)]);
-            pen.line_c(&[(4.5, 17.0), (15.5, 17.0)], a);
+            pen.text(10.0, 8.5, 13.0, "U", c, 0.0);
+            pen.line(&[(4.5, 16.5), (15.5, 16.5)]);
         }
         "fontSize" => {
-            pen.text(7.5, 10.5, 15.0, "A", c, 0.0);
-            pen.text(15.5, 12.5, 9.0, "A", c, 0.0);
+            pen.text(7.5, 10.0, 15.0, "A", c, 0.0);
+            pen.text(15.5, 12.0, 10.0, "A", c, 0.0);
         }
         "font" => {
-            pen.text(7.0, 10.5, 14.0, "A", c, 0.0);
-            pen.text(14.5, 12.0, 10.0, "a", a, 0.0);
+            pen.text(7.0, 10.0, 15.0, "A", c, 0.0);
+            pen.text(14.75, 12.0, 11.0, "a", c, 0.0);
         }
         "fontColor" => {
-            pen.text(10.0, 8.5, 13.0, "A", c, 0.0);
-            pen.frect(3.5, 15.0, 16.5, 18.0, a);
+            pen.text(10.0, 8.0, 13.0, "A", c, 0.0);
+            pen.frect_r(3.5, 14.5, 16.5, 17.5, 1.0, a);
+        }
+        "clearFormatting" => {
+            pen.text(7.0, 7.5, 11.0, "A", c, 0.0);
+            pen.badge_x(c);
         }
         "bullets" => {
             for y in [5.0, 10.0, 15.0] {
-                pen.fcircle(4.5, y, 1.4, a);
-                pen.line(&[(8.0, y), (17.0, y)]);
+                pen.fcircle(4.5, y, 1.25, c);
+                pen.line(&[(8.0, y), (17.5, y)]);
             }
         }
+        // Numbers of strokes, not of a font.
         "numbering" => {
-            for (y, n) in [(5.0, "1"), (10.0, "2"), (15.0, "3")] {
-                pen.text(4.5, y, 6.0, n, a, 0.0);
-                pen.line(&[(8.0, y), (17.0, y)]);
-            }
+            let x = 4.5;
+            pen.line(&[(x - 1.25, 4.0), (x + 0.25, 3.0), (x + 0.25, 9.0)]);
+            pen.path().a(&pen, x, 12.5, 1.5, 180.0, 380.0).l(&pen, x - 1.5, 17.0).l(&pen, x + 1.75, 17.0).draw(&pen, c);
+            pen.line(&[(9.0, 6.0), (17.5, 6.0)]);
+            pen.line(&[(9.0, 14.0), (17.5, 14.0)]);
         }
-        "insertLink" => {
-            // Two links of a chain.
-            let s = pen.s();
-            let link = |x0: f32, x1: f32, color: Color32| {
-                pen.p.rect_stroke(Rect::from_min_max(pen.pt(x0, 7.0), pen.pt(x1, 13.0)), 3.0 * s, pen.stroke(color), egui::StrokeKind::Middle);
-            };
-            link(2.5, 11.5, c);
-            link(8.5, 17.5, a);
+        // Code: its brackets and the slash between.
+        "formatHtml" => {
+            pen.head(2.5, 10.0, 180.0, 5.0, c);
+            pen.head(17.5, 10.0, 0.0, 5.0, c);
+            pen.line(&[(11.5, 4.5), (8.5, 15.5)]);
         }
-        "clearFormatting" => {
-            pen.text(8.0, 9.5, 13.0, "A", c, 0.0);
-            pen.line_c(&[(10.5, 17.0), (17.0, 10.5)], red);
-            pen.line_c(&[(10.5, 10.5), (17.0, 17.0)], red);
-        }
-        "formatHtml" => pen.text(10.0, 10.0, 8.5, "</>", c, 0.0),
         "increaseIndent" | "decreaseIndent" => {
-            pen.line(&[(3.0, 4.0), (17.0, 4.0)]);
-            pen.line(&[(9.5, 8.0), (17.0, 8.0)]);
-            pen.line(&[(9.5, 12.0), (17.0, 12.0)]);
-            pen.line(&[(3.0, 16.0), (17.0, 16.0)]);
+            pen.line(&[(2.5, 3.5), (17.5, 3.5)]);
+            pen.line(&[(9.5, 7.5), (17.5, 7.5)]);
+            pen.line(&[(9.5, 12.5), (17.5, 12.5)]);
+            pen.line(&[(2.5, 16.5), (17.5, 16.5)]);
             if name == "increaseIndent" {
-                pen.fill(&[(3.0, 7.0), (7.0, 10.0), (3.0, 13.0)], a);
+                pen.line_c(&[(2.5, 10.0), (6.5, 10.0)], a);
+                pen.head(6.5, 10.0, 0.0, 2.5, a);
             } else {
-                pen.fill(&[(7.0, 7.0), (3.0, 10.0), (7.0, 13.0)], a);
+                pen.line_c(&[(6.5, 10.0), (2.5, 10.0)], a);
+                pen.head(2.5, 10.0, 180.0, 2.5, a);
             }
         }
         "formatPlain" => {
-            pen.line(&[(4.0, 5.5), (16.0, 5.5)]);
-            pen.line(&[(4.0, 10.0), (16.0, 10.0)]);
-            pen.line(&[(4.0, 14.5), (11.5, 14.5)]);
+            pen.line(&[(3.5, 5.5), (16.5, 5.5)]);
+            pen.line(&[(3.5, 10.0), (16.5, 10.0)]);
+            pen.line(&[(3.5, 14.5), (11.5, 14.5)]);
         }
         // Anything else: a lettered tile, so a missing drawing is visible rather than empty.
         _ => {
             pen.rect(3.5, 3.5, 16.5, 16.5, c);
             let letter: String = name.chars().next().map(|ch| ch.to_uppercase().collect()).unwrap_or_default();
-            pen.text(10.0, 10.3, 9.5, &letter, c, 0.0);
+            pen.text(10.0, 10.0, 9.5, &letter, c, 0.0);
         }
-    }
-}
-
-impl Pen<'_> {
-    /// A small folder with its top-left corner at (`x`, `y`).
-    fn folder_small(&self, x: f32, y: f32, c: Color32) {
-        self.closed(&[(x, y), (x + 2.2, y), (x + 3.0, y + 1.2), (x + 5.5, y + 1.2), (x + 5.5, y + 5.5), (x, y + 5.5)], c);
     }
 }
 

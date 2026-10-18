@@ -874,7 +874,9 @@ mod tests {
                 assert!(contrast(t.accent, bg) >= 3.0, "{theme}: accent on {name} is {:.2}", contrast(t.accent, bg));
                 assert!(contrast(t.text, bg) > contrast(t.text_disabled, bg), "{theme}: disabled text on {name}");
                 // An icon's colours are marks, and need what the accent needs.
-                for (hue, color) in [("icon_red", t.icon_red), ("icon_yellow", t.icon_yellow), ("icon_green", t.icon_green), ("icon_purple", t.icon_purple)] {
+                for (hue, color) in
+                    [("icon_red", t.icon_red), ("icon_yellow", t.icon_yellow), ("icon_green", t.icon_green), ("icon_purple", t.icon_purple)]
+                {
                     assert!(contrast(color, bg) >= 3.0, "{theme}: {hue} on {name} is {:.2}", contrast(color, bg));
                 }
             }
