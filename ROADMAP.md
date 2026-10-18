@@ -2,7 +2,7 @@
 
 **Stage: early alpha** · next: beta, as the project defines it, by the roadmap reset
 
-> **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-18 · **Change:** minor (R6.2 slice 1: search answered from a word index beside the mailbox, built in the background; R6.4: 200,000 messages measured: open, a save and memory within beta's figures, until a search reads every body; #150: HTML mail's centred layouts: pictures in a line of text, tiles, rows of icons; #154: an original is marked replied or forwarded once its answer has gone; #126: attachments open; After beta: features ranked; #139: Gmail's Archive and Delete for good; #70: mail written in a shared mailbox is from it, kept in its Drafts and sent through it, behind the switch for testing; #70: a shared mailbox's changes go up, behind the switch for testing; #120: Send/Receive Progress; R6.3: the first save after a large download in the background, with progress; R6.1: attachments and older bodies stay on disk; R6: the mailbox file is a log of records; v0.4.3 prepared; R7.3: told when a new version is out; #103: a sign-in as someone else is asked about, never taken silently; R1: docs cleanup, no citations of private plans, releasing and contributing as they are, a revision history here; R3.7: the switch from IMAP to Graph, no switch for testing; R1: quitting on macOS through craft-quit; R3.5: undo for Microsoft accounts kept in step through Graph; R3.6: imported mail for a Microsoft account goes to a local folder; R3.4.2: sending through Graph, held messages, R3.4 done; R3.4.1: drafts up through Graph; R3.3 follow-up: a refused delete for good is put back at once; R3.3.2: message changes up through Graph, R3.3 done; R3.3.1: changes of messages in the Graph stand-in; R1: CodeQL triage, logs carry no addresses; D2: About ▸ Contributors; v0.4.1: MCP agents get only what the owner allows; R1: security hardening; R3.2.3: messages fetched whole; R3.2.2: mail down through Graph; v0.4.0; R3.2.1: messages in the Graph stand-in; D1: Copy Diagnostics in the title bar; R4.5: rich signatures with a logo; R3.1: Graph folders behind the switch for testing; R5: sign-ins remembered on Linux; R2: Exchange Web Services removed; R4: rich-text compose; R4.2: the rich-text editor) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+> **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-18 · **Change:** minor (R6.2 slice 1: search answered from a word index beside the mailbox, built in the background; the browser build: a section of its own, its review planned after beta; R6.4: 200,000 messages measured: open, a save and memory within beta's figures, until a search reads every body; #150: HTML mail's centred layouts: pictures in a line of text, tiles, rows of icons; #154: an original is marked replied or forwarded once its answer has gone; #126: attachments open; After beta: features ranked; #139: Gmail's Archive and Delete for good; #70: mail written in a shared mailbox is from it, kept in its Drafts and sent through it, behind the switch for testing; #70: a shared mailbox's changes go up, behind the switch for testing; #120: Send/Receive Progress; R6.3: the first save after a large download in the background, with progress; R6.1: attachments and older bodies stay on disk; R6: the mailbox file is a log of records; v0.4.3 prepared; R7.3: told when a new version is out; #103: a sign-in as someone else is asked about, never taken silently; R1: docs cleanup, no citations of private plans, releasing and contributing as they are, a revision history here; R3.7: the switch from IMAP to Graph, no switch for testing; R1: quitting on macOS through craft-quit; R3.5: undo for Microsoft accounts kept in step through Graph; R3.6: imported mail for a Microsoft account goes to a local folder; R3.4.2: sending through Graph, held messages, R3.4 done; R3.4.1: drafts up through Graph; R3.3 follow-up: a refused delete for good is put back at once; R3.3.2: message changes up through Graph, R3.3 done; R3.3.1: changes of messages in the Graph stand-in; R1: CodeQL triage, logs carry no addresses; D2: About ▸ Contributors; v0.4.1: MCP agents get only what the owner allows; R1: security hardening; R3.2.3: messages fetched whole; R3.2.2: mail down through Graph; v0.4.0; R3.2.1: messages in the Graph stand-in; D1: Copy Diagnostics in the title bar; R4.5: rich signatures with a logo; R3.1: Graph folders behind the switch for testing; R5: sign-ins remembered on Linux; R2: Exchange Web Services removed; R4: rich-text compose; R4.2: the rich-text editor) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
 
 MailCraft aims for complete parity with Microsoft Outlook, then goes further on speed, openness,
 privacy and agent control. This page is the summary; the assessment is
@@ -69,6 +69,19 @@ shortfall in [`docs/gaps.md`](docs/gaps.md).
 10. Shared and delegated calendars with their permissions, free/busy across the organisation, rooms
     (gaps 9, 17).
 11. Spell checking while writing (gap 7).
+
+## The browser build
+
+MailCraft also builds for the browser (WebAssembly), from the same code. Every change is checked to
+build, and each release carries it as a download, but it has not yet been reviewed in use, and it
+can't connect to a mail server (a browser can't open the connections IMAP and SMTP need): it opens
+the sample mailbox and mailboxes kept in the browser. Planned, after beta:
+
+1. Review it: run it in the main browsers, and list what works, what doesn't and what is missing.
+2. Decide what it is for, from that review: a demonstration of the program, or a mail client of
+   its own. Microsoft Graph runs over HTTPS, so a browser can reach a Microsoft account directly,
+   which is what would make it the second.
+3. Plan the chosen way, with its own steps here.
 
 ## Progress log
 
@@ -144,6 +157,7 @@ shortfall in [`docs/gaps.md`](docs/gaps.md).
 | Date | Change |
 |---|---|
 | 2026-10-18 | R6.2 slice 1: search answered from a word index (progress log) |
+| 2026-10-18 | The browser build: a section of its own, its review and a decision on its purpose planned after beta |
 | 2026-10-18 | #178: mail in every character set of the WHATWG Encoding Standard (progress log) |
 | 2026-10-18 | R6.4: 200,000 messages measured (headline numbers, progress log); #154: the replied and forwarded marks once the answer has gone; #150: HTML mail's centred layouts (pictures in a line of text, tiles, rows of icons) |
 | 2026-10-17 | #139: Gmail's Archive and Delete for good; #70: shared mailboxes' changes go up (behind the switch for testing); #120: Send/Receive Progress; R6: the mailbox file is a log of records (format 3) |
