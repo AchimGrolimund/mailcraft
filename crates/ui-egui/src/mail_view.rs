@@ -750,7 +750,7 @@ fn message_row(app: &mut MailApp, ui: &mut Ui, row: &Row, rect: Rect) {
             if resp.hovered() {
                 p.rect_filled(at, 4.0, t.pressed);
             }
-            icons::paint(p, Rect::from_center_size(at.center(), vec2(14.0, 14.0)), icon, color, t.accent);
+            icons::paint(p, Rect::from_center_size(at.center(), vec2(16.0, 16.0)), icon, color, t.accent);
         }
         // The marks keep clear of delete, so a click meant for the row doesn't land on it.
         x = delete_rect.min.x - QUICK_GAP;

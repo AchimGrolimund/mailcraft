@@ -85,7 +85,7 @@ pub(crate) fn big_frame(ui: &mut Ui, icon: &str, label: &str, on: bool, checked:
     if on {
         bg(ui, r, &resp, checked, &t);
     }
-    let ic = Rect::from_center_size(pos2(r.center().x, r.min.y + 20.0), vec2(30.0, 30.0));
+    let ic = Rect::from_center_size(pos2(r.center().x, r.min.y + 20.0), vec2(32.0, 32.0));
     let (c, a) = if on { (t.icon, t.accent) } else { (t.text_disabled, t.text_disabled) };
     icons::paint(ui.painter(), ic, icon, c, a);
     let mut y = r.min.y + 41.0;
@@ -100,7 +100,7 @@ pub(crate) fn big_frame(ui: &mut Ui, icon: &str, label: &str, on: bool, checked:
     (resp, painted)
 }
 
-/// Lay out and paint a small button of the classic ribbon: a 17 px icon with its label beside it.
+/// Lay out and paint a small button of the classic ribbon: a 16 pt icon with its label beside it.
 pub(crate) fn small_frame(ui: &mut Ui, icon: &str, label: Option<&str>, on: bool, checked: bool, menu: bool) -> Response {
     let t = Tokens::get(ui.ctx());
     let text_width = label.map(|l| text_w(ui, l, 11.5) + 6.0).unwrap_or(0.0);
@@ -108,7 +108,7 @@ pub(crate) fn small_frame(ui: &mut Ui, icon: &str, label: Option<&str>, on: bool
     if on {
         bg(ui, r, &resp, checked, &t);
     }
-    let ic = Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(17.0, 17.0));
+    let ic = Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(16.0, 16.0));
     let (c, a) = if on { (t.icon, t.accent) } else { (t.text_disabled, t.text_disabled) };
     icons::paint(ui.painter(), ic, icon, c, a);
     if let Some(l) = label {
