@@ -2738,7 +2738,12 @@ pub fn forget_due(path: &Path, rev: u64) -> Swept {
     }
     drop(st);
     if swept.removed > 0 {
-        log::info!("{}: removed {} content file(s) of mail now kept as its headers and preview ({} bytes)", path.display(), swept.removed, swept.bytes);
+        log::info!(
+            "{}: removed {} content file(s) of mail now kept as its headers and preview ({} bytes)",
+            path.display(),
+            swept.removed,
+            swept.bytes
+        );
     }
     swept
 }
@@ -3011,9 +3016,7 @@ impl Queue {
                         .unwrap_or_else(|_| Err("saving the mailbox stopped unexpectedly".to_string()));
                     drop(mailbox);
                     // Content let go of up to this state goes now (#143).
-                    if result.is_ok()
-                        && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| forget_due(&path, rev))).is_err()
-                    {
+                    if result.is_ok() && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| forget_due(&path, rev))).is_err() {
                         log::error!("removing the content of mail kept as its headers stopped unexpectedly");
                     }
                     let due = result.is_ok() && lock(&shared(&path).state).swept.is_none_or(|at| at.elapsed() >= SWEEP_EVERY);
