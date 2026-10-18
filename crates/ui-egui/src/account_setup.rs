@@ -24,7 +24,7 @@ use std::time::Duration;
 use egui::{
     Align, Align2, Key, Layout, Margin, Rect, Response, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui, WidgetInfo, WidgetType, pos2, vec2,
 };
-use mailcraft_model::{Account, AccountKind, Directory, Id, OAuth, OAuthProvider, Security, Server, provider};
+use mailcraft_model::{Account, AccountKind, Directory, Id, KeepOffline, OAuth, OAuthProvider, Security, Server, provider};
 use serde_json::{Map, Value, json};
 
 use crate::approval::SignInEnd;
@@ -408,6 +408,10 @@ pub struct AccountSetup {
     /// Which kind of Microsoft account the one being added is, as its sign-in said.
     directory: Directory,
     edit: Option<Editing>,
+    /// For the settings of a Microsoft account of its own: its mail to keep offline as it was,
+    /// and as the slider has it now (#143). Saved through `ui.keepOffline`, which asks first
+    /// when it is shorter.
+    keep_offline: Option<(KeepOffline, KeepOffline)>,
     /// The window's context, once a frame has run: what the password field left in its memory
     /// is cleared through it.
     ctx: Option<egui::Context>,
@@ -486,6 +490,7 @@ impl AccountSetup {
             outcome: Outcome::Downloading,
             directory: Directory::Unknown,
             edit: None,
+            keep_offline: None,
             ctx: None,
         }
     }
@@ -528,6 +533,9 @@ impl AccountSetup {
         }
         w.oauth = a.oauth.clone();
         w.edit = Some(Editing { id: a.id, baseline: w.fields() });
+        if a.kind == AccountKind::Microsoft && !a.is_shared() {
+            w.keep_offline = Some((a.keep_offline, a.keep_offline));
+        }
         w
     }
 
@@ -1044,6 +1052,11 @@ impl AccountSetup {
             self.error = e;
             return false;
         }
+        // A window of mail kept offline: a shorter one asks first, in a question of its own (#143).
+        if let Some(keep) = self.keep_offline.filter(|(was, keep)| was != keep).map(|(_, keep)| keep) {
+            self.keep_offline = Some((keep, keep));
+            let _ = app.run("ui.keepOffline", json!({"account": id, "keepOffline": keep.code()}));
+        }
         // A new password is for this session's Send/Receive, like one typed when it is asked for.
         let password = self.password.take();
         if !password.is_empty() && self.oauth.is_none() {
@@ -1444,6 +1457,19 @@ impl AccountSetup {
             if self.oauth.is_some() {
                 field(ui, pass, "clientId", tl!("Application (client) ID"), &mut self.client_id, tl!("The one in File › Options"), 200);
                 field(ui, pass, "tenant", tl!("Tenant"), &mut self.tenant, "common", 64);
+            }
+            if let Some((_, keep)) = self.keep_offline.as_mut() {
+                caption(ui, tl!("Mail to keep offline"), &t);
+                ui.horizontal(|ui| {
+                    let steps = KeepOffline::STEPS;
+                    let last = steps.len().saturating_sub(1);
+                    let mut index = steps.iter().position(|k| k == keep).unwrap_or(last);
+                    crate::keep_offline::step_slider(ui, &mut index, last + 1).on_hover_text(tl!(
+                        "How far back mail is kept in full on this computer. Older mail keeps its headers and a preview, and downloads when you open it. It stays on the server."
+                    ));
+                    *keep = steps.get(index).copied().unwrap_or(*keep);
+                    ui.label(crate::keep_offline::label(*keep));
+                });
             }
         });
         problem(ui, &self.error);

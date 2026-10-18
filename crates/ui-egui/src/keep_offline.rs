@@ -92,6 +92,80 @@ impl MailApp {
     }
 }
 
+/// A slider over `count` steps, Outlook's kind: a rail with a tick at each step, the part up to
+/// the step chosen in the accent colour, and a knob. Clicked or dragged, it goes to the nearest
+/// step; with the keyboard, the arrow keys move it a step. `changed` once the step differs.
+pub(crate) fn step_slider(ui: &mut egui::Ui, index: &mut usize, count: usize) -> egui::Response {
+    let t = crate::theme::Tokens::get(ui.ctx());
+    let last = count.saturating_sub(1).max(1);
+    let (rect, mut response) = ui.allocate_exact_size(egui::vec2(200.0, 22.0), egui::Sense::click_and_drag());
+    let (left, right) = (rect.left() + 7.0, rect.right() - 7.0);
+    let x_of = |i: usize| left + (right - left) * (i.min(last) as f32 / last as f32);
+    let before = *index;
+    if let Some(p) = response.interact_pointer_pos() {
+        let f = ((p.x - left) / (right - left).max(1.0)).clamp(0.0, 1.0);
+        *index = (f * last as f32).round() as usize;
+        response.request_focus();
+    }
+    if response.has_focus() {
+        let (less, more) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowDown),
+                i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::ArrowUp),
+            )
+        });
+        if less {
+            *index = index.saturating_sub(1);
+        }
+        if more {
+            *index = (*index + 1).min(last);
+        }
+    }
+    *index = (*index).min(last);
+    if *index != before {
+        response.mark_changed();
+    }
+    let painter = ui.painter_at(rect.expand(2.0));
+    let y = rect.center().y;
+    painter.line_segment([egui::pos2(left, y), egui::pos2(right, y)], egui::Stroke::new(2.0, t.border_strong));
+    painter.line_segment([egui::pos2(left, y), egui::pos2(x_of(*index), y)], egui::Stroke::new(2.0, t.accent));
+    for i in 0..=last {
+        let x = x_of(i);
+        painter.line_segment([egui::pos2(x, y + 4.0), egui::pos2(x, y + 7.0)], egui::Stroke::new(1.0, t.text_dim));
+    }
+    let knob = egui::pos2(x_of(*index), y);
+    let lit = response.hovered() || response.dragged() || response.has_focus();
+    painter.circle(knob, if lit { 7.0 } else { 6.0 }, t.accent, egui::Stroke::new(2.0, t.surface));
+    response
+}
+
+/// "Mail to keep offline" for `account` (a Microsoft account of its own: a shared mailbox
+/// follows it), as a slider over Outlook's steps from 3 days to All, with the step in words.
+/// Moving it runs `ui.keepOffline` once it is let go (a shorter window asks first); while it is
+/// dragged it only shows where it is. Answers the step it shows.
+pub(crate) fn slider(app: &mut MailApp, ui: &mut egui::Ui, account: mailcraft_model::Id, now: KeepOffline) -> KeepOffline {
+    let steps = KeepOffline::STEPS;
+    let last = steps.len().saturating_sub(1);
+    let at = steps.iter().position(|k| *k == now).unwrap_or(last);
+    let held = egui::Id::new(("keep-offline", account));
+    let mut index = ui.data(|d| d.get_temp::<usize>(held)).unwrap_or(at);
+    let response = step_slider(ui, &mut index, last + 1).on_hover_text(tl!(
+            "How far back mail is kept in full on this computer. Older mail keeps its headers and a preview, and downloads when you open it. It stays on the server."
+        ));
+    app.hit.add("keepOffline", account, response.rect);
+    let shown = steps.get(index).copied().unwrap_or(now);
+    ui.label(label(shown));
+    if response.dragged() {
+        ui.data_mut(|d| d.insert_temp(held, index));
+        return shown;
+    }
+    ui.data_mut(|d| d.remove::<usize>(held));
+    if (response.changed() || response.drag_stopped()) && shown != now {
+        let _ = app.run("ui.keepOffline", json!({"account": account, "keepOffline": shown.code()}));
+    }
+    shown
+}
+
 #[cfg(test)]
 mod tests {
     use mailcraft_engine::Session;
@@ -152,5 +226,27 @@ mod tests {
         app.session.replace_mailbox(mailbox);
         app.offline_tick();
         assert_eq!(whole(&app), [true, false, false]);
+
+        // The slider shortened: asked first, saying the space it frees; Cancel keeps the window.
+        assert_eq!(app.run("ui.keepOffline", json!({"account": account, "keepOffline": "3d"})).unwrap()["pending"], "confirm");
+        match &app.dialog {
+            Some(crate::dialogs::Dialog::Confirm { ask, .. }) => {
+                assert!(
+                    ask.text.starts_with("About ") && ask.text.contains("older than 3 days") && ask.text.contains("stays on the server"),
+                    "{}",
+                    ask.text
+                )
+            }
+            _ => panic!("no question"),
+        }
+        app.dialog = None;
+        assert_eq!(app.session.mailbox.keep_offline_of(account), KeepOffline::Week1, "Cancel");
+        // Said yes: the window is shorter, and what is outside goes at the next frame.
+        app.run("ui.keepOffline", json!({"account": account, "keepOffline": "3d", "confirmed": true})).unwrap();
+        assert_eq!(app.session.mailbox.keep_offline_of(account), KeepOffline::Days3);
+        app.offline_tick();
+        assert_eq!(whole(&app), [false, false, false]);
+        // Longer asks nothing.
+        assert_eq!(app.run("ui.keepOffline", json!({"account": account, "keepOffline": "all"})).unwrap()["changed"], true);
     }
 }
