@@ -224,6 +224,7 @@ pub struct Desktop;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 impl Launch for Desktop {
     fn launch(&self, url: &str, token: Option<&str>) -> bool {
+        log::info!("browser: opening a page {}", if token.is_some() { "with an activation token" } else { "without an activation token" });
         if let Some(token) = token
             && std::env::var_os("BROWSER").is_none()
             && let Some(mut command) = opener_command(url, token)
