@@ -5826,7 +5826,7 @@ mod rules {
                 }
                 crate::icons::paint(
                     ui.painter(),
-                    Rect::from_center_size(pos2(head.min.x + 10.0, head.center().y), vec2(10.0, 10.0)),
+                    Rect::from_center_size(pos2(head.min.x + 10.0, head.center().y), vec2(12.0, 12.0)),
                     if self.open { "expanded" } else { "collapsed" },
                     t.icon,
                     t.accent,

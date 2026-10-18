@@ -384,7 +384,7 @@ fn list(app: &mut MailApp, ui: &mut Ui, layout: &Layout<Group>) {
     if resp.hovered() {
         ui.painter().rect_filled(button, 4.0, if resp.is_pointer_button_down_on() { t.pressed } else { t.hover });
     }
-    icons::paint(ui.painter(), Rect::from_center_size(button.center(), vec2(17.0, 17.0)), "newContact", t.icon, t.accent);
+    icons::paint(ui.painter(), Rect::from_center_size(button.center(), vec2(16.0, 16.0)), "newContact", t.icon, t.accent);
     if resp.on_hover_text(tl!("New Contact")).clicked() {
         let _ = app.run("people.new", json!({}));
     }
@@ -435,7 +435,7 @@ fn contact_row(app: &mut MailApp, ui: &mut Ui, id: Id, rect: Rect) {
     let left = rect.min.x + 54.0;
     let mut right = rect.max.x - 12.0;
     if c.favorite {
-        icons::paint(p, Rect::from_center_size(pos2(right - 7.0, rect.center().y), vec2(14.0, 14.0)), "starOn", t.icon, t.accent);
+        icons::paint(p, Rect::from_center_size(pos2(right - 7.0, rect.center().y), vec2(16.0, 16.0)), "starOn", t.icon, t.accent);
         right -= 20.0;
     }
     let width = (right - left).max(0.0);
@@ -597,7 +597,7 @@ fn field(ui: &mut Ui, icon: &str, value: &str, label: &str, link: bool) -> egui:
         ui.painter().rect_filled(r, 4.0, if resp.is_pointer_button_down_on() { t.pressed } else { t.hover });
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(15.0, 15.0)), icon, t.text_dim, t.accent);
+    icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(16.0, 16.0)), icon, t.text_dim, t.accent);
     let label_w = if label.is_empty() { 0.0 } else { text_width(ui, label, regular(11.5)) + 12.0 };
     let x = r.min.x + 30.0;
     let used = paint_clipped(
@@ -699,7 +699,7 @@ fn card_recent(app: &mut MailApp, ui: &mut Ui, c: &Contact) {
         let from_them = c.has_email(&m.from.email);
         icons::paint(
             p,
-            Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(15.0, 15.0)),
+            Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(16.0, 16.0)),
             if from_them { "mail" } else { "sent" },
             t.text_dim,
             t.accent,

@@ -1333,7 +1333,7 @@ fn group_heading(app: &mut MailApp, ui: &mut Ui, t: &Tokens, n: usize, group: &L
         ui.painter().rect_filled(r.shrink2(vec2(4.0, 1.0)), 4.0, t.hover);
     }
     let icon = if group.folded { "collapsed" } else { "expanded" };
-    icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 13.0, r.center().y), vec2(11.0, 11.0)), icon, t.icon, t.accent);
+    icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 13.0, r.center().y), vec2(12.0, 12.0)), icon, t.icon, t.accent);
     paint_clipped(ui.painter(), pos2(r.min.x + 24.0, r.center().y), r.width() - 30.0, tl!(&group.title), regular(14.667), t.text);
     let tip = if group.folded { tl!("Show the calendars of this group") } else { tl!("Fold the calendars of this group away") };
     if resp.on_hover_text(tip).clicked() {
@@ -1631,7 +1631,7 @@ fn header(app: &mut MailApp, ui: &mut Ui) {
         if resp.hovered() {
             p.rect_filled(br, 4.0, if resp.is_pointer_button_down_on() { t.pressed } else { t.hover });
         }
-        icons::paint(&p, Rect::from_center_size(br.center(), vec2(14.0, 14.0)), icon, t.icon, t.accent);
+        icons::paint(&p, Rect::from_center_size(br.center(), vec2(16.0, 16.0)), icon, t.icon, t.accent);
         if resp.on_hover_text(tl!(tip)).clicked() {
             let _ = app.run(command, json!({}));
         }

@@ -247,7 +247,7 @@ fn filter_pane(app: &mut MailApp, ui: &mut Ui, counts: &[usize; 5]) {
             }
             icons::paint(
                 ui.painter(),
-                Rect::from_center_size(pos2(r.min.x + 22.0, r.center().y), vec2(15.0, 15.0)),
+                Rect::from_center_size(pos2(r.min.x + 22.0, r.center().y), vec2(16.0, 16.0)),
                 filter_icon(filter),
                 t.icon,
                 t.accent,
@@ -435,7 +435,7 @@ fn task_row(app: &mut MailApp, ui: &mut Ui, id: Id, rect: Rect, today: Date) {
         x -= p.text(pos2(x, y), Align2::RIGHT_CENTER, &due, regular(11.5), color).width() + 8.0;
     }
     let mut marker = |icon: &str, color: Color32| {
-        icons::paint(p, Rect::from_center_size(pos2(x - 7.0, y), vec2(13.0, 13.0)), icon, color, t.accent);
+        icons::paint(p, Rect::from_center_size(pos2(x - 7.0, y), vec2(12.0, 12.0)), icon, color, t.accent);
         x -= 17.0;
     };
     match task.importance {
@@ -532,7 +532,7 @@ fn details(app: &mut MailApp, ui: &mut Ui, task: &Task) {
             ui.horizontal(|ui| {
                 if done {
                     let (r, _) = ui.allocate_exact_size(vec2(14.0, 16.0), Sense::hover());
-                    icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(14.0, 14.0)), "complete", t.green, t.accent);
+                    icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(16.0, 16.0)), "complete", t.green, t.accent);
                 }
                 ui.label(RichText::new(status).font(regular(12.0)).color(if warn { t.red } else { t.text_dim }));
             });
@@ -612,7 +612,7 @@ fn details(app: &mut MailApp, ui: &mut Ui, task: &Task) {
 /// The icon and name of a field, at the left of its line.
 fn detail_label(ui: &Ui, r: Rect, icon: &str, label: &str) {
     let t = Tokens::get(ui.ctx());
-    icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 9.0, r.center().y), vec2(14.0, 14.0)), icon, t.text_dim, t.accent);
+    icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 9.0, r.center().y), vec2(16.0, 16.0)), icon, t.text_dim, t.accent);
     paint_clipped(ui.painter(), pos2(r.min.x + 26.0, r.center().y), LABEL_W - 30.0, label, regular(12.0), t.text_dim);
 }
 
