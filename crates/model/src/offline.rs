@@ -280,7 +280,7 @@ mod tests {
         let w = OfflineWindow::of(&mb, NOW);
         assert!(!w.within(&message(account, inbox, old)), "the plain case is outside");
         for folder in [drafts, outbox, own] {
-            assert!(w.within(&message(account, folder, old)), "folder {folder}");
+            assert!(w.within(&message(account, folder, old)));
         }
         assert!(w.within(&Message { account: local, folder: local_inbox, received: old, ..Default::default() }), "a local account's");
         let base = message(account, inbox, old);

@@ -231,11 +231,7 @@ mod tests {
         assert_eq!(app.run("ui.keepOffline", json!({"account": account, "keepOffline": "3d"})).unwrap()["pending"], "confirm");
         match &app.dialog {
             Some(crate::dialogs::Dialog::Confirm { ask, .. }) => {
-                assert!(
-                    ask.text.starts_with("About ") && ask.text.contains("older than 3 days") && ask.text.contains("stays on the server"),
-                    "{}",
-                    ask.text
-                )
+                assert!(ask.text.starts_with("About ") && ask.text.contains("older than 3 days") && ask.text.contains("stays on the server"))
             }
             _ => panic!("no question"),
         }
