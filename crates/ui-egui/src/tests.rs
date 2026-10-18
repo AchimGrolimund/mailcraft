@@ -1059,6 +1059,109 @@ fn a_message_dragged_onto_a_folder_is_filed_there() {
     }
 }
 
+/// A mailbox with a Microsoft account and a shared mailbox under it, each with mail in its Inbox,
+/// and the shared mailbox's Inbox in view; the owner's Inbox and the shared mailbox's.
+fn shared_and_own() -> (MailApp, mailcraft_model::Id, mailcraft_model::Id) {
+    use mailcraft_engine::cmd::graph_mail::apply_graph_mail;
+    use mailcraft_model::FolderKind;
+    use mailcraft_model::sync::{FolderListing, GraphFolder, GraphMailResult, GraphMessage, MessagePage, ServerMessage};
+
+    let mut s = Session::empty();
+    s.shared_mailboxes = true;
+    let owner = s.run("account.add", &json!({"email": "owner@example.org", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
+    let shared = s.run("account.addSharedMailbox", &json!({"address": "support@example.org"})).unwrap()["id"].as_u64().unwrap();
+    for (account, email) in [(owner, "owner@example.org"), (shared, "support@example.org")] {
+        let folder = |id: &str, name: &str, kind| GraphFolder { id: id.into(), name: name.into(), kind, ..Default::default() };
+        let folders = vec![folder("in", "Inbox", FolderKind::Inbox), folder("de", "Deleted Items", FolderKind::Deleted)];
+        let listing = FolderListing { folders, complete: true };
+        apply_graph_mail(&mut s, GraphMailResult { account, email: email.into(), listing: Some(listing), ..Default::default() }).unwrap();
+        let messages = ["AAkA1", "AAkA2"]
+            .iter()
+            .map(|id| GraphMessage {
+                server: ServerMessage { id: (*id).into(), folder: "in".into(), ..Default::default() },
+                subject: format!("{email}: {id}"),
+                ..Default::default()
+            })
+            .collect();
+        let page = MessagePage { folder: "in".into(), messages, caught_up: true, ..Default::default() };
+        apply_graph_mail(&mut s, GraphMailResult { account, email: email.into(), pages: vec![page], whole: true, ..Default::default() }).unwrap();
+    }
+    let (mine, theirs) = (s.mailbox.folder_of_kind(owner, FolderKind::Inbox).unwrap(), s.mailbox.folder_of_kind(shared, FolderKind::Inbox).unwrap());
+    let mut app = MailApp::new(s, Services::default());
+    app.autosave = false;
+    app.auto_sync = false;
+    app.execute("folder.select", json!({"id": theirs})).unwrap();
+    (app, mine, theirs)
+}
+
+/// #152: a message dragged from a shared mailbox to the owner's own is refused at once, and the
+/// reason comes in a message box with OK (and stays in the status bar). The same move through
+/// the control channel, as an agent or a script asks it, opens nothing: it answers the error.
+#[test]
+fn a_refused_drag_says_why_in_a_message_box_and_the_control_channel_never_does() {
+    let (a, mine, theirs) = shared_and_own();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut harness = window(a.with_control(rx));
+    let row = harness.state_mut().session.rows().first().cloned().unwrap();
+    assert_eq!(harness.state().session.mailbox.message(row.id).map(|m| m.folder), Some(theirs));
+    let start = harness.state().hit.rect("message", row.id).unwrap().center();
+    let target = harness.state().hit.rect("folder", mine).expect("the owner's Inbox in the folder pane").center();
+    harness.event(egui::Event::PointerMoved(start));
+    harness.step();
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    harness.event(button(start, true));
+    harness.step();
+    for k in 1..=8 {
+        harness.event(egui::Event::PointerMoved(start + (target - start) * (k as f32 / 8.0)));
+        harness.step();
+    }
+    harness.event(button(target, false));
+    harness.run_steps(3);
+    assert_eq!(harness.state().session.mailbox.message(row.id).map(|m| m.folder), Some(theirs), "nothing moved");
+    let Some(crate::dialogs::Dialog::Refused { text }) = &harness.state().dialog else {
+        panic!("a message box: {:?}", harness.state().dialog.as_ref().map(|d| d.name()))
+    };
+    assert!(text.contains("only within one mailbox"), "{text}");
+    assert!(harness.state().status_msg.as_ref().is_some_and(|(said, _)| said.contains("only within one mailbox")));
+    // OK closes it.
+    let ok = harness.state().hit.rect("refusedOk", 0).expect("OK");
+    harness.event(egui::Event::PointerMoved(ok.center()));
+    harness.step();
+    for pressed in [true, false] {
+        harness.event(button(ok.center(), pressed));
+        harness.step();
+    }
+    harness.run_steps(2);
+    assert!(harness.state().dialog.is_none());
+
+    // Through the control channel: the error, and no box.
+    harness.state_mut().status_msg = None;
+    let (req, reply) = crate::ControlRequest::new("engine.execute", json!({"command": "mail.move", "params": {"ids": [row.id], "folder": mine}}));
+    tx.send(req).unwrap();
+    harness.run_steps(3);
+    let reply = reply.try_recv().unwrap();
+    assert_eq!(reply["ok"], false);
+    assert!(reply["error"].as_str().is_some_and(|e| e.contains("only within one mailbox")), "{reply}");
+    assert!(harness.state().dialog.is_none() && harness.state().refused.is_none());
+    // Nor does a command the window runs by itself, outside of anything the owner did.
+    let _ = harness.state_mut().run("mail.move", json!({"ids": [row.id], "folder": mine}));
+    harness.run_steps(2);
+    assert!(harness.state().dialog.is_none());
+}
+
+/// What isn't a refusal stays in the status bar: a command that wasn't available, had nothing to
+/// do or was given what it can't take, and the window's own commands.
+#[test]
+fn only_a_real_refusal_is_worth_a_message_box() {
+    use crate::refusal_worth_a_box as boxed;
+    assert!(boxed("mail.move", mailcraft_model::BETWEEN_MAILBOXES));
+    assert!(!boxed("mail.delete", "not available: nothing is selected"));
+    assert!(!boxed("compose.undo", "nothing to undo in the message"));
+    assert!(!boxed("mail.move", "bad parameters: `folder` is a folder id"));
+    assert!(!boxed("ui.openWindow", "no windows of their own here"));
+    assert!(!boxed("mail.move", "  "));
+}
+
 /// Reminders fire: an event inside its reminder time shows in the reminders window, stays until
 /// it is dismissed (which is remembered) or put off (which is not), and the window comes up on
 /// its own.
