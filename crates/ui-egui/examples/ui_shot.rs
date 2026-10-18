@@ -27,6 +27,9 @@
 //! in, no browser is opened and nothing leaves this machine. The same host answers a check for a
 //! new version (`{"host": {"update": …}}`): `"0.9.0"` (that is the newest release), `"0.9.0
 //! security"` (and it fixes a security problem), `"same"` (the running version), or `"fails"`.
+//! The stand-in host is a copy that updates itself, whose downloads are checked at once (nothing
+//! is downloaded); `{"host": {"updates": "organisation"}}` on any line has the organisation
+//! turn that off for the computer from the start.
 //! And a Graph job (`{"host": {"graph": …}}`): `"consent"` (Microsoft wants the owner's
 //! permission first), `"refused"` (it refused the sign-in) or `"sendConsent"` (a shared
 //! mailbox's mail waits for permission to send from shared mailboxes, #70); anything else
@@ -383,6 +386,9 @@ fn stand_in(host: &Arc<Mutex<Host>>) -> Services {
                 None => Err("GitHub couldn't be reached".to_string()),
             })
         })),
+        // A copy that updates itself: what it finds is downloaded and checked at once (nothing
+        // is downloaded and nothing is kept).
+        update_download: Some(Box::new(|_| answered(Ok(std::path::PathBuf::from("updates"))))),
         saver: Some(Box::new(StandInSaver(host.clone()))),
         ..Default::default()
     }
@@ -414,7 +420,9 @@ fn main() {
     // A stand-in for the host's part in signing in, when a line of the script speaks to one.
     let host: Arc<Mutex<Host>> = Default::default();
     let stood_in = lines.iter().any(|l| l.get("host").is_some());
-    let services = if stood_in { stand_in(&host) } else { Services::default() };
+    let mut services = if stood_in { stand_in(&host) } else { Services::default() };
+    // The organisation has turned updating by itself off for the computer.
+    services.updates_turned_off_by_organisation = lines.iter().any(|l| l.pointer("/host/updates").and_then(|v| v.as_str()) == Some("organisation"));
     let mut app = MailApp::new(session, services).with_control(rx);
     app.autosave = false;
     // (With a host that answers, nothing is to happen by itself: what a shot shows, its script asked for.)

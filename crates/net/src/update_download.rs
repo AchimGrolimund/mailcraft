@@ -209,6 +209,15 @@ pub fn download(release: &Release, name: &str, dir: &Path) -> Result<PathBuf, Do
     download_with(release, name, dir, &release_keys(), &reach)
 }
 
+/// [`download`] from a stand-in release server on this machine (`http://127.0.0.1:…`), trusting
+/// `keys` rather than the build's: for the tests of the crates that sit on this one.
+#[cfg(feature = "stand-in")]
+pub fn download_from_stand_in(release: &Release, name: &str, dir: &Path, keys: &[[u8; 32]]) -> Result<PathBuf, DownloadError> {
+    let loopback = |url: &Url| crate::transport::is_loopback(&url.host);
+    let quick = StreamPatience { connect: Duration::from_secs(5), idle: Duration::from_secs(5), total: Duration::from_secs(20) };
+    download_with(release, name, dir, keys, &Reach { allowed: &loopback, large: quick, small: quick })
+}
+
 pub(crate) fn download_with(release: &Release, name: &str, dir: &Path, keys: &[[u8; 32]], reach: &Reach<'_>) -> Result<PathBuf, DownloadError> {
     if keys.is_empty() {
         return Err(refused("this build carries no release key"));

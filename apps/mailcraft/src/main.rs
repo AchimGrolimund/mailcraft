@@ -45,6 +45,9 @@ mod secrets;
 #[cfg(test)]
 mod shared_send_flow;
 mod single_instance;
+#[cfg(test)]
+mod update_flow;
+mod updater;
 
 use std::path::PathBuf;
 
@@ -985,6 +988,7 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
     let fetch_ctx = ctx.clone();
     let search_ctx = ctx.clone();
     let update_ctx = ctx.clone();
+    let download_ctx = ctx.clone();
     let copy_ctx = ctx.clone();
     let (sync_ctx, sign_in_ctx, graph_ctx, mx_ctx, test_ctx) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone(), ctx);
     let sync_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1076,8 +1080,33 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
         })),
         // A build that isn't one of the project's packages (they name their commit) never asks.
         development_build: build_sha() == "dev",
+        // A copy that updates itself downloads a newer release, checked by its signature.
+        update_download: update_download(&download_ctx),
+        updates_turned_off_by_organisation: updater::turned_off_by_organisation(),
         ..Default::default()
     }
+}
+
+/// The download of a newer release, for a copy that updates itself (the `.msi`, the macOS app,
+/// an AppImage) and is one of the project's packages, into the data folder's `updates/`, on a
+/// background thread; checked by the release's own signature there (`mailcraft_net`). None for
+/// any other copy, and for a run that keeps no files.
+fn update_download(
+    ctx: &egui::Context,
+) -> Option<Box<dyn Fn(mailcraft_model::update::Release) -> std::sync::mpsc::Receiver<Result<PathBuf, String>>>> {
+    if build_sha() == "dev" || !prefs_enabled() {
+        return None;
+    }
+    let install = install::this_copy();
+    if install == install::Install::NoticeOnly {
+        return None;
+    }
+    let dir = mailcraft_control_key::settings_dir()?.join(updater::FOLDER);
+    let ctx = ctx.clone();
+    Some(Box::new(move |release: mailcraft_model::update::Release| {
+        let dir = dir.clone();
+        background(&ctx, "update download", move || updater::download(&release, install, &dir, mailcraft_net::update_download::download))
+    }))
 }
 
 /// Window, Dock and taskbar icon.
