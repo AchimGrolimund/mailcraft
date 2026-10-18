@@ -916,6 +916,7 @@ fn of_two_saves_racing_the_newer_state_wins() {
 }
 
 /// Wait until `test` holds (the saver's thread is at work), or give up.
+#[track_caller]
 fn until(test: impl Fn() -> bool) {
     let t = Instant::now();
     while !test() {
@@ -966,13 +967,15 @@ fn the_saver_writes_in_the_background_coalesces_and_flushes() {
     saver.flush();
     let reports = saver.reports();
     assert_eq!(reports, [1, 5].map(|rev| SaveReport { path: path.clone(), rev, result: Ok(()) }));
-    until(|| woken.load(Ordering::Relaxed) == 2);
     assert!(whole(&path) == mb);
     assert!(saver.reports().is_empty());
 
-    // The first save queued a sweep, which holds the file's state while it runs: let it finish
-    // before holding that state here, or the sweep waits on this test and the saver on the sweep.
-    until(|| lock(&held.state).swept.is_some());
+    // The window is woken once for each of the two, and once more when the sweep the first save
+    // queued is over (it runs as soon as there is nothing to write, and holds the file's state
+    // while it runs). Counted once that sweep is over, so the count doesn't depend on how soon
+    // this thread gets to look (#138: waiting for two failed whenever the sweep was quicker).
+    until(|| woken.load(Ordering::Relaxed) == 3);
+    assert!(lock(&held.state).swept.is_some());
 
     // A state that gets to the disk after a newer one was written by somebody else (the Save
     // command, quitting) is dropped rather than written over it.
