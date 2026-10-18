@@ -169,6 +169,12 @@ pub struct Tokens {
     pub red: Color32,
     pub green: Color32,
     pub orange: Color32,
+    /// The few colours an icon has besides its ink and the accent (a flag, a warning, the
+    /// categories, a tick): each one at least 3:1 on every background an icon sits on.
+    pub icon_red: Color32,
+    pub icon_yellow: Color32,
+    pub icon_green: Color32,
+    pub icon_purple: Color32,
 }
 
 impl Tokens {
@@ -214,6 +220,10 @@ impl Tokens {
             red: Color32::from_rgb(0xD1, 0x3B, 0x3B),
             green: Color32::from_rgb(0x2E, 0x8B, 0x57),
             orange: Color32::from_rgb(0xE0, 0x7B, 0x1F),
+            icon_red: Color32::from_rgb(0xC4, 0x31, 0x4B),
+            icon_yellow: Color32::from_rgb(0x9C, 0x67, 0x00),
+            icon_green: Color32::from_rgb(0x2B, 0x7A, 0x4B),
+            icon_purple: Color32::from_rgb(0x7B, 0x4F, 0xB8),
         }
     }
     /// The dark palette: near-black neutral greys, with a light blue accent.
@@ -236,7 +246,8 @@ impl Tokens {
             text: Color32::WHITE,
             text_dim: Color32::from_rgb(0xC8, 0xC8, 0xC8),
             text_disabled: Color32::from_rgb(0x70, 0x70, 0x70),
-            icon: Color32::WHITE,
+            // A shade off white: line drawings in pure white glare on the dark panes.
+            icon: Color32::from_rgb(0xE0, 0xE0, 0xE0),
             hover: Color32::from_rgb(0x38, 0x38, 0x38),
             pressed: Color32::from_rgb(0x4A, 0x4A, 0x4A),
             checked: Color32::from_rgb(0x1F, 0x3B, 0x57),
@@ -258,6 +269,10 @@ impl Tokens {
             red: Color32::from_rgb(0xEE, 0x6A, 0x6A),
             green: Color32::from_rgb(0x5B, 0xC0, 0x8A),
             orange: Color32::from_rgb(0xF0, 0xA0, 0x50),
+            icon_red: Color32::from_rgb(0xF0, 0x7A, 0x7A),
+            icon_yellow: Color32::from_rgb(0xE8, 0xB7, 0x4A),
+            icon_green: Color32::from_rgb(0x5B, 0xC0, 0x8A),
+            icon_purple: Color32::from_rgb(0xB6, 0x9B, 0xEE),
         }
     }
     pub fn get(ctx: &egui::Context) -> Tokens {
@@ -858,6 +873,10 @@ mod tests {
                 // Marks, unread counts and what is disabled need less than running text does.
                 assert!(contrast(t.accent, bg) >= 3.0, "{theme}: accent on {name} is {:.2}", contrast(t.accent, bg));
                 assert!(contrast(t.text, bg) > contrast(t.text_disabled, bg), "{theme}: disabled text on {name}");
+                // An icon's colours are marks, and need what the accent needs.
+                for (hue, color) in [("icon_red", t.icon_red), ("icon_yellow", t.icon_yellow), ("icon_green", t.icon_green), ("icon_purple", t.icon_purple)] {
+                    assert!(contrast(color, bg) >= 3.0, "{theme}: {hue} on {name} is {:.2}", contrast(color, bg));
+                }
             }
             assert!(contrast(t.on_accent, t.accent) >= 4.5, "{theme}: on_accent");
             assert!(contrast(t.on_accent, t.accent_text) >= 4.5, "{theme}: on_accent on a hovered button");
