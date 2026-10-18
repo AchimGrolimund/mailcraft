@@ -154,6 +154,15 @@ pub fn blob_dir(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+/// Where the word index of the mailbox file at `path` is kept: `<file>.words` beside the file it
+/// stands for ([`crate::words`]).
+pub fn words_file(path: &Path) -> PathBuf {
+    let path = resolve(path);
+    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(".words");
+    path.with_file_name(name)
+}
+
 /// The file a mailbox path stands for: itself, or where it leads when it is a link. A mailbox
 /// kept somewhere else through a link stays there, with its content beside it, instead of the
 /// link being replaced by a file the first time it is saved.
@@ -775,7 +784,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// A new file for its owner only, created where nothing is (never through something already
 /// there by that name).
-fn create_private(path: &Path) -> std::io::Result<fs::File> {
+pub(crate) fn create_private(path: &Path) -> std::io::Result<fs::File> {
     let mut open = fs::OpenOptions::new();
     open.write(true).create_new(true);
     // Mail is private: nobody else on the machine reads it.
@@ -800,14 +809,14 @@ fn sync_dir_of(path: &Path) {
 
 /// A file written to a temporary file beside it and renamed over it when it is whole
 /// ([`AtomicFile::commit`]); dropped before that, the temporary file goes and nothing changed.
-struct AtomicFile {
+pub(crate) struct AtomicFile {
     tmp: PathBuf,
     path: PathBuf,
     out: Option<std::io::BufWriter<fs::File>>,
 }
 
 impl AtomicFile {
-    fn create(path: &Path) -> std::io::Result<AtomicFile> {
+    pub(crate) fn create(path: &Path) -> std::io::Result<AtomicFile> {
         let mut tries = 0;
         loop {
             let tmp = temp_beside(path);
@@ -823,7 +832,7 @@ impl AtomicFile {
     }
 
     /// Flushed to the disk, then renamed over the file it stands for.
-    fn commit(mut self) -> std::io::Result<()> {
+    pub(crate) fn commit(mut self) -> std::io::Result<()> {
         let out = self.out.take().ok_or_else(|| std::io::Error::other("written twice"))?;
         let file = out.into_inner().map_err(|e| e.into_error())?;
         file.sync_all()?;
