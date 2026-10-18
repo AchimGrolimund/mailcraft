@@ -320,7 +320,7 @@ impl State {
     }
 
     pub(super) fn look_of(asked: &Asked, list: bool) -> Result<Look, Refusal> {
-        let allowed: &[&str] = if list { &["$select", "$top", "$skip", "$expand", "$filter"] } else { &["$select", "$expand"] };
+        let allowed: &[&str] = if list { &["$select", "$top", "$skip", "$expand", "$filter", "$search"] } else { &["$select", "$expand"] };
         if let Some((other, _)) = asked.query.iter().find(|(name, _)| !allowed.contains(&name.as_str())) {
             return Err(bad(format!("The query parameter '{other}' is not one this stand-in answers here.")));
         }
