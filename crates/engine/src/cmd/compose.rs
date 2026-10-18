@@ -3,7 +3,7 @@
 use mailcraft_model::rich::RichText;
 use mailcraft_model::signature::Picture;
 use mailcraft_model::sync::{DraftKind, DraftOf, DraftState, ServerDraft};
-use mailcraft_model::{AccountKind, Address, Attachment, Body, FolderKind, Id, Importance, Message, RichBody, Signature, format_list};
+use mailcraft_model::{AccountKind, Address, Answers, Attachment, Body, FolderKind, Id, Importance, Message, RichBody, Signature, format_list};
 use serde_json::{Value, json};
 
 use super::{bad, base64_decode, done, fail, needs_compose, needs_message, source};
@@ -624,6 +624,17 @@ fn attachments_of(c: &Compose, message_id: &str) -> Vec<Attachment> {
     all
 }
 
+/// The original a reply or forward being written answers or forwards.
+fn answers_of(s: &Session, c: &Compose) -> Option<Answers> {
+    let forward = match c.mode {
+        ComposeMode::Forward => true,
+        ComposeMode::Reply | ComposeMode::ReplyAll => false,
+        _ => return None,
+    };
+    let original = s.mailbox.message(c.source?)?;
+    Some(Answers { message: original.id, message_id: original.message_id.clone(), forward })
+}
+
 fn send(s: &mut Session, _: &Value) -> CmdResult {
     let c = s.compose.clone().ok_or_else(|| fail("no message is being written"))?;
     // A draft of a Microsoft account goes as the draft its server has (R3.4.2): the same
@@ -643,15 +654,12 @@ fn send(s: &mut Session, _: &Value) -> CmdResult {
     let queued = account.kind.has_server();
     let kind = if queued { FolderKind::Outbox } else { FolderKind::Sent };
     m.folder = s.mailbox.folder_of_kind(account.id, kind).ok_or_else(|| fail(format!("this account has no {} folder", kind.default_name())))?;
+    // The original is marked replied or forwarded once this has gone (#154): from the Outbox when
+    // the server has taken it, at once for a local account, which files it as sent.
+    m.answers = answers_of(s, &c).or_else(|| c.draft.and_then(|d| s.mailbox.message(d)).and_then(|d| d.answers.clone()));
     let id = s.mailbox.add_message(m.clone())?;
-    if let Some(src) = c.source
-        && let Ok(orig) = s.mailbox.message_mut(src)
-    {
-        match c.mode {
-            ComposeMode::Forward => orig.forwarded = true,
-            ComposeMode::Reply | ComposeMode::ReplyAll => orig.answered = true,
-            _ => {}
-        }
+    if !queued {
+        s.mailbox.mark_answered(id);
     }
     if let Some(d) = c.draft {
         // The draft became this message: one the server has goes from there by being sent, not
@@ -672,7 +680,7 @@ fn send(s: &mut Session, _: &Value) -> CmdResult {
                 continue;
             }
             let Some(inbox) = s.mailbox.folder_of_kind(local, FolderKind::Inbox) else { continue };
-            let copy = Message { id: 0, folder: inbox, read: false, bcc: Vec::new(), ..m.clone() };
+            let copy = Message { id: 0, folder: inbox, read: false, bcc: Vec::new(), answers: None, ..m.clone() };
             let cid = s.mailbox.add_message(copy)?;
             s.mailbox.apply_rules(cid);
             delivered += 1;
@@ -689,6 +697,8 @@ fn save_draft(s: &mut Session, _: &Value) -> CmdResult {
     let old = c.draft.and_then(|d| s.loaded_message(d).ok().map(|m| Message::clone(&m)).or_else(|| s.mailbox.message(d).cloned()));
     let mut m = build_as(s, &c, false, old.as_ref().map(|o| o.message_id.as_str()).filter(|id| !id.is_empty()))?;
     m.draft = true;
+    // A reply or forward kept as a draft still knows its original, to be marked once it is sent.
+    m.answers = answers_of(s, &c).or_else(|| old.as_ref().and_then(|o| o.answers.clone()));
     m.folder = s.mailbox.folder_of_kind(m.account, FolderKind::Drafts).ok_or_else(|| fail("this account has no Drafts folder"))?;
     // Saved again in the same account: what the mailbox keeps of it beside what is written (where
     // its server has it, and its marks) stays, so that the server's copy is changed in place

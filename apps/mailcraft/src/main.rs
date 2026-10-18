@@ -37,6 +37,7 @@ mod graph_mail_flow;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
 mod logging;
+mod opened_files;
 mod picture_cache;
 mod quit;
 mod secrets;
@@ -109,6 +110,10 @@ impl eframe::App for App {
         if let Err(e) = self.0.save_on_exit() {
             log::error!("saving the mailbox on exit failed: {e}");
         }
+        // The attachments opened in this run (#126).
+        if let Some(opened) = OPENED.get() {
+            opened.clear();
+        }
         // What is still to be noted of the pictures kept on disk.
         if let Some(pictures) = PICTURES.get() {
             pictures.flush();
@@ -151,6 +156,26 @@ fn keep_pictures() -> Option<std::sync::Arc<picture_cache::Cache>> {
         log::debug!("the downloaded pictures were not tidied: {e}");
     }
     Some(cache)
+}
+
+/// The attachments the owner opened in this run (`opened_files`), in this user's cache folder.
+static OPENED: std::sync::OnceLock<opened_files::Opened> = std::sync::OnceLock::new();
+
+/// Where opened attachments are written, and what earlier runs left there a day ago and more
+/// tidied a moment later, off the window's thread. None when there is no cache folder.
+fn opened_files() -> Option<&'static opened_files::Opened> {
+    let base = opened_files::base()?;
+    let opened = OPENED.get_or_init(|| opened_files::Opened::at(base));
+    let tidy = || {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        if let Some(opened) = OPENED.get() {
+            opened.tidy(opened_files::MAX_AGE);
+        }
+    };
+    if let Err(e) = std::thread::Builder::new().name("opened attachments tidying".into()).spawn(tidy) {
+        log::debug!("the opened attachments were not tidied: {e}");
+    }
+    Some(opened)
 }
 
 /// Where the log files live: `logs` in the preferences folder (see `logging`).
@@ -1029,6 +1054,10 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
             let ctx = approval_ctx.clone();
             background(&approval_ctx, "admin consent", move || admin_consent(&ctx, request))
         })),
+        // An attachment the owner opened (double-click, Open): written into MailCraft's own
+        // folder and opened with the system's program for its kind (#126).
+        open_file: opened_files()
+            .map(|opened| Box::new(move |name: &str, bytes: &[u8]| opened.open(name, bytes)) as Box<dyn Fn(&str, &[u8]) -> Result<(), String>>),
         secrets: secrets::store(),
         clipboard: clipboard::board(),
         // Help › Copy Diagnostics: the version, the platform and the redacted end of the logs.

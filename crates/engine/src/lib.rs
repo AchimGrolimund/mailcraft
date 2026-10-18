@@ -11,6 +11,7 @@ pub mod catalog;
 pub mod cmd;
 pub mod io;
 pub mod list;
+pub mod opening;
 pub mod sample;
 mod session;
 #[cfg(not(target_arch = "wasm32"))]
