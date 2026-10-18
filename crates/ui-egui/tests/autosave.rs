@@ -494,3 +494,86 @@ fn open_waits_for_a_sweep_of_the_content_folder_too() {
     assert_eq!(app.session.path.as_deref(), Some(other.as_path()));
     assert_eq!(app.saving_inspect()["last"]["ok"], json!(true));
 }
+
+#[test]
+fn closing_while_an_open_waits_for_the_saver_closes_and_opens_nothing_on_the_way_out() {
+    // #134: an Open and a Close both waiting for the background save, the Open ran first when
+    // the save was done, and the window then closed on the other mailbox. Closing wins now.
+    let tmp = Temp::new("open-then-close");
+    let (path, other) = (tmp.0.join("mailbox.mailcraft"), tmp.0.join("other.mailcraft"));
+    let ctx = egui::Context::default();
+    let script = Arc::new(Scripted::default());
+    let busy = SaveProgress { stage: SaveStage::Messages, done: 5, total: 200_000, millis: 60_000 };
+    let mut app = app(&path, Box::new(Handle(script.clone())));
+    store::save(&other, &mailcraft_engine::sample::mailbox(NOW, 0)).unwrap();
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    let rev = app.session.rev();
+    *script.progress.lock().unwrap() = Some(busy);
+
+    // File › Open waits for the save; then the owner closes the window, which waits too.
+    assert_eq!(app.execute("file.open", json!({"path": other.to_string_lossy()})).unwrap(), json!({"pending": "save"}));
+    app.logic(&ctx);
+    assert!(!app.close_requested());
+    app.logic(&ctx);
+    assert!(!app.quit_requested);
+    let saving = app.saving_inspect();
+    assert_eq!((&saving["closing"], &saving["pending"]), (&json!(true), &json!(null)));
+    // An agent answered `"pending": "save"` hears that the Open gave way.
+    assert_eq!((&saving["last"]["command"], &saving["last"]["ok"]), (&json!("file.open"), &json!(false)));
+    assert!(app.saving_text().unwrap().ends_with("MailCraft closes when it is done"));
+
+    // Written: the window closes on the mailbox it had, and the other one never opened.
+    *script.progress.lock().unwrap() = None;
+    script.answers.lock().unwrap().push(SaveReport { path: path.clone(), rev, result: Ok(()) });
+    app.logic(&ctx);
+    assert_eq!(app.session.path.as_deref(), Some(path.as_path()));
+    assert!(app.quit_requested && !app.session.dirty);
+    app.logic(&ctx);
+    assert_eq!(app.session.path.as_deref(), Some(path.as_path()));
+    assert!(app.close_requested());
+    app.save_on_exit().unwrap();
+}
+
+#[test]
+fn an_open_asked_for_while_closing_waits_is_refused_and_an_open_alone_never_closes() {
+    // #134, the other way round: closing waits for the save, then File › Open is asked for.
+    let tmp = Temp::new("close-then-open");
+    let (path, other) = (tmp.0.join("mailbox.mailcraft"), tmp.0.join("other.mailcraft"));
+    let ctx = egui::Context::default();
+    let script = Arc::new(Scripted::default());
+    let busy = SaveProgress { stage: SaveStage::Messages, done: 5, total: 200_000, millis: 60_000 };
+    let mut app = app(&path, Box::new(Handle(script.clone())));
+    store::save(&other, &mailcraft_engine::sample::mailbox(NOW, 0)).unwrap();
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    let rev = app.session.rev();
+    *script.progress.lock().unwrap() = Some(busy);
+    assert!(!app.close_requested());
+    let error = app.execute("file.open", json!({"path": other.to_string_lossy()})).unwrap_err();
+    assert!(error.contains("closes once the mailbox is saved"), "{error}");
+    assert_eq!(app.saving_inspect()["pending"], json!(null));
+    *script.progress.lock().unwrap() = None;
+    script.answers.lock().unwrap().push(SaveReport { path: path.clone(), rev, result: Ok(()) });
+    app.logic(&ctx);
+    assert_eq!(app.session.path.as_deref(), Some(path.as_path()));
+    assert!(app.quit_requested && app.close_requested());
+
+    // An Open with nobody closing opens the other mailbox once the save is done, and the window
+    // stays.
+    let mut app = self::app(&path, Box::new(Handle(script.clone())));
+    let id = unread(&app);
+    app.execute("mail.markRead", json!({"id": id})).unwrap();
+    let rev = app.session.rev();
+    *script.progress.lock().unwrap() = Some(busy);
+    assert_eq!(app.execute("file.open", json!({"path": other.to_string_lossy()})).unwrap(), json!({"pending": "save"}));
+    app.logic(&ctx);
+    *script.progress.lock().unwrap() = None;
+    script.answers.lock().unwrap().push(SaveReport { path: path.clone(), rev, result: Ok(()) });
+    for _ in 0..3 {
+        app.logic(&ctx);
+    }
+    assert_eq!(app.session.path.as_deref(), Some(other.as_path()));
+    assert!(!app.quit_requested);
+    assert_eq!(app.saving_inspect()["last"]["ok"], json!(true));
+}
