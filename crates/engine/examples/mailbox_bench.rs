@@ -16,8 +16,10 @@
 //! nothing else, and says how long that took and how much memory the process holds after it
 //! (resident, and its peak; Linux): what a person opening that mailbox waits for and pays (R6.1).
 //! Then, as the window goes on: the first message list, a read mark saved (the first save after
-//! opening and three more), and a search everywhere for a word no message has, within the
-//! window's time and to the end, with the memory held after all of it (R6.4). It saves into
+//! opening and three more), the word index read or built (R6.2: the first time, every message
+//! is read into it, which takes a while), and a search everywhere for a word no message has,
+//! answered from it, within the window's time and with all the time it wants, with the memory
+//! held after all of it (R6.4). It saves into
 //! `DIR`. To open with the page cache emptied first, without root: `sync`, then
 //! `find DIR -type f -exec dd if={} iflag=nocache count=0 status=none \;` (GNU `dd`).
 //!
@@ -525,9 +527,24 @@ fn open_only(dir: &Path) -> Result<(), String> {
     let mut saves = saves.into_iter();
     println!("  save after a read mark: first after opening {}", saves.next().unwrap_or_default());
     println!("      then {}", saves.collect::<Vec<_>>().join(", "));
-    // Full text across everything, for words no message has, so every body is read: as the
-    // window searches (within its time), and to the end (another word, so nothing of the first
-    // is reused).
+    // The word index (R6.2): read from beside the mailbox, or built in the background where it
+    // lacks messages (the first time, every one), with the memory held after it.
+    s.index_words = true;
+    let words_file = store::words_file(&path);
+    let had = std::fs::metadata(&words_file).map_or(0, |m| m.len());
+    let (_, took) = timed(|| s.wait_for_word_index());
+    println!(
+        "  word index: {} {}   ({:?}; its file {}, {} before)",
+        if had == 0 { "built in" } else { "read and brought in step in" },
+        ms(took).trim(),
+        s.word_index(),
+        mb(std::fs::metadata(&words_file).map_or(0, |m| m.len())),
+        mb(had)
+    );
+    println!("      the process {} resident, peak {}", memory().map_or_else(|| "not readable".into(), |(rss, _)| mb(rss)), peak());
+    // Full text across everything, for words no message has: answered from the word index now
+    // that it holds every message, as the window searches (within its time), and with all the
+    // time it wants (another word, so nothing of the first is reused).
     for (label, limit, word) in [("within the window's time", s.search_time, "zyxwvutsrq"), ("to the end", Duration::MAX, "qrstuvwxyz")] {
         s.search_time = limit;
         let (found, took) = timed(|| s.run("view.search", &serde_json::json!({"query": word, "scope": "everywhere"})));

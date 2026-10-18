@@ -863,18 +863,23 @@ impl Session {
         let list_now = list(self);
         #[cfg(not(target_arch = "wasm32"))]
         self.words_in_step(!mailcraft_model::search::Query::parse(&self.view.search).is_empty());
+        #[cfg(not(target_arch = "wasm32"))]
+        let (decided, unverified) = self.search_words();
+        #[cfg(target_arch = "wasm32")]
+        let (decided, unverified) = (std::collections::HashMap::new(), 0);
         let searched = match &self.search_pass {
             // Only content came in or went since this list was searched (a result opened): what
             // was found stands, and nothing is brought in for it again.
             Some((_, hits)) if self.searched_for.as_deref() == Some(list_now.as_str()) => hits.clone(),
             _ => {
-                let hits = self.load_bodies_for_search();
+                let hits = self.load_bodies_for_search(&decided);
+                self.unsearched = self.unsearched.saturating_add(unverified);
                 self.searched_for = self.search_pass.is_some().then_some(list_now);
                 hits
             }
         };
         let key = key(self);
-        let rows = Arc::new(crate::list::rows_with(self, &searched));
+        let rows = Arc::new(crate::list::rows_with(self, &decided, &searched));
         self.list_cache = Some((key, rows.clone()));
         rows
     }
@@ -899,6 +904,70 @@ impl Session {
             words.in_step(&self.mailbox, &|m| self.kept_text(m));
         }
         self.words = Some(words);
+    }
+
+    /// The search in view, answered from the word index for the messages in view it holds as
+    /// they are (R6.2): whether each matches. A word finds the messages holding a word that starts
+    /// with it, in the parts its keyword names; what the index doesn't hold (`is:`, dates,
+    /// categories) is looked at on the message, which is in memory. A phrase is checked on the
+    /// message itself, its text read from disk when it is kept there, within
+    /// [`Session::search_time`]: what that leaves unread doesn't match and is counted (the
+    /// second number). Messages the index hasn't got (being read in the background) are left out,
+    /// to be searched as without an index.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn search_words(&self) -> (std::collections::HashMap<Id, bool>, usize) {
+        use std::cell::Cell;
+        let mut decided = std::collections::HashMap::new();
+        let query = mailcraft_model::search::Query::parse(&self.view.search);
+        let Some(words) = self.words.as_ref().filter(|_| !query.is_empty()) else { return (decided, 0) };
+        let mut verify: Vec<Id> = Vec::new();
+        {
+            let guard = words.lock();
+            let Some(index) = guard.as_ref() else { return (decided, 0) };
+            let sets: Vec<Option<crate::words::Bits>> =
+                (0..query.len()).map(|i| query.words_of(i).map(|(fields, w)| index.matching(w, fields))).collect();
+            let in_view = crate::list::in_view(self);
+            for m in self.mailbox.messages.values() {
+                let Some(slot) = index.slot_of(m.id) else { continue };
+                if !in_view(m) {
+                    continue;
+                }
+                let text_on_disk = crate::words::body_in_memory(m).is_none();
+                let unread_phrase = Cell::new(false);
+                let hit = query.matches_with(m, self.offset_at(m.date), |i| {
+                    let set = sets.get(i)?.as_ref()?;
+                    if !set.has(slot) {
+                        return Some(false);
+                    }
+                    let (fields, w) = query.words_of(i)?;
+                    if w.len() <= 1 {
+                        return Some(true);
+                    }
+                    // A phrase: its words one after another, looked at on the message.
+                    if fields & mailcraft_model::words::BODY != 0 && text_on_disk {
+                        unread_phrase.set(true);
+                        return Some(true);
+                    }
+                    None
+                });
+                // Said to be there before it was looked at: the whole query is looked at on
+                // the text as it is (a phrase that is there may make a `-` term fail).
+                if unread_phrase.get() {
+                    verify.push(m.id);
+                } else {
+                    decided.insert(m.id, hit);
+                }
+            }
+        }
+        let deadline = std::time::Instant::now().checked_add(self.search_time);
+        let mut unread = 0;
+        for id in verify {
+            let in_time = deadline.is_none_or(|d| std::time::Instant::now() < d);
+            let hit = in_time && self.loaded_message_where(id, |_| false).is_ok_and(|m| query.matches(&m, self.offset_at(m.date)));
+            unread += usize::from(!in_time);
+            decided.insert(id, hit);
+        }
+        (decided, unread)
     }
 
     /// How far the word index a search answers from has got.
@@ -1246,39 +1315,28 @@ impl Session {
             .collect()
     }
 
-    /// Before the list is built for a search that reads bodies: the bodies it lacks, newest
-    /// first, within [`Session::search_time`]; the rest are counted as not searched. Bringing them
+    /// Before the list is built for a search that reads bodies: the bodies it lacks of the
+    /// messages the word index didn't answer for (`decided`), newest first, within [`Session::search_time`]; the rest are counted as not searched. Bringing them
     /// in keeps within [`Session::loaded_budget`], so a body may be let go of again before the
     /// list is built: each is matched before it goes, and what is returned says whether it did
     /// (for [`crate::list::rows_with`]).
-    fn load_bodies_for_search(&mut self) -> std::collections::HashMap<Id, bool> {
+    fn load_bodies_for_search(&mut self, decided: &std::collections::HashMap<Id, bool>) -> std::collections::HashMap<Id, bool> {
         self.unsearched = 0;
         self.search_pass = None;
         let query = mailcraft_model::search::Query::parse(&self.view.search);
         if query.is_empty() || !query.reads_bodies() {
             return Default::default();
         }
-        // The messages the list looks at (`list::rows`): the folder in view, or everywhere but
-        // Deleted Items and Junk E-mail.
-        let everywhere = self.view.scope == Scope::Everywhere;
-        let mb = &self.mailbox;
-        let hidden: Vec<Id> = if everywhere {
-            mb.folders
-                .iter()
-                .filter(|f| matches!(f.kind, mailcraft_model::FolderKind::Deleted | mailcraft_model::FolderKind::Junk))
-                .flat_map(|f| mb.subtree(f.id))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let folder = self.view.folder;
-        let mut wanted: Vec<(Timestamp, Id)> = mb
+        // The messages the list looks at (`list::rows`) that the word index didn't answer for.
+        let in_view = crate::list::in_view(self);
+        let mut wanted: Vec<(Timestamp, Id)> = self
+            .mailbox
             .messages
             .values()
-            .filter(|m| if everywhere { !hidden.contains(&m.folder) } else { m.folder == folder })
-            .filter(|m| m.body_is_kept())
+            .filter(|m| in_view(m) && m.body_is_kept() && !decided.contains_key(&m.id))
             .map(|m| (m.date, m.id))
             .collect();
+        drop(in_view);
         if wanted.is_empty() {
             return Default::default();
         }

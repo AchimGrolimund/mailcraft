@@ -534,3 +534,169 @@ mod background {
         assert_eq!((s.word_index(), count(&s, "download")), (WordIndex::Complete, READ_NOW_MOST + 10));
     }
 }
+
+// ---- a search answered from it ----
+
+mod answered {
+    use std::time::Duration;
+
+    use mailcraft_model::{FolderKind, Mailbox};
+    use serde_json::json;
+
+    use super::in_step::{id_of, session};
+    use super::*;
+    use crate::{Scope, Session, WordIndex};
+
+    /// A mailbox whose texts are kept outside the mailbox file, with words to find in every part.
+    fn mailbox(tmp: &Temp) -> PathBuf {
+        let path = tmp.0.join("mailbox.mailcraft");
+        let mut mb = Mailbox::with_local_account("Avery", "avery@mail.example");
+        let inbox = mb.inbox().unwrap();
+        let junk = mb.folders.iter().find(|f| f.kind == FolderKind::Junk).unwrap().id;
+        let filler = " Nothing else of note this week, all is well with the project.".repeat(30);
+        let mut add = |folder: Id, subject: &str, from: &str, text: &str, file: Option<&str>| {
+            let mut m = Message { folder, date: mb.messages.len() as i64, ..message(0, subject, from, &format!("{text}{filler}")) };
+            m.attachments = file.map(|f| vec![Attachment::new(f, "application/pdf", vec![7; 10])]).unwrap_or_default();
+            m.read = subject.starts_with('R');
+            mb.add_message(m).unwrap();
+        };
+        add(inbox, "Meeting on Tuesday", "Ada", "The budget review meets at noon in the Gvožđar room.", None);
+        add(inbox, "Re: Budget", "Bram", "Numbers attached. Café at three? Review budget later.", Some("budget-Q4.pdf"));
+        add(inbox, "Figures", "Kit", "See the attached estimate.", Some("estimate.xlsx"));
+        add(inbox, "Picnic", "Đorđe", "Bring sandwiches and the meeting notes.", None);
+        add(junk, "Cheap budget", "Spam", "A budget review you can't refuse.", None);
+        crate::store::save(&path, &mb).unwrap();
+        path
+    }
+
+    fn found(s: &mut Session, query: &str, scope: Scope) -> Vec<String> {
+        s.view.search = query.into();
+        s.view.scope = scope;
+        let rows = s.rows();
+        let mut subjects: Vec<String> = rows.iter().map(|r| s.mailbox.message(r.id).unwrap().subject.clone()).collect();
+        subjects.sort();
+        subjects
+    }
+
+    const QUERIES: &[&str] = &[
+        "budget",
+        "budg",
+        "udget",
+        "BUDGET review",
+        "\"budget review\"",
+        "\"review budget\"",
+        "\"budget rev\"",
+        "gvozdar",
+        "dorde",
+        "from:đorđe",
+        "cafe",
+        "café",
+        "meet",
+        "subject:meet",
+        "body:meet",
+        "-budget",
+        "budget -meeting",
+        "-\"budget review\"",
+        "attachment:estimate",
+        "attachment:q4",
+        "has:attachment budget",
+        "is:unread budget",
+        "is:read",
+        "to:avery",
+        "from:\"ada\" to:avery",
+        "zyxwvut",
+        "category:red",
+        "- @ ...",
+        "on:1970-01-01 sandwiches",
+    ];
+
+    /// Every query finds through the index what reading every message finds.
+    #[test]
+    fn the_index_finds_what_reading_every_message_finds() {
+        let tmp = Temp::new("same");
+        let path = mailbox(&tmp);
+        let mut indexed = session(&path);
+        indexed.wait_for_word_index();
+        assert_eq!(indexed.word_index(), WordIndex::Complete);
+        let mut read = session(&path);
+        read.index_words = false;
+        read.search_time = Duration::MAX;
+        for scope in [Scope::Folder, Scope::Everywhere] {
+            for q in QUERIES {
+                let want = found(&mut read, q, scope);
+                assert_eq!(found(&mut indexed, q, scope), want, "{q} ({scope:?})");
+                assert_eq!(indexed.unsearched, 0, "{q}");
+            }
+        }
+        // A sample of what that means.
+        assert_eq!(found(&mut indexed, "budg", Scope::Everywhere), ["Meeting on Tuesday", "Re: Budget"]);
+        assert_eq!(found(&mut indexed, "\"budget review\"", Scope::Folder), ["Meeting on Tuesday"]);
+        assert_eq!(found(&mut indexed, "gvozdar", Scope::Folder), ["Meeting on Tuesday"]);
+        assert!(found(&mut indexed, "udget", Scope::Everywhere).is_empty());
+    }
+
+    /// Searching with a complete index reads no body into memory, and says nothing was left
+    /// unsearched; while it is built, what it hasn't got is searched as before.
+    #[test]
+    fn a_complete_index_answers_without_reading_the_messages() {
+        let tmp = Temp::new("no-reading");
+        let path = mailbox(&tmp);
+        let mut s = session(&path);
+        s.wait_for_word_index();
+        let loads = s.loads();
+        assert_eq!(found(&mut s, "sandwiches", Scope::Everywhere), ["Picnic"]);
+        assert_eq!((s.loads(), s.unsearched), (loads, 0), "no body brought in");
+        assert!(s.mailbox.messages.values().all(|m| m.body_is_kept()));
+        // A phrase in a text kept on disk is checked on that text, still without bringing it in.
+        assert_eq!(found(&mut s, "\"meeting notes\"", Scope::Everywhere), ["Picnic"]);
+        assert_eq!(s.loads(), loads);
+        // Out of time for checking it: counted, not found.
+        s.search_time = Duration::ZERO;
+        assert!(found(&mut s, "\"the meeting\"", Scope::Everywhere).is_empty());
+        assert_eq!(s.unsearched, 2, "two hold both words");
+    }
+
+    #[test]
+    fn a_message_changed_since_the_index_was_built_is_found_as_it_is_now() {
+        let tmp = Temp::new("changed");
+        let path = mailbox(&tmp);
+        let mut s = session(&path);
+        s.wait_for_word_index();
+        let picnic = id_of(&s, "Picnic");
+        s.run("mail.deletePermanently", &json!({"ids": [picnic]})).unwrap();
+        assert!(found(&mut s, "sandwiches", Scope::Everywhere).is_empty());
+        s.run("edit.undo", &json!({})).unwrap();
+        assert_eq!(found(&mut s, "sandwiches", Scope::Everywhere), ["Picnic"]);
+        let m = s.mailbox.message_mut(picnic).unwrap();
+        m.subject = "Barbecue".into();
+        s.mailbox_changed();
+        assert_eq!(found(&mut s, "barbecue sandwiches", Scope::Everywhere), ["Barbecue"]);
+        assert!(found(&mut s, "picnic", Scope::Everywhere).is_empty());
+    }
+
+    /// Hostile queries through the index: never a panic.
+    #[test]
+    fn hostile_queries_never_panic() {
+        let tmp = Temp::new("hostile");
+        let path = mailbox(&tmp);
+        let mut s = session(&path);
+        s.wait_for_word_index();
+        for q in [
+            "\"",
+            "\"\"\"",
+            "-",
+            "--",
+            "-\"\"",
+            "from:",
+            ":::",
+            "\u{0}\u{301}\u{301}",
+            &"a ".repeat(5_000),
+            &"\"x y ".repeat(400),
+            "会議 -会",
+            "İİİ ß",
+        ] {
+            let _ = s.run("view.search", &json!({"query": q, "scope": "everywhere"}));
+            let _ = s.rows();
+        }
+    }
+}
