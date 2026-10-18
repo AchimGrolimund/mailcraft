@@ -231,6 +231,11 @@ pub fn confirmation(app: &MailApp, id: &str, params: &Value) -> Option<Question>
     let server_too = |yes: bool| if yes { format!(" {}", tl!("They are removed from the mail server too.")) } else { String::new() };
     let question = |title: &str, text: String, action: &str| Some(Question::new(title, text, action, Value::Null));
     match id {
+        // An Office file with macros, or a web page, from a message (#126).
+        "mail.openAttachment" => {
+            let (title, text, action) = crate::attachment_open::question(app, params)?;
+            question(&title, text, &action)
+        }
         "mail.delete" | "mail.deletePermanently" => {
             let ids: Vec<u64> = match params.get("ids").and_then(Value::as_array) {
                 Some(ids) => ids.iter().filter_map(Value::as_u64).collect(),

@@ -1,6 +1,6 @@
 # MCP server
 
-> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-17 · **Change:** minor (`sync.progress`'s `fullMessages`, `ui.skipSync` allowed, #120; `sync.progress`, its problems framed as untrusted, #120) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-18 · **Change:** minor (`mail.openAttachment` never for agents, #126; `sync.progress`'s `fullMessages`, `ui.skipSync` allowed, #120; `sync.progress`, its problems framed as untrusted, #120) · **Target:** Microsoft Outlook (Microsoft 365)
 
 MailCraft speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio, so
 agents can read, file and write mail and keep a calendar.
@@ -27,7 +27,7 @@ doesn't rely on the agent's judgement: every command has a class for agents (`ag
 |---|---|---|
 | `safe` | reading, searching, flagging, filing, moving, categories, calendar, contacts and tasks kept here or synchronised as usual, writing a message (not sending it), Send/Receive | runs |
 | `owner` | `send`: sending, answering or forwarding a meeting so that people are written to (`"send": true`), anything put in an Outbox, pictures from the web, joining a meeting's link · `delete`: deleting for good (also a delete in Deleted Items), emptying or deleting a folder, removing an attachment or a calendar, discarding what is being written · `accounts`: adding, changing or removing an account, signing in, the application id, remembering sign-ins, moving calendars to an account · `mailbox`: opening, replacing or saving the mailbox file · `settings`: options, signatures, rules (all of them), how pictures are downloaded | bridged: the owner is asked in the window; headless: refused, unless the server was started with `--allow` for it |
-| `never` | the host's side of a synchronisation (`sync.*`), file pickers (`ui.open`, `ui.import`, `ui.attach`), putting an agent's text on the clipboard (`ui.copyLinkAddress`) | refused |
+| `never` | the host's side of a synchronisation (`sync.*`), file pickers (`ui.open`, `ui.import`, `ui.attach`), putting an agent's text on the clipboard (`ui.copyLinkAddress`), opening an attachment with another program (`mail.openAttachment`: only the owner's double-click or Open; an agent saves it as `data` with `mail.saveAttachment`) | refused |
 
 A command without a class is refused; every command MailCraft has carries one, and a test makes
 new commands choose.
@@ -114,3 +114,4 @@ parameters.
 | 2026-10-15 | major | Agents get only what the owner allows: classes, no file paths but inside `--files`, `--allow`, the question in the window, untrusted message text framed |
 | 2026-10-17 | minor | `sync.progress` (Send/Receive Progress, #120): safe for agents, its problems framed as untrusted message content |
 | 2026-10-17 | minor | `sync.progress`'s `fullMessages`; `ui.skipSync` allowed to agents (#120) |
+| 2026-10-18 | minor | `mail.openAttachment` (#126): never for agents |

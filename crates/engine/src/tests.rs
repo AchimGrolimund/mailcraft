@@ -284,6 +284,25 @@ fn attachments_come_and_go() {
 }
 
 #[test]
+fn attachments_are_opened_only_in_the_window() {
+    let mut s = session();
+    run(&mut s, "mail.new", json!({"to": "maya@lumen.example"}));
+    run(&mut s, "compose.attach", json!({"name": "notes.txt", "data": "aGVsbG8="}));
+    run(&mut s, "compose.attach", json!({"name": "setup.exe", "data": "aGVsbG8="}));
+    let id = run(&mut s, "compose.send", json!({}))["id"].as_u64().unwrap();
+    // Outside the window nothing is opened: an ordinary file says where it would be...
+    let e = s.run("mail.openAttachment", &json!({"id": id, "index": 0})).unwrap_err().to_string();
+    assert!(e.contains("window") && e.contains("mail.saveAttachment"), "{e}");
+    // ...and a program is refused for what it is.
+    let e = s.run("mail.openAttachment", &json!({"id": id, "index": 1})).unwrap_err().to_string();
+    assert!(e.contains("doesn't open setup.exe") && e.contains("Save As"), "{e}");
+    assert!(s.run("mail.openAttachment", &json!({"id": id, "index": 9})).is_err());
+    assert!(s.run("mail.openAttachment", &json!({"id": id})).is_err());
+    // Agents may not ask for it at all.
+    assert_eq!(crate::agent::access("mail.openAttachment"), Some(crate::agent::Access::Never));
+}
+
+#[test]
 fn folders_and_views() {
     let mut s = session();
     let r = run(&mut s, "folder.select", json!({"path": "inbox/projects/atlas"}));

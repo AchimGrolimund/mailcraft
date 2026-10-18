@@ -53,6 +53,12 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("mail.junk", "Block Sender", "Home › Delete", junk).params(IDS).selection(needs_message),
         CommandSpec::new("mail.notJunk", "Not Junk", "Home › Delete", not_junk).key("Mod+Alt+J").params(IDS).selection(needs_message),
         CommandSpec::new("mail.findRelated", "Find Related Messages", "Home › Find", find_related).pure().selection(needs_message),
+        CommandSpec::new("mail.openAttachment", "Open Attachment", "Attachments › Actions", open_attachment)
+            .pure()
+            .params(
+                r#"{"index": number, "id"?: number} — opens the file with the computer's own program for it, in the MailCraft window only (never for an agent). Programs, scripts, shortcuts, installers and disk images are refused: save them instead. Anywhere else answers why it opened nothing"#,
+            )
+            .selection(needs_message),
         CommandSpec::new("mail.saveAttachment", "Save Attachment", "Attachments › Actions", save_attachment)
             .pure()
             .params(r#"{"index": number, "id"?: number, "path"?: string} — without a path, answers the bytes as base64 `data`"#)
@@ -412,6 +418,17 @@ fn save_attachment(s: &mut Session, v: &Value) -> CmdResult {
     // The file's bytes, from where the mailbox keeps them when they aren't in memory.
     let bytes = s.content(id, crate::Part::Attachment(index))?;
     deliver(v, &file_name(stem, ext), bytes.as_ref().clone())
+}
+
+/// The window opens attachments (through its host); everywhere else this says why nothing was
+/// opened: refused for a program or a script, or not the place for it.
+fn open_attachment(s: &mut Session, v: &Value) -> CmdResult {
+    let (id, index) = attachment_target(s, v)?;
+    let name = s.mailbox.message(id).and_then(|m| m.attachments.get(index)).map(|a| a.name.clone()).ok_or_else(|| fail("no such attachment"))?;
+    Err(match crate::opening::verdict(&name) {
+        crate::opening::Verdict::Blocked => fail(crate::opening::blocked_message(&name)),
+        _ => crate::CmdError::Disabled("attachments are opened in the MailCraft window; `mail.saveAttachment` gives the file".into()),
+    })
 }
 
 fn remove_attachment(s: &mut Session, v: &Value) -> CmdResult {
