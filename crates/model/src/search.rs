@@ -4,6 +4,8 @@
 //! of a term excludes what it matches. Keywords: `from`, `to`, `cc`, `subject`, `body`,
 //! `category`, `attachment` (file name), `has:attachment`, `is:unread|read|flagged|important`,
 //! `importance:high|normal|low`, `before:`, `after:`, `on:` (dates, `YYYY-MM-DD` or `M/D/YYYY`).
+//! A space after a keyword's colon is allowed (`from: ada`); a keyword with nothing after it yet
+//! asks for nothing.
 //!
 //! A word matches the start of a word, ignoring case and accents (`meet` finds "Meeting",
 //! `gvozdar` finds "Gvožđar"); a phrase, its words one after another ([`crate::words`]). A
@@ -139,13 +141,62 @@ fn parse_date(s: &str) -> Option<Date> {
     Date::new(y, m, d)
 }
 
+/// The keywords the search box knows (what comes before a `:`), in small letters.
+const KEYWORDS: &[&str] = &[
+    "from",
+    "to",
+    "cc",
+    "subject",
+    "body",
+    "category",
+    "categories",
+    "attachment",
+    "attachments",
+    "has",
+    "hasattachment",
+    "hasattachments",
+    "is",
+    "importance",
+    "before",
+    "after",
+    "on",
+    "received",
+    "sent",
+];
+
+fn is_keyword(key: &str) -> bool {
+    KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(key))
+}
+
+/// Whether `token` (with a `-` in front or not) is a known keyword and its colon: `subject:`,
+/// `-from:ada`.
+fn starts_with_keyword(token: &str) -> bool {
+    let body = token.strip_prefix('-').unwrap_or(token);
+    body.split_once(':').is_some_and(|(key, _)| is_keyword(key))
+}
+
 impl Query {
     pub fn parse(s: &str) -> Query {
         let mut terms = Vec::new();
-        for token in tokens(s).into_iter().take(MAX_TERMS) {
+        let mut tokens = tokens(s).into_iter().take(MAX_TERMS).peekable();
+        while let Some(token) = tokens.next() {
             let (negate, body) = match token.strip_prefix('-') {
                 Some(rest) if !rest.is_empty() => (true, rest),
                 _ => (false, token.as_str()),
+            };
+            // `from: stuart` is `from:stuart`, as Outlook reads it: a keyword with nothing after
+            // its colon takes what comes next. With nothing next (the owner is still typing it),
+            // or another keyword, it asks for nothing (#194).
+            let joined;
+            let body = match body.strip_suffix(':') {
+                Some(key) if is_keyword(key) => match tokens.next_if(|next| !starts_with_keyword(next)) {
+                    Some(value) => {
+                        joined = format!("{body}{value}");
+                        joined.as_str()
+                    }
+                    None => continue,
+                },
+                _ => body,
             };
             let text = || Kind::Words { fields: words::ALL, words: words::words(body), raw: raw_words(body) };
             let words_in = |fields: u8, v: &str| Kind::Words { fields, words: words::words(v), raw: raw_words(v) };
@@ -399,6 +450,55 @@ mod tests {
         // At most so many terms go; the rest stay here.
         let many = Query::parse(&"word ".repeat(40)).for_server();
         assert_eq!((many.terms.len(), many.local.len()), (MAX_SERVER_TERMS, 40 - MAX_SERVER_TERMS));
+    }
+
+    /// #194: a space after a keyword's colon is allowed, as in Outlook; a keyword with nothing
+    /// after it yet, while the owner types, asks for nothing; a partial word is a word start.
+    #[test]
+    fn a_keyword_may_have_a_space_after_its_colon() {
+        let m = Message { subject: "[IQA] Audit summary".into(), from: Address::new("Stuart Example", "stuart@example.org"), ..Default::default() };
+        let on = |q: &str| Query::parse(q).matches(&m, 0);
+        for q in [
+            "from: stuart",
+            "from: stuart subject: iqa",
+            "FROM:  Stuart   Subject: IQA",
+            "from: stuart subject:",
+            "from: stuart su",
+            "subject: \"iqa audit\"",
+            "subject: \"iqa audit s\"",
+            "subject: from:stuart",
+        ] {
+            assert!(on(q), "{q}");
+        }
+        for q in ["from: ada", "from: stuart subject: budget", "subject: stuart", "-from: stuart", "from: stuart sz"] {
+            assert!(!on(q), "{q}");
+        }
+        assert!(on("-from: ada"));
+        assert_eq!(Query::parse("from: stuart subject: iqa"), Query::parse("from:stuart subject:iqa"));
+        assert_eq!(Query::parse("-from: stuart"), Query::parse("-from:stuart"));
+        // Nothing after the keyword (yet): no condition, the rest as it is.
+        assert!(Query::parse("subject:").is_empty() && Query::parse("from: subject:").is_empty() && Query::parse("-is:").is_empty());
+        assert_eq!(Query::parse("from: stuart subject:"), Query::parse("from:stuart"));
+        assert_eq!(Query::parse("subject: from:stuart"), Query::parse("from:stuart"));
+        // A word ending in a colon that is no keyword is still text.
+        assert_eq!(Query::parse("re: budget").len(), 2);
+        assert_eq!(Query::parse("is: unread"), Query::parse("is:unread"));
+        assert_eq!(Query::parse("before: 2026-10-12"), Query::parse("before:2026-10-12"));
+        // The server is given the same.
+        let split = Query::parse("from: stuart subject: iqa").for_server();
+        let words = |field, w: &str| ServerTerm::Words { field: Some(field), words: vec![w.to_string()] };
+        assert_eq!(split.terms, [words(ServerField::From, "stuart"), words(ServerField::Subject, "iqa")]);
+        assert!(split.local.is_empty());
+    }
+
+    /// #194: `subject:iqa` finds the word wherever it stands among punctuation.
+    #[test]
+    fn a_subject_word_is_found_among_punctuation() {
+        for subject in ["[IQA] Audit dates", "IQA-2026 review", "RE: IQA", "Fwd: (iqa)", "Re: Re: IQA."] {
+            let m = Message { subject: subject.into(), ..Default::default() };
+            assert!(Query::parse("subject:iqa").matches(&m, 0) && Query::parse("subject: IQA").matches(&m, 0), "{subject}");
+        }
+        assert!(!Query::parse("subject:iqa").matches(&Message { subject: "LIQA notes".into(), ..Default::default() }, 0));
     }
 
     #[test]

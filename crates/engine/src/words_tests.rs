@@ -565,6 +565,9 @@ mod answered {
         add(inbox, "Figures", "Kit", "See the attached estimate.", Some("estimate.xlsx"));
         add(inbox, "Picnic", "Đorđe", "Bring sandwiches and the meeting notes.", None);
         add(junk, "Cheap budget", "Spam", "A budget review you can't refuse.", None);
+        add(inbox, "[IQA] Audit dates", "Stuart", "Dates for the visit.", None);
+        add(inbox, "IQA-2026 sign-off", "Stuart", "Signed.", None);
+        add(inbox, "RE: IQA", "Kit", "Fine by me.", None);
         crate::store::save(&path, &mb).unwrap();
         path
     }
@@ -608,6 +611,16 @@ mod answered {
         "category:red",
         "- @ ...",
         "on:1970-01-01 sandwiches",
+        // #194: a space after a keyword's colon, and a keyword or a word half typed.
+        "from: stuart",
+        "from: stuart su",
+        "from: stuart subject:",
+        "from: stuart subject: iqa",
+        "from: stuart subject: i",
+        "subject:iqa",
+        "subject: IQA -from: kit",
+        "re: iqa",
+        "from:",
     ];
 
     /// Every query finds through the index what reading every message finds.
@@ -633,6 +646,14 @@ mod answered {
         assert_eq!(found(&mut indexed, "\"budget review\"", Scope::Folder), ["Meeting on Tuesday"]);
         assert_eq!(found(&mut indexed, "gvozdar", Scope::Folder), ["Meeting on Tuesday"]);
         assert!(found(&mut indexed, "udget", Scope::Everywhere).is_empty());
+        // #194: `from: stuart subject: iqa` is `from:stuart subject:iqa`, found by either way.
+        for s in [&mut indexed, &mut read] {
+            let stuart = ["IQA-2026 sign-off", "[IQA] Audit dates"];
+            assert_eq!(found(s, "from: stuart subject: iqa", Scope::Everywhere), stuart);
+            assert_eq!(found(s, "from: stuart subject:", Scope::Everywhere), stuart);
+            assert_eq!(found(s, "from: stuart si", Scope::Everywhere), ["IQA-2026 sign-off"]);
+            assert_eq!(found(s, "subject: iqa", Scope::Folder), ["IQA-2026 sign-off", "RE: IQA", "[IQA] Audit dates"]);
+        }
     }
 
     /// Searching with a complete index reads no body into memory, and says nothing was left
