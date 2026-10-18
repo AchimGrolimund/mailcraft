@@ -251,6 +251,92 @@ fn messages_download_whole_in_the_background_on_opening_and_before_a_reply() {
     assert!(app.session.mailbox.message(by(&app, &ids[0])).unwrap().body.text.contains("The words of message 1."));
 }
 
+/// The background download goes the whole way past what it can't take: a message over 16 MB
+/// comes whole, and messages the server refuses, three of them one after another among them, are
+/// asked for once and passed over, never holding up the rest (#175).
+#[test]
+fn a_message_over_16_mb_and_those_refused_dont_hold_the_background_up() {
+    use mailcraft_model::sync::Tokens;
+    use mailcraft_net::graph::standin::Fault;
+    use mailcraft_net::oauth::GraphTokens;
+    use mailcraft_ui_egui::graph_fetch::GraphFetchJob;
+    use mailcraft_ui_egui::{GraphRequest, MailApp, Services};
+
+    let server = StandIn::start().unwrap();
+    let inbox_there = server.state().well_known("inbox");
+    // Newest first: the large one, then three refused one after another, and one more later on.
+    let ids = server.state().mailbox.generate(&inbox_there, 25, NOW);
+    let large = format!(
+        "From: avery@mail.example\r\nTo: owner@mail.example\r\nSubject: Large\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nThe large one.\r\n{}",
+        "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ+/\r\n".repeat(300_000)
+    );
+    assert!(large.len() > 17 * 1024 * 1024);
+    let refused = [&ids[1], &ids[2], &ids[3], &ids[12]];
+    {
+        let mut state = server.state();
+        state.mailbox.update(&ids[0], |m| m.mime = Some(large.clone()));
+        for id in refused {
+            state.mailbox.faults.insert(id.clone(), Fault::Invalid);
+        }
+    }
+    let url = server.url();
+    let session = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
+    let mut app = MailApp::new(session, Services::default());
+    (app.autosave, app.auto_sync) = (false, false);
+    let base = url.clone();
+    app.services.graph = Some(Box::new(move |request: GraphRequest| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let base = base.clone();
+        std::thread::spawn(move || {
+            let _route = mailcraft_net::graph::standin::route(&base);
+            let tokens = Tokens { access: TOKEN.into(), refresh: "ref".into(), expires_at: mailcraft_time::now() + 3_600, ..Default::default() };
+            let renewed = GraphTokens { tokens, extras_missing: false, covers_favorites: false };
+            let _ = tx.send(super::graph_with(request, "UTC", &move |_, _, _| Ok(renewed.clone())));
+        });
+        rx
+    }));
+    let base = url.clone();
+    app.services.graph_fetch = Some(Box::new(move |job: GraphFetchJob| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let base = base.clone();
+        std::thread::spawn(move || {
+            let _route = mailcraft_net::graph::standin::route(&base);
+            let _ = tx.send(mailcraft_net::graph::fetch_messages(&job.access, &job.request, &job.cancel));
+        });
+        rx
+    }));
+    app.services.sync = Some(Box::new(|_| std::sync::mpsc::channel().1));
+    let account = app.execute("account.add", json!({"email": "avery@mail.example", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
+    app.seed_graph_token(
+        account,
+        Tokens { access: TOKEN.into(), refresh: "ref".into(), expires_at: mailcraft_time::now() + 3_600, ..Default::default() },
+    );
+    app.execute("ui.sync", json!({"account": account})).unwrap();
+    let here = |app: &MailApp, id: &str| app.session.mailbox.messages.values().find(|m| m.server.as_ref().is_some_and(|s| s.id == id)).cloned();
+    let done = |app: &MailApp| !app.graph_running() && ids.iter().all(|id| here(app, id).is_some_and(|m| refused.contains(&id) || !m.unfetched));
+    // Well within the 20 s an account that stopped waits: nothing stops.
+    let mut finished = false;
+    for _ in 0..5_000 {
+        app.poll_graph();
+        app.drive_fetch();
+        if done(&app) {
+            finished = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let left: Vec<_> = ids.iter().filter(|id| here(&app, id).is_none_or(|m| m.unfetched)).collect();
+    assert!(finished, "still not here whole: {left:?}");
+    let big = here(&app, &ids[0]).unwrap();
+    assert!(big.body.text.starts_with("The large one.") && big.body.text.len() > 16 * 1024 * 1024);
+    // Each refused one was asked for once, and is passed over from then on.
+    for id in refused {
+        assert!(here(&app, id).unwrap().unfetched);
+        let asked = server.state().requests.iter().filter(|r| r.target.contains("$value") && r.target.contains(id.trim_end_matches('='))).count();
+        assert_eq!(asked, 1, "{id}");
+    }
+}
+
 /// What changed on the server after every folder had come to its end (read on a phone, flagged
 /// and categorised in Outlook on the web) comes down with the next Send/Receive, across a save
 /// and a reopen of the mailbox: Exchange Online says a change of read state alone as the

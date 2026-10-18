@@ -26,6 +26,8 @@ use crate::http;
 
 /// Largest message taken (Microsoft's own limit is 150 MB).
 const MAX_MIME: usize = 160 * 1024 * 1024;
+// What is asked for is what comes: a body is never cut to less than this (#175).
+const _: () = assert!(MAX_MIME <= http::MAX_LARGE_BODY);
 /// How long one message may take to come.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(300);
 /// Messages refused one after another before the batch stops: by then it is likely the request,
