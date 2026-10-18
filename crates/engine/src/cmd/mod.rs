@@ -23,6 +23,7 @@ pub mod graph_send;
 pub mod graph_switch;
 pub mod graph_up;
 pub mod mail;
+pub mod offline;
 #[cfg(test)]
 mod offline_tests;
 pub mod people;
