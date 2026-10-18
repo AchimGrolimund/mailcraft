@@ -294,7 +294,7 @@ pub fn import(s: &mut Session, name: &str, bytes: &[u8], folder: Option<Id>) -> 
             Ok(json!({"format": "ics", "events": events.len(), "tasks": tasks.len(), "updated": updated, "method": file.method, "notes": notes}))
         }
         Format::Vcf => {
-            let contacts = mailcraft_vcard::parse(&String::from_utf8_lossy(bytes));
+            let contacts = mailcraft_vcard::parse_bytes(bytes);
             if contacts.is_empty() {
                 return Err(fail(format!("{name} has no contacts")));
             }

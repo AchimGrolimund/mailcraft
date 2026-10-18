@@ -2249,3 +2249,15 @@ fn the_servers_folder_tree_is_here_before_its_mail() {
     repaired.repair();
     assert_eq!(repaired.folders.len(), s.mailbox.folders.len());
 }
+
+#[test]
+fn a_windows_1250_contact_file_keeps_its_letters() {
+    // #185: a vCard 2.1 file with raw 8-bit values in Windows-1250 lost đ, ć, č and Š, because the
+    // bytes were read as UTF-8 before the CHARSET of each line was looked at.
+    let mut s = session();
+    let file: &[u8] = b"BEGIN:VCARD\r\nVERSION:2.1\r\nN;CHARSET=WINDOWS-1250:Gvo\xf0\xe6i\xe8;Ivana\r\nFN;CHARSET=WINDOWS-1250:Ivana Gvo\xf0\xe6i\xe8\r\nORG;CHARSET=WINDOWS-1250:\x8akola \xe8e\x9a\xe6e\r\nEMAIL;INTERNET:ivana@example.org\r\nEND:VCARD\r\n";
+    let read = crate::io::import(&mut s, "ivana.vcf", file, None).unwrap();
+    assert_eq!(read["contacts"], 1);
+    let c = s.mailbox.contact(s.sel.contact.unwrap()).unwrap();
+    assert_eq!((c.display_name.as_str(), c.last.as_str(), c.company.as_str()), ("Ivana Gvođćič", "Gvođćič", "Škola češće"));
+}
