@@ -40,7 +40,7 @@ fn diagnostics_pill(ui: &mut Ui, app: &mut MailApp, h: f32) {
         t.title_bar
     };
     ui.painter().rect(r, h / 2.0, fill, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
-    icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 15.0, r.center().y), vec2(14.0, 14.0)), "copy", t.icon, t.accent);
+    icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 15.0, r.center().y), vec2(16.0, 16.0)), "copy", t.icon, t.accent);
     ui.painter().text(pos2(r.min.x + 26.0, r.center().y), Align2::LEFT_CENTER, label, font, t.text);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     let tip = tl!(
@@ -81,7 +81,7 @@ fn search_box(app: &mut MailApp, ui: &mut Ui, rect: Rect) {
         Stroke::new(1.0, if focused { t.accent } else { edge }),
         egui::StrokeKind::Inside,
     );
-    icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.min.x + 15.0, rect.center().y), vec2(15.0, 15.0)), "search", t.text_dim, t.accent);
+    icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.min.x + 15.0, rect.center().y), vec2(16.0, 16.0)), "search", t.text_dim, t.accent);
     // The engine's search is the truth; the box follows it when it changes elsewhere (a command).
     if !focused && app.search_text != app.session.view.search {
         app.search_text = app.session.view.search.clone();

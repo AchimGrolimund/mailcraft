@@ -28,9 +28,7 @@ use crate::http::{self, Request, Url};
 /// that updates itself takes nothing that isn't (`update_download`). An empty one is no key:
 /// with neither, nothing is ever downloaded. `cargo xtask release-key new` prints both
 /// (docs/releasing.md).
-// TODO(keys): the maintainer's two public keys go here, the one in use first. Until then this
-// build verifies nothing, so it downloads and installs nothing.
-pub const RELEASE_KEYS: [&str; 2] = ["", ""];
+pub const RELEASE_KEYS: [&str; 2] = ["Mu5RF5oJpFhDGfa5wpgznC39tDC8vbUbyNkiAMdluPQ=", "XV6WRgW06/mGhZCHhFVKMIEZDmLevQduZPLSj/UW5zI="];
 
 /// The repository this build came from: `https://github.com/{owner}/{repo}`.
 pub const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
@@ -450,10 +448,10 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_release_keys_are_keys_or_none() {
+    fn the_shipped_release_keys_are_keys() {
         use base64::Engine as _;
         for key in RELEASE_KEYS {
-            assert!(key.is_empty() || base64::engine::general_purpose::STANDARD.decode(key).is_ok_and(|k| k.len() == 32), "{key}");
+            assert!(base64::engine::general_purpose::STANDARD.decode(key).is_ok_and(|k| k.len() == 32), "{key}");
         }
     }
 

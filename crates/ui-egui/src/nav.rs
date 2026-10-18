@@ -74,7 +74,7 @@ pub fn module_bar(app: &mut MailApp, ui: &mut Ui) {
             }
             // One colour: the icons of the bar are line drawings, lit when theirs is the module in view.
             let ink = if active { t.accent_text } else { t.icon };
-            icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(22.0, 22.0)), icon, ink, ink);
+            icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(24.0, 24.0)), icon, ink, ink);
             let sc = crate::widgets::shortcut_text(app, id);
             if resp.on_hover_text(format!("{} ({sc})", tl!(m.label()))).clicked() {
                 let _ = app.run(id, json!({}));
