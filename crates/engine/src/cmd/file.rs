@@ -122,8 +122,15 @@ fn open(s: &mut Session, v: &Value) -> CmdResult {
     if favorites_now_graph > 0 {
         s.mailbox_changed();
     }
+    // Mail of Microsoft accounts kept with characters that couldn't be read is fetched again,
+    // once (#185).
+    let fetched_again = super::graph_down::refetch_unreadable(&mut s.mailbox);
+    if fetched_again > 0 {
+        s.mailbox_changed();
+    }
     Ok(json!({
         "favoritesNowGraph": favorites_now_graph,
+        "fetchedAgain": fetched_again,
         "accounts": s.mailbox.accounts.len(),
         "messages": s.mailbox.messages.len(),
         "contacts": s.mailbox.contacts.len(),

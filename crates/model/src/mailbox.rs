@@ -613,6 +613,12 @@ pub struct Mailbox {
     /// zone has the times rewritten first ([`Mailbox::rebase`]).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub zone: String,
+    /// The messages of Microsoft accounts that held a character that couldn't be read (U+FFFD)
+    /// were looked for once, and marked to be fetched again (#185): mail fetched before character
+    /// sets beyond UTF-8 and Windows-1252 were read was kept with U+FFFD in their place. Looked
+    /// for once only, so that a message whose own bytes are broken isn't fetched at every start.
+    #[serde(skip_serializing_if = "is_false")]
+    pub redecoded: bool,
     next_id: Id,
 }
 
@@ -637,6 +643,7 @@ impl Default for Mailbox {
             queued: Vec::new(),
             outlook_categories: Vec::new(),
             zone: String::new(),
+            redecoded: false,
             next_id: 1,
         }
     }

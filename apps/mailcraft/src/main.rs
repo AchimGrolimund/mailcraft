@@ -1266,6 +1266,13 @@ fn main() -> eframe::Result {
                 app.session.mailbox_changed();
                 app.status(mailcraft_ui_egui::favorites_sync::FAVORITES_NOW_GRAPH);
             }
+            // Mail of Microsoft accounts kept with characters that couldn't be read (fetched
+            // before their character sets were) is fetched again, once (#185).
+            let again = mailcraft_engine::cmd::graph_down::refetch_unreadable(&mut app.session.mailbox);
+            if again > 0 {
+                app.session.mailbox_changed();
+                app.status(format!("{again} messages with characters that couldn't be read are being downloaded again."));
+            }
             // An ordinary start on a mailbox nobody has set up yet begins with adding an account.
             app.offer_setup = kept && !sample;
             // A Microsoft account still on IMAP is offered the switch to Graph (R3.7): only for a

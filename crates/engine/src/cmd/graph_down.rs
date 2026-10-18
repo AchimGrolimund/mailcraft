@@ -360,6 +360,50 @@ pub fn take_fetched(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, id: 
     true
 }
 
+/// Once a mailbox (#185): the messages of Microsoft accounts fetched whole whose subject, names
+/// or text hold U+FFFD are marked not fetched, so that the background fetches them again and
+/// reads them with the character sets of today. Mail fetched before Windows-1250 and the rest
+/// were read was kept with U+FFFD where a character was (the MIME itself isn't kept). Their
+/// headers, preview, attachments and everything done to them here stay as they are until the
+/// new copy comes; [`take_fetched`] then writes the text over. Drafts, a message being moved
+/// out of its account, and one the server no longer has are left alone. Only what is in
+/// memory is looked at: the text of older mail kept on disk isn't read for this. How many were
+/// marked; none once the mailbox has been looked through ([`Mailbox::redecoded`]).
+pub fn refetch_unreadable(mb: &mut Mailbox) -> usize {
+    if mb.redecoded {
+        return 0;
+    }
+    const MARK: char = char::REPLACEMENT_CHARACTER;
+    let graph: HashSet<Id> = mb.accounts.iter().filter(|a| a.kind == mailcraft_model::AccountKind::Microsoft).map(|a| a.id).collect();
+    // Without a Microsoft account there is nothing to look for, and the mailbox stays as it is.
+    if graph.is_empty() {
+        return 0;
+    }
+    mb.redecoded = true;
+    let unreadable = |m: &Message| {
+        let names = std::iter::once(&m.from).chain(&m.to).chain(&m.cc).chain(&m.reply_to).map(|a| a.name.as_str());
+        let texts = [m.subject.as_str(), m.body.text.as_str(), m.body.html.as_deref().unwrap_or("")];
+        names.chain(texts).any(|text| text.contains(MARK))
+    };
+    let mut marked = 0usize;
+    for m in mb.messages.values_mut() {
+        let whole_from_server = graph.contains(&m.account)
+            && !m.unfetched
+            && !m.incomplete
+            && !m.draft
+            && m.server_draft.is_none()
+            && m.moving_out.is_none()
+            && m.server.as_ref().is_some_and(|s| !s.gone && !s.id.is_empty());
+        if whole_from_server && unreadable(m) {
+            let m = std::sync::Arc::make_mut(m);
+            m.attachments_on_server = m.has_attachments();
+            m.unfetched = true;
+            marked = marked.saturating_add(1);
+        }
+    }
+    marked
+}
+
 /// How large a message of `account` is fetched whole in the background: its own Download
 /// messages in full, and for a shared mailbox its owner's (#70: it keeps as much mail as its
 /// owner's account does; there is no setting of its own).
@@ -474,5 +518,76 @@ mod tests {
         assert!(take_fetched(&mut mb, &mut ServerIndex::default(), account, "AAkA1", mime));
         let m = mb.message(id).unwrap();
         assert!(m.kept.is_none() && !m.body_is_kept() && m.body.html.is_none(), "{:?}", m.kept);
+    }
+
+    /// A message in Windows-1250 (#185): the sender's name, the subject and the text with the
+    /// characters Windows-1250 has and Windows-1252 hasn't (đ, ž) or has elsewhere (’, –).
+    pub(crate) const CENTRAL_EUROPEAN: &[u8] = b"From: =?windows-1250?Q?Tarik_Gvo=9E=F0ar?= <tarik@example.org>\r\n\
+To: Avery <avery@mail.example>\r\nSubject: =?windows-1250?Q?Introduction_=96_Josh?=\r\nMessage-ID: <cp1250@example.org>\r\n\
+MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"b\"\r\n\r\n--b\r\n\
+Content-Type: text/plain; charset=windows-1250\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\nHi Avery, we=92ve met.\r\n--b\r\n\
+Content-Type: text/html; charset=windows-1250\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n\
+<html><head><meta http-equiv=3D\"Content-Type\" content=3D\"text/html; charset=3Dwindows-1250\"></head><body><p>Hi Avery, we=92ve met.</p></body></html>\r\n--b--\r\n";
+
+    #[test]
+    fn mail_kept_with_unreadable_characters_is_fetched_again_once() {
+        let (mut mb, account, folder) = mailbox();
+        // As it was kept before Windows-1250 was read: U+FFFD where đ, ž, ’ and – were.
+        let broken = |n: u32, draft: bool| {
+            let server = ServerMessage { id: format!("AAkC{n}"), folder: "F".into(), size: 2_000, ..Default::default() };
+            Message {
+                folder,
+                received: 9_000 + i64::from(n),
+                server: Some(server),
+                draft,
+                from: mailcraft_model::Address::new("Tarik Gvo\u{FFFD}\u{FFFD}ar", "tarik@example.org"),
+                subject: "Introduction \u{FFFD} Josh".into(),
+                body: Body { text: "Hi Avery, we\u{FFFD}ve met.".into(), html: Some("<p>Hi Avery, we\u{FFFD}ve met.</p>".into()) },
+                read: true,
+                flag: FlagStatus::Flagged,
+                categories: vec!["Blue category".into()],
+                ..Default::default()
+            }
+        };
+        let id = mb.add_message(broken(1, false)).unwrap();
+        // A draft is the owner's own: written over, what was written here would be lost.
+        let draft = mb.add_message(broken(2, true)).unwrap();
+        // Only its body has one, and the body only in HTML.
+        let mut html_only = broken(3, false);
+        (html_only.from.name, html_only.subject, html_only.body.text) = ("Tarik".into(), "Plain".into(), "Plain".into());
+        let html_only = mb.add_message(html_only).unwrap();
+        let count = mb.messages.len();
+
+        assert_eq!(refetch_unreadable(&mut mb), 2);
+        assert!(mb.redecoded);
+        let m = mb.message(id).unwrap();
+        // Nothing disappears meanwhile: its headers and text are as they were until the new copy comes.
+        assert!(m.unfetched && m.subject.starts_with("Introduction") && m.body.html.is_some());
+        assert!(mb.message(html_only).unwrap().unfetched && !mb.message(draft).unwrap().unfetched);
+        assert!(fetch_queue(&mb, account, 10).contains(&"AAkC1".to_string()));
+        // Opened again: not looked through again.
+        assert_eq!(refetch_unreadable(&mut mb), 0);
+
+        let mut index = ServerIndex::default();
+        assert!(take_fetched(&mut mb, &mut index, account, "AAkC1", CENTRAL_EUROPEAN));
+        let m = mb.message(id).unwrap();
+        assert_eq!((m.from.name.as_str(), m.subject.as_str()), ("Tarik Gvožđar", "Introduction – Josh"));
+        assert_eq!(m.body.text.trim(), "Hi Avery, we’ve met.");
+        assert!(m.body.html.as_deref().unwrap().contains("we’ve met"));
+        assert!(!m.unfetched && m.read && m.flag == FlagStatus::Flagged && m.categories == ["Blue category"] && m.folder == folder);
+        assert_eq!(mb.messages.len(), count, "no copy");
+
+        // Its source is broken (bytes that aren't UTF-8 in a message that says it is): fetched
+        // again it is as before, and nothing fetches it once more, after a save and an open too.
+        let bad = b"From: Kit <kit@example.org>\r\nSubject: Still \xff\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nBroken \xff text.\r\n";
+        assert!(take_fetched(&mut mb, &mut index, account, "AAkC3", bad));
+        assert!(mb.message(html_only).unwrap().body.text.contains('\u{FFFD}'));
+        let json = serde_json::to_string(&mb).unwrap();
+        assert!(json.contains(r#""redecoded":true"#));
+        let mut again: Mailbox = serde_json::from_str(&json).unwrap();
+        assert_eq!(refetch_unreadable(&mut again), 0);
+        assert!(again.messages.values().all(|m| !m.unfetched || m.subject.starts_with("Preview")));
+        // A file from before has not been looked through.
+        assert!(!serde_json::from_str::<Mailbox>("{}").unwrap().redecoded);
     }
 }
