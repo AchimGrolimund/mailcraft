@@ -96,15 +96,32 @@ fn search_box(app: &mut MailApp, ui: &mut Ui, rect: Rect) {
         Module::Calendar | Module::Tasks => tl!("Search mail"),
         Module::Mail => tl!("Search mail (try from:, has:attachment, is:unread)"),
     };
+    // The tabs' size in the tall box of the title row; the small one in the macOS title bar.
+    let font = if rect.height() >= 30.0 { regular(13.0) } else { TypeRung::Control.regular() };
+    // Keywords and their values as pills (#196), drawn under the text in a place kept for them.
+    let cursor = if focused { egui::TextEdit::load_state(ui.ctx(), id).and_then(|s| s.cursor.char_range()).map(|r| r.primary.index.0) } else { None };
+    let pill_slot = ui.painter().add(egui::Shape::Noop);
+    let mut drawn: Vec<crate::search_pills::Pill> = Vec::new();
+    let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, _wrap: f32| {
+        drawn = if mail_search { crate::search_pills::pills(text.as_str(), cursor) } else { Vec::new() };
+        ui.fonts_mut(|f| f.layout_job(crate::search_pills::layout(text.as_str(), &drawn, font.clone(), &t)))
+    };
     let edit = egui::TextEdit::singleline(&mut app.search_text)
         .id(id)
         .frame(egui::Frame::NONE)
         .hint_text(hint)
-        // The tabs' size in the tall box of the title row; the small one in the macOS title bar.
-        .font(if rect.height() >= 30.0 { regular(13.0) } else { TypeRung::Control.regular() })
+        .font(font.clone())
         .vertical_align(egui::Align::Center)
-        .desired_width(edit_rect.width());
-    let resp = ui.put(edit_rect, edit);
+        .desired_width(edit_rect.width())
+        .layouter(&mut layouter);
+    let output = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(edit_rect).layout(egui::Layout::centered_and_justified(egui::Direction::TopDown)), |ui| {
+            edit.show(ui)
+        })
+        .inner;
+    let shapes = crate::search_pills::shapes(&output.galley, output.galley_pos, &drawn, &t);
+    ui.painter().with_clip_rect(output.text_clip_rect).set(pill_slot, egui::Shape::Vec(shapes));
+    let resp = output.response.response;
     if std::mem::take(&mut app.search_focus) {
         resp.request_focus();
     }

@@ -43,6 +43,7 @@ pub mod reading;
 mod reminders;
 pub mod ribbon;
 pub mod scheduling;
+mod search_pills;
 pub mod server_search;
 mod shared_mailboxes;
 mod signatures;
@@ -196,6 +197,18 @@ pub struct Services {
     /// A development build (not one of the project's packages): it never asks about the daily
     /// check for new versions and never checks by itself; Check for Updates still works.
     pub development_build: bool,
+    /// Desktop, for a copy that updates itself (the Windows `.msi`, the macOS app, a Linux
+    /// AppImage): download, on a background thread, this copy's file of a newer release into
+    /// the data folder, and check it by the release's own signature ([`updates`];
+    /// `mailcraft_net::update_download`). Where the file is, or why there is none in words that
+    /// name no address, arrives through the channel. Nothing is installed. Absent for every
+    /// other copy, in the browser and in the tests: the owner is told of new versions, and that
+    /// is all.
+    pub update_download: Option<Box<dyn Fn(mailcraft_model::update::Release) -> Receiver<Result<std::path::PathBuf, String>>>>,
+    /// The organisation has turned updating MailCraft by itself off for every user of the
+    /// computer (a policy in the registry on Windows, a file on macOS and Linux): Install
+    /// updates automatically is off and can't be turned on, and only the notice remains.
+    pub updates_turned_off_by_organisation: bool,
 }
 
 /// The system's clipboard with HTML on it ([`Services::clipboard`]).
@@ -519,6 +532,9 @@ pub struct UiState {
     pub update_checked: i64,
     /// The last newer version the owner was told of (`0.4.3`), so it is said once.
     pub update_told: String,
+    /// Whether a copy that updates itself downloads a new version by itself, while the daily
+    /// check is on ([`updates`]): on unless the owner turns it off.
+    pub update_install: bool,
 }
 
 impl Default for UiState {
@@ -552,6 +568,7 @@ impl Default for UiState {
             update_asked: 0,
             update_checked: 0,
             update_told: String::new(),
+            update_install: true,
         }
     }
 }
@@ -764,7 +781,13 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "ui.updateCheck",
         "Check for New Versions",
         "File › Options",
-        r#"{"value"?: bool (default: toggle)} — whether MailCraft asks GitHub once a day which is the newest release (off until the owner turns it on). Answers {"value", "setting": "notAsked"|"on"|"off", "asked": number, "version", "newer": {"version", "security", "page"}|null, "checking": bool}"#,
+        r#"{"value"?: bool (default: toggle)} — whether MailCraft asks GitHub once a day which is the newest release (off until the owner turns it on). Answers {"value", "setting": "notAsked"|"on"|"off", "asked": number, "version", "newer": {"version", "security", "page"}|null, "checking": bool, "install": {"value": bool, "setting": "on"|"off"|"needsCheck"|"organisation"|"notThisCopy", "downloading": bool, "downloaded": version|null}}"#,
+    ),
+    (
+        "ui.updateInstall",
+        "Install Updates Automatically",
+        "File › Options",
+        r#"{"value"?: bool (default: toggle)} — whether a copy that updates itself (the Windows .msi, the macOS app, a Linux AppImage) downloads a newer release by itself while the daily check is on, and checks it by the release's own signature (on unless the owner turns it off). Refused when the organisation has turned it off ("Turned off by your organisation") and for a copy that doesn't update itself. Agents and scripts can't start a download. Answers what `ui.updateCheck` answers"#,
     ),
     (
         "ui.toggleCalendarGroup",

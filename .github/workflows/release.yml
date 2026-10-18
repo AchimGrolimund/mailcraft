@@ -2,9 +2,10 @@ name: Release
 
 # A pushed version tag vX.Y.Z builds and signs every platform (package.yml) and makes ONE draft
 # GitHub release, "MailCraft vX.Y.Z" on that tag, holding all the files plus SHA256SUMS.txt
-# (`sha256sum` format): the layout of the Craft apps' releases, so ArtCraft Launcher and anything
-# else that reads those releases finds MailCraft's files by the same names. A maintainer reviews
-# the draft and publishes it by hand. See docs/releasing.md.
+# (`sha256sum` format) and SHA256SUMS.txt.sig (MailCraft's own ed25519 signature over it, which
+# a copy of MailCraft checks before it takes an update): the layout of the Craft apps' releases,
+# so ArtCraft Launcher and anything else that reads those releases finds MailCraft's files by
+# the same names. A maintainer reviews the draft and publishes it by hand. See docs/releasing.md.
 #
 # The signing and publishing jobs run in the protected `release` environment, which holds the
 # signing secrets and is limited to version tags; only a pushed tag reaches them.
@@ -69,6 +70,35 @@ jobs:
       freebsd: ${{ inputs.freebsd == true }}
       sign: false
 
+  # The dry run's checksums, made and "signed" as a release's are: no secret is given, so the
+  # signing step says "unsigned" and the run goes on. Kept as a workflow artifact.
+  dry-run-sums:
+    name: Checksums (dry run, unsigned)
+    needs: [dry-run]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums
+        working-directory: artifacts
+        run: |
+          rm -f SHA256SUMS.txt SHA256SUMS.txt.sig
+          sha256sum -- * | tee SHA256SUMS.txt
+      - name: Sign the checksums (no key here)
+        run: packaging/sign-sums.sh artifacts
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dry-run-sums
+          path: artifacts/SHA256SUMS.txt*
+          if-no-files-found: error
+
   # A pushed version tag: signed, in the `release` environment (package.yml's signing jobs).
   package:
     name: Package
@@ -121,8 +151,18 @@ jobs:
       - name: Checksums
         working-directory: artifacts
         run: |
-          rm -f SHA256SUMS.txt
+          rm -f SHA256SUMS.txt SHA256SUMS.txt.sig
           sha256sum -- * | tee SHA256SUMS.txt
+      # MailCraft's own release signature over the checksums (SHA256SUMS.txt.sig): what a copy of
+      # MailCraft checks before it installs an update. Built from this checkout's xtask with the
+      # locked crates; no tool is downloaded. Without the key the release is unsigned and says so.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - name: Sign the checksums
+        env:
+          MAILCRAFT_RELEASE_KEY: ${{ secrets.MAILCRAFT_RELEASE_KEY }}
+        run: packaging/sign-sums.sh artifacts
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:

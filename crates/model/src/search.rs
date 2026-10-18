@@ -12,6 +12,8 @@
 //! category matches anywhere in its name. Text with no letters or digits in it (`-`, `@`) asks
 //! for nothing.
 
+use std::ops::Range;
+
 use mailcraft_time::{Date, DateTime};
 
 use crate::words::{self, ATTACHMENT, BODY, CC, FROM, SUBJECT, TO};
@@ -54,31 +56,104 @@ pub struct Query {
     terms: Vec<Term>,
 }
 
-/// Split on spaces outside double quotes; the quotes are dropped.
-fn tokens(s: &str) -> Vec<String> {
+/// Split on spaces outside double quotes; the quotes are dropped. Each token with where it
+/// stands in `s` (bytes, its quotes included).
+fn tokens(s: &str) -> Vec<(String, Range<usize>)> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut quoted = false;
     let mut any = false;
-    for c in s.chars().take(MAX_QUERY) {
-        match c {
-            '"' => {
-                quoted = !quoted;
-                any = true;
+    let (mut start, mut end) = (0, 0);
+    for (i, c) in s.char_indices().take(MAX_QUERY) {
+        if c.is_whitespace() && !quoted {
+            if any || !cur.is_empty() {
+                out.push((std::mem::take(&mut cur), start..end));
             }
-            c if c.is_whitespace() && !quoted => {
-                if any || !cur.is_empty() {
-                    out.push(std::mem::take(&mut cur));
-                }
-                any = false;
-            }
-            c => cur.push(c),
+            any = false;
+            continue;
+        }
+        if !any && cur.is_empty() {
+            start = i;
+        }
+        end = i.saturating_add(c.len_utf8());
+        if c == '"' {
+            quoted = !quoted;
+            any = true;
+        } else {
+            cur.push(c);
         }
     }
     if any || !cur.is_empty() {
-        out.push(cur);
+        out.push((cur, start..end));
     }
     out
+}
+
+/// A keyword and its value as they stand in the text of a query (bytes): what the search box
+/// draws as one piece (#196). `key` is the keyword and its colon (after a `-`, when there is one).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeywordSpan {
+    pub range: Range<usize>,
+    pub key: Range<usize>,
+}
+
+/// The keywords of `s` that [`Query::parse`] reads as keywords, with their values, in order: not
+/// `re: budget`, `is:banana` or a keyword with nothing after it yet, which it reads as text or as
+/// nothing.
+pub fn keyword_spans(s: &str) -> Vec<KeywordSpan> {
+    let mut out = Vec::new();
+    let mut tokens = tokens(s).into_iter().take(MAX_TERMS).peekable();
+    while let Some((token, at)) = tokens.next() {
+        let body = token.strip_prefix('-').filter(|rest| !rest.is_empty()).unwrap_or(&token);
+        let (body, range) = match body.strip_suffix(':') {
+            Some(key) if is_keyword(key) => match tokens.next_if(|(next, _)| !starts_with_keyword(next)) {
+                Some((value, next)) => (format!("{body}{value}"), at.start..next.end),
+                None => continue,
+            },
+            _ => (body.to_string(), at.clone()),
+        };
+        let shown = keyword_kind(&body).is_some_and(|kind| !matches!(&kind, Kind::Words { words, .. } if words.is_empty()));
+        let colon = s.get(at.clone()).and_then(|t| t.find(':')).map(|c| at.start.saturating_add(c).saturating_add(1));
+        if let Some(colon) = colon.filter(|_| shown) {
+            let key_start = if s.get(at.start..).is_some_and(|t| t.starts_with('-')) { at.start.saturating_add(1) } else { at.start };
+            out.push(KeywordSpan { range, key: key_start..colon });
+        }
+    }
+    out
+}
+
+/// What `body` (`key:value`) asks for when its key is a keyword the search box knows and its value
+/// one the keyword takes; `None`: it is text.
+fn keyword_kind(body: &str) -> Option<Kind> {
+    let (key, value) = body.split_once(':').filter(|(_, v)| !v.is_empty())?;
+    let v = value.to_string();
+    let words_in = |fields: u8, v: &str| Kind::Words { fields, words: words::words(v), raw: raw_words(v) };
+    Some(match key.to_ascii_lowercase().as_str() {
+        "from" => words_in(FROM, &v),
+        "to" => words_in(TO, &v),
+        "cc" => words_in(CC, &v),
+        "subject" => words_in(SUBJECT, &v),
+        "body" => words_in(BODY, &v),
+        "category" | "categories" => Kind::Category(v),
+        "attachment" | "attachments" => words_in(ATTACHMENT, &v),
+        "has" | "hasattachment" | "hasattachments" => match v.to_ascii_lowercase().as_str() {
+            "attachment" | "attachments" | "yes" | "true" => Kind::HasAttachment,
+            _ => return None,
+        },
+        "is" => match v.to_ascii_lowercase().as_str() {
+            "unread" => Kind::Unread,
+            "read" => Kind::Read,
+            "flagged" => Kind::Flagged,
+            "important" => Kind::Importance(Importance::High),
+            _ => return None,
+        },
+        "importance" => Kind::Importance(Importance::parse(&v)?),
+        "before" => Kind::Before(parse_date(&v)?),
+        "after" => Kind::After(parse_date(&v)?),
+        "on" | "received" | "sent" => Kind::On(parse_date(&v)?),
+        // `10:30`, `re: budget`, a URL: plain text.
+        _ => return None,
+    })
 }
 
 /// Most words of one term, and most characters of one word, that go to a server.
@@ -178,7 +253,7 @@ fn starts_with_keyword(token: &str) -> bool {
 impl Query {
     pub fn parse(s: &str) -> Query {
         let mut terms = Vec::new();
-        let mut tokens = tokens(s).into_iter().take(MAX_TERMS).peekable();
+        let mut tokens = tokens(s).into_iter().map(|(token, _)| token).take(MAX_TERMS).peekable();
         while let Some(token) = tokens.next() {
             let (negate, body) = match token.strip_prefix('-') {
                 Some(rest) if !rest.is_empty() => (true, rest),
@@ -198,40 +273,7 @@ impl Query {
                 },
                 _ => body,
             };
-            let text = || Kind::Words { fields: words::ALL, words: words::words(body), raw: raw_words(body) };
-            let words_in = |fields: u8, v: &str| Kind::Words { fields, words: words::words(v), raw: raw_words(v) };
-            let kind = match body.split_once(':') {
-                Some((key, value)) if !value.is_empty() => {
-                    let v = value.to_string();
-                    match key.to_ascii_lowercase().as_str() {
-                        "from" => words_in(FROM, &v),
-                        "to" => words_in(TO, &v),
-                        "cc" => words_in(CC, &v),
-                        "subject" => words_in(SUBJECT, &v),
-                        "body" => words_in(BODY, &v),
-                        "category" | "categories" => Kind::Category(v),
-                        "attachment" | "attachments" => words_in(ATTACHMENT, &v),
-                        "has" | "hasattachment" | "hasattachments" => match v.to_ascii_lowercase().as_str() {
-                            "attachment" | "attachments" | "yes" | "true" => Kind::HasAttachment,
-                            _ => text(),
-                        },
-                        "is" => match v.to_ascii_lowercase().as_str() {
-                            "unread" => Kind::Unread,
-                            "read" => Kind::Read,
-                            "flagged" => Kind::Flagged,
-                            "important" => Kind::Importance(Importance::High),
-                            _ => text(),
-                        },
-                        "importance" => Importance::parse(&v).map_or_else(text, Kind::Importance),
-                        "before" => parse_date(&v).map_or_else(text, Kind::Before),
-                        "after" => parse_date(&v).map_or_else(text, Kind::After),
-                        "on" | "received" | "sent" => parse_date(&v).map_or_else(text, Kind::On),
-                        // `10:30`, `re: budget`, a URL: plain text.
-                        _ => text(),
-                    }
-                }
-                _ => text(),
-            };
+            let kind = keyword_kind(body).unwrap_or_else(|| Kind::Words { fields: words::ALL, words: words::words(body), raw: raw_words(body) });
             // Text with no words in it asks for nothing.
             if !matches!(&kind, Kind::Words { words, .. } if words.is_empty()) {
                 terms.push(Term { negate, kind });
@@ -499,6 +541,30 @@ mod tests {
             assert!(Query::parse("subject:iqa").matches(&m, 0) && Query::parse("subject: IQA").matches(&m, 0), "{subject}");
         }
         assert!(!Query::parse("subject:iqa").matches(&Message { subject: "LIQA notes".into(), ..Default::default() }, 0));
+    }
+
+    /// #196: where the keywords the parser reads stand in the text, for the search box's pills.
+    #[test]
+    fn keywords_are_found_where_they_stand() {
+        fn spans(q: &str) -> Vec<(&str, &str)> {
+            keyword_spans(q).into_iter().map(|k| (&q[k.range], &q[k.key])).collect()
+        }
+        assert_eq!(spans("from: stuart subject: iqa"), [("from: stuart", "from:"), ("subject: iqa", "subject:")]);
+        assert_eq!(spans("budget  -from:ada  is:unread"), [("-from:ada", "from:"), ("is:unread", "is:")]);
+        assert_eq!(spans(r#"subject:"q4 plan" x"#), [(r#"subject:"q4 plan""#, "subject:")]);
+        assert_eq!(spans(r#"subject: "q4 plan""#), [(r#"subject: "q4 plan""#, "subject:")]);
+        assert_eq!(spans("Grüße from:Đorđe"), [("from:Đorđe", "from:")]);
+        // What the parser reads as text or as nothing is no keyword.
+        for q in ["re: budget", "is:banana", "subject:", "from: subject:", "from:@@", "10:30", "budget", ""] {
+            assert!(spans(q).is_empty(), "{q}");
+        }
+        assert_eq!(spans("from: subject:iqa"), [("subject:iqa", "subject:")]);
+        // Hostile text: never a panic, every range on a character boundary.
+        for q in ["\"from:\"x", "-", "-:", "\u{301}from:\u{301}", "from:\"", &"from: ".repeat(500)] {
+            for k in keyword_spans(q) {
+                assert!(q.get(k.range.clone()).is_some() && q.get(k.key.clone()).is_some(), "{q}");
+            }
+        }
     }
 
     #[test]

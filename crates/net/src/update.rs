@@ -3,7 +3,9 @@
 //!
 //! The request is a GET over HTTPS with the crate's fixed `User-Agent` (`MailCraft`, no version)
 //! and an `Accept` header: no account, address, mailbox detail, identifier or version of this
-//! program goes with it. Nothing is downloaded or installed.
+//! program goes with it. Nothing is downloaded here: the release's list of files is read
+//! (names, sizes, and addresses that must be that release's own on `github.com`), and a copy
+//! that updates itself hands it to [`crate::update_download`].
 //!
 //! The answer is as hostile as any server's: at most 512 KB, ten seconds, no redirects. Its
 //! `tag_name` is read strictly as a version; a pre-release is passed over unless the one asking
@@ -14,11 +16,21 @@
 
 use std::time::Duration;
 
-use mailcraft_model::update::{Release, Version};
+use mailcraft_model::update::{Asset, Release, Version, is_file_name};
 use serde_json::Value;
 
 use crate::NetError;
 use crate::http::{self, Request, Url};
+
+/// The public keys of MailCraft's release signature, in base64 (32 bytes each): the key the
+/// release workflow signs `SHA256SUMS.txt` with, and a spare whose private half is kept offline
+/// until the first is lost or stolen. A release signed by either is one of the project's; a copy
+/// that updates itself takes nothing that isn't (`update_download`). An empty one is no key:
+/// with neither, nothing is ever downloaded. `cargo xtask release-key new` prints both
+/// (docs/releasing.md).
+// TODO(keys): the maintainer's two public keys go here, the one in use first. Until then this
+// build verifies nothing, so it downloads and installs nothing.
+pub const RELEASE_KEYS: [&str; 2] = ["", ""];
 
 /// The repository this build came from: `https://github.com/{owner}/{repo}`.
 pub const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
@@ -31,6 +43,8 @@ const PATIENCE: Duration = Duration::from_secs(5);
 const MAX_ANSWER: usize = 512 * 1024;
 /// Longest owner or repository name taken from the build.
 const MAX_NAME: usize = 100;
+/// Most files of a release looked at (0.4.2 had 21).
+const MAX_ASSETS: usize = 200;
 
 /// The newest release of this build's repository, when GitHub says there is one that this
 /// build could run. `pre_releases`: the running build is a pre-release itself, so one is not
@@ -100,7 +114,40 @@ fn release(body: &[u8], owner: &str, repo: &str, pre_releases: bool) -> Result<R
     let given = json.get("html_url").and_then(Value::as_str).unwrap_or_default();
     let page = if is_release_page(given, owner, repo, tag) { given.to_string() } else { page };
     let security = json.get("body").and_then(Value::as_str).is_some_and(names_an_advisory);
-    Ok(Release { version, page, security })
+    let assets = json.get("assets").and_then(Value::as_array).map(|list| assets(list, owner, repo, tag)).unwrap_or_default();
+    Ok(Release { version, page, security, assets })
+}
+
+/// The files of release `tag` in GitHub's list of them: those with a name that will do as one
+/// ([`is_file_name`]), a size, and the address of that name in that release on `github.com`.
+/// Any other is left out; so is a name that comes twice, and what is beyond [`MAX_ASSETS`].
+fn assets(list: &[Value], owner: &str, repo: &str, tag: &str) -> Vec<Asset> {
+    let mut found: Vec<Asset> = Vec::new();
+    let mut twice: Vec<String> = Vec::new();
+    for asset in list.iter().take(MAX_ASSETS) {
+        let Some(name) = asset.get("name").and_then(Value::as_str).filter(|name| is_file_name(name)) else { continue };
+        let Some(size) = asset.get("size").and_then(Value::as_u64) else { continue };
+        let url = asset.get("browser_download_url").and_then(Value::as_str).unwrap_or_default();
+        if !is_download_address(url, owner, repo, tag, name) {
+            continue;
+        }
+        if found.iter().any(|a| a.name == name) {
+            twice.push(name.to_string());
+            continue;
+        }
+        found.push(Asset { name: name.to_string(), size, url: url.to_string() });
+    }
+    found.retain(|a| !twice.contains(&a.name));
+    found
+}
+
+/// Whether `given` is `https://github.com/{owner}/{repo}/releases/download/{tag}/{name}`: the
+/// owner and the repository in any case, everything else exactly.
+fn is_download_address(given: &str, owner: &str, repo: &str, tag: &str, name: &str) -> bool {
+    let Some(rest) = given.strip_prefix("https://github.com/") else { return false };
+    let parts: Vec<&str> = rest.splitn(6, '/').collect();
+    matches!(parts.as_slice(), [o, r, "releases", "download", t, n]
+        if o.eq_ignore_ascii_case(owner) && r.eq_ignore_ascii_case(repo) && *t == tag && *n == name)
 }
 
 /// Whether `given` is the page of release `tag` of `owner`/`repo`: the owner and the repository
@@ -355,6 +402,59 @@ mod tests {
         release["body"] = Value::Null;
         let server = FakeHttp::answering(answer(&release));
         assert!(!ask(&server, false).unwrap().security);
+    }
+
+    #[test]
+    fn the_files_of_the_release_are_read_and_checked() {
+        let download = |name: &str| format!("https://github.com/UCS-Care-Group/mailcraft/releases/download/v0.9.0/{name}");
+        let mut release = release_of("v0.9.0");
+        release["assets"] = serde_json::json!([
+            {"name": "SHA256SUMS.txt", "size": 2000, "browser_download_url": download("SHA256SUMS.txt")},
+            {"name": "SHA256SUMS.txt.sig", "size": 89, "browser_download_url": download("SHA256SUMS.txt.sig")},
+            {"name": "mailcraft-0.9.0-linux-x86_64.AppImage", "size": 40_000_000u64, "browser_download_url": download("mailcraft-0.9.0-linux-x86_64.AppImage")},
+            // Another case of the repository's name is the same repository.
+            {"name": "mailcraft-0.9.0-windows-x64.msi", "size": 9, "browser_download_url": "https://github.com/ucs-care-group/MailCraft/releases/download/v0.9.0/mailcraft-0.9.0-windows-x64.msi"},
+            // Left out: another host, another repository, another tag, another name, no size, a bad name.
+            {"name": "evil.msi", "size": 9, "browser_download_url": "https://evil.example/UCS-Care-Group/mailcraft/releases/download/v0.9.0/evil.msi"},
+            {"name": "other.msi", "size": 9, "browser_download_url": "https://github.com/someone/mailcraft/releases/download/v0.9.0/other.msi"},
+            {"name": "old.msi", "size": 9, "browser_download_url": "https://github.com/UCS-Care-Group/mailcraft/releases/download/v0.1.0/old.msi"},
+            {"name": "named.msi", "size": 9, "browser_download_url": download("renamed.msi")},
+            {"name": "sizeless.msi", "browser_download_url": download("sizeless.msi")},
+            {"name": "../up.msi", "size": 9, "browser_download_url": download("../up.msi")},
+            {"name": "http.msi", "size": 9, "browser_download_url": "http://github.com/UCS-Care-Group/mailcraft/releases/download/v0.9.0/http.msi"},
+            {"name": "query.msi", "size": 9, "browser_download_url": format!("{}?x=1", download("query.msi"))},
+            // A name that comes twice is neither.
+            {"name": "twice.dmg", "size": 9, "browser_download_url": download("twice.dmg")},
+            {"name": "twice.dmg", "size": 10, "browser_download_url": download("twice.dmg")},
+            "junk",
+        ]);
+        let server = FakeHttp::answering(answer(&release));
+        let got = ask(&server, false).unwrap();
+        let names: Vec<&str> = got.assets.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["SHA256SUMS.txt", "SHA256SUMS.txt.sig", "mailcraft-0.9.0-linux-x86_64.AppImage", "mailcraft-0.9.0-windows-x64.msi"]);
+        assert_eq!(got.assets[2].size, 40_000_000);
+        assert_eq!(got.assets[2].url, download("mailcraft-0.9.0-linux-x86_64.AppImage"));
+        // Not a list at all: no files.
+        let mut release = release_of("v0.9.0");
+        release["assets"] = serde_json::json!({"name": "x"});
+        let server = FakeHttp::answering(answer(&release));
+        assert!(ask(&server, false).unwrap().assets.is_empty());
+        // More than are looked at.
+        let many: Vec<Value> = (0..MAX_ASSETS + 50)
+            .map(|n| serde_json::json!({"name": format!("f{n}"), "size": 1, "browser_download_url": download(&format!("f{n}"))}))
+            .collect();
+        let mut release = release_of("v0.9.0");
+        release["assets"] = Value::Array(many);
+        let server = FakeHttp::answering(answer(&release));
+        assert_eq!(ask(&server, false).unwrap().assets.len(), MAX_ASSETS);
+    }
+
+    #[test]
+    fn the_shipped_release_keys_are_keys_or_none() {
+        use base64::Engine as _;
+        for key in RELEASE_KEYS {
+            assert!(key.is_empty() || base64::engine::general_purpose::STANDARD.decode(key).is_ok_and(|k| k.len() == 32), "{key}");
+        }
     }
 
     #[test]

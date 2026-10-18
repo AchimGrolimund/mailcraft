@@ -1,6 +1,6 @@
 //! Telling the owner when a new version of MailCraft is out (File › About, File › Options, the
-//! status bar). Nothing is downloaded or installed: the owner is told, with a link to the
-//! release's page, and that is all.
+//! status bar), and, for a copy that updates itself, downloading it. Nothing is installed: the
+//! owner is told, with a link to the release's page.
 //!
 //! - The daily check is off until the owner turns it on. At the first starts of a build that has
 //!   it, a question above the status bar asks once a run, at most [`MOST_ASKS`] runs: Yes or No
@@ -12,9 +12,19 @@
 //!   may check only while the daily check is on (`ui.checkForUpdates`).
 //! - A newer version is said once in the status bar, and stays in About while it is newer than
 //!   the running build. A failure is one log line, said only when the owner pressed the button.
-//! - Kept in `ui.json`: the setting, how often it was asked, when a check last got an answer,
+//! - A copy that updates itself (the Windows `.msi`, the macOS app, a Linux AppImage: the host
+//!   says so by giving [`Services::update_download`]) downloads a newer release in the
+//!   background, when the daily check (or the owner's press while it is on) finds one and File ›
+//!   Options › Install updates automatically is on (as it is unless the owner turns it off; it
+//!   needs the daily check). The host checks it by the release's own signature and deletes
+//!   what doesn't pass; the owner is told only the notice, as for any other copy. Not for a
+//!   pre-release, nor in a development build, nor when the organisation has turned it off
+//!   ([`Services::updates_turned_off_by_organisation`]), nor for a check an agent or a script
+//!   asked for. Cut off, it is carried on at the next start.
+//! - Kept in `ui.json`: the settings, how often it was asked, when a check last got an answer,
 //!   and the last version told of ([`UiState`]); nothing else of GitHub's answer.
 
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use egui::{Ui, vec2};
@@ -60,6 +70,20 @@ impl UpdateCheck {
     }
 }
 
+/// The refusal of Install updates automatically while the organisation has it off.
+pub const TURNED_OFF: &str = "Turned off by your organisation";
+
+/// Who asked for a check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Asker {
+    /// The daily check, by itself.
+    Itself,
+    /// The owner, pressing Check for Updates.
+    Owner,
+    /// An agent or a script: what it finds is said, and never downloaded.
+    Script,
+}
+
 /// What a run knows of new versions (not kept).
 #[derive(Default)]
 pub struct Updates {
@@ -67,8 +91,15 @@ pub struct Updates {
     started: bool,
     /// The question is on screen.
     pub(crate) asking: bool,
-    /// A check on its way, and whether the owner pressed for it.
-    pending: Option<(Receiver<Result<Release, String>>, bool)>,
+    /// A check on its way, and who asked for it.
+    pending: Option<(Receiver<Result<Release, String>>, Asker)>,
+    /// A download on its way, of that version.
+    downloading: Option<(Receiver<Result<PathBuf, String>>, Version)>,
+    /// The version downloaded and checked this run.
+    downloaded: Option<Version>,
+    /// A check has been made at the start of this run to carry on a download of the version
+    /// told of before (or there was none to carry on).
+    resumed: bool,
     /// The newest release this run found, when it is newer than the running build.
     newer: Option<Release>,
     /// A check got an answer this run: what it found stands, whatever was told before.
@@ -120,7 +151,7 @@ impl MailApp {
             return self.updates.newer.clone();
         }
         let told = Version::parse(&self.ui.update_told).filter(|told| told.is_newer_than(&running))?;
-        Some(Release { page: page_of(&told), version: told, security: false })
+        Some(Release { page: page_of(&told), version: told, security: false, assets: Vec::new() })
     }
 
     /// Once, at the start of a run (after the settings are read): put the question, when it is
@@ -135,17 +166,29 @@ impl MailApp {
         }
     }
 
+    /// Whether this copy downloads a newer release by itself: it is one that updates itself, the
+    /// daily check is on, so is Install updates automatically, the organisation hasn't turned it
+    /// off, and this is not a development build.
+    pub(crate) fn installs_updates(&self) -> bool {
+        install_setting(self) == "on"
+    }
+
     /// Every frame: the start's question, a check that is due, and the answer to one.
     pub(crate) fn updates_tick(&mut self, ctx: &egui::Context) {
         self.updates_at_start();
         self.poll_update_check();
+        self.poll_update_download();
         if self.ui.update_check != UpdateCheck::On || !may_check_by_itself(&self.services) || self.updates.pending.is_some() {
             return;
         }
         let now = self.session.now();
+        // A newer version told of in an earlier run, whose download is still to be had (it was
+        // cut off, or the computer was turned off): checked again now, and carried on.
+        let told_newer = Version::parse(&self.ui.update_told).is_some_and(|told| running().is_some_and(|r| told.is_newer_than(&r)));
+        let carry_on = !std::mem::replace(&mut self.updates.resumed, true) && told_newer && self.installs_updates();
         let due = self.ui.update_checked.saturating_add(DAY).max(self.updates.retry_at);
-        if now >= due {
-            self.begin_update_check(false);
+        if now >= due || carry_on {
+            self.begin_update_check(Asker::Itself);
         } else {
             // Looked at again when it is due (an hour at a time: a computer that slept wakes up late).
             let wait = u64::try_from(due.saturating_sub(now).clamp(1, AFTER_A_FAILURE)).unwrap_or(1);
@@ -154,19 +197,53 @@ impl MailApp {
     }
 
     /// Hand a check to the host.
-    fn begin_update_check(&mut self, pressed: bool) -> bool {
+    fn begin_update_check(&mut self, asker: Asker) -> bool {
         let Some(check) = &self.services.update_check else { return false };
         let pre_releases = running().is_some_and(|v| v.is_pre_release());
-        self.updates.pending = Some((check(pre_releases), pressed));
-        if pressed {
+        self.updates.pending = Some((check(pre_releases), asker));
+        if asker == Asker::Owner {
             self.updates.said = Some(tl!("Checking for a new version…").to_string());
         }
         true
     }
 
+    /// Hand the download of `release` to the host, when this copy takes updates by itself and it
+    /// isn't downloaded or on its way already. Never for what an agent or a script asked for.
+    fn begin_update_download(&mut self, release: &Release, asker: Asker) {
+        let wanted = asker != Asker::Script
+            && self.installs_updates()
+            && !release.version.is_pre_release()
+            && running().is_some_and(|running| release.version.is_newer_than(&running))
+            && self.updates.downloaded.as_ref() != Some(&release.version)
+            && self.updates.downloading.as_ref().is_none_or(|(_, v)| *v != release.version);
+        let Some(download) = self.services.update_download.as_ref().filter(|_| wanted) else { return };
+        self.updates.downloading = Some((download(release.clone()), release.version.clone()));
+    }
+
+    fn poll_update_download(&mut self) {
+        let Some((rx, version)) = &self.updates.downloading else { return };
+        let answer = match rx.try_recv() {
+            Ok(answer) => answer,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("the download stopped unexpectedly".to_string()),
+        };
+        let version = version.clone();
+        self.updates.downloading = None;
+        // One line in the log, naming no address (the host's words name none); the owner is told
+        // the notice and nothing more.
+        match answer {
+            Ok(_) => {
+                log::info!("MailCraft {version} is downloaded and checked by its release signature");
+                self.updates.downloaded = Some(version);
+            }
+            Err(why) => log::info!("MailCraft {version} wasn't downloaded: {why}"),
+        }
+    }
+
     fn poll_update_check(&mut self) {
-        let Some((rx, pressed)) = &self.updates.pending else { return };
-        let pressed = *pressed;
+        let Some((rx, asker)) = &self.updates.pending else { return };
+        let asker = *asker;
+        let pressed = asker == Asker::Owner;
         let answer = match rx.try_recv() {
             Ok(answer) => answer,
             Err(TryRecvError::Empty) => return,
@@ -188,6 +265,7 @@ impl MailApp {
                     }
                     self.ui.update_told = version;
                     self.updates.said = pressed.then_some(said);
+                    self.begin_update_download(&release, asker);
                     self.updates.newer = Some(release);
                 } else {
                     self.updates.newer = None;
@@ -219,7 +297,8 @@ impl MailApp {
         if !pressed && self.ui.update_check != UpdateCheck::On {
             return Err(tl!(NOT_ALLOWED).to_string());
         }
-        if self.updates.pending.is_none() && !self.begin_update_check(pressed) {
+        let asker = if pressed { Asker::Owner } else { Asker::Script };
+        if self.updates.pending.is_none() && !self.begin_update_check(asker) {
             return Err(tl!("This build doesn't check for new versions.").to_string());
         }
         Ok(json!({"pending": "updateCheck", "version": env!("CARGO_PKG_VERSION")}))
@@ -235,12 +314,52 @@ impl MailApp {
         self.updates.asking = false;
         Ok(update_state(self))
     }
+
+    /// `ui.updateInstall`: Install updates automatically on or off (File › Options).
+    pub(crate) fn set_update_install(&mut self, p: &Value) -> Result<Value, String> {
+        if self.services.updates_turned_off_by_organisation {
+            return Err(tl!(TURNED_OFF).to_string());
+        }
+        if self.services.update_download.is_none() {
+            return Err(tl!("This copy of MailCraft doesn't update itself.").to_string());
+        }
+        let on = match p.get("value") {
+            None | Some(Value::Null) => !self.ui.update_install,
+            Some(value) => value.as_bool().ok_or_else(|| tl!("`value` is true or false").to_string())?,
+        };
+        self.ui.update_install = on;
+        Ok(update_state(self))
+    }
+}
+
+/// Where Install updates automatically stands: `on` (a newer release is downloaded), `off` (the
+/// owner turned it off), `needsCheck` (the daily check is off), `organisation` (turned off for
+/// every user of the computer), or `notThisCopy` (a copy that doesn't update itself, or a
+/// development build).
+fn install_setting(app: &MailApp) -> &'static str {
+    if app.services.update_download.is_none() || app.services.development_build || !may_check_by_itself(&app.services) {
+        "notThisCopy"
+    } else if app.services.updates_turned_off_by_organisation {
+        "organisation"
+    } else if app.ui.update_check != UpdateCheck::On {
+        "needsCheck"
+    } else if app.ui.update_install {
+        "on"
+    } else {
+        "off"
+    }
 }
 
 /// What `ui.updateCheck` answers: the setting, and what is known.
 fn update_state(app: &MailApp) -> Value {
     let newer = app.newer_release();
     json!({
+        "install": {
+            "value": app.installs_updates(),
+            "setting": install_setting(app),
+            "downloading": app.updates.downloading.is_some(),
+            "downloaded": app.updates.downloaded.as_ref().map(ToString::to_string),
+        },
         "value": app.ui.update_check == UpdateCheck::On,
         "setting": app.ui.update_check.code(),
         "asked": app.ui.update_asked,
@@ -306,12 +425,39 @@ pub(crate) fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     if switch.changed() {
         let _ = app.run("ui.updateCheck", json!({"value": on}));
     }
+    let setting = install_setting(app);
     let detail = if app.services.development_build {
         tl!("This is a development build: it checks only when you press Check for Updates in File › About.")
-    } else {
+    } else if setting == "notThisCopy" {
         tl!("Once a day. Only GitHub is asked; nothing about you or your mail is sent. Nothing is downloaded or installed.")
+    } else {
+        tl!("Once a day. Only GitHub is asked; nothing about you or your mail is sent.")
     };
     ui.label(egui::RichText::new(detail).color(t.text_dim));
+    if setting == "notThisCopy" {
+        return;
+    }
+    // Install updates automatically: it needs the daily check, and the organisation's word wins.
+    ui.add_space(4.0);
+    let mut install = setting == "on";
+    let enabled = matches!(setting, "on" | "off");
+    let switch = ui.add_enabled(enabled, egui::Checkbox::new(&mut install, tl!("Install updates automatically")));
+    app.hit.add("updateInstallOption", 0, switch.rect);
+    if switch.changed() {
+        let _ = app.run("ui.updateInstall", json!({"value": install}));
+    }
+    let (detail, color) = match setting {
+        "organisation" => (tl!(TURNED_OFF), t.text),
+        "needsCheck" => (tl!("Needs Check for new versions."), t.text_dim),
+        _ => (
+            tl!(
+                "A new version is downloaded in the background and kept only when MailCraft's own release signature says it is ours. Nothing is installed yet."
+            ),
+            t.text_dim,
+        ),
+    };
+    let said = ui.label(egui::RichText::new(detail).color(color));
+    app.hit.add("updateInstallDetail", 0, said.rect);
 }
 
 /// File › About: the newer version, when there is one, and Check for Updates.
@@ -330,6 +476,10 @@ pub(crate) fn about(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(release.page.clone()));
             }
         });
+        if app.updates.downloaded.as_ref() == Some(&release.version) {
+            let said = crate::i18n::fmt(tl!("MailCraft {version} is downloaded and checked."), &[("version", &release.version.to_string())]);
+            ui.label(egui::RichText::new(said).color(t.text_dim));
+        }
     }
     let checking = app.updates.pending.is_some();
     let label = if checking { tl!("Checking…") } else { tl!("Check for Updates") };
@@ -355,6 +505,7 @@ pub(crate) fn ui_command(app: &mut MailApp, id: &str, p: &Value) -> Option<Resul
     Some(match id {
         CHECK => app.check_for_updates(false),
         "ui.updateCheck" => app.set_update_check(p),
+        "ui.updateInstall" => app.set_update_install(p),
         _ => return None,
     })
 }
@@ -379,7 +530,7 @@ mod tests {
 
     fn release(version: &str, security: bool) -> Release {
         let version = Version::parse(version).unwrap();
-        Release { page: page_of(&version), version, security }
+        Release { page: page_of(&version), version, security, assets: Vec::new() }
     }
 
     fn stand_in(answer: Result<Release, String>) -> (Host, Services) {
@@ -611,6 +762,167 @@ mod tests {
         assert_eq!(host.asked.load(Ordering::Relaxed), 0);
         let json: UiState = serde_json::from_value(json!({"updateCheck": "sometimes", "updateAsked": -1})).unwrap_or_default();
         assert_eq!(json.update_check, UpdateCheck::NotAsked);
+    }
+
+    /// `services` with a stand-in download that answers `answer` and counts what it was asked for.
+    fn downloading(mut services: Services, answer: Result<PathBuf, String>) -> (Services, Arc<Mutex<Vec<String>>>) {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let kept = asked.clone();
+        services.update_download = Some(Box::new(move |release: Release| {
+            kept.lock().unwrap().push(release.version.to_string());
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(answer.clone());
+            rx
+        }));
+        (services, asked)
+    }
+
+    fn on() -> UiState {
+        UiState { update_check: UpdateCheck::On, ..Default::default() }
+    }
+
+    #[test]
+    fn a_copy_that_updates_itself_downloads_a_newer_release() {
+        let (_host, services) = stand_in(Ok(release(&newer(), false)));
+        let (services, asked) = downloading(services, Ok(PathBuf::from("/updates/x")));
+        let mut app = start(services, &on(), NOW);
+        assert!(UiState::default().update_install, "on by default");
+        assert_eq!(update_state(&app)["install"]["setting"], "on");
+        for _ in 0..3 {
+            frame(&mut app);
+        }
+        assert_eq!(*asked.lock().unwrap(), [newer()]);
+        assert_eq!(app.updates.downloaded.as_ref().map(ToString::to_string), Some(newer()));
+        // The owner is told the notice, as before.
+        assert_eq!(said(&app), Some(format!("MailCraft {} is available", newer())));
+        // Not twice in a run.
+        app.run(CHECK, json!({})).unwrap();
+        frame(&mut app);
+        frame(&mut app);
+        assert_eq!(asked.lock().unwrap().len(), 1);
+        // The owner's press, while the daily check is on, downloads too.
+        let (_host, services) = stand_in(Ok(release(&newer(), false)));
+        let (services, asked) = downloading(services, Ok(PathBuf::from("/updates/x")));
+        let mut app = start(services, &UiState { update_checked: NOW, ..on() }, NOW);
+        app.updates.resumed = true;
+        frame(&mut app);
+        assert!(asked.lock().unwrap().is_empty());
+        app.run(CHECK, json!({})).unwrap();
+        frame(&mut app);
+        frame(&mut app);
+        assert_eq!(asked.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn nothing_is_downloaded_unless_everything_allows_it() {
+        let cases: Vec<(&str, Box<dyn Fn(&mut Services, &mut UiState)>)> = vec![
+            ("the owner turned it off", Box::new(|_, ui| ui.update_install = false)),
+            ("the daily check is off", Box::new(|_, ui| ui.update_check = UpdateCheck::Off)),
+            ("the organisation turned it off", Box::new(|s, _| s.updates_turned_off_by_organisation = true)),
+            ("a development build", Box::new(|s, _| s.development_build = true)),
+        ];
+        for (why, adjust) in cases {
+            let (_host, services) = stand_in(Ok(release(&newer(), false)));
+            let (mut services, asked) = downloading(services, Ok(PathBuf::new()));
+            let mut saved = on();
+            adjust(&mut services, &mut saved);
+            let mut app = start(services, &saved, NOW);
+            for _ in 0..3 {
+                frame(&mut app);
+            }
+            app.run(CHECK, json!({})).unwrap();
+            frame(&mut app);
+            frame(&mut app);
+            assert!(asked.lock().unwrap().is_empty(), "{why}");
+            assert!(!app.installs_updates(), "{why}");
+        }
+        // A pre-release, and an older or the same version.
+        for version in ["99.0.0-beta.1".to_string(), env!("CARGO_PKG_VERSION").to_string(), "0.0.1".to_string()] {
+            let (_host, services) = stand_in(Ok(release(&version, false)));
+            let (services, asked) = downloading(services, Ok(PathBuf::new()));
+            let mut app = start(services, &on(), NOW);
+            for _ in 0..3 {
+                frame(&mut app);
+            }
+            assert!(asked.lock().unwrap().is_empty(), "{version}");
+        }
+        // A copy that doesn't update itself has no switch to turn on.
+        let (_host, services) = stand_in(Ok(release(&newer(), false)));
+        let mut app = start(services, &on(), NOW);
+        assert_eq!(update_state(&app)["install"]["setting"], "notThisCopy");
+        assert!(app.run("ui.updateInstall", json!({"value": true})).is_err());
+    }
+
+    #[test]
+    fn agents_and_scripts_never_start_a_download() {
+        let (host, services) = stand_in(Ok(release(&newer(), false)));
+        let (services, asked) = downloading(services, Ok(PathBuf::new()));
+        let mut app = start(services, &UiState { update_checked: NOW, ..on() }, NOW);
+        app.updates.resumed = true;
+        frame(&mut app);
+        assert_eq!(app.execute(CHECK, json!({})).unwrap()["pending"], "updateCheck");
+        frame(&mut app);
+        frame(&mut app);
+        assert_eq!(host.asked.load(Ordering::Relaxed), 1);
+        assert!(app.newer_release().is_some());
+        assert!(asked.lock().unwrap().is_empty());
+        // The switch is a setting: the agents' gate asks the owner first.
+        assert_eq!(
+            mailcraft_engine::agent::access("ui.updateInstall"),
+            Some(mailcraft_engine::agent::Access::Owner(mailcraft_engine::agent::Class::Settings))
+        );
+    }
+
+    #[test]
+    fn the_switch_and_the_organisations_word() {
+        let (_host, services) = stand_in(Ok(release(&newer(), false)));
+        let (services, _) = downloading(services, Ok(PathBuf::new()));
+        let mut app = start(services, &on(), NOW);
+        assert_eq!(app.run("ui.updateInstall", json!({"value": false})).unwrap()["install"]["setting"], "off");
+        assert!(!app.prefs().update_install);
+        assert_eq!(app.run("ui.updateInstall", json!({})).unwrap()["install"]["value"], true);
+        assert!(app.run("ui.updateInstall", json!({"value": "yes"})).is_err());
+        // Without the daily check it waits for it.
+        app.run("ui.updateCheck", json!({"value": false})).unwrap();
+        assert_eq!(update_state(&app)["install"]["setting"], "needsCheck");
+        // The organisation's off-switch wins over the owner's.
+        let (_host, mut services) = stand_in(Ok(release(&newer(), false)));
+        services.updates_turned_off_by_organisation = true;
+        let (services, _) = downloading(services, Ok(PathBuf::new()));
+        let mut app = start(services, &on(), NOW);
+        assert_eq!(update_state(&app)["install"]["setting"], "organisation");
+        assert_eq!(app.run("ui.updateInstall", json!({"value": true})), Err(TURNED_OFF.to_string()));
+        assert!(!app.installs_updates());
+        // What was kept says nothing of the organisation: a file without the field is on.
+        let kept: UiState = serde_json::from_value(json!({"updateCheck": "on"})).unwrap();
+        assert!(kept.update_install);
+    }
+
+    #[test]
+    fn a_download_cut_off_is_carried_on_at_the_next_start() {
+        // The last run was told of a newer version within the day, and its download was cut off.
+        let saved = UiState { update_checked: NOW - 60, update_told: newer(), ..on() };
+        let (host, services) = stand_in(Ok(release(&newer(), false)));
+        let (services, asked) = downloading(services, Err("the update couldn't be downloaded: GitHub took too long".into()));
+        let mut app = start(services, &saved, NOW);
+        for _ in 0..3 {
+            frame(&mut app);
+        }
+        assert_eq!(host.asked.load(Ordering::Relaxed), 1, "checked at once, not a day on");
+        assert_eq!(asked.lock().unwrap().len(), 1);
+        assert!(app.updates.downloaded.is_none());
+        // Failed: not again in this run until the next check is due, and nothing is said.
+        for _ in 0..3 {
+            frame(&mut app);
+        }
+        assert_eq!(host.asked.load(Ordering::Relaxed), 1);
+        assert_eq!(said(&app), None);
+        // Without anything told of before, a start within the day asks nobody.
+        let (host, services) = stand_in(Ok(release(&newer(), false)));
+        let (services, _) = downloading(services, Ok(PathBuf::new()));
+        let mut app = start(services, &UiState { update_checked: NOW - 60, ..on() }, NOW);
+        frame(&mut app);
+        assert_eq!(host.asked.load(Ordering::Relaxed), 0);
     }
 
     #[test]
