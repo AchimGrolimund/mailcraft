@@ -209,6 +209,11 @@ pub struct Message {
     /// message of a file from before this was kept is whole.
     #[serde(skip_serializing_if = "is_false")]
     pub unfetched: bool,
+    /// While it is not fetched: the server said it has attachments (Graph's `hasAttachments`),
+    /// which its headers and preview don't show. It wears the paperclip and `has:attachment`
+    /// finds it; once it is fetched its own attachments say.
+    #[serde(skip_serializing_if = "is_false")]
+    pub attachments_on_server: bool,
     /// It was moved here, out of a Microsoft account (into a local folder or another account),
     /// from the server's copy this names, and that copy is still on the server: it is **being
     /// moved** (R3 spec S19). The server's copy is removed only once this message is fetched
@@ -299,9 +304,10 @@ impl Message {
         self.to.iter().chain(&self.cc).chain(&self.bcc)
     }
 
-    /// Whether the attachment list has something.
+    /// Whether the attachment list has something, or, for a message not fetched yet, the server
+    /// said it will ([`Message::attachments_on_server`]).
     pub fn has_attachments(&self) -> bool {
-        self.listed_attachments().next().is_some()
+        (self.unfetched && self.attachments_on_server) || self.listed_attachments().next().is_some()
     }
 
     /// The attachments the attachment list shows, with their index: everything except pictures
