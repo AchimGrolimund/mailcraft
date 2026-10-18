@@ -270,6 +270,25 @@ fn a_message_the_server_refuses_is_passed_over_and_the_rest_still_come() {
 }
 
 #[test]
+fn a_message_over_16_mb_is_fetched_whole() {
+    // Exchange Online gives messages up to 150 MB; 16 MB was the most any answer could be (#175).
+    let server = StandIn::start().unwrap();
+    let inbox = server.state().well_known("inbox");
+    let ids = server.state().mailbox.generate(&inbox, 2, NOW);
+    let attachment = "QUJD".repeat(5 * 1024 * 1024);
+    let mime = format!(
+        "From: avery@example.org\r\nTo: owner@example.org\r\nSubject: Large\r\nMIME-Version: 1.0\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\n\r\n{attachment}\r\n"
+    );
+    assert!(mime.len() > 20 * 1024 * 1024);
+    server.state().mailbox.update(&ids[0], |m| m.mime = Some(mime.clone()));
+    let got = super::fetch::fetch_messages_with(&server.url(), TOKEN, &fetch_request(&ids), Arc::new(Gate::new()), QUICK, &AtomicBool::new(false));
+    assert!(got.errors.is_empty() && got.failed.is_empty(), "{:?}", got.errors);
+    assert_eq!(got.fetched.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), [ids[0].as_str(), ids[1].as_str()]);
+    assert_eq!(got.fetched[0].mime.len(), mime.len());
+    assert!(got.fetched[0].mime == mime.as_bytes());
+}
+
+#[test]
 fn three_messages_refused_one_after_another_stop_the_batch() {
     use crate::graph::standin::Fault;
     let server = StandIn::start().unwrap();
