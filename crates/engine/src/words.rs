@@ -37,7 +37,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
-use mailcraft_model::{Id, Message, words};
+use mailcraft_model::{Id, Mailbox, Message, words};
 
 /// The format of the file: another number is another version, thrown away and built again.
 pub const VERSION: u32 = 1;
@@ -837,6 +837,142 @@ fn append(file: &Path, len: u64, bytes: &[u8]) -> std::io::Result<u64> {
     std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(len))?;
     f.write_all(bytes)?;
     Ok(len + bytes.len() as u64)
+}
+
+// ---- a session's word index ----
+
+/// The word index of the mailbox file a session keeps its mailbox in, kept in step with the
+/// mailbox ([`Words::in_step`]).
+pub struct Words {
+    mailbox: PathBuf,
+    shared: Arc<Shared>,
+    /// The accounts of the mailbox when it was last brought in step: one gone since takes its
+    /// words off the disk at once.
+    accounts: Vec<Id>,
+    /// Messages the last [`Words::in_step`] left out of the index (to be read in the background).
+    left: usize,
+}
+
+struct Shared {
+    /// `None` until the file has been read.
+    index: std::sync::Mutex<Option<Index>>,
+}
+
+/// What [`Words::in_step`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InStep {
+    /// Messages read into the index.
+    pub read: usize,
+    /// Messages taken out (gone from the mailbox, or changed and not read again yet).
+    pub removed: usize,
+    /// Messages the index hasn't got as they are now.
+    pub left: usize,
+}
+
+fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl Words {
+    /// The word index of the mailbox file at `mailbox`, read from beside it; one that can't be
+    /// used is thrown away and starts empty.
+    pub fn open(mailbox: &Path) -> Words {
+        let file = crate::store::words_file(mailbox);
+        let index = match Index::open(&file) {
+            Ok(index) => index,
+            Err(why) => {
+                log::info!("search: the mailbox's word index is built again: {why}");
+                let _ = std::fs::remove_file(&file);
+                Index::new(Some(file))
+            }
+        };
+        Words {
+            mailbox: mailbox.to_path_buf(),
+            shared: Arc::new(Shared { index: std::sync::Mutex::new(Some(index)) }),
+            accounts: Vec::new(),
+            left: 0,
+        }
+    }
+
+    /// The mailbox file it is the index of.
+    pub fn mailbox(&self) -> &Path {
+        &self.mailbox
+    }
+
+    /// The index, while nothing else changes it; `None` while its file is being read.
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, Option<Index>> {
+        lock(&self.shared.index)
+    }
+
+    /// Whether the index holds every message of the mailbox as it was when it was last brought
+    /// in step.
+    pub fn complete(&self) -> bool {
+        self.left == 0 && self.lock().is_some()
+    }
+
+    /// Whether an account of the mailbox it was last brought in step with is gone from `mb`.
+    pub fn account_gone(&self, mb: &Mailbox) -> bool {
+        self.accounts.iter().any(|a| mb.account(*a).is_none())
+    }
+
+    /// Bring the index in step with `mb`: a message it hasn't got, or has otherwise than it is
+    /// now, is read into it (its text through `read` when it is kept on disk), and one that is
+    /// gone from `mb` is taken out. What a command did, an undo, mail that arrived, all come out
+    /// the same: the index follows the mailbox as it is, not the way it got there. An account
+    /// gone since the last time has its words taken off the disk at once ([`Index::compact`]).
+    pub fn in_step(&mut self, mb: &Mailbox, read: &dyn Fn(&Message) -> Option<String>) -> InStep {
+        let gone_account = self.account_gone(mb);
+        self.accounts = mb.accounts.iter().map(|a| a.id).collect();
+        let mut out = InStep::default();
+        let mut guard = lock(&self.shared.index);
+        let Some(index) = guard.as_mut() else { return out };
+        let mut held = 0;
+        let mut left: Vec<(&Arc<Message>, u64)> = Vec::new();
+        for m in mb.messages.values() {
+            if index.seen(m) {
+                held += 1;
+                continue;
+            }
+            let fp = fingerprint(m);
+            if index.current(m.id, fp) {
+                index.note_seen(m);
+                held += 1;
+            } else {
+                left.push((m, fp));
+            }
+        }
+        if index.len() > held {
+            let gone: Vec<Id> = index.ids().filter(|id| !mb.messages.contains_key(id)).collect();
+            out.removed += gone.len();
+            for id in gone {
+                index.remove(id);
+            }
+        }
+        for (m, fp) in left {
+            let text = match body_in_memory(m) {
+                Some(text) => std::borrow::Cow::Borrowed(text),
+                None => std::borrow::Cow::Owned(read(m).unwrap_or_default()),
+            };
+            index.insert(Doc::with_fingerprint(m, &text, fp), Some(m));
+            out.read += 1;
+        }
+        if gone_account || index.wants_compacting() {
+            index.compact();
+        } else {
+            index.flush();
+        }
+        self.left = out.left;
+        out
+    }
+}
+
+/// Remove the word index kept beside the mailbox file at `mailbox`, as a wipe of the mailbox
+/// does (#177).
+pub fn remove(mailbox: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(crate::store::words_file(mailbox)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        done => done,
+    }
 }
 
 #[cfg(test)]

@@ -597,6 +597,14 @@ pub struct Session {
     search_pass: Option<(mailcraft_model::search::Query, std::collections::HashMap<Id, bool>)>,
     /// What the list was when `search_pass` was made: its key without the loads.
     searched_for: Option<String>,
+    /// Keep a word index beside the mailbox file, which a search answers from (R6.2): set by a
+    /// host that wants it (the desktop app), never by a command's params. Off, a search reads
+    /// the messages themselves, as it always does in the browser. Never saved.
+    pub index_words: bool,
+    /// The word index of the mailbox file, while [`Session::index_words`] is on and the mailbox
+    /// is kept in a file ([`crate::words`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    words: Option<crate::words::Words>,
 }
 
 /// Message `id` was `old` and is `new`, the same message with more or less of it in memory.
@@ -680,6 +688,9 @@ impl Session {
             swaps: None,
             search_pass: None,
             searched_for: None,
+            index_words: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            words: None,
         };
         s.view.date = s.today();
         s.normalize();
@@ -835,6 +846,8 @@ impl Session {
             return rows.clone();
         }
         let list_now = list(self);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.words_in_step(!mailcraft_model::search::Query::parse(&self.view.search).is_empty());
         let searched = match &self.search_pass {
             // Only content came in or went since this list was searched (a result opened): what
             // was found stands, and nothing is brought in for it again.
@@ -849,6 +862,39 @@ impl Session {
         let rows = Arc::new(crate::list::rows_with(self, &searched));
         self.list_cache = Some((key, rows.clone()));
         rows
+    }
+
+    /// Keep the word index of the mailbox file ([`crate::words`]) while [`Session::index_words`]
+    /// is on and the mailbox is kept in a file: the one beside the file it is kept in now, brought
+    /// in step with the mailbox before a search is answered (`search`), and when an account went.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn words_in_step(&mut self, search: bool) {
+        let Some(path) = self.path.clone().filter(|_| self.index_words) else {
+            self.words = None;
+            return;
+        };
+        let mut words = match self.words.take() {
+            Some(words) if words.mailbox() == path => words,
+            _ => crate::words::Words::open(&path),
+        };
+        if search || words.account_gone(&self.mailbox) {
+            words.in_step(&self.mailbox, &|m| self.kept_text(m));
+        }
+        self.words = Some(words);
+    }
+
+    /// The word index this session keeps, if any.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn words(&self) -> Option<&crate::words::Words> {
+        self.words.as_ref()
+    }
+
+    /// The text of message `m` that is kept outside memory, read from where it is kept (also when
+    /// reading it failed before, and the message says so in its place).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn kept_text(&self, m: &Message) -> Option<String> {
+        let r = m.kept.as_deref()?.text?;
+        self.fetch(&r).ok().map(|bytes| text_of(&bytes))
     }
 
     // ---- content that isn't in memory ----

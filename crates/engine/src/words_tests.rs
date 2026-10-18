@@ -327,3 +327,138 @@ proptest::proptest! {
         }
     }
 }
+
+// ---- kept in step with a session's mailbox ----
+
+mod in_step {
+    use mailcraft_model::{Account, FolderKind, Mailbox};
+    use serde_json::json;
+
+    use super::*;
+    use crate::Session;
+
+    /// A mailbox of two accounts, each with an Inbox of messages whose texts are long enough to be
+    /// kept outside the mailbox file; saved in `tmp`.
+    pub(crate) fn kept(tmp: &Temp) -> (PathBuf, Id, Id) {
+        let path = tmp.0.join("mailbox.mailcraft");
+        let mut mb = Mailbox::with_local_account("Avery", "avery@mail.example");
+        let work = mb.add_account(Account { name: "Work".into(), email: "avery@work.example".into(), ..Default::default() });
+        let inbox = |mb: &Mailbox, account: Id| mb.folders.iter().find(|f| f.account == account && f.kind == FolderKind::Inbox).unwrap().id;
+        let first = mb.accounts[0].id;
+        let filler = " Nothing else of note this week, all is well with the project.".repeat(30);
+        for (n, (subject, word)) in [("Meeting", "zymurgy"), ("Lunch", "quokka"), ("Figures", "marmalade")].into_iter().enumerate() {
+            let folder = inbox(&mb, first);
+            mb.add_message(Message { folder, account: first, date: n as i64, ..message(0, subject, "Ada", &format!("About the {word}.{filler}")) })
+                .unwrap();
+        }
+        let folder = inbox(&mb, work);
+        mb.add_message(Message { folder, account: work, ..message(0, "Rota", "Kit", &format!("The nightingale rota.{filler}")) }).unwrap();
+        crate::store::save(&path, &mb).unwrap();
+        (path, first, work)
+    }
+
+    /// A session on the mailbox at `path` with no body in memory, keeping a word index.
+    pub(crate) fn session(path: &std::path::Path) -> Session {
+        crate::store::clear_cache();
+        let opened = crate::store::with_budget(1, || crate::store::open(path)).unwrap();
+        let mut s = Session::new(opened.mailbox);
+        s.path = Some(path.to_path_buf());
+        s.index_words = true;
+        s
+    }
+
+    /// What the session's index finds for `query` (anywhere), after a search brought it in step.
+    fn finds(s: &mut Session, query: &str) -> Vec<Id> {
+        s.view.search = format!("{query} ");
+        s.view.scope = crate::Scope::Everywhere;
+        let _ = s.rows();
+        let words = s.words().unwrap();
+        let guard = words.lock();
+        found(guard.as_ref().unwrap(), query, words::ALL)
+    }
+
+    pub(crate) fn id_of(s: &Session, subject: &str) -> Id {
+        s.mailbox.messages.values().find(|m| m.subject == subject).unwrap().id
+    }
+
+    #[test]
+    fn the_index_follows_the_mailbox_through_commands_undo_and_mail_that_arrives() {
+        let tmp = Temp::new("in-step");
+        let (path, _, _) = kept(&tmp);
+        let mut s = session(&path);
+        assert!(s.mailbox.messages.values().all(|m| m.body_is_kept()), "every text on disk");
+        let meeting = id_of(&s, "Meeting");
+        assert_eq!(finds(&mut s, "zymurgy"), [meeting]);
+        assert!(s.words().unwrap().complete());
+        // Deleted for good: gone from the index; undone: back.
+        s.run("mail.deletePermanently", &json!({"ids": [meeting]})).unwrap();
+        assert_eq!(finds(&mut s, "zymurgy"), Vec::<Id>::new());
+        s.run("edit.undo", &json!({})).unwrap();
+        assert_eq!(finds(&mut s, "zymurgy"), [meeting]);
+        // A command that fails changes nothing.
+        assert!(s.run("mail.move", &json!({"ids": [meeting], "folder": 999_999})).is_err());
+        assert_eq!(finds(&mut s, "zymurgy"), [meeting]);
+        // Moved: the same words.
+        let archive = s.mailbox.folders.iter().find(|f| f.kind == FolderKind::Archive).unwrap().id;
+        s.run("mail.move", &json!({"ids": [meeting], "folder": archive})).unwrap();
+        assert_eq!(finds(&mut s, "zymurgy"), [meeting]);
+        // Changed outside a command (mail that came down from a server): as it is now.
+        let lunch = id_of(&s, "Lunch");
+        s.mailbox.message_mut(lunch).unwrap().subject = "Supper".into();
+        s.mailbox_changed();
+        assert_eq!(finds(&mut s, "supper"), [lunch]);
+        assert_eq!(finds(&mut s, "lunch"), Vec::<Id>::new());
+        assert_eq!(finds(&mut s, "quokka"), [lunch], "its text read again from disk");
+        let folder = s.mailbox.inbox().unwrap();
+        let new = s.mailbox.add_message(Message { folder, ..message(0, "Picnic", "Oona", "Bring sandwiches.") }).unwrap();
+        s.mailbox_changed();
+        assert_eq!(finds(&mut s, "sandwich"), [new]);
+    }
+
+    #[test]
+    fn the_index_is_kept_beside_the_mailbox_and_read_back_when_it_opens_again() {
+        let tmp = Temp::new("reopen");
+        let (path, _, _) = kept(&tmp);
+        let mut s = session(&path);
+        let meeting = id_of(&s, "Meeting");
+        assert_eq!(finds(&mut s, "zymurgy"), [meeting]);
+        let file = crate::store::words_file(&path);
+        assert!(file.is_file());
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&file).unwrap().permissions()) & 0o077, 0, "for its owner only");
+        let len = std::fs::metadata(&file).unwrap().len();
+        drop(s);
+        let mut again = session(&path);
+        assert_eq!(finds(&mut again, "zymurgy"), [meeting]);
+        assert_eq!(std::fs::metadata(&file).unwrap().len(), len, "nothing had to be read again");
+        // Junk where the index was: built again, never a crash.
+        drop(again);
+        std::fs::write(&file, b"MCWORDS\0\x01\0\0\0\0\0\0\0junk junk junk junk").unwrap();
+        let mut third = session(&path);
+        assert_eq!(finds(&mut third, "zymurgy"), [meeting]);
+        assert!(Index::open(&file).is_ok());
+        // Off: no index.
+        third.index_words = false;
+        third.view.search = "anything".into();
+        let _ = third.rows();
+        assert!(third.words().is_none());
+        assert!(super::super::remove(&path).is_ok() && !file.exists());
+    }
+
+    #[test]
+    fn removing_an_account_takes_its_words_off_the_disk() {
+        let tmp = Temp::new("account");
+        let (path, _, work) = kept(&tmp);
+        let mut s = session(&path);
+        let rota = id_of(&s, "Rota");
+        assert_eq!(finds(&mut s, "nightingale"), [rota]);
+        let file = crate::store::words_file(&path);
+        let holds = |file: &std::path::Path| std::fs::read(file).unwrap().windows(11).any(|w| w == b"nightingale");
+        assert!(holds(&file));
+        s.run("account.remove", &json!({"id": work})).unwrap();
+        s.view.search.clear();
+        let _ = s.rows();
+        assert!(!holds(&file), "gone without a search");
+        assert_eq!(finds(&mut s, "zymurgy").len(), 1);
+    }
+}
