@@ -493,6 +493,20 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// How far the word index a search answers from has got (R6.2; [`Session::word_index`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WordIndex {
+    /// None is kept: the browser, a mailbox kept in no file, or a host that didn't ask for one
+    /// ([`Session::index_words`]). A search reads the messages themselves.
+    Off,
+    /// Its file is being read, or messages are being read into it in the background (`done` of
+    /// `total`; both 0 while there is nothing to count yet): what it hasn't got yet is searched
+    /// as without an index, more slowly.
+    Building { done: usize, total: usize },
+    /// It holds every message as it is.
+    Complete,
+}
+
 /// The clock commands read; tests and scripts pin it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Clock {
@@ -838,7 +852,8 @@ impl Session {
     /// as [`Session::search_time`] allows; what it didn't get to is counted in
     /// [`Session::unsearched`].
     pub fn rows(&mut self) -> Arc<Vec<Row>> {
-        let list = |s: &Session| format!("{}|{}|{}", s.rev, s.today().to_days(), serde_json::to_string(&s.view).unwrap_or_default());
+        let list =
+            |s: &Session| format!("{}|{}|{}|{}", s.rev, s.today().to_days(), s.words_finished(), serde_json::to_string(&s.view).unwrap_or_default());
         let key = |s: &Session| format!("{}|{}", s.loads, list(s));
         if let Some((k, rows)) = &self.list_cache
             && *k == key(self)
@@ -865,8 +880,10 @@ impl Session {
     }
 
     /// Keep the word index of the mailbox file ([`crate::words`]) while [`Session::index_words`]
-    /// is on and the mailbox is kept in a file: the one beside the file it is kept in now, brought
-    /// in step with the mailbox before a search is answered (`search`), and when an account went.
+    /// is on and the mailbox is kept in a file: the one beside the file it is kept in now (read,
+    /// and built where it lacks messages, in the background), brought in step with the mailbox
+    /// before a search is answered (`search`), when an account went, and when the background is
+    /// done.
     #[cfg(not(target_arch = "wasm32"))]
     fn words_in_step(&mut self, search: bool) {
         let Some(path) = self.path.clone().filter(|_| self.index_words) else {
@@ -875,12 +892,53 @@ impl Session {
         };
         let mut words = match self.words.take() {
             Some(words) if words.mailbox() == path => words,
-            _ => crate::words::Words::open(&path),
+            _ => crate::words::Words::open(&path, self.mailbox.messages.values().cloned().collect()),
         };
-        if search || words.account_gone(&self.mailbox) {
+        // Also once the background is done: what came while it read is looked at then.
+        if search || words.account_gone(&self.mailbox) || (!words.building() && !words.complete()) {
             words.in_step(&self.mailbox, &|m| self.kept_text(m));
         }
         self.words = Some(words);
+    }
+
+    /// How far the word index a search answers from has got.
+    pub fn word_index(&self) -> WordIndex {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(words) = &self.words {
+            return match words.progress() {
+                Some((done, total)) => WordIndex::Building { done, total },
+                None if words.complete() => WordIndex::Complete,
+                // Done reading, with what came while it read still to be looked at (when the
+                // list is next worked out): nothing to count.
+                None => WordIndex::Building { done: 0, total: 0 },
+            };
+        }
+        WordIndex::Off
+    }
+
+    /// Wait until the word index holds the mailbox as it is now (started if it wasn't), for as
+    /// long as that takes: for the bench and tests, never the window.
+    pub fn wait_for_word_index(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        for _ in 0..8 {
+            self.words_in_step(false);
+            let Some(words) = &mut self.words else { return };
+            words.wait();
+            self.words_in_step(true);
+            if self.words.as_ref().is_none_or(|w| !w.building()) {
+                return;
+            }
+        }
+    }
+
+    /// Counts the times the word index's background finished: a list searched before it did is
+    /// worked out again.
+    fn words_finished(&self) -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(words) = &self.words {
+            return words.finished();
+        }
+        0
     }
 
     /// The word index this session keeps, if any.

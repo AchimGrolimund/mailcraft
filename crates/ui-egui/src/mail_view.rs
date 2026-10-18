@@ -430,6 +430,14 @@ fn list(app: &mut MailApp, ui: &mut Ui) {
             });
         }
     }
+    // While the word index is being built, what it hasn't got yet is searched more slowly (R6.2).
+    if !app.session.view.search.trim().is_empty() && matches!(app.session.word_index(), mailcraft_engine::WordIndex::Building { .. }) {
+        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
+        ui.painter().rect_filled(r, 0.0, t.panel);
+        let text = tl!("Still indexing: some older mail is searched more slowly");
+        paint_clipped(ui.painter(), pos2(r.min.x + 10.0, r.min.y + 4.0), r.width() - 20.0, text, regular(11.5), t.text_dim);
+        app.hit.add("stillIndexing", 0, r);
+    }
     // A search that reads the text of messages goes as far into older mail as its time allows,
     // and says how far that was.
     if app.session.unsearched > 0 && !app.session.view.search.trim().is_empty() {

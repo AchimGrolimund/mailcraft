@@ -400,6 +400,8 @@ pub fn status_bar(app: &mut MailApp, ui: &mut Ui) {
                         ui.add_space(10.0);
                         st(ui, &saving, t.text_dim);
                     }
+                    // The word index being built, in the background (R6.2).
+                    indexing_bar(app, ui, &t);
                 });
             });
         });
@@ -408,6 +410,14 @@ pub fn status_bar(app: &mut MailApp, ui: &mut Ui) {
 /// A Send/Receive under way, in the status bar: its label, then a bar that fills as the run goes
 /// and never goes back while it lasts (an account that joins the run doesn't empty it).
 fn sync_bar(app: &mut MailApp, ui: &mut Ui, t: &Tokens, label: &str, fraction: f32) -> egui::Response {
+    let (resp, track) = progress_bar(ui, t, label, fraction, "status_sync_bar");
+    app.hit.add("syncBar", 0, track);
+    resp
+}
+
+/// A label and a bar that fills as `fraction` goes from 0 to 1, in the status bar: the bar never
+/// goes back while it is shown (`key` remembers how far it got). Returns the whole and the bar.
+fn progress_bar(ui: &mut Ui, t: &Tokens, label: &str, fraction: f32, key: &str) -> (egui::Response, Rect) {
     let font = regular(STATUS_TEXT);
     let gap = 8.0;
     let label_w = text_width(ui.painter(), label, &font, 0.0, t.text_dim).min(220.0);
@@ -415,7 +425,7 @@ fn sync_bar(app: &mut MailApp, ui: &mut Ui, t: &Tokens, label: &str, fraction: f
     let bar_w = SYNC_BAR.x.min(room);
     let label_w = label_w.min((room - bar_w - gap).max(0.0));
     let (r, resp) = ui.allocate_exact_size(vec2(label_w + gap + bar_w, STATUS_TEXT * 1.4), Sense::hover());
-    let key = egui::Id::new("status_sync_bar");
+    let key = egui::Id::new(key);
     let before: f32 = ui.ctx().data(|d| d.get_temp(key)).unwrap_or(0.0);
     let shown = fraction.clamp(0.0, 1.0).max(before);
     ui.ctx().data_mut(|d| d.insert_temp(key, shown));
@@ -429,8 +439,31 @@ fn sync_bar(app: &mut MailApp, ui: &mut Ui, t: &Tokens, label: &str, fraction: f
         let fill = Rect::from_min_max(track.min, pos2(track.min.x + (bar_w * shown).max(SYNC_BAR.y), track.max.y));
         ui.painter().rect_filled(fill, radius, t.accent);
     }
-    app.hit.add("syncBar", 0, track);
-    resp
+    (resp, track)
+}
+
+/// The word index being built (R6.2), in the status bar: "Indexing mail: 45%" and its bar, as
+/// Send/Receive shows its progress. Nothing when it isn't being built; the bar's memory of how
+/// far it got goes when it is done.
+fn indexing_bar(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
+    let key = "status_index_bar";
+    let mailcraft_engine::WordIndex::Building { done, total } = app.session.word_index() else {
+        ui.ctx().data_mut(|d| d.remove::<f32>(egui::Id::new(key)));
+        return;
+    };
+    if total == 0 {
+        // Its file being read, or a moment's look at what came since: nothing to count.
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+        return;
+    }
+    let fraction = (done.min(total) as f64 / total as f64) as f32;
+    let percent = ((fraction * 100.0).floor() as u32).min(100);
+    let label = crate::i18n::fmt(tl!("Indexing mail: {percent}%"), &[("percent", &percent.to_string())]);
+    ui.add_space(10.0);
+    let (resp, track) = progress_bar(ui, t, &label, fraction, key);
+    app.hit.add("indexBar", 0, track);
+    resp.on_hover_text(tl!("Building the index search answers from; until it is done, some older mail is searched more slowly"));
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
 }
 
 /// Forget how far the bar of the last run got, once no run is under way.

@@ -163,6 +163,24 @@ pub fn words_file(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+/// Reads content of one mailbox file from the content folder beside it, checked as [`fetch`]
+/// checks it, without keeping it in the cache: for reading through many bodies once (the word
+/// index), which would otherwise push out of the cache what is wanted again.
+pub(crate) struct Reader {
+    dir: PathBuf,
+    folders: Folders,
+}
+
+impl Reader {
+    pub(crate) fn new(path: &Path) -> Reader {
+        Reader { dir: blob_dir(&resolve(path)), folders: Folders::new() }
+    }
+
+    pub(crate) fn read(&self, r: &ContentRef) -> Option<Vec<u8>> {
+        get(&self.dir, &Ref::from_model(r), &self.folders)
+    }
+}
+
 /// The file a mailbox path stands for: itself, or where it leads when it is a link. A mailbox
 /// kept somewhere else through a link stays there, with its content beside it, instead of the
 /// link being replaced by a file the first time it is saved.

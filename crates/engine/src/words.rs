@@ -35,6 +35,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
 use mailcraft_model::{Id, Mailbox, Message, words};
@@ -841,21 +842,43 @@ fn append(file: &Path, len: u64, bytes: &[u8]) -> std::io::Result<u64> {
 
 // ---- a session's word index ----
 
+/// Messages a search reads into the index itself, rather than leave them to the background: a
+/// few mails that came since, not a whole account's download.
+pub const READ_NOW_MOST: usize = 2_000;
+
+/// Messages the background reads between two looks at whether it should stop, and two writes to
+/// the file.
+const BATCH: usize = 256;
+
 /// The word index of the mailbox file a session keeps its mailbox in, kept in step with the
-/// mailbox ([`Words::in_step`]).
+/// mailbox ([`Words::in_step`]). Its file is read, and the messages it hasn't got are read into
+/// it, on a thread of its own ([`Words::open`]): nothing the window does waits for that. Dropped,
+/// it stops the thread at the next message (what was read by then is in the file, and the rest
+/// is read the next time).
 pub struct Words {
     mailbox: PathBuf,
     shared: Arc<Shared>,
+    thread: Option<std::thread::JoinHandle<()>>,
     /// The accounts of the mailbox when it was last brought in step: one gone since takes its
     /// words off the disk at once.
     accounts: Vec<Id>,
-    /// Messages the last [`Words::in_step`] left out of the index (to be read in the background).
+    /// Messages the last [`Words::in_step`] left out of the index (for the background to read).
     left: usize,
 }
 
 struct Shared {
     /// `None` until the file has been read.
     index: std::sync::Mutex<Option<Index>>,
+    /// The background's progress through the messages it was given.
+    done: AtomicUsize,
+    total: AtomicUsize,
+    /// The background is reading (its file, or messages).
+    building: AtomicBool,
+    /// Stop at the next message.
+    cancel: AtomicBool,
+    /// Counts the times the background finished: what was searched before may be answered
+    /// otherwise now.
+    finished: AtomicU64,
 }
 
 /// What [`Words::in_step`] did.
@@ -865,7 +888,7 @@ pub struct InStep {
     pub read: usize,
     /// Messages taken out (gone from the mailbox, or changed and not read again yet).
     pub removed: usize,
-    /// Messages the index hasn't got as they are now.
+    /// Messages the index hasn't got as they are now (being read in the background).
     pub left: usize,
 }
 
@@ -873,24 +896,57 @@ fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The text of `m`'s body, from memory or from the content folder beside the mailbox file.
+fn text_of(m: &Message, reader: &crate::store::Reader) -> String {
+    match body_in_memory(m) {
+        Some(text) => text.to_string(),
+        None => m.kept.as_deref().and_then(|k| k.text).and_then(|r| reader.read(&r)).map(|b| crate::store::text_of_bytes(&b)).unwrap_or_default(),
+    }
+}
+
 impl Words {
-    /// The word index of the mailbox file at `mailbox`, read from beside it; one that can't be
-    /// used is thrown away and starts empty.
-    pub fn open(mailbox: &Path) -> Words {
-        let file = crate::store::words_file(mailbox);
-        let index = match Index::open(&file) {
-            Ok(index) => index,
-            Err(why) => {
-                log::info!("search: the mailbox's word index is built again: {why}");
-                let _ = std::fs::remove_file(&file);
-                Index::new(Some(file))
-            }
+    /// The word index of the mailbox file at `mailbox`, read from beside it in the background,
+    /// and then `messages` it hasn't got as they are read into it, newest first. A file that
+    /// can't be used is thrown away and the index starts empty.
+    pub fn open(mailbox: &Path, messages: Vec<Arc<Message>>) -> Words {
+        let shared = Arc::new(Shared {
+            index: std::sync::Mutex::new(None),
+            done: AtomicUsize::new(0),
+            total: AtomicUsize::new(messages.len()),
+            building: AtomicBool::new(true),
+            cancel: AtomicBool::new(false),
+            finished: AtomicU64::new(0),
+        });
+        // Not complete until it has been brought in step with the mailbox as it is once read.
+        let mut words = Words { mailbox: mailbox.to_path_buf(), shared, thread: None, accounts: Vec::new(), left: 1 };
+        words.build(messages, true);
+        words
+    }
+
+    /// Read `messages` into the index on the background's thread (its file first, `open`).
+    fn build(&mut self, messages: Vec<Arc<Message>>, open: bool) {
+        let shared = self.shared.clone();
+        let mailbox = self.mailbox.clone();
+        shared.done.store(0, Ordering::Relaxed);
+        shared.total.store(messages.len(), Ordering::Relaxed);
+        shared.building.store(true, Ordering::Relaxed);
+        let work = move || {
+            build(&shared, &mailbox, messages, open);
+            shared.building.store(false, Ordering::Relaxed);
+            shared.finished.fetch_add(1, Ordering::Relaxed);
         };
-        Words {
-            mailbox: mailbox.to_path_buf(),
-            shared: Arc::new(Shared { index: std::sync::Mutex::new(Some(index)) }),
-            accounts: Vec::new(),
-            left: 0,
+        match std::thread::Builder::new().name("word index".into()).spawn(work) {
+            Ok(thread) => self.thread = Some(thread),
+            Err(e) => {
+                // No thread to be had: the index is read here, at the next search.
+                log::warn!("search: the word index can't be built in the background ({e})");
+                let file = crate::store::words_file(&self.mailbox);
+                let mut index = lock(&self.shared.index);
+                if index.is_none() {
+                    *index = Some(open_or_new(&file));
+                }
+                self.shared.building.store(false, Ordering::Relaxed);
+            }
         }
     }
 
@@ -904,10 +960,32 @@ impl Words {
         lock(&self.shared.index)
     }
 
+    /// Whether the background is reading the file or messages.
+    pub fn building(&self) -> bool {
+        self.shared.building.load(Ordering::Relaxed)
+    }
+
+    /// While the background reads messages: how many of how many it has got through.
+    pub fn progress(&self) -> Option<(usize, usize)> {
+        self.building().then(|| (self.shared.done.load(Ordering::Relaxed), self.shared.total.load(Ordering::Relaxed)))
+    }
+
+    /// Counts the times the background finished.
+    pub fn finished(&self) -> u64 {
+        self.shared.finished.load(Ordering::Relaxed)
+    }
+
     /// Whether the index holds every message of the mailbox as it was when it was last brought
-    /// in step.
+    /// in step, with nothing being read.
     pub fn complete(&self) -> bool {
-        self.left == 0 && self.lock().is_some()
+        !self.building() && self.left == 0 && self.lock().is_some()
+    }
+
+    /// Wait for the background to finish (tests, and the bench).
+    pub fn wait(&mut self) {
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 
     /// Whether an account of the mailbox it was last brought in step with is gone from `mb`.
@@ -920,49 +998,166 @@ impl Words {
     /// gone from `mb` is taken out. What a command did, an undo, mail that arrived, all come out
     /// the same: the index follows the mailbox as it is, not the way it got there. An account
     /// gone since the last time has its words taken off the disk at once ([`Index::compact`]).
+    ///
+    /// While the background is reading, or when more than [`READ_NOW_MOST`] messages are to be
+    /// read (a whole account downloaded), they are left out of the index (taken out, if it had
+    /// them otherwise) for the background, and counted in [`InStep::left`]: a search reads those
+    /// itself, as it would without an index.
     pub fn in_step(&mut self, mb: &Mailbox, read: &dyn Fn(&Message) -> Option<String>) -> InStep {
         let gone_account = self.account_gone(mb);
         self.accounts = mb.accounts.iter().map(|a| a.id).collect();
         let mut out = InStep::default();
-        let mut guard = lock(&self.shared.index);
-        let Some(index) = guard.as_mut() else { return out };
-        let mut held = 0;
-        let mut left: Vec<(&Arc<Message>, u64)> = Vec::new();
-        for m in mb.messages.values() {
-            if index.seen(m) {
-                held += 1;
-                continue;
-            }
-            let fp = fingerprint(m);
-            if index.current(m.id, fp) {
-                index.note_seen(m);
-                held += 1;
-            } else {
-                left.push((m, fp));
-            }
-        }
-        if index.len() > held {
-            let gone: Vec<Id> = index.ids().filter(|id| !mb.messages.contains_key(id)).collect();
-            out.removed += gone.len();
-            for id in gone {
-                index.remove(id);
-            }
-        }
-        for (m, fp) in left {
-            let text = match body_in_memory(m) {
-                Some(text) => std::borrow::Cow::Borrowed(text),
-                None => std::borrow::Cow::Owned(read(m).unwrap_or_default()),
+        let building = self.building();
+        let mut later: Vec<Arc<Message>> = Vec::new();
+        {
+            let mut guard = lock(&self.shared.index);
+            let Some(index) = guard.as_mut() else {
+                self.left = mb.messages.len();
+                out.left = self.left;
+                return out;
             };
-            index.insert(Doc::with_fingerprint(m, &text, fp), Some(m));
-            out.read += 1;
+            let mut held = 0;
+            let mut left: Vec<(&Arc<Message>, u64)> = Vec::new();
+            for m in mb.messages.values() {
+                if index.seen(m) {
+                    held += 1;
+                    continue;
+                }
+                let fp = fingerprint(m);
+                if index.current(m.id, fp) {
+                    index.note_seen(m);
+                    held += 1;
+                } else {
+                    left.push((m, fp));
+                }
+            }
+            if index.len() > held {
+                let gone: Vec<Id> = index.ids().filter(|id| !mb.messages.contains_key(id)).collect();
+                out.removed += gone.len();
+                for id in gone {
+                    index.remove(id);
+                }
+            }
+            if building || left.len() > READ_NOW_MOST {
+                for (m, _) in &left {
+                    if index.slot_of(m.id).is_some() {
+                        index.remove(m.id);
+                        out.removed += 1;
+                    }
+                }
+                out.left = left.len();
+                if !building {
+                    later = left.into_iter().map(|(m, _)| m.clone()).collect();
+                }
+            } else {
+                for (m, fp) in left {
+                    let text = match body_in_memory(m) {
+                        Some(text) => std::borrow::Cow::Borrowed(text),
+                        None => std::borrow::Cow::Owned(read(m).unwrap_or_default()),
+                    };
+                    index.insert(Doc::with_fingerprint(m, &text, fp), Some(m));
+                    out.read += 1;
+                }
+            }
+            if gone_account || index.wants_compacting() {
+                index.compact();
+            } else {
+                index.flush();
+            }
         }
-        if gone_account || index.wants_compacting() {
-            index.compact();
-        } else {
-            index.flush();
+        if !later.is_empty() {
+            self.wait();
+            self.build(later, false);
         }
         self.left = out.left;
         out
+    }
+}
+
+impl Drop for Words {
+    fn drop(&mut self) {
+        self.shared.cancel.store(true, Ordering::Relaxed);
+        self.wait();
+    }
+}
+
+/// The index in `file`, or an empty one in its place when it can't be used.
+fn open_or_new(file: &Path) -> Index {
+    match Index::open(file) {
+        Ok(index) => index,
+        Err(why) => {
+            log::info!("search: the mailbox's word index is built again: {why}");
+            let _ = std::fs::remove_file(file);
+            Index::new(Some(file.to_path_buf()))
+        }
+    }
+}
+
+/// The background's work: the file read (`open`), then each of `messages` the index hasn't got as
+/// it is read into it, newest first, a batch at a time. Only one body is in memory at a time, and
+/// the content cache is left alone.
+fn build(shared: &Shared, mailbox: &Path, mut messages: Vec<Arc<Message>>, open: bool) {
+    if open {
+        let index = open_or_new(&crate::store::words_file(mailbox));
+        *lock(&shared.index) = Some(index);
+    }
+    messages.sort_by_key(|m| std::cmp::Reverse((crate::list::when(m), m.id)));
+    let reader = crate::store::Reader::new(mailbox);
+    let mut rest = messages.into_iter();
+    loop {
+        if shared.cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let batch: Vec<Arc<Message>> = rest.by_ref().take(BATCH).collect();
+        if batch.is_empty() {
+            break;
+        }
+        let n = batch.len();
+        let marked: Vec<(Arc<Message>, u64)> = batch
+            .into_iter()
+            .map(|m| {
+                let fp = fingerprint(&m);
+                (m, fp)
+            })
+            .collect();
+        // Which of them the index has as they are (a file read back), looked at in one go.
+        let wanted: Vec<(Arc<Message>, u64)> = {
+            let mut guard = lock(&shared.index);
+            let Some(index) = guard.as_mut() else { break };
+            marked
+                .into_iter()
+                .filter(|(m, fp)| {
+                    let have = index.current(m.id, *fp);
+                    if have {
+                        index.note_seen(m);
+                    }
+                    !have
+                })
+                .collect()
+        };
+        let mut docs = Vec::with_capacity(wanted.len());
+        for (m, fp) in wanted {
+            if shared.cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            docs.push((Doc::with_fingerprint(&m, &text_of(&m, &reader), fp), m));
+        }
+        {
+            let mut guard = lock(&shared.index);
+            let Some(index) = guard.as_mut() else { break };
+            for (doc, m) in docs {
+                index.insert(doc, Some(&m));
+            }
+            index.flush();
+        }
+        shared.done.fetch_add(n, Ordering::Relaxed);
+    }
+    let mut guard = lock(&shared.index);
+    if let Some(index) = guard.as_mut()
+        && index.wants_compacting()
+        && !shared.cancel.load(Ordering::Relaxed)
+    {
+        index.compact();
     }
 }
 

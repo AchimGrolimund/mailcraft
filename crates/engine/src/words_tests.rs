@@ -371,6 +371,7 @@ mod in_step {
     fn finds(s: &mut Session, query: &str) -> Vec<Id> {
         s.view.search = format!("{query} ");
         s.view.scope = crate::Scope::Everywhere;
+        s.wait_for_word_index();
         let _ = s.rows();
         let words = s.words().unwrap();
         let guard = words.lock();
@@ -460,5 +461,76 @@ mod in_step {
         let _ = s.rows();
         assert!(!holds(&file), "gone without a search");
         assert_eq!(finds(&mut s, "zymurgy").len(), 1);
+    }
+}
+
+// ---- built in the background ----
+
+mod background {
+    use mailcraft_model::Mailbox;
+
+    use super::in_step::session;
+    use super::*;
+    use crate::{Session, WordIndex};
+
+    fn many(tmp: &Temp, n: usize) -> PathBuf {
+        let path = tmp.0.join("mailbox.mailcraft");
+        let mut mb = Mailbox::with_local_account("Avery", "avery@mail.example");
+        let folder = mb.inbox().unwrap();
+        for i in 0..n {
+            let text = format!("Note {i}: the word{i} of the day.");
+            mb.add_message(Message { folder, date: i as i64, ..message(0, &format!("Item {i}"), "Ada", &text) }).unwrap();
+        }
+        crate::store::save(&path, &mb).unwrap();
+        path
+    }
+
+    fn count(s: &Session, query: &str) -> usize {
+        let words = s.words().unwrap();
+        let guard = words.lock();
+        let index = guard.as_ref().unwrap();
+        found(index, query, words::ALL).len()
+    }
+
+    #[test]
+    fn the_index_is_built_in_the_background_and_says_how_far_it_has_got() {
+        let tmp = Temp::new("background");
+        let path = many(&tmp, 3_000);
+        let mut s = session(&path);
+        assert_eq!(s.word_index(), WordIndex::Off, "nothing until the list is first shown");
+        let _ = s.rows();
+        assert!(matches!(s.word_index(), WordIndex::Building { total: 3_000, .. } | WordIndex::Complete), "{:?}", s.word_index());
+        s.wait_for_word_index();
+        assert_eq!(s.word_index(), WordIndex::Complete);
+        assert_eq!(count(&s, "note"), 3_000);
+        assert_eq!(count(&s, "word2999"), 1);
+        // Stopped part of the way (the window closed): the next time it goes on from there.
+        drop(s);
+        std::fs::remove_file(crate::store::words_file(&path)).unwrap();
+        let mut s = session(&path);
+        let _ = s.rows();
+        drop(s);
+        let mut s = session(&path);
+        s.wait_for_word_index();
+        assert_eq!((s.word_index(), count(&s, "note")), (WordIndex::Complete, 3_000));
+    }
+
+    #[test]
+    fn a_whole_download_that_arrives_is_read_in_the_background_too() {
+        let tmp = Temp::new("download");
+        let path = many(&tmp, 10);
+        let mut s = session(&path);
+        s.wait_for_word_index();
+        assert_eq!(s.word_index(), WordIndex::Complete);
+        let folder = s.mailbox.inbox().unwrap();
+        for i in 0..READ_NOW_MOST + 10 {
+            s.mailbox.add_message(Message { folder, ..message(0, "Arrived", "Kit", &format!("Download {i}")) }).unwrap();
+        }
+        s.mailbox_changed();
+        s.view.search = "download".into();
+        let _ = s.rows();
+        assert!(matches!(s.word_index(), WordIndex::Building { .. }), "left to the background: {:?}", s.word_index());
+        s.wait_for_word_index();
+        assert_eq!((s.word_index(), count(&s, "download")), (WordIndex::Complete, READ_NOW_MOST + 10));
     }
 }

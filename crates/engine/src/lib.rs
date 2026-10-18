@@ -30,7 +30,7 @@ pub use mailcraft_model as model;
 pub use mailcraft_time as time;
 pub use session::{
     BodyFormat, CalView, Clock, Compose, ComposeMode, Doc, Filter, InsertedSignature, Module, Pane, Part, Prefs, Quote, Scope, Selection, Session,
-    SignatureEdit, SortBy, TaskFilter, ViewState,
+    SignatureEdit, SortBy, TaskFilter, ViewState, WordIndex,
 };
 
 /// What a message says instead of text that couldn't be read back from where the mailbox keeps
