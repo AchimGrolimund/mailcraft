@@ -25,12 +25,13 @@
       Compressed="yes"
       Language="1033">
     <SummaryInformation Description="MailCraft mail and calendar" Manufacturer="MailCraft contributors" />
-    <!-- Same-version upgrades let successive pre-releases of one X.Y.Z replace each other
-         (MSI versions are numeric, so 1.2.3-rc.1 and 1.2.3-rc.2 are both 1.2.3). Downgrades
-         are allowed so that MailCraft can go back to the version an update replaced, when the
+    <!-- Any other version replaces the one installed: a newer one, the same X.Y.Z (successive
+         pre-releases of one X.Y.Z replace each other; MSI versions are numeric, so 1.2.3-rc.1 and
+         1.2.3-rc.2 are both 1.2.3; AllowDowngrades takes in AllowSameVersionUpgrades) and an
+         older one. Downgrades are allowed so that MailCraft can go back to the version an update replaced, when the
          new one doesn't start (apps/mailcraft/src/self_update.rs): installing this package over
          a newer MailCraft replaces it. The mailbox is in the user's own folder either way. -->
-    <MajorUpgrade AllowSameVersionUpgrades="yes" AllowDowngrades="yes" />
+    <MajorUpgrade AllowDowngrades="yes" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Icon Id="MailcraftIcon.ico" SourceFile="$(var.IconPath)" />
