@@ -1,6 +1,6 @@
 //! More results on the server (R6.2): what the engine asks a host to search, and what it makes
 //! of what comes back. (Against the Graph stand-in: `crates/net/src/graph/mail/search_tests.rs`,
-//! and the whole way in `crates/ui-egui/src/server_search.rs`.)
+//! and the window's part in `crates/ui-egui/src/server_search.rs`.)
 
 use mailcraft_model::sync::{
     FolderListing, GraphFolder, GraphMailResult, GraphMessage, GraphSearchResult, MessagePage, ServerMessage, SharedRefusal,

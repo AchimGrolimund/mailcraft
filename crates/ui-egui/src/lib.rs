@@ -42,6 +42,7 @@ pub mod reading;
 mod reminders;
 pub mod ribbon;
 pub mod scheduling;
+pub mod server_search;
 mod shared_mailboxes;
 mod signatures;
 mod sync_panel;
@@ -108,6 +109,9 @@ pub struct Services {
     pub graph: Option<Box<dyn Fn(GraphRequest) -> Receiver<GraphResult>>>,
     /// Desktop: fetch messages of a Microsoft account whole on a background thread (R3.2).
     pub graph_fetch: Option<Box<dyn Fn(graph_fetch::GraphFetchJob) -> Receiver<mailcraft_model::sync::GraphFetchResult>>>,
+    /// Desktop: search a Microsoft mailbox on its server, one page, on a background thread
+    /// (R6.2: More results on the server, only on the owner's click).
+    pub graph_search: Option<Box<dyn Fn(server_search::GraphSearchJob) -> Receiver<mailcraft_model::sync::GraphSearchResult>>>,
     /// Desktop: ask the DNS for a domain's mail exchangers on a background thread (best first),
     /// so account setup can tell whose servers an address at a company's own domain uses. Only
     /// the domain is given, never the mailbox name.
@@ -585,6 +589,12 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
     ),
     ("ui.cancelSync", "Cancel Send/Receive", "Send / Receive", "{}"),
     (
+        "ui.moreResultsOnServer",
+        "More Results on the Server",
+        "Search",
+        "{} — asks the server of each Microsoft mailbox the search in view involves for its next 50 results (the owner's click only: never by itself)",
+    ),
+    (
         "ui.skipSync",
         "Skip",
         "Send / Receive",
@@ -817,6 +827,8 @@ pub struct MailApp {
     graph_after_sign_in: Option<Id>,
     /// Messages of Microsoft accounts being fetched whole ([`graph_fetch`]).
     pub(crate) fetching: graph_fetch::Fetching,
+    /// Pages of a search on the server being asked for ([`server_search`]).
+    pub(crate) server_searching: server_search::ServerSearching,
     /// When each account's calendar and contacts were last brought down (milliseconds).
     graph_checked: std::collections::HashMap<Id, f64>,
     /// Accounts whose owner hasn't allowed Graph yet ("Connect calendar and contacts").
@@ -1006,6 +1018,7 @@ impl MailApp {
             graph_pieces_taken: 0,
             graph_after_sign_in: None,
             fetching: Default::default(),
+            server_searching: Default::default(),
             graph_checked: Default::default(),
             graph_consent_needed: Default::default(),
             calendar: Default::default(),
@@ -1134,6 +1147,9 @@ impl MailApp {
             }
             None if id == "ui.cancelSignIn" => self.signing_in.is_some() || self.approving(),
             None if id == "ui.cancelSync" => self.sync_rx.is_some(),
+            None if id == "ui.moreResultsOnServer" => {
+                matches!(self.server_link(), server_search::Link::Ask | server_search::Link::NotConnected { retry: true })
+            }
             None if id == "ui.copySelection" => self.text_selection.any(),
             None => UI_COMMANDS.iter().any(|c| c.0 == id),
         }
@@ -1414,6 +1430,13 @@ impl MailApp {
             "ui.allowSharedSend" => {
                 let Some(shared) = p.get("account").and_then(Value::as_u64) else { return Some(Err(tl!("`account` is required").to_string())) };
                 self.begin_shared_send_sign_in(shared)
+            }
+            "ui.moreResultsOnServer" => {
+                if !self.enabled("ui.moreResultsOnServer") {
+                    return Some(Err(tl!("More results on the server can't be asked for now").to_string()));
+                }
+                self.more_on_server();
+                Ok(json!({"pending": "serverSearch"}))
             }
             "ui.cancelSync" => {
                 if self.sync_rx.is_none() && self.graph_pieces.is_none() {
@@ -2590,6 +2613,10 @@ impl MailApp {
         self.sweep_admin_consent();
         self.poll_graph();
         self.drive_fetch();
+        self.drive_server_search();
+        if self.server_searching.busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
         if self.fetching.busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }

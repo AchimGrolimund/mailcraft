@@ -49,6 +49,12 @@
 //! done, total], …]}}` has Send/Receive Progress say that many of an account's messages are
 //! fetched whole of that many (Full messages), as the background would have counted them for a
 //! Microsoft account; Stop (`ui.cancelSync`) during a run then pauses them as it does.
+//!
+//! And a search on the server (R6.2, `{"host": {"serverSearch": {"messages": [GraphMessage, …],
+//! "next": bool, "offline": bool}}}`): from that line on, every Microsoft mailbox has a Graph
+//! token of this session (an invented one), and More results on the server answers each mailbox
+//! with those of the messages whose folder it has, saying there are more when `next` is true, or
+//! that the server can't be reached when `offline` is.
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -94,6 +100,8 @@ struct Host {
     sync_open: Option<(u64, u64, Sender<SyncResult>)>,
     /// The last UID a made-up message was given.
     uid: u32,
+    /// What a search on the server finds (see the header), when the script said.
+    server_search: Option<serde_json::Value>,
 }
 
 /// A piece of a stand-in Send/Receive, from what the script says: for `account`, whose Inbox is
@@ -215,6 +223,9 @@ impl Host {
                 self.sync_open = Some((account, inbox, to));
             }
         }
+        if let Some(found) = said.get("serverSearch") {
+            self.server_search = Some(found.clone());
+        }
         if let Some(how) = said.get("saving").and_then(|v| v.as_str()) {
             let mut words = how.split_whitespace();
             let stage = match words.next() {
@@ -269,6 +280,7 @@ fn stand_in(host: &Arc<Mutex<Host>>) -> Services {
     }
     let (signing, approving, updating, graphing, copying) = (host.clone(), host.clone(), host.clone(), host.clone(), host.clone());
     let syncing = host.clone();
+    let searching = host.clone();
     Services {
         microsoft_client_id: "11111111-2222-3333-4444-555555555555".into(),
         lookup_mx: Some(Box::new(|_| answered(Ok(vec!["example-org.mail.protection.outlook.com".to_string()])))),
@@ -322,6 +334,29 @@ fn stand_in(host: &Arc<Mutex<Host>>) -> Services {
                 host.sync_open = Some((account, inbox, tx));
             }
             rx
+        })),
+        // A search on the server answers what the script said it finds (see the header).
+        graph_search: Some(Box::new(move |job: mailcraft_ui_egui::server_search::GraphSearchJob| {
+            let said = searching.lock().ok().and_then(|host| host.server_search.clone()).unwrap_or_default();
+            let request = &job.request;
+            let messages: Vec<mailcraft_model::sync::GraphMessage> =
+                said.get("messages").cloned().and_then(|m| serde_json::from_value(m).ok()).unwrap_or_default();
+            let offline = said.get("offline").and_then(|v| v.as_bool()) == Some(true);
+            let more = said.get("next").and_then(|v| v.as_bool()) == Some(true) && request.next.is_empty();
+            answered(mailcraft_model::sync::GraphSearchResult {
+                account: request.account,
+                email: request.email.clone(),
+                ticket: request.ticket,
+                messages: if offline || !request.next.is_empty() { Vec::new() } else { messages },
+                next: if more { "https://graph.microsoft.com/v1.0/me/messages?$skip=50".into() } else { String::new() },
+                offline,
+                errors: if offline {
+                    vec!["Couldn't search on Microsoft's server: couldn't reach graph.microsoft.com: no network".into()]
+                } else {
+                    Vec::new()
+                },
+                ..Default::default()
+            })
         })),
         secrets: Some(Box::new(StandInSecrets(host.clone()))),
         write_copy: Some(Box::new(move |_, _| {
@@ -413,6 +448,21 @@ fn main() {
         if let Some(said) = l.get("host") {
             if let Ok(mut host) = host.lock() {
                 host.told(said);
+            }
+            // A search on the server is asked with a token of this session (invented).
+            if said.get("serverSearch").is_some() {
+                let app = harness.state_mut();
+                let ids: Vec<u64> =
+                    app.session.mailbox.accounts.iter().filter(|a| a.kind == mailcraft_model::AccountKind::Microsoft).map(|a| a.id).collect();
+                for id in ids {
+                    let tokens = Tokens {
+                        access: "stand-in-access".into(),
+                        refresh: "stand-in-refresh".into(),
+                        expires_at: mailcraft_time::now() + 3_600,
+                        ..Default::default()
+                    };
+                    app.seed_graph_token(id, tokens);
+                }
             }
             for full in said.get("fullMessages").and_then(|v| v.as_array()).into_iter().flatten() {
                 let n = |k: usize| full.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
