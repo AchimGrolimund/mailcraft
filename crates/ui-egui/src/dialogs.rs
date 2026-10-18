@@ -68,6 +68,11 @@ pub enum Dialog {
         title: String,
         lines: Vec<String>,
     },
+    /// What the owner has just done by hand was refused at once, and why (#152): a message box
+    /// with OK, as Outlook's. Never opened for the control channel, an agent or the background.
+    Refused {
+        text: String,
+    },
     /// Something that can't be taken back is about to happen, and the owner is asked first.
     Confirm {
         command: String,
@@ -142,6 +147,7 @@ impl Dialog {
             Dialog::DiscardDraft { .. } => "discardDraft",
             Dialog::Confirm { .. } => "confirm",
             Dialog::Report { name, .. } => name,
+            Dialog::Refused { .. } => "refused",
             Dialog::About(AboutTab::About) => "about",
             Dialog::About(AboutTab::Contributors) => "contributors",
             Dialog::GraphSwitch { .. } => "graphSwitch",
@@ -410,10 +416,9 @@ pub(crate) fn go_ahead(app: &mut MailApp, command: &str, params: Value) {
         let day = params.get("occurrence").and_then(Value::as_str).and_then(mailcraft_time::Date::parse_iso).filter(|_| one);
         app.calendar.opened = params.get("scope").is_some().then_some((event, day));
     }
-    let said = app.status_msg.clone();
-    if app.run(command, params.clone()).is_err() && command == "ui.openWindow" {
+    let opened = if command == "ui.openWindow" { app.run_or_else(command, params.clone()) } else { app.run(command, params.clone()) };
+    if opened.is_err() && command == "ui.openWindow" {
         // No windows of their own here: the form, as a double click does without them.
-        app.status_msg = said;
         let which: serde_json::Map<String, Value> = params
             .as_object()
             .into_iter()
@@ -1045,6 +1050,27 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
                 });
             });
             close |= !open;
+        }
+        Dialog::Refused { text } => {
+            let open = window(ctx, "MailCraft", 420.0, |ui| {
+                ui.horizontal_top(|ui| {
+                    // A warning mark drawn here: a round red dot with a white bar.
+                    let (mark, _) = ui.allocate_exact_size(vec2(28.0, 28.0), egui::Sense::hover());
+                    ui.painter().circle_filled(mark.center(), 13.0, t.red);
+                    let bar = egui::Rect::from_center_size(mark.center(), vec2(3.0, 12.0)).translate(vec2(0.0, -2.5));
+                    ui.painter().rect_filled(bar, 1.0, t.on_accent);
+                    ui.painter().circle_filled(mark.center() + vec2(0.0, 7.0), 1.8, t.on_accent);
+                    ui.add(egui::Label::new(text.as_str()).selectable(true).wrap());
+                });
+                ui.add_space(6.0);
+                button_row(ui, |ui| {
+                    let ok = primary_button(ui, tl!("OK"), true);
+                    app.hit.add("refusedOk", 0, ok.rect);
+                    close |= ok.clicked();
+                });
+            });
+            // OK is what Enter means here too.
+            close |= !open || enter;
         }
         Dialog::Confirm { command, params, ask } => {
             // The way of going ahead that was picked: what it adds to the parameters.

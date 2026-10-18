@@ -472,6 +472,10 @@ pub struct UiState {
     pub view: mailcraft_engine::ViewState,
     pub folder_pane_width: f32,
     pub list_width: f32,
+    /// Send/Receive Progress's width, and the height of its list of accounts (0: as tall as what
+    /// it lists, up to a limit), as the owner dragged them (#145).
+    pub sync_panel_width: f32,
+    pub sync_panel_height: f32,
     /// Folders shown collapsed in the folder pane.
     pub collapsed_folders: Vec<Id>,
     /// Mailbox files opened lately, most recent first.
@@ -519,6 +523,8 @@ impl Default for UiState {
             view: mailcraft_engine::ViewState::default(),
             folder_pane_width: 230.0,
             list_width: 380.0,
+            sync_panel_width: sync_panel::WIDTH,
+            sync_panel_height: 0.0,
             collapsed_folders: Vec::new(),
             recent: Vec::new(),
             microsoft_client_id: String::new(),
@@ -941,6 +947,13 @@ pub struct MailApp {
     sync_problems: Vec<(Id, String, String, Vec<String>)>,
     /// Send/Receive Progress, when it is open ([`sync_panel`]).
     pub(crate) sync_panel: Option<sync_panel::Panel>,
+    /// What runs now was asked for by the owner's own hand: a frame of the window that a press, a
+    /// release or a key started, or a file let go over it (#152). Never so for the control
+    /// channel, an agent or the background.
+    pub(crate) by_hand: bool,
+    /// A refusal of what the owner has just done by hand, shown in a message box once the frame
+    /// is laid out ([`MailApp::refusal`]).
+    pub(crate) refused: Option<String>,
     /// Messages and appointments opened in windows of their own ([`windows`]).
     pub(crate) windows: windows::Windows,
     /// Pictures from the web: which messages may show them, and the ones on their way.
@@ -1046,6 +1059,8 @@ impl MailApp {
             reminders: Default::default(),
             sync_problems: Vec::new(),
             sync_panel: None,
+            by_hand: false,
+            refused: None,
             windows: Default::default(),
             remote_pictures: Default::default(),
             text_selection: Default::default(),
@@ -1081,6 +1096,7 @@ impl MailApp {
         self.ui.backstage_page = "info".into();
         self.ui.folder_pane_width = if self.ui.folder_pane_width.is_finite() { self.ui.folder_pane_width.clamp(150.0, 500.0) } else { 230.0 };
         self.ui.list_width = if self.ui.list_width.is_finite() { self.ui.list_width.clamp(240.0, 900.0) } else { 380.0 };
+        (self.ui.sync_panel_width, self.ui.sync_panel_height) = sync_panel::sane_size(self.ui.sync_panel_width, self.ui.sync_panel_height);
         self.ui.collapsed_folders.truncate(10_000);
         self.ui.recent.truncate(20);
         self.ui.collapsed_calendar_groups.truncate(200);
@@ -1159,9 +1175,16 @@ impl MailApp {
             self.ran = (self.ran.0.wrapping_add(1), id.to_string(), r.clone());
         }
         match &r {
-            // (The engine's refusal of received mail for a Microsoft account, in the interface's language.)
-            Err(e) if e == mailcraft_model::STAYS_LOCAL => self.status(tl!(mailcraft_model::STAYS_LOCAL)),
-            Err(e) => self.status(e.clone()),
+            Err(e) => {
+                // (The engine's refusal of received mail for a Microsoft account, in the interface's language.)
+                let said = if e == mailcraft_model::STAYS_LOCAL { tl!(mailcraft_model::STAYS_LOCAL).to_string() } else { e.clone() };
+                // What the owner has just done by hand and was refused at once is said in a
+                // message box too, as Outlook does (#152).
+                if self.by_hand && refusal_worth_a_box(id, e) {
+                    self.refused = Some(said.clone());
+                }
+                self.status(said);
+            }
             Ok(v) => {
                 if let Some(msg) = feedback(id, v).or_else(|| self.stays_here_note(id, v)) {
                     self.status(msg);
@@ -2483,6 +2506,28 @@ impl MailApp {
         self.status_msg = Some((s.into(), now_ms()));
     }
 
+    /// Run a command the owner asked for that may well be refused, with another way to go when it
+    /// is (a window of its own where there are none, say): a refusal is nobody's business, and
+    /// the status bar and the message box stay as they were.
+    pub(crate) fn run_or_else(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        let (said, refused) = (self.status_msg.clone(), self.refused.clone());
+        let r = self.run(id, params);
+        if r.is_err() {
+            (self.status_msg, self.refused) = (said, refused);
+        }
+        r
+    }
+
+    /// The message box for what the owner did by hand and was refused (#152), once the frame is
+    /// laid out: only when nothing else is asking the owner anything (a dialog that ran the
+    /// command and stays open says what went wrong itself).
+    fn refusal(&mut self) {
+        let Some(text) = self.refused.take() else { return };
+        if self.dialog.is_none() {
+            self.dialog = Some(dialogs::Dialog::Refused { text });
+        }
+    }
+
     /// The name of what is in view, for the window title.
     pub fn title_stem(&self) -> String {
         use mailcraft_engine::Module;
@@ -2578,6 +2623,8 @@ impl MailApp {
         }
         #[cfg(not(target_arch = "wasm32"))]
         for f in ctx.input(|i| i.raw.dropped_files.clone()) {
+            // A file let go over the window is the owner's doing.
+            self.by_hand = true;
             let path = f.path().to_string_lossy().to_string();
             // A picture dropped on File › Signatures goes into the signature open there.
             if signatures && self.session.signature_edit.is_some() {
@@ -2586,6 +2633,7 @@ impl MailApp {
                 self.open_path(&path);
             }
         }
+        self.by_hand = false;
         self.report_dirty();
     }
 
@@ -2912,6 +2960,8 @@ impl MailApp {
         }
         let t = theme::Tokens::get(&ctx);
         self.hit.clear();
+        // (Before the shortcuts take their keys.)
+        self.by_hand = owner_input(&ctx);
         // The computer may have been carried to another time zone since the last frame: the
         // mailbox's times are put by the new clock before anything of it is drawn, and so are
         // the appointments that stand open.
@@ -2947,6 +2997,8 @@ impl MailApp {
         reminders::show(self, &ctx);
         // Over everything: what an agent wants that needs the owner.
         agent_gate::show(self, &ctx);
+        self.by_hand = false;
+        self.refusal();
         let title = format!("{} - MailCraft", self.title_stem());
         if title != self.sent_title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
@@ -3112,6 +3164,22 @@ pub fn damaged_mailbox_notice() -> String {
 }
 
 /// What the status bar says after a command the user ran, when it is worth saying.
+/// The window's input this frame came from the owner's hand: a press or a release of the pointer,
+/// or a key going down (#152). Moving the pointer about isn't doing anything.
+fn owner_input(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::PointerButton { .. } | egui::Event::Key { pressed: true, .. })))
+}
+
+/// Whether a command's refusal of what the owner just did is said in a message box (#152). The
+/// window's own commands (`ui.*`) say what they need where they are; and a command that wasn't
+/// available (`not available: …`), was given what it can't take, or had nothing to do is no
+/// refusal: those stay in the status bar.
+pub(crate) fn refusal_worth_a_box(id: &str, error: &str) -> bool {
+    let quiet = ["not available:", "unknown command", "bad parameters:", "nothing "];
+    let lower = error.trim_start().to_lowercase();
+    !id.starts_with("ui.") && !error.trim().is_empty() && !quiet.iter().any(|q| lower.starts_with(q))
+}
+
 fn feedback(id: &str, v: &Value) -> Option<String> {
     let n = |k: &str| v.get(k).and_then(Value::as_u64);
     let plural = |n: u64, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
