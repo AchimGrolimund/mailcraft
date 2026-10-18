@@ -2678,8 +2678,12 @@ impl MailApp {
         }
         // File › New or File › Open runs once the saver is done with the file (it is handed
         // nothing newer meanwhile, below), writing what changed since itself. Run any earlier,
-        // it would wait for the file and give up.
-        if free && let Some((id, params)) = self.after_save.take() {
+        // it would wait for the file and give up. Never on the way out: a window about to close
+        // doesn't open another mailbox first (#134).
+        if free
+            && !self.close_ready
+            && let Some((id, params)) = self.after_save.take()
+        {
             self.running_after_save = true;
             let r = self.run(&id, params);
             self.running_after_save = false;
@@ -2775,6 +2779,11 @@ impl MailApp {
                 saver.submit(path, &self.session.mailbox, rev);
                 Some(Ok(json!({"path": path.to_string_lossy(), "background": true})))
             }
+            // The window closes once the save it waits for is done: closing wins, and nothing
+            // else opens on the way out (#134).
+            "file.new" | "file.open" if !self.running_after_save && (self.closing_after_save.is_some() || self.close_ready) => {
+                Some(Err(format!("{id} wasn't run: MailCraft closes once the mailbox is saved")))
+            }
             "file.new" | "file.open" if !self.running_after_save => {
                 if rev != self.saved_rev {
                     saver.submit(path, &self.session.mailbox, rev);
@@ -2790,6 +2799,16 @@ impl MailApp {
                 Some(Ok(json!({"pending": "save"})))
             }
             _ => None,
+        }
+    }
+
+    /// A File › New or File › Open waiting for the saver gives way to closing the window: the
+    /// owner asked to close after it, and the window would otherwise open the other mailbox the
+    /// moment the save is done and then close on it (#134). An agent that was answered
+    /// `"pending": "save"` hears that it didn't happen, and why.
+    fn drop_for_close(&mut self) {
+        if let Some((id, _)) = self.after_save.take() {
+            self.after_save_outcome = Some(json!({"command": id, "ok": false, "error": "the window was closed instead"}));
         }
     }
 
@@ -2954,6 +2973,7 @@ impl MailApp {
         }
         // What closing waited for is written, or couldn't be (the owner was told): it closes.
         if ready || anyway {
+            self.drop_for_close();
             return true;
         }
         // What is still to be written (the first save after a large download can take minutes)
@@ -2973,9 +2993,12 @@ impl MailApp {
             if unsaved || saver.progress().is_some() {
                 self.closing_after_save = Some(rev);
                 self.quit_requested = false;
+                // Closing waits for the save now: an Open that waited for it too gives way.
+                self.drop_for_close();
                 return false;
             }
         }
+        self.drop_for_close();
         true
     }
 
