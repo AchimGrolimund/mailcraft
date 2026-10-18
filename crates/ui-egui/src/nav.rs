@@ -556,6 +556,23 @@ pub(crate) fn folder_label(mb: &Mailbox, f: &Folder) -> String {
     crate::i18n::fmt(tl!("{folder} - {mailbox}"), &[("folder", &f.name), ("mailbox", mailbox)])
 }
 
+/// A folder's name on a row of a search of every mailbox (#195): [`folder_label`], and for a
+/// folder whose name a folder of another account of the owner's has too (two Inboxes), its
+/// account's name after it, so the row says which one. Short otherwise: the name alone. A shared
+/// mailbox's folders are named with their mailbox already, so they make no twin.
+pub(crate) fn result_folder_label(mb: &Mailbox, f: &Folder) -> String {
+    let shared = mb.account(f.account).is_some_and(|a| a.is_shared());
+    let own = |id: Id| mb.account(id).is_some_and(|a| !a.is_shared());
+    let twin = || mb.folders.iter().any(|o| o.account != f.account && own(o.account) && o.name.eq_ignore_ascii_case(&f.name));
+    match mb.account(f.account) {
+        Some(a) if !shared && twin() => {
+            let account = if a.name.trim().is_empty() { a.email.trim() } else { a.name.trim() };
+            crate::i18n::fmt(tl!("{folder} - {mailbox}"), &[("folder", &f.name), ("mailbox", account)])
+        }
+        _ => folder_label(mb, f),
+    }
+}
+
 /// What an account's heading in the folder pane says: its name, and for a shared mailbox
 /// Microsoft won't open for the owner, No access (#70; the mail already here stays readable).
 pub(crate) fn heading_name(app: &MailApp, a: &mailcraft_model::Account) -> String {

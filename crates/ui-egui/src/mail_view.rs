@@ -554,6 +554,12 @@ fn list(app: &mut MailApp, ui: &mut Ui) {
     }
 }
 
+/// Whether a row names the folder its message is in, before its preview: in a search of every
+/// mailbox, as Outlook's rows do (#195); in one folder the owner knows which it is.
+fn shows_folder(s: &mailcraft_engine::Session) -> bool {
+    s.view.scope == mailcraft_engine::Scope::Everywhere && !mailcraft_model::search::Query::parse(&s.view.search).is_empty()
+}
+
 /// The previews of the rows the list drew last, so that drawing them again reads no message a
 /// second time. Kept for as long as the mailbox stays as it is.
 #[derive(Clone, Default)]
@@ -804,6 +810,7 @@ fn message_row(app: &mut MailApp, ui: &mut Ui, row: &Row, rect: Rect) {
     // Category marks and the size of a conversation: at the right of the preview's first line,
     // under the time, or before the time when no preview is shown.
     let lines = app.session.prefs.preview_lines.min(3);
+    let searched_everywhere = shows_folder(&app.session);
     let preview_y = rect.min.y + PREVIEW_TOP + PREVIEW_PITCH / 2.0 + 0.5;
     let (mut sx, tail_y) = if lines > 0 { (time_end, preview_y) } else { (time_end - date_w - 8.0, line2) };
     for c in m.categories.iter().take(4) {
@@ -836,7 +843,15 @@ fn message_row(app: &mut MailApp, ui: &mut Ui, row: &Row, rect: Rect) {
         let said = preview(ui, app.session.rev(), &m, usize::from(lines) * 200);
         let format =
             egui::text::TextFormat { font_id: regular(LIST_TEXT), color: t.text_dim, line_height: Some(PREVIEW_PITCH), ..Default::default() };
-        let mut job = egui::text::LayoutJob::single_section(said.to_string(), format);
+        let mut job = egui::text::LayoutJob::default();
+        // In a search of every mailbox, the folder it is in first, as on the server's rows (#195).
+        if let Some(folder) = searched_everywhere.then(|| app.session.mailbox.folder(m.folder)).flatten() {
+            let label = crate::nav::result_folder_label(&app.session.mailbox, folder);
+            job.append(&label, 0.0, egui::text::TextFormat { font_id: semibold(LIST_TEXT), ..format.clone() });
+            job.append(&said, 8.0, format);
+        } else {
+            job.append(&said, 0.0, format);
+        }
         job.wrap =
             egui::text::TextWrapping { max_width: preview_end - left, max_rows: usize::from(lines), break_anywhere: false, overflow_character: None };
         let galley = p.layout_job(job);
@@ -1384,5 +1399,27 @@ mod tests {
             assert_eq!(row_fill(&t, FollowUp::None, false, false), None);
             assert!(![t.surface, t.selection, t.hover].contains(&t.flagged_row));
         }
+    }
+    /// #195: in a search of every mailbox a row names its folder, as a server's result does; in
+    /// one folder, or with nothing searched, it doesn't. Two accounts' Inboxes are told apart.
+    #[test]
+    fn a_search_of_every_mailbox_names_each_rows_folder() {
+        let mut a = app();
+        assert!(!shows_folder(&a.session));
+        a.execute("view.search", json!({"query": "budget", "scope": "folder"})).unwrap();
+        assert!(!shows_folder(&a.session));
+        a.execute("view.search", json!({"query": "budget", "scope": "everywhere"})).unwrap();
+        assert!(shows_folder(&a.session));
+        a.execute("view.search", json!({"query": "- @", "scope": "everywhere"})).unwrap();
+        assert!(!shows_folder(&a.session), "nothing asked for yet: the folder's own list");
+        let mb = &mut a.session.mailbox;
+        let first = mb.inbox().unwrap();
+        let projects = mb.folders.iter().find(|f| f.name == "Projects").unwrap().id;
+        assert_eq!(crate::nav::result_folder_label(mb, mb.folder(first).unwrap()), "Inbox", "one account: the name alone");
+        let work = mb.add_account(mailcraft_model::Account { name: "Work".into(), email: "me@work.example".into(), ..Default::default() });
+        let second = mb.folders.iter().find(|f| f.account == work && f.kind == FolderKind::Inbox).unwrap().id;
+        assert_eq!(crate::nav::result_folder_label(mb, mb.folder(second).unwrap()), "Inbox - Work");
+        assert!(crate::nav::result_folder_label(mb, mb.folder(first).unwrap()).starts_with("Inbox - "));
+        assert_eq!(crate::nav::result_folder_label(mb, mb.folder(projects).unwrap()), "Projects", "a name only one has");
     }
 }
