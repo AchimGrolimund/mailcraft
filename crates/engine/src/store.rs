@@ -2475,6 +2475,8 @@ const FORMAT: &str = "format";
 /// bytes and all, or nothing is written; so is a file of an earlier form, the first time this
 /// form takes its place ([`Keep`]).
 fn compact(st: &mut State, path: &Path, mailbox: &Mailbox, keep: Option<Keep>, progress: &Progress) -> Result<Saved, String> {
+    // (An earlier form of the file than this one is kept as `.format<n>` already.)
+    let legacy = matches!(keep, Some(Keep::Legacy(_)));
     let keep = keep.map(Keep::name);
     let rest = rest_json(mailbox)?;
     let mut out = Summed::new(AtomicFile::create(path).map_err(io_error)?);
@@ -2512,6 +2514,12 @@ fn compact(st: &mut State, path: &Path, mailbox: &Mailbox, keep: Option<Keep>, p
     let mut saved = Saved::default();
     write_content(path, &wanted, &mut saved, progress)?;
     drop(wanted);
+    // Before a newer format than the file's is first written over it: the file as it was, for
+    // the MailCraft before this one (`store_before`).
+    if !legacy {
+        crate::store_before::keep_before_newer_format(path, INDEX_VERSION, env!("CARGO_PKG_VERSION"))
+            .map_err(|e| format!("the mailbox file couldn't be kept before its format changes ({e})"))?;
+    }
     if let Some((what, needed)) = keep {
         match keep_aside(path, &what) {
             // Never removed by this program: each may be the only copy of what it holds (saves
@@ -2651,7 +2659,7 @@ fn names_in(mut r: impl std::io::Read, into: &mut HashSet<Digest>) -> std::io::R
 /// longer does, which someone may want back, or an older MailCraft may open. `None` when one of
 /// them can't be read through (or there are too many): then nothing is swept.
 fn named_by_kept_aside(file: &Path) -> Option<HashSet<Digest>> {
-    let kept = kept_aside(file, &[DAMAGED, CHANGED, FORMAT]);
+    let kept = kept_aside(file, &[DAMAGED, CHANGED, FORMAT, crate::store_before::BEFORE, crate::store_before::AFTER]);
     if kept.len() > MAX_KEPT_ASIDE {
         return None;
     }
