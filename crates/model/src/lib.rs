@@ -35,7 +35,7 @@ pub use mailbox::{
     Mailbox, OAuth, OAuthProvider, Pending, Queued, STAYS_LOCAL, Security, Server, ServerFavorites, ServerFolder,
 };
 pub use mailcraft_time as time;
-pub use message::{Attachment, Body, ContentRef, FlagStatus, Importance, KeptBody, Message, normalize_subject, text_hash};
+pub use message::{Answers, Attachment, Body, ContentRef, FlagStatus, Importance, KeptBody, Message, normalize_subject, text_hash};
 pub use remote::Origin;
 pub use rich::{RichBody, RichText};
 pub use rule::{Action, Condition, Rule};

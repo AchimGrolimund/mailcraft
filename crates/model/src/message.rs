@@ -227,10 +227,30 @@ pub struct Message {
     /// what to check. It isn't sent again until the owner says so. Empty for every other message.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub held: String,
+    /// For a reply or forward written here and not sent yet: the message it answers or forwards,
+    /// which is marked so once this has gone (#154), not when Send is pressed. `None` for every
+    /// other message, and once it is sent.
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "crate::sync::lenient")]
+    pub answers: Option<Answers>,
     /// Where the body is while it isn't in memory ([`KeptBody`]); `None` once it is (or when it
     /// always was). Not written: see [`Attachment::kept`].
     #[serde(skip)]
     pub kept: Option<Box<KeptBody>>,
+}
+
+/// The message a reply or forward not sent yet answers or forwards ([`Message::answers`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Answers {
+    /// The original's id in this mailbox.
+    pub message: Id,
+    /// The original's `Message-ID`, when it has one: a message under that id that isn't it (the
+    /// mailbox was put together otherwise since) isn't marked.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub message_id: String,
+    /// It is a forward (the original is marked forwarded); otherwise a reply (marked replied).
+    #[serde(skip_serializing_if = "is_false")]
+    pub forward: bool,
 }
 
 fn is_false(b: &bool) -> bool {
