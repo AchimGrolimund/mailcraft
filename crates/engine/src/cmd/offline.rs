@@ -156,6 +156,7 @@ pub fn thin(s: &mut Session, account: Option<Id>, most: usize) -> Thinned {
     let waiting = outside(s, account);
     let mut done = Thinned { left: waiting.len().saturating_sub(most), ..Default::default() };
     let mut thinned = HashSet::new();
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
     let mut refs: Vec<mailcraft_model::ContentRef> = Vec::new();
     for id in waiting.into_iter().take(most) {
         let preview = preview_of(s, id);
