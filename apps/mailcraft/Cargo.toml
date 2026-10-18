@@ -46,18 +46,27 @@ winresource = "0.1"
 # WordCraft, PdfCraft and PhotoCraft) registers the handler (Objective-C interop needs unsafe,
 # which our workspace forbids) behind a safe API. Pinned exactly: review the diff before bumping.
 fmv-macos-events = "=0.1.0"
+# The macOS keychain (the owner's login keychain), for the credential store below.
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 # A password or sign-in the owner asks to be remembered goes to the operating system's credential
-# store (Windows Credential Manager, the macOS keychain), never to a file of ours.
-keyring = { version = "3.6", default-features = false, features = ["windows-native", "apple-native"] }
+# store (Windows Credential Manager, the macOS keychain), never to a file of ours. keyring-core is
+# the keyring crate's API: keyring 4 is only a wrapper over it and the stores named here, and its
+# documentation tells programs to link those instead. Each system's store is a crate of its own.
+keyring-core = "1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Windows Credential Manager, for the credential store above.
+windows-native-keyring-store = "1.1"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 # On Linux and FreeBSD the store is the desktop's Secret Service (GNOME Keyring, KWallet,
 # KeePassXC…), spoken to over D-Bus. These features keep it pure Rust: zbus rather than libdbus,
 # so neither building nor installing needs a system library, and the secret travels to the
 # service encrypted (a Diffie-Hellman session, RustCrypto) rather than in the clear.
-keyring = { version = "3.6", default-features = false, features = ["async-secret-service", "async-io", "crypto-rust"] }
+keyring-core = "1"
+zbus-secret-service-keyring-store = { version = "1", features = ["rt-async-io-crypto-rust"] }
 # Under Wayland the clipboard is the compositor's (its data-control protocol, which KDE Plasma
 # and the wlroots compositors have); where it isn't offered (GNOME), arboard falls back to the
 # X11 clipboard through XWayland.
