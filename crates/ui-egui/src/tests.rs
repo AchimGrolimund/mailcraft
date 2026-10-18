@@ -1958,3 +1958,32 @@ fn info_account_card_keeps_what_follows_below_it() {
     let card_bottom = settings.center().y + 29.0;
     assert!(download.min.y >= card_bottom + 8.0, "download {download:?} under the card ending at {card_bottom}");
 }
+
+/// #196: the search box draws keywords as pills, and the query stays what was typed: the pills'
+/// capitals never reach it, Backspace edits it as text, and the keyboard alone does all of it.
+#[test]
+fn search_pills_are_only_how_the_box_draws_the_query() {
+    let mut a = app();
+    let _ = a.execute("ui.dismissReminder", json!({"all": true}));
+    a.execute("ui.focusSearch", json!({})).unwrap();
+    let mut harness = window(a);
+    harness.run_steps(3);
+    let key = |h: &mut egui_kittest::Harness<'static, MailApp>, key: egui::Key| {
+        for pressed in [true, false] {
+            h.event(egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE });
+            h.step();
+        }
+        h.run_steps(2);
+    };
+    harness.event(egui::Event::Text("from: priya subject: atlas ".into()));
+    harness.run_steps(3);
+    assert_eq!(harness.state().session.view.search, "from: priya subject: atlas ");
+    assert_eq!(crate::search_pills::pills(&harness.state().search_text, None).len(), 2);
+    key(&mut harness, egui::Key::Backspace);
+    key(&mut harness, egui::Key::Backspace);
+    assert_eq!(harness.state().session.view.search, "from: priya subject: atla");
+    harness.event(egui::Event::Text("s".into()));
+    harness.run_steps(3);
+    assert_eq!(harness.state().session.view.search, "from: priya subject: atlas");
+    assert_eq!(harness.state_mut().session.rows().len(), 1, "the Atlas welcome from Priya");
+}

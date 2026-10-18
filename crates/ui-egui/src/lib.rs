@@ -42,6 +42,7 @@ pub mod reading;
 mod reminders;
 pub mod ribbon;
 pub mod scheduling;
+mod search_pills;
 pub mod server_search;
 mod shared_mailboxes;
 mod signatures;
