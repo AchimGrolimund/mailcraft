@@ -222,8 +222,8 @@ pub(crate) fn open_dialog(app: &mut MailApp, name: &str, params: &Value) -> Opti
 }
 
 /// What to ask before a user-run command that can't be taken back: deleting for good (also on
-/// the mail server, for an account that has one), emptying or deleting a folder, removing an
-/// account. `None` for everything else. Scripts and agents are not asked: they said what they meant.
+/// the mail server, for an account that has one), deleting a contact, emptying or deleting a
+/// folder, removing an account. `None` for everything else. Scripts and agents are not asked: they said what they meant.
 pub fn confirmation(app: &MailApp, id: &str, params: &Value) -> Option<Question> {
     let mb = &app.session.mailbox;
     let folder = |key: &str| params.get(key).and_then(Value::as_u64).or(Some(app.session.view.folder)).and_then(|f| mb.folder(f));
@@ -267,6 +267,22 @@ pub fn confirmation(app: &MailApp, id: &str, params: &Value) -> Option<Question>
                 what
             };
             question(tl!("Delete for Good"), text, tl!("Delete"))
+        }
+        // A contact has no Deleted Items to go to: deleting one is for good (#186). One the
+        // account's server keeps can't be deleted here, and the command says so without asking.
+        "people.delete" => {
+            let c = mb.contact(params.get("id").and_then(Value::as_u64).or(app.session.sel.contact)?)?;
+            if mailcraft_engine::cmd::remote::keeper(mb, &c.origin).is_some() {
+                return None;
+            }
+            let name = c.name();
+            let name = name.trim();
+            let what = if name.is_empty() {
+                tl!("This contact will be deleted for good.").to_string()
+            } else {
+                crate::i18n::fmt(tl!("\"{name}\" will be deleted for good."), &[("name", name)])
+            };
+            question(tl!("Delete Contact"), format!("{what} {}", tl!("Contacts don't go to Deleted Items.")), tl!("Delete"))
         }
         "folder.empty" => {
             let f = folder("id")?;
