@@ -20,8 +20,9 @@ use crate::transport::{self, Service};
 
 /// Largest answer body taken, unless the one who asks says otherwise ([`Request::max_body`]).
 pub(crate) const MAX_BODY: usize = 64 * 1024;
-/// Largest answer body anyone may ask for.
-pub(crate) const MAX_LARGE_BODY: usize = 16 * 1024 * 1024;
+/// Largest answer body anyone may ask for: a whole message of a Microsoft account (Microsoft's
+/// own limit is 150 MB). Each caller asks for no more than its own answers need (#175).
+pub(crate) const MAX_LARGE_BODY: usize = 160 * 1024 * 1024;
 /// Most bytes the answer's status line and headers may take, and most lines.
 const MAX_HEAD: usize = 16 * 1024;
 const MAX_HEAD_LINES: usize = 200;
@@ -819,6 +820,25 @@ mod tests {
             assert_eq!(too_long(reply(&answer, 2 * 1024)), "the server's answer is longer than 2 KB");
             assert!(reply(&answer, 0).is_err());
         }
+    }
+
+    #[test]
+    fn an_answer_over_16_mb_comes_whole_to_one_who_asks_for_it() {
+        use crate::fake::FakeHttp;
+
+        // A whole message of a Microsoft account may be larger than 16 MB (#175).
+        let size = 17 * 1024 * 1024 + 3;
+        let mut answer = format!("HTTP/1.1 200 OK\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n").into_bytes();
+        answer.resize(answer.len() + size, b'm');
+        let server = FakeHttp::answering(answer);
+        let at = url(&server.url("/v1.0/me/messages/AAMk/$value"));
+        let ask = |max_body: usize| request(&at, &Request { method: "GET", headers: &[], body: None, patience: SOON, max_body });
+        assert_eq!(ask(MAX_LARGE_BODY).unwrap().body.len(), size);
+        assert_eq!(ask(size).unwrap().body.len(), size);
+        assert_eq!(ask(usize::MAX).unwrap().body.len(), size, "within the ceiling");
+        // Everyone else still has their own limit.
+        assert!(matches!(ask(16 * 1024 * 1024), Err(NetError::Proto(ProtoError::Protocol(why))) if why.contains("longer than 16384 KB")));
+        assert!(matches!(ask(MAX_BODY), Err(NetError::Proto(ProtoError::Protocol(why))) if why.contains("longer than 64 KB")));
     }
 
     #[test]

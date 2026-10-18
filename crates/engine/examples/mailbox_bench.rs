@@ -15,6 +15,11 @@
 //! `--open DIR` only opens `DIR/mailbox.mailcraft` (one `--keep` left), in a process that has done
 //! nothing else, and says how long that took and how much memory the process holds after it
 //! (resident, and its peak; Linux): what a person opening that mailbox waits for and pays (R6.1).
+//! Then, as the window goes on: the first message list, a read mark saved (the first save after
+//! opening and three more), and a search everywhere for a word no message has, within the
+//! window's time and to the end, with the memory held after all of it (R6.4). It saves into
+//! `DIR`. To open with the page cache emptied first, without root: `sync`, then
+//! `find DIR -type f -exec dd if={} iflag=nocache count=0 status=none \;` (GNU `dd`).
 //!
 //! The run holds the whole invented mailbox in memory, and the single file twice more while it is
 //! written and read back: about three and a half times the content at its peak, two and a half
@@ -497,6 +502,52 @@ fn open_only(dir: &Path) -> Result<(), String> {
             println!("  memory: {} resident after opening (from {} before), peak {}", mb(rss), mb(rss0), mb(peak));
         }
         _ => println!("  memory: not readable on this system"),
+    }
+    // What the window does next: a session on it, and the message list it shows first.
+    let (mut s, took) = timed(|| {
+        let mut s = Session::new(opened.mailbox);
+        s.path = Some(path.clone());
+        s
+    });
+    let (rows, listed) = timed(|| s.rows().len());
+    println!("  session {}, first message list {} ({rows} rows)", ms(took).trim(), ms(listed).trim());
+    // A read mark saved: the first save after opening, then the next ones (what the saver does
+    // in the background after each change).
+    let ids: Vec<u64> = s.mailbox.messages.keys().copied().collect();
+    let mut saves = Vec::new();
+    for n in 0..4 {
+        let id = ids.get(n * 997 % ids.len().max(1)).copied().unwrap_or(0);
+        s.mailbox.message_mut(id).map_err(|e| e.to_string())?.read ^= true;
+        let (saved, took) = timed(|| store::save(&path, &s.mailbox));
+        let saved = saved?;
+        saves.push(format!("{} ({})", ms(took).trim(), mb(saved.bytes)));
+    }
+    let mut saves = saves.into_iter();
+    println!("  save after a read mark: first after opening {}", saves.next().unwrap_or_default());
+    println!("      then {}", saves.collect::<Vec<_>>().join(", "));
+    // Full text across everything, for words no message has, so every body is read: as the
+    // window searches (within its time), and to the end (another word, so nothing of the first
+    // is reused).
+    for (label, limit, word) in [("within the window's time", s.search_time, "zyxwvutsrq"), ("to the end", Duration::MAX, "qrstuvwxyz")] {
+        s.search_time = limit;
+        let (found, took) = timed(|| s.run("view.search", &serde_json::json!({"query": word, "scope": "everywhere"})));
+        let found = found.map_err(|e| e.to_string())?;
+        println!(
+            "  search everywhere, {label}: {}   ({} found, {} not searched)",
+            ms(took),
+            found.get("found").and_then(serde_json::Value::as_u64).unwrap_or(0),
+            s.unsearched
+        );
+        println!(
+            "      the session holds {} of what it brought in; the process {} resident",
+            mb(s.resident_bytes()),
+            memory().map_or_else(|| "not readable".into(), |(rss, _)| mb(rss))
+        );
+        let _ = s.run("view.clearSearch", &serde_json::json!({}));
+    }
+    match memory() {
+        Some((rss, peak)) => println!("  memory after the saves and searches: {} resident, peak {}", mb(rss), mb(peak)),
+        None => println!("  memory: not readable on this system"),
     }
     Ok(())
 }
