@@ -1165,6 +1165,29 @@ impl Mailbox {
         self.messages.get_mut(&id).map(Arc::make_mut).ok_or(not_found("message", id))
     }
 
+    /// Message `id` has been sent: the original it answers or forwards ([`Message::answers`]) is
+    /// marked replied or forwarded now, and `id` no longer waits to do so (#154). Nothing for a
+    /// message that answers nothing, or whose original is gone. Whether anything changed.
+    pub fn mark_answered(&mut self, id: Id) -> bool {
+        let Some(answers) = self.message(id).and_then(|m| m.answers.clone()) else { return false };
+        if let Ok(m) = self.message_mut(id) {
+            m.answers = None;
+        }
+        let marked = |m: &Message| if answers.forward { m.forwarded } else { m.answered };
+        let same = |m: &Message| answers.message_id.is_empty() || m.message_id == answers.message_id;
+        if answers.message != id
+            && self.message(answers.message).is_some_and(|orig| same(orig) && !marked(orig))
+            && let Ok(orig) = self.message_mut(answers.message)
+        {
+            if answers.forward {
+                orig.forwarded = true;
+            } else {
+                orig.answered = true;
+            }
+        }
+        true
+    }
+
     pub fn messages_in(&self, folder: Id) -> impl Iterator<Item = &Arc<Message>> {
         self.messages.values().filter(move |m| m.folder == folder)
     }
