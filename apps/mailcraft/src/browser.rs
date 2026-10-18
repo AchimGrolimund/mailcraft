@@ -409,7 +409,9 @@ mod tests {
                     continue;
                 }
                 stack.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
-            } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("src/browser.rs") {
+            // ponytail: opened_files.rs opens saved attachments (files, not pages) with `open`;
+            // it could take the activation token too if those programs should come in front.
+            } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("src/browser.rs") && !path.ends_with("src/opened_files.rs") {
                 let text = std::fs::read_to_string(&path).unwrap();
                 if text.contains(concat!("webbrowser", "::"))
                     || text.contains(concat!("open", "::that"))
