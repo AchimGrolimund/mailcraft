@@ -162,7 +162,9 @@ mod tests {
         assert_eq!(windows(exe, None), Install::NoticeOnly);
     }
 
+    // Paths of macOS and Linux, which are absolute only there.
     #[test]
+    #[cfg(unix)]
     fn a_mac_app_where_the_owner_keeps_it() {
         assert_eq!(mac(Path::new("/Applications/MailCraft.app/Contents/MacOS/mailcraft")), Install::MacApp);
         assert_eq!(mac(Path::new("/Users/a/Apps/MailCraft.app/Contents/MacOS/mailcraft")), Install::MacApp);
@@ -178,7 +180,9 @@ mod tests {
         }
     }
 
+    // Paths of macOS and Linux, which are absolute only there.
     #[test]
+    #[cfg(unix)]
     fn an_appimage_by_what_its_runtime_says() {
         let image = Some(OsStr::new("/home/a/Apps/mailcraft-0.5.0-linux-x86_64.AppImage"));
         let dir = Some(OsStr::new("/tmp/.mount_mailcrXYZ"));
