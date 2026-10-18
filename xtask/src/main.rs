@@ -7,6 +7,7 @@ mod ico;
 mod icon;
 mod layers;
 mod parity;
+mod release_key;
 mod stats;
 mod version;
 
@@ -28,6 +29,10 @@ commands:
                   pack square PNGs (<= 256 px) into a Windows .ico (see packaging/icons.sh)
   icon            draw the app icon (original artwork, in code) into assets/app-icon
   version [...]   show or set the workspace version
+  release-key new <dir>
+                  make the two release keys (in use, spare): private keys into <dir>, public keys printed
+  release-key sign <file>
+                  sign <file> into <file>.sig with the key in MAILCRAFT_RELEASE_KEY (base64 PKCS#8)
 ";
 
 fn main() -> ExitCode {
@@ -44,6 +49,7 @@ fn main() -> ExitCode {
         Some("ico") => ico::run(&rest),
         Some("icon") => icon::run(&root()),
         Some("version") => version::run(&root(), &rest),
+        Some("release-key") => release_key::run(&rest),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");
             Ok(())

@@ -292,19 +292,7 @@ pub(crate) fn request(url: &Url, request: &Request<'_>) -> Result<Reply, NetErro
     let body: &[u8] = request.body.unwrap_or_default();
     let allowance = Duration::from_secs(u64::try_from(body.len() / MIN_UPLOAD_RATE).unwrap_or(u64::MAX));
     let patience = request.patience.saturating_add(allowance);
-    // The address was checked when it was read: nothing in it can end the line early.
-    let mut head = format!("{method} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {USER_AGENT}\r\n", url.path, url.authority());
-    for (name, value) in request.headers {
-        // Nor can a header: a name that isn't one is left out, and a value loses its control characters.
-        if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
-            let value: String = value.chars().filter(|c| !c.is_control()).collect();
-            head.push_str(&format!("{name}: {value}\r\n"));
-        }
-    }
-    if request.body.is_some() {
-        head.push_str(&format!("Content-Length: {}\r\n", body.len()));
-    }
-    head.push_str("Connection: close\r\n\r\n");
+    let head = head_of(method, url, request.headers, request.body.map(<[u8]>::len));
     // A header or a body may carry secrets: nothing of the request is logged.
     if body.len() <= UPLOAD_CHUNK {
         let mut all = head.into_bytes();
@@ -324,6 +312,129 @@ pub(crate) fn request(url: &Url, request: &Request<'_>) -> Result<Reply, NetErro
     let reply = read_reply(&mut stream, started, patience, request.max_body.min(MAX_LARGE_BODY))?;
     log::debug!("{} answered {} ({} bytes)", url.host, reply.status, reply.body.len());
     Ok(reply)
+}
+
+/// The request line and the headers of a request, up to the empty line.
+fn head_of(method: &str, url: &Url, headers: &[(&str, &str)], body: Option<usize>) -> String {
+    // The address was checked when it was read: nothing in it can end the line early.
+    let mut head = format!("{method} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {USER_AGENT}\r\n", url.path, url.authority());
+    for (name, value) in headers {
+        // Nor can a header: a name that isn't one is left out, and a value loses its control characters.
+        if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            let value: String = value.chars().filter(|c| !c.is_control()).collect();
+            head.push_str(&format!("{name}: {value}\r\n"));
+        }
+    }
+    if let Some(length) = body {
+        head.push_str(&format!("Content-Length: {length}\r\n"));
+    }
+    head.push_str("Connection: close\r\n\r\n");
+    head
+}
+
+/// How long a [`stream`] may take: `connect` to connect, `idle` for any one read, and `total`
+/// for all of it from the request on.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct StreamPatience {
+    pub(crate) connect: Duration,
+    pub(crate) idle: Duration,
+    pub(crate) total: Duration,
+}
+
+/// What a [`stream`]ed answer said of itself, and how much of its body was written.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Streamed {
+    pub(crate) status: u16,
+    /// Its `Location` header (where a redirect leads), as the server wrote it.
+    pub(crate) location: Option<String>,
+    /// Its `Content-Range` header (`bytes 100-199/200`), as the server wrote it.
+    pub(crate) content_range: Option<String>,
+    /// Its `Content-Length`, when it gave one.
+    pub(crate) length: Option<u64>,
+    /// Bytes of the body written to the sink.
+    pub(crate) written: u64,
+}
+
+/// A GET of `url` whose body, when the status is 200 or 206 and `accept` takes what the head
+/// says, goes into `sink` as it comes, at most `max` bytes of it (an answer that says it has
+/// more is refused before a byte is written). Any other answer is given back with its head
+/// alone: its body is not read. An answer cut off halfway is an error, and what came of it
+/// before is in the sink.
+pub(crate) fn stream(
+    url: &Url,
+    headers: &[(&str, &str)],
+    patience: StreamPatience,
+    max: u64,
+    accept: &dyn Fn(&Streamed) -> bool,
+    sink: &mut dyn Write,
+) -> Result<Streamed, NetError> {
+    let server = Server { host: url.host.clone(), port: url.port, security: if url.secure { Security::Tls } else { Security::None } };
+    let (mut stream, _) = transport::open_within(&server, Service::Http, patience.connect, patience.idle)?;
+    let started = Instant::now();
+    write_all(&mut stream, head_of("GET", url, headers, None).as_bytes())?;
+    stream.flush().map_err(|e| io_problem(&e))?;
+    let mut reader = Reader { stream: &mut stream, buf: Vec::new(), start: 0, ended: false, started, patience: patience.total };
+    let mut head = read_head(&mut reader)?;
+    for _ in 0..4 {
+        if !(100..200).contains(&head.status) {
+            break;
+        }
+        head = read_head(&mut reader)?;
+    }
+    let mut said =
+        Streamed { status: head.status, location: head.location.clone(), content_range: head.content_range.clone(), length: head.length, written: 0 };
+    if !matches!(head.status, 200 | 206) || !accept(&said) {
+        return Ok(said);
+    }
+    let too_long = || nonsense(&format!("{TOO_LONG} {} KB", max / 1024));
+    if head.chunked {
+        // Every chunk but the last has at least one byte, so the limit also limits the rounds.
+        let mut ended = false;
+        for _ in 0..=max {
+            let line = reader.line(256)?.ok_or_else(closed)?;
+            let line = String::from_utf8_lossy(&line);
+            let digits = line.split(';').next().unwrap_or("").trim();
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(nonsense("the server's answer is garbled"));
+            }
+            let size = u64::from_str_radix(digits, 16).unwrap_or(u64::MAX);
+            if size == 0 {
+                ended = true;
+                break;
+            }
+            if size > max.saturating_sub(said.written) {
+                return Err(too_long());
+            }
+            let poured = reader.pour(size, sink)?;
+            said.written = said.written.saturating_add(poured);
+            if poured < size {
+                return Err(closed());
+            }
+            match reader.line(2)? {
+                Some(rest) if rest.is_empty() => {}
+                Some(_) => return Err(nonsense("the server's answer is garbled")),
+                None => return Err(closed()),
+            }
+        }
+        if !ended {
+            return Err(too_long());
+        }
+    } else if let Some(length) = head.length {
+        if length > max {
+            return Err(too_long());
+        }
+        said.written = reader.pour(length, sink)?;
+        if said.written < length {
+            return Err(closed());
+        }
+    } else {
+        said.written = reader.pour(max, sink)?;
+        if reader.fill()? {
+            return Err(too_long());
+        }
+    }
+    log::debug!("{} answered {} ({} bytes)", url.host, said.status, said.written);
+    Ok(said)
 }
 
 /// Not `write_all`: that retries an interrupted write for ever.
@@ -421,6 +532,25 @@ impl<R: Read> Reader<'_, R> {
         Ok(out)
     }
 
+    /// Up to `n` bytes on into `sink`, as they come; how many were written (fewer only when the
+    /// stream ended first).
+    fn pour(&mut self, n: u64, sink: &mut dyn Write) -> Result<u64, NetError> {
+        let mut written = 0u64;
+        while written < n {
+            if self.pending().is_empty() && !self.fill()? {
+                break;
+            }
+            let left = usize::try_from(n.saturating_sub(written)).unwrap_or(usize::MAX);
+            let pending = self.pending();
+            let piece = pending.get(..left.min(pending.len())).unwrap_or(&[]);
+            let taken = piece.len();
+            sink.write_all(piece).map_err(|e| NetError::Config(format!("the download couldn't be written: {}", tidy(&e.to_string()))))?;
+            self.start = self.start.saturating_add(taken);
+            written = written.saturating_add(u64::try_from(taken).unwrap_or(u64::MAX));
+        }
+        Ok(written)
+    }
+
     /// Everything up to the end of the stream, when that is no more than `max`.
     fn rest(&mut self, max: usize) -> Result<Vec<u8>, NetError> {
         while self.pending().len() <= max && self.fill()? {}
@@ -444,6 +574,8 @@ struct Head {
     length: Option<u64>,
     chunked: bool,
     retry_after: Option<String>,
+    location: Option<String>,
+    content_range: Option<String>,
 }
 
 /// [`read_reply`] with a body of no more than the usual size.
@@ -510,6 +642,10 @@ fn read_head<R: Read>(reader: &mut Reader<'_, R>) -> Result<Head, NetError> {
             head.chunked = value.rsplit(',').next().is_some_and(|last| last.trim().eq_ignore_ascii_case("chunked"));
         } else if name.eq_ignore_ascii_case("retry-after") {
             head.retry_after = Some(tidy(value));
+        } else if name.eq_ignore_ascii_case("location") {
+            head.location = Some(value.to_string());
+        } else if name.eq_ignore_ascii_case("content-range") {
+            head.content_range = Some(value.to_string());
         }
     }
     Err(nonsense("the server's answer has too many headers"))

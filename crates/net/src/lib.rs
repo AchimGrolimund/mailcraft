@@ -45,6 +45,8 @@ mod sync;
 mod transport;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod update;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod update_download;
 
 // (`cfg(test)` on its own line: that is how clippy knows test code, which may unwrap.)
 #[cfg(test)]
