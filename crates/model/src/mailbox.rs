@@ -821,6 +821,27 @@ impl Mailbox {
         Ok(id)
     }
 
+    /// The name of the shared mailbox `account` as its server writes it, for its From line
+    /// (#70): when it has none yet, the name on its own address in the mail its Sent Items
+    /// brought down (Exchange writes that, not a sender from outside). Whether it was named.
+    pub fn name_shared_from_sent(&mut self, account: Id) -> bool {
+        let Some(a) = self.account(account).filter(|a| a.is_shared() && a.display_name.trim().is_empty()) else { return false };
+        let address = a.email.trim().to_string();
+        let Some(sent) = self.folder_of_kind(account, FolderKind::Sent) else { return false };
+        let named = self
+            .messages_in(sent)
+            .filter(|m| m.from.email.trim().eq_ignore_ascii_case(&address))
+            .map(|m| m.from.name.chars().map(|c| if c.is_control() { ' ' } else { c }).take(254).collect::<String>().trim().to_string())
+            .find(|name| !name.is_empty() && !name.eq_ignore_ascii_case(&address));
+        match (named, self.account_mut(account)) {
+            (Some(name), Ok(a)) => {
+                a.display_name = name;
+                true
+            }
+            _ => false,
+        }
+    }
+
     // ---- favourites ----
 
     /// The folders of `account` that its server lists as Favorites, in the server's order;
