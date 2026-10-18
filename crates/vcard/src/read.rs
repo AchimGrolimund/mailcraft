@@ -6,7 +6,7 @@ use mailcraft_model::{Contact, Labeled, PostalAddress};
 use mailcraft_time::Date;
 
 use crate::lines::{ContentLine, Lines};
-use crate::text::{base64_bytes, component, decode, multi, quoted_printable, single, split, unescape};
+use crate::text::{base64_bytes, component, multi, quoted_printable, single, split, unescape};
 
 /// Most cards read from one text.
 const MAX_CARDS: usize = 100_000;
@@ -192,7 +192,7 @@ fn decoded(line: &ContentLine) -> String {
         "BASE64" | "B" => base64_bytes(&line.value),
         _ => return line.value.clone(),
     };
-    decode(bytes, line.param("CHARSET").unwrap_or(""))
+    mailcraft_charset::decode(&bytes, line.param("CHARSET").unwrap_or(""))
 }
 
 /// `tel:+1-555-0100` and `mailto:a@example.org` (vCard 4.0 URIs) without the scheme.
@@ -567,6 +567,39 @@ ADR;TYPE=dom,postal,parcel:;;1 Main St;Riverton\nitem2.ADR:;;2 Side St\nitem2.X-
         assert_eq!(card("FN;CHARSET=windows-1252;ENCODING=QUOTED-PRINTABLE:Zo=EB =96 caf=E9").display_name, "Zoë – café");
         assert_eq!(card("FN;QUOTED-PRINTABLE:Zo=EB").display_name, "Zoë");
         assert_eq!(card("FN;QUOTED-PRINTABLE:Zo=C3=AB").display_name, "Zoë");
+    }
+
+    #[test]
+    fn central_european_charsets() {
+        // #180: a 2.1 card from a Central European phone or mail program, in Windows-1250 and in
+        // ISO-8859-2, was read as Windows-1252 or UTF-8.
+        let cards = parse(
+            "BEGIN:VCARD\r\n\
+VERSION:2.1\r\n\
+N;CHARSET=windows-1250;ENCODING=QUOTED-PRINTABLE:=8Eagar;=D0ur=F0ica;;;\r\n\
+FN;CHARSET=windows-1250;ENCODING=QUOTED-PRINTABLE:=D0ur=F0ica =8Eagar\r\n\
+ORG;CHARSET=windows-1250;ENCODING=QUOTED-PRINTABLE:Gvo=9E=F0e d.o.o.\r\n\
+NOTE;CHARSET=windows-1250;ENCODING=QUOTED-PRINTABLE:We=92ve met =96 twice, in =8Aibenik =\r\n\
+and =C8akovec.\r\n\
+EMAIL;INTERNET:durdica@example.org\r\n\
+END:VCARD\r\n\
+BEGIN:VCARD\r\n\
+VERSION:2.1\r\n\
+N;CHARSET=ISO-8859-2;ENCODING=QUOTED-PRINTABLE:Kova=E8i=E6;=AEeljko;;;\r\n\
+FN;CHARSET=ISO-8859-2;ENCODING=QUOTED-PRINTABLE:=AEeljko Kova=E8i=E6\r\n\
+TITLE;CHARSET=iso-8859-2;ENCODING=QUOTED-PRINTABLE:Gvo=BE=F0e i =B9ljunak\r\n\
+EMAIL;INTERNET:zeljko@example.org\r\n\
+END:VCARD\r\n",
+        );
+        assert_eq!(cards.len(), 2);
+        let (first, second) = (&cards[0], &cards[1]);
+        assert_eq!((first.display_name.as_str(), first.first.as_str(), first.last.as_str()), ("Đurđica Žagar", "Đurđica", "Žagar"));
+        assert_eq!(first.company, "Gvožđe d.o.o.");
+        assert_eq!(first.notes, "We’ve met – twice, in Šibenik and Čakovec.");
+        assert_eq!((second.display_name.as_str(), second.first.as_str(), second.last.as_str()), ("Željko Kovačić", "Željko", "Kovačić"));
+        assert_eq!(second.title, "Gvožđe i šljunak");
+        // A set no standard names is read as UTF-8, as mail is.
+        assert_eq!(card("FN;CHARSET=x-unknown;ENCODING=QUOTED-PRINTABLE:Zo=C3=AB").display_name, "Zoë");
     }
 
     #[test]
