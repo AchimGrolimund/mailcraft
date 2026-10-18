@@ -120,7 +120,7 @@ impl MailApp {
             return self.updates.newer.clone();
         }
         let told = Version::parse(&self.ui.update_told).filter(|told| told.is_newer_than(&running))?;
-        Some(Release { page: page_of(&told), version: told, security: false })
+        Some(Release { page: page_of(&told), version: told, security: false, assets: Vec::new() })
     }
 
     /// Once, at the start of a run (after the settings are read): put the question, when it is
@@ -379,7 +379,7 @@ mod tests {
 
     fn release(version: &str, security: bool) -> Release {
         let version = Version::parse(version).unwrap();
-        Release { page: page_of(&version), version, security }
+        Release { page: page_of(&version), version, security, assets: Vec::new() }
     }
 
     fn stand_in(answer: Result<Release, String>) -> (Host, Services) {

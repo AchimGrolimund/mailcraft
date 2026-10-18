@@ -378,6 +378,7 @@ fn stand_in(host: &Arc<Mutex<Host>>) -> Services {
                     page: format!("https://github.com/UCS-Care-Group/mailcraft/releases/tag/v{version}"),
                     version,
                     security,
+                    assets: Vec::new(),
                 }),
                 None => Err("GitHub couldn't be reached".to_string()),
             })
