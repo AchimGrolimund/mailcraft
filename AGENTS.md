@@ -40,7 +40,7 @@ People trust MailCraft with years of correspondence; a crash loses their work an
 ## Architecture (see `docs/architecture.md`)
 | Layer | Crate | Job |
 |---|---|---|
-| L0 | `time`, `control-key` | calendar maths, date text, the clock; control-port key files |
+| L0 | `time`, `control-key`, `charset` | calendar maths, date text, the clock; control-port key files; bytes in any WHATWG character set to text |
 | L1 | `model`, `html` | the mailbox and its edit primitives, recurrence, search, sync data; hostile HTML to display blocks |
 | L2 | `mime`, `ical`, `vcard` | Internet messages and mbox; iCalendar; vCard |
 | L3 | `proto`, `net` | IMAP and SMTP over any `Read + Write`; TLS sockets, sending, synchronising |

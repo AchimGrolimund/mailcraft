@@ -2305,6 +2305,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mailcraft-charset"
+version = "0.4.3"
+dependencies = [
+ "encoding_rs",
+ "proptest",
+]
+
+[[package]]
 name = "mailcraft-cli"
 version = "0.4.3"
 dependencies = [
@@ -2372,7 +2380,7 @@ name = "mailcraft-mime"
 version = "0.4.3"
 dependencies = [
  "base64",
- "encoding_rs",
+ "mailcraft-charset",
  "mailcraft-html",
  "mailcraft-model",
  "mailcraft-time",
@@ -2455,6 +2463,7 @@ name = "mailcraft-vcard"
 version = "0.4.3"
 dependencies = [
  "base64",
+ "mailcraft-charset",
  "mailcraft-model",
  "mailcraft-time",
  "proptest",

@@ -13,6 +13,7 @@ repository = "https://github.com/UCS-Care-Group/mailcraft"
 [workspace.dependencies]
 # internal
 mailcraft-time = { path = "crates/time" }
+mailcraft-charset = { path = "crates/charset" }
 mailcraft-model = { path = "crates/model" }
 mailcraft-html = { path = "crates/html" }
 mailcraft-mime = { path = "crates/mime" }
@@ -33,7 +34,7 @@ log = "0.4"
 proptest = "1"
 base64 = "0.22"
 # Character sets by the WHATWG Encoding Standard, for mail in any of the sets it names
-# (windows-1250, iso-8859-2, koi8-r, shift_jis, iso-2022-jp…): `mailcraft-mime`'s `charset`.
+# (windows-1250, iso-8859-2, koi8-r, shift_jis, iso-2022-jp…), and vCard files: `mailcraft-charset`.
 # (Apache-2.0 OR MIT) AND BSD-3-Clause, Rust throughout, builds for the browser.
 encoding_rs = "0.8"
 getrandom = "0.3"

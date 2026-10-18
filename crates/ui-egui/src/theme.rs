@@ -420,6 +420,9 @@ pub fn font_definitions_with(system: &SystemFont) -> FontDefinitions {
     // Symbols and emoji fall back to egui's defaults (kept after our faces).
     let mut fallback: Vec<String> = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     fallback.push("SourceSans".into());
+    // Last, JetBrains Mono, for what only it has: U+FFFD among them, the mark of a character that
+    // couldn't be read, which would otherwise be an empty box (#180).
+    fallback.push("Mono".into());
     // A weight is the system's face of that weight, then the bundled face nearest to it, then
     // the regular faces for whatever glyph those two lack.
     let chain = |faces: &[Option<&str>]| -> Vec<String> {
@@ -680,6 +683,25 @@ mod tests {
         })
         .drop_without_applying_deltas();
         ctx
+    }
+
+    /// #180: U+FFFD, the mark of a character that couldn't be read, has a glyph in every weight
+    /// of the interface's text, from JetBrains Mono at the end of each family.
+    #[test]
+    fn the_replacement_character_is_drawn() {
+        let fonts = super::font_definitions_with(&SystemFont::none());
+        for (name, faces) in &fonts.families {
+            if *name != egui::FontFamily::Monospace {
+                assert_eq!(faces.last().map(String::as_str), Some("Mono"), "{name:?}");
+            }
+        }
+        let ctx = draws(fonts);
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            for font in [super::regular(12.0), super::medium(12.0), super::semibold(12.0), super::bold(12.0)] {
+                assert!(ui.fonts_mut(|f| f.has_glyph(&font, '\u{fffd}')), "{font:?}");
+            }
+        })
+        .drop_without_applying_deltas();
     }
 
     /// Without the system's font (another system, the browser, a folder that isn't there) the
