@@ -25,6 +25,9 @@ enum Kind {
     Words {
         fields: u8,
         words: Vec<String>,
+        /// The same words as the owner wrote them (case and accents as typed), for a server's
+        /// search ([`Query::for_server`]).
+        raw: Vec<String>,
     },
     Category(String),
     HasAttachment,
@@ -76,6 +79,57 @@ fn tokens(s: &str) -> Vec<String> {
     out
 }
 
+/// Most words of one term, and most characters of one word, that go to a server.
+const MAX_SERVER_WORDS: usize = 8;
+const MAX_SERVER_WORD: usize = 64;
+/// Most terms that go to a server; the rest are checked here.
+const MAX_SERVER_TERMS: usize = 16;
+
+/// The words of `text` as a server's search is to be given them: runs of letters, digits and
+/// `@._-'` (so that an address stays whole), each trimmed of what isn't a letter or a digit at
+/// its ends, in the case and with the accents they were typed in.
+fn raw_words(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_alphanumeric() || "@._-'".contains(c)))
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|w| !w.is_empty())
+        .take(MAX_SERVER_WORDS)
+        .map(|w| w.chars().take(MAX_SERVER_WORD).collect())
+        .collect()
+}
+
+/// The part of a message a server's search is asked to look in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerField {
+    From,
+    To,
+    Cc,
+    Subject,
+    Body,
+    Attachment,
+}
+
+/// A term of a query a server's search understands (Microsoft Graph's, R6.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ServerTerm {
+    /// Words one after another (a phrase, when there are several), as the owner wrote them: in
+    /// one part of a message, or (`None`) wherever the server looks by itself.
+    Words {
+        field: Option<ServerField>,
+        words: Vec<String>,
+    },
+    HasAttachment,
+    /// High or low (a server's search has no word for normal).
+    Importance(Importance),
+}
+
+/// A query split for a server: what it understands, and what is left to check here against what
+/// comes back.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerQuery {
+    pub terms: Vec<ServerTerm>,
+    pub local: Query,
+}
+
 fn parse_date(s: &str) -> Option<Date> {
     if let Some(d) = Date::parse_iso(s) {
         return Some(d);
@@ -93,8 +147,8 @@ impl Query {
                 Some(rest) if !rest.is_empty() => (true, rest),
                 _ => (false, token.as_str()),
             };
-            let text = || Kind::Words { fields: words::ALL, words: words::words(body) };
-            let words_in = |fields: u8, v: &str| Kind::Words { fields, words: words::words(v) };
+            let text = || Kind::Words { fields: words::ALL, words: words::words(body), raw: raw_words(body) };
+            let words_in = |fields: u8, v: &str| Kind::Words { fields, words: words::words(v), raw: raw_words(v) };
             let kind = match body.split_once(':') {
                 Some((key, value)) if !value.is_empty() => {
                     let v = value.to_string();
@@ -155,7 +209,7 @@ impl Query {
     /// say `None`.
     pub fn words_of(&self, i: usize) -> Option<(u8, &[String])> {
         match &self.terms.get(i)?.kind {
-            Kind::Words { fields, words } => Some((*fields, words)),
+            Kind::Words { fields, words, .. } => Some((*fields, words)),
             _ => None,
         }
     }
@@ -163,6 +217,41 @@ impl Query {
     /// Whether term `i` reads a message's text.
     pub fn term_reads_body(&self, i: usize) -> bool {
         self.words_of(i).is_some_and(|(fields, _)| fields & BODY != 0)
+    }
+
+    /// The query split for a server's search (R6.2): words, phrases and `from:`, `to:`, `cc:`,
+    /// `subject:`, `body:` and `attachment:` with them, `has:attachment`, and `importance:` high
+    /// or low go to the server; a term with `-` in front, `is:`, `category:`, dates, normal
+    /// importance, and whatever is past [`MAX_SERVER_TERMS`] are left to check here. A message the
+    /// server finds for the first matches the whole query when it matches the second.
+    pub fn for_server(&self) -> ServerQuery {
+        let mut out = ServerQuery::default();
+        for term in &self.terms {
+            let sent = match (&term.kind, term.negate) {
+                (_, true) => None,
+                (Kind::Words { fields, raw, .. }, false) if !raw.is_empty() => {
+                    let field = match *fields {
+                        words::ALL => Some(None),
+                        FROM => Some(Some(ServerField::From)),
+                        TO => Some(Some(ServerField::To)),
+                        CC => Some(Some(ServerField::Cc)),
+                        SUBJECT => Some(Some(ServerField::Subject)),
+                        BODY => Some(Some(ServerField::Body)),
+                        ATTACHMENT => Some(Some(ServerField::Attachment)),
+                        _ => None,
+                    };
+                    field.map(|field| ServerTerm::Words { field, words: raw.clone() })
+                }
+                (Kind::HasAttachment, false) => Some(ServerTerm::HasAttachment),
+                (Kind::Importance(i @ (Importance::High | Importance::Low)), false) => Some(ServerTerm::Importance(*i)),
+                _ => None,
+            };
+            match sent {
+                Some(sent) if out.terms.len() < MAX_SERVER_TERMS => out.terms.push(sent),
+                _ => out.local.terms.push(term.clone()),
+            }
+        }
+        out
     }
 
     /// Whether `m` matches every term. Dates compare in a zone `offset_minutes` east of UTC.
@@ -176,7 +265,9 @@ impl Query {
         let day = || DateTime::from_timestamp(m.date, offset_minutes).date;
         self.terms.iter().enumerate().all(|(i, t)| {
             let hit = known(i).unwrap_or_else(|| match &t.kind {
-                Kind::Words { fields, words } => words::texts(m, &m.body.text, |field, text| field & fields != 0 && words::starts_in(text, words)),
+                Kind::Words { fields, words, .. } => {
+                    words::texts(m, &m.body.text, |field, text| field & fields != 0 && words::starts_in(text, words))
+                }
                 Kind::Category(x) => m.categories.iter().any(|c| contains_ci(c, x)),
                 Kind::HasAttachment => m.has_attachments(),
                 Kind::Unread => !m.read,
@@ -277,6 +368,37 @@ mod tests {
         assert!(!q.matches_with(&m, 0, |i| (i == 1).then_some(true)));
         assert!(!q.matches_with(&m, 0, |i| (i == 0).then_some(false)));
         assert!(!Query::parse("subject:x").reads_bodies() && Query::parse("body:x").reads_bodies());
+    }
+
+    /// R6.2: what a server's search understands goes there; the rest is checked here, and the
+    /// two together are the whole query.
+    #[test]
+    fn a_query_splits_into_what_a_server_understands_and_what_is_checked_here() {
+        let split =
+            Query::parse(r#"Budget from:ada@example.org subject:"Q4 plan" has:attachment is:unread -lunch importance:low category:red"#).for_server();
+        let words = |field, w: &[&str]| ServerTerm::Words { field, words: w.iter().map(|w| w.to_string()).collect() };
+        assert_eq!(
+            split.terms,
+            [
+                words(None, &["Budget"]),
+                words(Some(ServerField::From), &["ada@example.org"]),
+                words(Some(ServerField::Subject), &["Q4", "plan"]),
+                ServerTerm::HasAttachment,
+                ServerTerm::Importance(Importance::Low),
+            ]
+        );
+        assert_eq!(split.local.len(), 3, "is:unread, -lunch, category:red");
+        assert!(!split.local.matches(&msg(), 0), "its category is blue");
+        let unread_red = Message { categories: vec!["Red".into()], ..msg() };
+        assert!(split.local.matches(&unread_red, 0));
+        // Accents and case as typed; punctuation at a word's ends trimmed; an address whole.
+        assert_eq!(Query::parse("Gvožđar, (ada@example.org).").for_server().terms, [words(None, &["Gvožđar"]), words(None, &["ada@example.org"])]);
+        // Nothing for the server: all of it is checked here.
+        let none = Query::parse("is:flagged -x after:2026-01-01 importance:normal").for_server();
+        assert!(none.terms.is_empty() && none.local.len() == 4);
+        // At most so many terms go; the rest stay here.
+        let many = Query::parse(&"word ".repeat(40)).for_server();
+        assert_eq!((many.terms.len(), many.local.len()), (MAX_SERVER_TERMS, 40 - MAX_SERVER_TERMS));
     }
 
     #[test]

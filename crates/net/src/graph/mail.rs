@@ -593,13 +593,17 @@ fn child_named(graph: &Graph<'_>, known: &Known, parent: &str, name: &str) -> Re
 mod down;
 mod drafts;
 mod fetch;
+mod search;
 mod send;
 mod up;
 
 pub use fetch::fetch_messages;
+pub use search::search_messages;
 
 #[cfg(test)]
 mod down_tests;
+#[cfg(test)]
+mod search_tests;
 #[cfg(test)]
 mod shared_tests;
 #[cfg(test)]
