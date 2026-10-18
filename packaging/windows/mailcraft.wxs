@@ -26,9 +26,11 @@
       Language="1033">
     <SummaryInformation Description="MailCraft mail and calendar" Manufacturer="MailCraft contributors" />
     <!-- Same-version upgrades let successive pre-releases of one X.Y.Z replace each other
-         (MSI versions are numeric, so 1.2.3-rc.1 and 1.2.3-rc.2 are both 1.2.3). -->
-    <MajorUpgrade AllowSameVersionUpgrades="yes"
-        DowngradeErrorMessage="A newer version of MailCraft is already installed." />
+         (MSI versions are numeric, so 1.2.3-rc.1 and 1.2.3-rc.2 are both 1.2.3). Downgrades
+         are allowed so that MailCraft can go back to the version an update replaced, when the
+         new one doesn't start (apps/mailcraft/src/self_update.rs): installing this package over
+         a newer MailCraft replaces it. The mailbox is in the user's own folder either way. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" AllowDowngrades="yes" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Icon Id="MailcraftIcon.ico" SourceFile="$(var.IconPath)" />
@@ -53,6 +55,13 @@
       <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchMailcraft"
           Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
     </UI>
+
+    <!-- An organisation turns MailCraft's updating by itself off for every user of the computer
+         by installing with DISABLEAUTOMATICUPDATES=1
+         (`msiexec /i mailcraft-….msi DISABLEAUTOMATICUPDATES=1`): the policy value the program
+         reads (HKLM\Software\Policies\MailCraft, DisableAutomaticUpdates = 1) is written, and
+         removed again with the program. A Group Policy can set the same value instead. -->
+    <Property Id="DISABLEAUTOMATICUPDATES" Secure="yes" />
 
     <StandardDirectory Id="ProgramFiles6432Folder">
       <Directory Id="INSTALLFOLDER" Name="MailCraft" />
@@ -128,6 +137,9 @@
         <RegistryValue Root="HKLM" Key="Software\Classes\MailCraft.Url.mailto" Name="URL Protocol" Value="" Type="string" />
         <RegistryValue Root="HKLM" Key="Software\Classes\MailCraft.Url.mailto\shell\open\command" Value="&quot;[#MailcraftExe]&quot; &quot;%1&quot;" Type="string" />
         <RegistryValue Root="HKLM" Key="Software\MailCraft\Capabilities\URLAssociations" Name="mailto" Value="MailCraft.Url.mailto" Type="string" />
+      </Component>
+      <Component Id="MailcraftUpdatePolicy" Guid="3B0C9E57-5A2D-4F0B-9C0E-7D8E2F61A4C3" Condition="DISABLEAUTOMATICUPDATES = 1">
+        <RegistryValue Root="HKLM" Key="Software\Policies\MailCraft" Name="DisableAutomaticUpdates" Value="1" Type="integer" KeyPath="yes" />
       </Component>
       <Component Id="MailcraftCli">
         <File Id="MailcraftCliExe" Source="$(var.BinDir)\mailcraft-cli.exe" KeyPath="yes" />
