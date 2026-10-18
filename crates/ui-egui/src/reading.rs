@@ -121,7 +121,10 @@ pub fn show_message(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, place: Pla
     // Asked for: what has not come yet is sent for, while the message is on screen.
     let progress = if access == Access::Allowed { remote::want(app, &ctx, m, &doc) } else { remote::Progress::default() };
     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-    header(app, ui, m, place, |app, ui, t| remote::line(app, ui, m, &doc, access, progress, place, t));
+    header(app, ui, m, place, |app, ui, t| {
+        remote::line(app, ui, m, &doc, access, progress, place, t);
+        unreadable_line(ui, m, t);
+    });
     // A meeting that came with the message: what it is, and the ways to answer it.
     invitation::bar(app, ui, m, place);
     // Only its headers and a preview are here yet (R3.2): say so, and why.
@@ -165,6 +168,44 @@ pub fn show_message(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, place: Pla
             egui::Frame::NONE.inner_margin(egui::Margin { left: 20, right: 20, top: 12, bottom: 24 }).show(ui, |ui| {
                 view::show(app, ui, m, place, access);
             });
+        });
+    });
+}
+
+/// Whether `m`'s subject, sender or text holds U+FFFD, the mark a reader leaves for a character
+/// it couldn't read (bytes that aren't in the character set the message names, or no name for
+/// one that isn't UTF-8 or Windows-1252).
+pub(crate) fn has_unreadable(m: &Message) -> bool {
+    const MARK: char = char::REPLACEMENT_CHARACTER;
+    [m.subject.as_str(), m.from.name.as_str(), m.from.email.as_str(), m.body.text.as_str(), m.body.html.as_deref().unwrap_or("")]
+        .iter()
+        .any(|text| text.contains(MARK))
+}
+
+/// The line above a message that holds a character that couldn't be read ([`has_unreadable`]):
+/// why there is a � in it. One line for the whole message, so that no � needs a word of its own.
+/// Looked for once per message and kept, not every frame: a body can be long.
+fn unreadable_line(ui: &mut Ui, m: &Message, t: &Tokens) {
+    let key = egui::Id::new(("mailcraft-unreadable", m.id, m.subject.len(), m.body.text.len(), m.body.html.as_ref().map_or(0, String::len)));
+    let unreadable = match ui.ctx().data(|d| d.get_temp::<bool>(key)) {
+        Some(kept) => kept,
+        None => {
+            let found = has_unreadable(m);
+            ui.ctx().data_mut(|d| d.insert_temp(key, found));
+            found
+        }
+    };
+    if !unreadable {
+        return;
+    }
+    remote::notice(t.blue, t).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
+            let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+            icons::paint(ui.painter(), r.shrink(1.0), "info", t.text, t.blue);
+            let said = tl!("Some characters in this message couldn't be read: the sender's program didn't say properly how they were written.");
+            ui.add(egui::Label::new(egui::RichText::new(said).font(regular(11.5)).color(t.text)).wrap());
         });
     });
 }

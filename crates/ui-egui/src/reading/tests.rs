@@ -3488,3 +3488,29 @@ fn a_picture_and_text_in_one_line_go_on_lines_of_their_own_when_short_of_room() 
         assert!(logo.max.y <= name.min.y, "{logo:?} {name:?}");
     });
 }
+
+/// #180: a message holding U+FFFD, where a character couldn't be read, says why in one line above
+/// it, whether the mark is in its subject, its sender or its text; one without says nothing.
+#[test]
+fn a_character_that_couldnt_be_read_is_explained_once() {
+    const SAID: &str = "Some characters in this message couldn't be read";
+    let clean = message(0, ("Mila Horvat", "mila@example.org"), "Gvožđe", None, "We’ve met – twice.".into());
+    let marked = [
+        message(1, ("Mila Horvat", "mila@example.org"), "Gvo\u{fffd}\u{fffd}e", None, "Plain.".into()),
+        message(2, ("Mila Horvat\u{fffd}", "mila@example.org"), "Hello", None, "Plain.".into()),
+        message(3, ("Mila Horvat", "mila@example.org"), "Hello", None, "We\u{fffd}ve met \u{fffd} twice.".into()),
+        message(4, ("Mila Horvat", "mila@example.org"), "Hello", Some("<p>We\u{fffd}ve met</p>".into()), String::new()),
+    ];
+    assert!(!super::has_unreadable(&clean));
+    for m in &marked {
+        assert!(super::has_unreadable(m), "{:?}", m.subject);
+    }
+    let (app, ids) = app_with(std::iter::once(clean).chain(marked).collect());
+    let mut harness = window(app, (1100.0, 700.0));
+    select(&mut harness, ids[0]);
+    assert!(!says(&harness, SAID));
+    for id in &ids[1..] {
+        select(&mut harness, *id);
+        assert_eq!(harness.query_all_by_label_contains(SAID).count(), 1, "message {id}");
+    }
+}

@@ -12,8 +12,8 @@ workspace = true
 mailcraft-time = { workspace = true }
 mailcraft-model = { workspace = true }
 mailcraft-html = { workspace = true }
+mailcraft-charset = { workspace = true }
 base64 = { workspace = true }
-encoding_rs = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
