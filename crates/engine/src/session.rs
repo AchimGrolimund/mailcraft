@@ -589,7 +589,7 @@ pub struct Session {
     /// and as it became ([`Session::put_message`]), so that the state the command started from
     /// (its Undo step, and what a failed command goes back to) has them as they are now. Bringing
     /// content in is not a change to the mailbox.
-    swaps: Option<Vec<Swap>>,
+    swaps: Option<Swaps>,
     /// Since a search that reads bodies brought them in: the query, and whether each message
     /// whose body was let go of since matched it ([`Session::load_bodies_for_search`]). Kept
     /// while the list stays as it was searched (`searched_for`), so that a result opened, whose
@@ -604,6 +604,36 @@ struct Swap {
     id: Id,
     old: Arc<Message>,
     new: Arc<Message>,
+}
+
+/// The swaps of a command, one a message where they follow on from each other: a message brought
+/// in and let go of again many times (a search that reads every body) keeps only what it was
+/// first and what it is last, not every body it held between (#173).
+#[derive(Default)]
+struct Swaps {
+    list: Vec<Swap>,
+    /// Where in `list` each message's latest swap is.
+    last: std::collections::HashMap<Id, usize>,
+}
+
+impl Swaps {
+    fn push(&mut self, swap: Swap) {
+        if let Some(&i) = self.last.get(&swap.id)
+            && let Some(prev) = self.list.get_mut(i)
+            && Arc::ptr_eq(&prev.new, &swap.old)
+        {
+            // `old` became `prev.new` and that became `new`: the same as `old` becoming `new`.
+            prev.new = swap.new;
+            return;
+        }
+        self.last.insert(swap.id, self.list.len());
+        self.list.push(swap);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.list.len()
+    }
 }
 
 impl Session {
@@ -1344,19 +1374,21 @@ impl Session {
         let view = self.view.clone();
         let run = spec.run;
         // Last-resort guard (never-crash): a panic in a command becomes an error and the state is restored.
-        let outer = self.swaps.replace(Vec::new());
+        let outer = self.swaps.replace(Swaps::default());
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(self, params)));
         // Content the command brought in or let go of is in the state it started from too: it
         // is no change to undo, and a command that fails keeps it (and what is counted of it).
         let swaps = std::mem::replace(&mut self.swaps, outer).unwrap_or_default();
         let mut before = before;
-        for swap in &swaps {
+        for swap in &swaps.list {
             if before.mailbox.messages.get(&swap.id).is_some_and(|m| Arc::ptr_eq(m, &swap.old)) {
                 before.mailbox.messages.insert(swap.id, swap.new.clone());
             }
         }
         if let Some(outer) = &mut self.swaps {
-            outer.extend(swaps);
+            for swap in swaps.list {
+                outer.push(swap);
+            }
         }
         let result = match result {
             Ok(r) => r,
@@ -1463,3 +1495,7 @@ fn in_memory(m: &Message) -> u64 {
 fn text_of(bytes: &[u8]) -> String {
     String::from_utf8(bytes.to_vec()).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
+
+#[cfg(test)]
+#[path = "session_tests.rs"]
+mod tests;
