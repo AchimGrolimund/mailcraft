@@ -20,6 +20,7 @@ pub mod signature;
 pub mod sync;
 mod task;
 pub mod update;
+pub mod words;
 pub mod zoned;
 
 use serde::{Deserialize, Serialize};
