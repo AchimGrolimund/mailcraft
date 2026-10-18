@@ -596,3 +596,33 @@ fn a_shared_mailboxs_favourite_and_its_link_to_its_owner_survive_a_save_and_a_re
     assert_eq!(found(&mut opened, "quarterly", "everywhere").len(), 4);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_shared_mailbox_is_named_as_its_own_sent_items_name_it_or_as_the_owner_gave_it() {
+    use mailcraft_model::Address;
+    let (mut s, _, owner) = session();
+    let shared = add(&mut s, json!({"account": owner, "address": SHARED})).unwrap();
+    assert_eq!(s.mailbox.account(shared).map(|a| a.address().full()), Some(SHARED.to_string()), "its address, until named");
+    let folders = vec![
+        GraphFolder { id: "in".into(), name: "Inbox".into(), kind: FolderKind::Inbox, ..Default::default() },
+        GraphFolder { id: "se".into(), name: "Sent Items".into(), kind: FolderKind::Sent, ..Default::default() },
+    ];
+    let listed =
+        GraphMailResult { account: shared, email: SHARED.into(), listing: Some(FolderListing { folders, complete: true }), ..Default::default() };
+    apply_graph_mail(&mut s, listed).unwrap();
+    // A sender from outside may put any name on its address: the Inbox doesn't name it.
+    let mut inbox = mail_in(shared, SHARED, "in", &["i1"], "Hello", 0);
+    inbox.pages[0].messages[0].from = Address::new("Not Its Name", SHARED);
+    apply_graph_mail(&mut s, inbox).unwrap();
+    assert_eq!(s.mailbox.account(shared).map(|a| a.display_name.clone()), Some(String::new()));
+    // Its Sent Items, as Exchange writes them, do.
+    let mut sent = mail_in(shared, SHARED, "se", &["s1"], "Rota", 0);
+    sent.pages[0].messages[0].from = Address::new("Front\u{7}Desk Team", "Support@Example.org");
+    apply_graph_mail(&mut s, sent).unwrap();
+    let a = s.mailbox.account(shared).unwrap();
+    assert_eq!(a.address().full(), format!("Front Desk Team <{SHARED}>"));
+    // The name the owner gave it when adding it stays.
+    let (mut s, _, owner) = session();
+    let other = add(&mut s, json!({"account": owner, "address": SHARED, "displayName": "Support\nTeam"})).unwrap();
+    assert_eq!(s.mailbox.account(other).map(|a| a.display_name.clone()), Some("Support Team".to_string()));
+}

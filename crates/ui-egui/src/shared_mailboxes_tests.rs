@@ -537,3 +537,98 @@ fn a_run_that_started_by_itself_never_asks_and_the_mail_waits() {
     assert!(app.run("ui.allowSharedSend", json!({"confirmed": true})).is_err());
     no_imap();
 }
+
+/// One look of the window's own Send/Receive, as each frame has it, with the few seconds between
+/// looks gone by: what waits to go out may start a run, and a run that is under way is finished.
+fn frame(app: &mut MailApp) {
+    app.push_checked = 0.0;
+    app.auto_sync();
+    app.auto_sync();
+    app.poll_graph();
+}
+
+/// Runs that start by themselves come only every few minutes here: what is left is the window's
+/// look for something that waits to go out.
+fn by_itself_only_to_push(app: &mut MailApp) {
+    app.session.prefs.sync_minutes = 0;
+    app.auto_sync = true;
+}
+
+#[test]
+fn mail_held_back_for_permission_doesnt_start_run_after_run() {
+    let (mut app, _, shared, id, answers, jobs, asked) = sending(Ok(tokens("send-access", "ref-4")));
+    by_itself_only_to_push(&mut app);
+    for _ in 0..6 {
+        answers.lock().unwrap().push_back((GraphResult { account: shared, send_consent_needed: true, ..Default::default() }, Vec::new()));
+    }
+    for _ in 0..6 {
+        frame(&mut app);
+    }
+    // One run took it to the host, which found it may not go yet; nothing started again for it.
+    let runs: Vec<usize> = jobs.lock().unwrap().iter().map(|j| j.2.as_ref().map_or(0, |m| m.sends.len())).collect();
+    assert_eq!(runs, [1], "one run, then none until something changes");
+    assert!(app.dialog.is_none() && asked.lock().unwrap().is_empty(), "nobody asked for that run");
+    assert!(app.session.mailbox.message(id).is_some_and(|m| m.held.is_empty()), "it waits, not held");
+    // A run that starts by itself later (every few minutes) doesn't ask Microsoft about it again.
+    app.execute("ui.sync", json!({"account": shared, "quiet": true})).unwrap();
+    app.poll_graph();
+    assert_eq!(jobs.lock().unwrap().last().and_then(|j| j.2.as_ref()).map(|m| m.sends.len()), Some(0));
+    for _ in 0..3 {
+        frame(&mut app);
+    }
+    assert_eq!(jobs.lock().unwrap().len(), 2);
+    no_imap();
+}
+
+#[test]
+fn send_receive_asks_about_mail_held_back_for_permission() {
+    let (mut app, _, shared, _, answers, jobs, asked) = sending(Ok(tokens("send-access", "ref-4")));
+    by_itself_only_to_push(&mut app);
+    answers.lock().unwrap().push_back((GraphResult { account: shared, send_consent_needed: true, ..Default::default() }, Vec::new()));
+    frame(&mut app);
+    assert!(app.dialog.is_none());
+    // The owner's Send/Receive of every account: the owner's own, then the shared mailbox, whose
+    // mail goes to the host again, which still may not send it: the window asks.
+    answers.lock().unwrap().push_back((GraphResult::default(), Vec::new()));
+    answers.lock().unwrap().push_back((GraphResult { account: shared, send_consent_needed: true, ..Default::default() }, Vec::new()));
+    app.run("ui.sync", json!({})).unwrap();
+    for _ in 0..4 {
+        frame(&mut app);
+    }
+    let last = jobs.lock().unwrap().last().cloned().unwrap();
+    assert_eq!((last.0, last.2.map(|m| m.sends.len())), (shared, Some(1)));
+    let Some(crate::dialogs::Dialog::Confirm { command, .. }) = &app.dialog else { panic!("the owner is asked") };
+    assert_eq!(command, "ui.allowSharedSend");
+    assert!(asked.lock().unwrap().is_empty(), "no page before the owner says go ahead");
+    no_imap();
+}
+
+#[test]
+fn pressing_send_in_a_shared_mailbox_asks_about_sending_from_it() {
+    let (mut app, _, shared, _, answers, jobs, _) = sending(Ok(tokens("send-access", "ref-4")));
+    by_itself_only_to_push(&mut app);
+    // The first send the owner pressed: the run that takes it out finds it may not go yet, and
+    // the window asks, though that run started by itself.
+    app.session.view.folder = app.session.mailbox.folder_of_kind(shared, FolderKind::Inbox).unwrap();
+    app.execute("mail.new", json!({"to": "kit@example.net", "subject": "Second"})).unwrap();
+    app.run("compose.send", json!({})).unwrap();
+    answers.lock().unwrap().push_back((GraphResult { account: shared, send_consent_needed: true, ..Default::default() }, Vec::new()));
+    frame(&mut app);
+    assert_eq!(jobs.lock().unwrap().len(), 1);
+    assert_eq!(app.dialog.as_ref().map(|d| d.name()), Some("confirm"));
+    // Not now: it waits, and nothing starts again for it.
+    app.execute("ui.closeDialog", json!({})).unwrap();
+    for _ in 0..3 {
+        frame(&mut app);
+    }
+    assert_eq!(jobs.lock().unwrap().len(), 1);
+    // Another one pressed while sending from it is known not to be allowed yet: asked at once,
+    // with no run for it.
+    app.execute("mail.new", json!({"to": "kit@example.net", "subject": "Third"})).unwrap();
+    app.run("compose.send", json!({})).unwrap();
+    let Some(crate::dialogs::Dialog::Confirm { command, params, .. }) = &app.dialog else { panic!("asked at once") };
+    assert_eq!((command.as_str(), params["account"].as_u64()), ("ui.allowSharedSend", Some(shared)));
+    frame(&mut app);
+    assert_eq!(jobs.lock().unwrap().len(), 1);
+    no_imap();
+}
