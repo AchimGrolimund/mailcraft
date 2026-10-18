@@ -1,59 +1,53 @@
 //! Bytes to text, for the character sets mail still arrives in.
 
-/// Windows-1252 for 0x80–0x9F; the five holes keep their C1 control code, as browsers do.
-const CP1252: [u32; 32] = [
-    0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x8D, 0x017D, 0x8F, 0x90, 0x2018, 0x2019,
-    0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x9D, 0x017E, 0x0178,
-];
+use encoding_rs::{Encoding, UTF_8, UTF_16BE, UTF_16LE, WINDOWS_1252};
 
 /// Text from bytes in a named character set.
 ///
-/// Knows UTF-8, US-ASCII, ISO-8859-1, ISO-8859-15 and Windows-1252. ISO-8859-1 is read as
-/// Windows-1252, its superset, because mail that says Latin-1 very often holds curly quotes and
-/// euro signs. A missing name, or US-ASCII with bytes above 0x7F, is guessed with [`guess`]. Any
-/// other character set is read as UTF-8, with U+FFFD for what doesn't fit.
+/// Knows every character set of the WHATWG Encoding Standard by any of its names (UTF-8, the
+/// Windows and ISO-8859 sets, KOI8, Shift_JIS, EUC-JP, ISO-2022-JP, GBK, Big5, EUC-KR, UTF-16…),
+/// as a browser does. ISO-8859-1 is read as Windows-1252, its superset, because mail that says
+/// Latin-1 very often holds curly quotes and euro signs (the standard does the same). A missing
+/// name, or US-ASCII with bytes above 0x7F, is guessed with [`guess`]. A name the standard doesn't
+/// know, or one it reads as "replacement" (ISO-2022-KR, HZ…), is read as UTF-8, with U+FFFD for
+/// what doesn't fit.
 pub(crate) fn decode(bytes: &[u8], label: &str) -> String {
-    if bytes.is_ascii() {
+    let label = label.trim().trim_matches(['"', '\'']).trim().to_ascii_lowercase();
+    if matches!(label.as_str(), "" | "us-ascii" | "ascii" | "ansi_x3.4-1968" | "iso646-us") {
+        return guess(bytes);
+    }
+    let encoding = encoding(&label).unwrap_or(UTF_8);
+    // ASCII reads the same in every set that keeps it; UTF-16 and ISO-2022-JP don't.
+    if bytes.is_ascii() && encoding.is_ascii_compatible() {
         return String::from_utf8_lossy(bytes).into_owned();
     }
-    let label = label.trim().trim_matches(['"', '\'']).to_ascii_lowercase();
-    match label.as_str() {
-        "" | "us-ascii" | "ascii" | "ansi_x3.4-1968" | "iso646-us" => guess(bytes),
-        "iso-8859-1" | "iso8859-1" | "iso_8859-1" | "latin1" | "latin-1" | "l1" | "cp819" | "ibm819" | "windows-1252" | "cp1252" | "cp-1252"
-        | "x-cp1252" => bytes.iter().map(|b| cp1252(*b)).collect(),
-        "iso-8859-15" | "iso8859-15" | "iso_8859-15" | "latin9" | "latin-9" | "l9" => bytes.iter().map(|b| latin9(*b)).collect(),
-        _ => String::from_utf8_lossy(bytes).into_owned(),
+    if encoding == UTF_16LE || encoding == UTF_16BE {
+        // "UTF-16" names no byte order (it is read as little-endian): a byte order mark says which.
+        return encoding.decode(bytes).0.into_owned();
     }
+    // Elsewhere a byte order mark is text like any other (the reader drops one that opens a body).
+    encoding.decode_without_bom_handling(bytes).0.into_owned()
+}
+
+/// The character set a name means: the standard's own names, and a few more that mail uses.
+/// None for a name it doesn't know and for its "replacement" sets.
+fn encoding(label: &str) -> Option<&'static Encoding> {
+    let label = match label {
+        "latin-1" => "latin1",
+        "latin9" | "latin-9" => "iso-8859-15",
+        "latin-2" => "latin2",
+        "cp-1250" => "windows-1250",
+        "cp-1252" => "windows-1252",
+        other => other,
+    };
+    Encoding::for_label_no_replacement(label.as_bytes())
 }
 
 /// Text from bytes that don't say what they are: UTF-8 when they are valid UTF-8, else Windows-1252.
 pub(crate) fn guess(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
         Ok(s) => s.to_string(),
-        Err(_) => bytes.iter().map(|b| cp1252(*b)).collect(),
-    }
-}
-
-fn cp1252(b: u8) -> char {
-    let code = match b {
-        0x80..=0x9F => CP1252.get(usize::from(b - 0x80)).copied().unwrap_or(u32::from(b)),
-        _ => u32::from(b),
-    };
-    char::from_u32(code).unwrap_or(char::REPLACEMENT_CHARACTER)
-}
-
-/// ISO-8859-15: Latin-1 with eight characters replaced (the euro sign among them).
-fn latin9(b: u8) -> char {
-    match b {
-        0xA4 => '\u{20AC}',
-        0xA6 => '\u{0160}',
-        0xA8 => '\u{0161}',
-        0xB4 => '\u{017D}',
-        0xB8 => '\u{017E}',
-        0xBC => '\u{0152}',
-        0xBD => '\u{0153}',
-        0xBE => '\u{0178}',
-        b => char::from(b),
+        Err(_) => WINDOWS_1252.decode_without_bom_handling(bytes).0.into_owned(),
     }
 }
 
@@ -106,8 +100,37 @@ mod tests {
 
     #[test]
     fn unknown_charsets_fall_back_to_lossy_utf8() {
-        assert_eq!(decode("grüße".as_bytes(), "koi8-r"), "grüße");
-        assert_eq!(decode(b"\xC0\xC1", "shift_jis"), "\u{fffd}\u{fffd}");
+        assert_eq!(decode("grüße".as_bytes(), "x-unknown"), "grüße");
+        assert_eq!(decode(b"\xC0\xC1", "x-unknown"), "\u{fffd}\u{fffd}");
+        // The standard's "replacement" sets are read the same way.
+        assert_eq!(decode("grüße".as_bytes(), "iso-2022-kr"), "grüße");
+        assert_eq!(decode(b"a\xFFb", "hz-gb-2312"), "a\u{fffd}b");
+    }
+
+    #[test]
+    fn central_european_sets() {
+        // #178: windows-1250 and iso-8859-2 were read as UTF-8, every letter past ASCII a box.
+        assert_eq!(decode(b"Gvo\x9E\xF0e we\x92ve \x96 \x8E\x9A\xE8\xE6", "windows-1250"), "Gvožđe we’ve – Žščć");
+        assert_eq!(decode(b"Gvo\x9E\xF0e", "cp1250"), "Gvožđe");
+        assert_eq!(decode(b"Gvo\xBE\xF0e \xAE\xB9\xE8\xE6", "ISO-8859-2"), "Gvožđe Žščć");
+        assert_eq!(decode(b"\xBE", "latin2"), "ž");
+        let all: Vec<u8> = (0..=255).collect();
+        for label in ["windows-1250", "iso-8859-2"] {
+            let text = decode(&all, label);
+            assert_eq!(text.chars().count(), 256, "{label}");
+            assert!(!text.contains('\u{fffd}'), "{label}");
+        }
+    }
+
+    #[test]
+    fn other_sets_of_the_standard() {
+        assert_eq!(decode(b"\xD0\xD2\xC9\xD7\xC5\xD4", "koi8-r"), "привет");
+        assert_eq!(decode(b"\x93\xFA\x96\x7B", "Shift_JIS"), "日本");
+        // ISO-2022-JP is seven-bit, and still not ASCII.
+        assert_eq!(decode(b"\x1B$BF|K\\\x1B(B", "iso-2022-jp"), "日本");
+        assert_eq!(decode(b"h\0i\0", "utf-16le"), "hi");
+        assert_eq!(decode(b"\xFE\xFF\0h\0i", "utf-16"), "hi");
+        assert_eq!(decode(b"\xA4", "latin9"), "€");
     }
 
     #[test]
