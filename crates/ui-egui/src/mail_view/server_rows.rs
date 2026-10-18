@@ -212,7 +212,7 @@ fn result_row(app: &mut MailApp, ui: &mut Ui, index: usize, rect: Rect) {
         sx -= 13.0;
     }
     if app.session.prefs.preview_lines > 0 {
-        let folder = app.session.mailbox.folder(r.folder).map(|f| crate::nav::folder_label(&app.session.mailbox, f)).unwrap_or_default();
+        let folder = app.session.mailbox.folder(r.folder).map(|f| crate::nav::result_folder_label(&app.session.mailbox, f)).unwrap_or_default();
         let end = text_end.min(sx - 6.0);
         let w = paint_clipped(p, pos2(left, preview_y), (end - left).max(0.0), &folder, semibold(LIST_TEXT), t.text_dim);
         let preview: String = m.body.text.split_whitespace().collect::<Vec<_>>().join(" ");
