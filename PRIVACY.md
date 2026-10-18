@@ -24,6 +24,13 @@ you.
   says why.
 - **Pictures you asked to download** are kept on your computer for up to 30 days so they are not
   asked for again; File › Options shows how many and clears them.
+- **A downloaded new version** (only for a copy that updates itself) is kept in the `updates`
+  folder of MailCraft's settings folder until it is used, and is deleted when it doesn't pass
+  MailCraft's release signature or when a newer one replaces it. An organisation can turn this
+  off for every user of the computer: the registry value `DisableAutomaticUpdates` (a DWORD other
+  than 0) under `HKEY_LOCAL_MACHINE\Software\Policies\MailCraft` on Windows, or a file named
+  `no-automatic-updates` in `/Library/Application Support/MailCraft/` on macOS and in
+  `/etc/mailcraft/` on Linux and FreeBSD.
 
 ## What the program connects to, and when
 
@@ -35,7 +42,8 @@ MailCraft connects only to these, over encrypted connections:
 | Microsoft's sign-in pages and Microsoft Graph, for an account that signs in with Microsoft | When you sign in; for calendar, contacts, sending mail, working hours, categories and Outlook's Favorites | Your sign-in happens on Microsoft's page in your browser; the program receives tokens, never your password |
 | A public DNS-over-HTTPS resolver (Cloudflare, then Google) | Once, when you press Connect while adding an account at a domain the program does not know | The domain of your address (the part after the @), never the mailbox name |
 | The web address of a picture in a message | Only when you ask for a message's pictures, or for a sender or domain you chose to always download from | The address alone: no cookies, no referrer, no sign-in |
-| GitHub's API (`api.github.com`), to see whether a new version is out | Off unless you turn it on (the program asks once, and File › Options changes it): then at most once a day; and whenever you press Check for Updates in File › About | One request for the newest release of MailCraft's repository (`GET /repos/UCS-Care-Group/mailcraft/releases/latest`), with nothing about you, your accounts, your mail or this computer in it, not even the version you run. Nothing is downloaded or installed |
+| GitHub's API (`api.github.com`), to see whether a new version is out | Off unless you turn it on (the program asks once, and File › Options changes it): then at most once a day; and whenever you press Check for Updates in File › About | One request for the newest release of MailCraft's repository (`GET /repos/UCS-Care-Group/mailcraft/releases/latest`), with nothing about you, your accounts, your mail or this computer in it, not even the version you run |
+| GitHub's release downloads (`github.com`, and `objects.githubusercontent.com` or `release-assets.githubusercontent.com`, where GitHub sends those), to download a new version | Only for a copy installed from the Windows `.msi`, the macOS app or a Linux AppImage, while the daily check is on and File › Options › Install updates automatically is on (as it is unless you, or your organisation, turn it off); when a check finds a newer release | Requests for three files of that release: its list of checksums, the signature over it, and the package for your kind of computer. Nothing about you, your accounts, your mail or the version you run. The package is kept in the program's own folder, used only when MailCraft's release signature says it is the project's own, and deleted otherwise. Nothing is installed yet |
 
 Nothing in a message runs, and nothing in a message is fetched unless you ask for its pictures.
 

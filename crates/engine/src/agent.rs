@@ -363,6 +363,7 @@ const SETTINGS: &[&str] = &[
     "ui.alwaysDownloadPictures",
     "ui.downloadPicturesAutomatically",
     "ui.updateCheck",
+    "ui.updateInstall",
 ];
 
 const NEVER: &[&str] = &[

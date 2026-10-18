@@ -2278,6 +2278,7 @@ version = "0.4.3"
 dependencies = [
  "apple-native-keyring-store",
  "arboard",
+ "base64",
  "craft-quit",
  "eframe",
  "egui",
@@ -2296,10 +2297,12 @@ dependencies = [
  "open",
  "pollster 0.4.0",
  "rfd",
+ "ring",
  "serde_json",
  "webbrowser",
  "windows-native-keyring-store",
  "winit",
+ "winreg",
  "winresource",
  "zbus-secret-service-keyring-store",
 ]
@@ -5200,6 +5203,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "winreg"
+version = "0.55.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb5a765337c50e9ec252c2069be9bf91c7df47afb103b642ba3a53bf8101be97"
+dependencies = [
+ "cfg-if",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "winresource"
 version = "0.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5306,7 +5319,9 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 name = "xtask"
 version = "0.4.3"
 dependencies = [
+ "base64",
  "image",
+ "ring",
  "serde_json",
 ]
 

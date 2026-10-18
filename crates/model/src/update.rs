@@ -96,6 +96,29 @@ pub struct Release {
     pub page: String,
     /// Its notes name a published security advisory (`GHSA-…` or `RUSTSEC-…`).
     pub security: bool,
+    /// Its files, as far as they were found to be files of this release: what a copy that
+    /// updates itself downloads from. Nothing in them is believed until the release's own
+    /// signature says so.
+    pub assets: Vec<Asset>,
+}
+
+/// One file of a release: its name ([`is_file_name`]), the size the release says it has, and
+/// where it is downloaded from (that release's address for that name).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Asset {
+    pub name: String,
+    pub size: u64,
+    pub url: String,
+}
+
+/// Whether `name` will do as the name of a release's file, and of a file it is kept in: at most
+/// 120 letters, digits, `.`, `-`, `_` and `+`, not starting with a dot, and no `..`.
+pub fn is_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 120
+        && !name.starts_with('.')
+        && !name.contains("..")
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+'))
 }
 
 #[cfg(test)]
@@ -143,6 +166,16 @@ mod tests {
         }
         assert_eq!(Version::parse(&format!("1.2.3-{}", "a".repeat(MAX_SUFFIX + 1))), None);
         assert_eq!(v("999999.999999.999999").major, 999_999);
+    }
+
+    #[test]
+    fn file_names() {
+        for good in ["SHA256SUMS.txt", "mailcraft-0.5.0-linux-x86_64.AppImage", "mailcraft-0.5.0-windows-x64.msi", "a+b_c"] {
+            assert!(is_file_name(good), "{good}");
+        }
+        for bad in ["", ".hidden", "a/b", "a\\b", "..", "a..b", "a b", "é", "a:b", "a\0b", &"a".repeat(121)] {
+            assert!(!is_file_name(bad), "{bad}");
+        }
     }
 
     #[test]
