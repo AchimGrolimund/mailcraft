@@ -1,6 +1,8 @@
 //! Command implementations, one module per area. Each module exposes `specs()`.
 
 pub mod account;
+#[cfg(test)]
+mod answered_tests;
 pub mod calendar;
 pub mod calendar_extra;
 pub mod calendar_settings;

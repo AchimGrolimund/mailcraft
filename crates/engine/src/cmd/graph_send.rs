@@ -73,8 +73,12 @@ pub fn send_done(mb: &mut Mailbox, account: Id, done: &SendDone, said: &mut Vec<
     let subject = if subject.trim().is_empty() { "(no subject)".to_string() } else { subject };
     match &done.outcome {
         SendOutcome::Waits => changed,
-        // Gone: the server files it in Sent Items, and that copy comes down.
-        SendOutcome::Sent => mb.forget_message(done.message).is_ok() || changed,
+        // Gone: the server files it in Sent Items, and that copy comes down. What it answers or
+        // forwards is marked so now (#154).
+        SendOutcome::Sent => {
+            mb.mark_answered(done.message);
+            mb.forget_message(done.message).is_ok() || changed
+        }
         // Exchange won't let the owner send as the shared mailbox nor on its behalf (#70): said
         // with its address where the message is read, and never sent from another.
         SendOutcome::Held { lost: false, why } if why == SEND_AS_DENIED => {
