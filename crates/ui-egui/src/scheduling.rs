@@ -781,7 +781,7 @@ pub(crate) fn show(app: &mut MailApp, ui: &mut Ui, view: &mut View, meeting: &Me
                 below.line_segment([pos2(cell.min.x, cell.max.y - 0.5), pos2(cell.max.x, cell.max.y - 0.5)], Stroke::new(1.0, t.border));
                 let mark = pos2(cell.min.x + 14.0, cell.center().y);
                 match row.kind {
-                    0 => crate::icons::paint(&below, Rect::from_center_size(mark, vec2(15.0, 15.0)), "meeting", t.icon, t.accent),
+                    0 => crate::icons::paint(&below, Rect::from_center_size(mark, vec2(16.0, 16.0)), "meeting", t.icon, t.accent),
                     1 => {
                         below.circle_filled(mark, 4.5, t.accent);
                     }

@@ -1417,7 +1417,7 @@ impl AccountSetup {
             ui.vertical_centered(|ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(56.0, 56.0), Sense::hover());
                 ui.painter().circle_filled(r.center(), 26.0, t.accent);
-                icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(42.0, 42.0)), "tick", t.on_accent, t.on_accent);
+                icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(40.0, 40.0)), "tick", t.on_accent, t.on_accent);
                 ui.add_space(6.0);
                 let done = fmt(tl!("{address} is set up"), &[("address", &shown(self.email.trim(), 120))]);
                 ui.label(RichText::new(done).font(semibold(16.0)).color(t.text));
@@ -1547,7 +1547,7 @@ fn page(ui: &mut Ui, t: &Tokens, add: impl FnOnce(&mut Ui)) {
             let (r, _) = ui.allocate_exact_size(vec2(ui.available_width().max(0.0), 38.0), Sense::hover());
             let center = pos2(r.min.x + 18.0, r.center().y);
             ui.painter().circle_filled(center, 18.0, t.accent);
-            icons::paint(ui.painter(), Rect::from_center_size(center, vec2(22.0, 22.0)), "mail", t.on_accent, t.on_accent);
+            icons::paint(ui.painter(), Rect::from_center_size(center, vec2(20.0, 20.0)), "mail", t.on_accent, t.on_accent);
             ui.painter().text(pos2(r.min.x + 46.0, r.center().y), Align2::LEFT_CENTER, "MailCraft", semibold(17.0), t.text);
             ui.add_space(10.0);
             add(ui);
@@ -1734,7 +1734,7 @@ fn tile(ui: &mut Ui, kind: Kind, width: f32, t: &Tokens) -> Response {
     resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, title));
     let lit = resp.hovered() || resp.has_focus();
     ui.painter().rect(r, 6.0, if lit { t.hover } else { t.panel }, Stroke::new(1.0, if lit { t.accent } else { t.border }), StrokeKind::Inside);
-    icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 24.0, r.center().y), vec2(22.0, 22.0)), kind.icon(), t.icon, t.accent);
+    icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 24.0, r.center().y), vec2(24.0, 24.0)), kind.icon(), t.icon, t.accent);
     paint_clipped(ui.painter(), pos2(r.min.x + 46.0, r.min.y + 17.0), r.width() - 54.0, title, semibold(12.5), t.text);
     paint_clipped(ui.painter(), pos2(r.min.x + 46.0, r.min.y + 34.0), r.width() - 54.0, detail, regular(11.0), t.text_dim);
     resp
