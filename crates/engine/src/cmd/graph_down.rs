@@ -162,6 +162,7 @@ pub(crate) fn new_message(folder: Id, server_folder: &str, there: &GraphMessage)
         draft: there.draft,
         server: Some(server),
         unfetched: true,
+        attachments_on_server: there.has_attachments,
         ..Default::default()
     }
 }
@@ -205,9 +206,13 @@ fn update(mb: &mut Mailbox, account: Id, id: Id, folder: Id, server_folder: &str
     if follows {
         m.folder = folder;
     }
+    if m.unfetched {
+        m.attachments_on_server = there.has_attachments;
+    }
     if changed_there {
         // Changed elsewhere only: the server's version, fetched afresh.
         (m.subject, m.to, m.cc, m.unfetched) = (there.subject.clone(), there.to.clone(), there.cc.clone(), true);
+        m.attachments_on_server = there.has_attachments;
         if let Some(sd) = m.server_draft.as_mut() {
             sd.synced = None;
         }
@@ -343,6 +348,7 @@ pub fn take_fetched(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, id: 
     // What it is now is all of it: nothing the mailbox kept on disk of its preview is its body.
     m.kept = None;
     m.unfetched = false;
+    m.attachments_on_server = false;
     // A draft as the server has it now: what a change made here is worked out from.
     if m.draft {
         let state = mailcraft_model::sync::DraftState::of(m);
@@ -412,6 +418,49 @@ mod tests {
         let m = mb.message(id).unwrap();
         assert_eq!((m.subject.as_str(), m.body.text.trim(), m.from.email.as_str()), ("The whole of it", "All of the text.", "kit@example.org"));
         assert!(!m.unfetched && m.read && m.flag == FlagStatus::Flagged && m.folder == folder && m.server.as_ref().unwrap().id == "AAkA1");
+    }
+
+    /// R6.2 S5: the server's "has attachments" is kept on a message not fetched yet, so that it
+    /// wears the paperclip and `has:attachment` finds it; once fetched, its own files say.
+    #[test]
+    fn a_message_not_fetched_yet_has_the_attachments_the_server_said() {
+        let (mut mb, account, folder) = mailbox();
+        mb.folder_mut(folder).unwrap().server = Some(mailcraft_model::ServerFolder { id: "F".into(), ..Default::default() });
+        let page = |id: &str, has_attachments: bool| MessagePage {
+            folder: "F".into(),
+            messages: vec![GraphMessage {
+                server: ServerMessage { id: id.into(), ..Default::default() },
+                subject: "Quarterly figures".into(),
+                has_attachments,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut index = ServerIndex::default();
+        take_page(&mut mb, &mut index, account, &page("AAkB1", true), &mut Down::default());
+        let id = mb.messages.values().find(|m| m.subject == "Quarterly figures").unwrap().id;
+        let m = mb.message(id).unwrap();
+        assert!(m.unfetched && m.attachments.is_empty() && m.attachments_on_server && m.has_attachments());
+        let query = mailcraft_model::search::Query::parse("has:attachment");
+        assert!(query.matches(m, 0));
+        assert!(!query.matches(mb.messages.values().find(|m| m.subject == "Preview 1").unwrap(), 0));
+        // Written to the mailbox file and read back; a file from before has none.
+        let json = serde_json::to_string(m).unwrap();
+        assert!(json.contains(r#""attachmentsOnServer":true"#), "{json}");
+        assert_eq!(&serde_json::from_str::<Message>(&json).unwrap(), m);
+        assert!(!serde_json::from_str::<Message>(r#"{"id": 9, "unfetched": true}"#).unwrap().has_attachments());
+
+        // The server says it has none after all (its files were taken off): neither does it here.
+        take_page(&mut mb, &mut index, account, &page("AAkB1", false), &mut Down::default());
+        assert!(!mb.message(id).unwrap().has_attachments());
+        take_page(&mut mb, &mut index, account, &page("AAkB1", true), &mut Down::default());
+        assert!(mb.message(id).unwrap().has_attachments());
+
+        // Fetched whole, without files: its own attachments say.
+        let mime = b"From: Kit <kit@example.org>\r\nSubject: Quarterly figures\r\nContent-Type: text/plain\r\n\r\nNo files.\r\n";
+        assert!(take_fetched(&mut mb, &mut index, account, "AAkB1", mime));
+        let m = mb.message(id).unwrap();
+        assert!(!m.unfetched && !m.attachments_on_server && !m.has_attachments() && m.folder == folder);
     }
 
     #[test]
