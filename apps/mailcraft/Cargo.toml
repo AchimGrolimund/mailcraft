@@ -35,6 +35,9 @@ craft-quit = { workspace = true }
 mailcraft-net = { workspace = true, features = ["stand-in"] }
 # A sign-in the provider refuses, as `mailcraft-net` says it.
 mailcraft-proto = { workspace = true }
+# A release signed with a key made in the test, for the stand-in release server (`update_flow`).
+ring = { workspace = true }
+base64 = { workspace = true }
 
 [build-dependencies]
 # Icon + VERSIONINFO for mailcraft.exe; build.rs only uses it when the target is Windows.
@@ -59,6 +62,9 @@ keyring-core = "1"
 [target.'cfg(target_os = "windows")'.dependencies]
 # Windows Credential Manager, for the credential store above.
 windows-native-keyring-store = "1.1"
+# Two registry values read, never written: where the `.msi` put the program (whether this copy
+# updates itself) and an organisation's policy that turns updating off (`install.rs`, `updater.rs`).
+winreg = "0.55"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 # On Linux and FreeBSD the store is the desktop's Secret Service (GNOME Keyring, KWallet,

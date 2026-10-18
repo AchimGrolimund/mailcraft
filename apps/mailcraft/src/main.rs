@@ -36,6 +36,7 @@ mod graph_folders_flow;
 mod graph_mail_flow;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
+mod install;
 mod logging;
 mod opened_files;
 mod picture_cache;
