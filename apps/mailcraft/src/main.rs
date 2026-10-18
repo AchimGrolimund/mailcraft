@@ -338,9 +338,21 @@ fn run_window(options: eframe::NativeOptions, creator: eframe::AppCreator<'_>) -
     {
         let _ = BROWSER.set(browser::Browser::new(std::sync::Arc::new(browser::Desktop)));
         let event_loop = winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event().build()?;
+        // eframe keeps a start-up failure to itself on this path: the app is only created once
+        // the window is, so a loop that ends without having created it failed to start.
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = started.clone();
+        let creator: eframe::AppCreator<'_> = Box::new(move |cc| {
+            seen.store(true, std::sync::atomic::Ordering::Relaxed);
+            creator(cc)
+        });
         let mut app = WithTokens(eframe::create_native("MailCraft", options, creator, &event_loop));
         event_loop.run_app(&mut app)?;
-        Ok(())
+        if started.load(std::sync::atomic::Ordering::Relaxed) {
+            Ok(())
+        } else {
+            Err(eframe::Error::AppCreation("the window couldn't be started (see the log)".into()))
+        }
     }
     #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
     eframe::run_native("MailCraft", options, creator)
