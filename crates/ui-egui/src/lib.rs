@@ -472,6 +472,10 @@ pub struct UiState {
     pub view: mailcraft_engine::ViewState,
     pub folder_pane_width: f32,
     pub list_width: f32,
+    /// Send/Receive Progress's width, and the height of its list of accounts (0: as tall as what
+    /// it lists, up to a limit), as the owner dragged them (#145).
+    pub sync_panel_width: f32,
+    pub sync_panel_height: f32,
     /// Folders shown collapsed in the folder pane.
     pub collapsed_folders: Vec<Id>,
     /// Mailbox files opened lately, most recent first.
@@ -519,6 +523,8 @@ impl Default for UiState {
             view: mailcraft_engine::ViewState::default(),
             folder_pane_width: 230.0,
             list_width: 380.0,
+            sync_panel_width: sync_panel::WIDTH,
+            sync_panel_height: 0.0,
             collapsed_folders: Vec::new(),
             recent: Vec::new(),
             microsoft_client_id: String::new(),
@@ -1072,6 +1078,7 @@ impl MailApp {
         self.ui.backstage_page = "info".into();
         self.ui.folder_pane_width = if self.ui.folder_pane_width.is_finite() { self.ui.folder_pane_width.clamp(150.0, 500.0) } else { 230.0 };
         self.ui.list_width = if self.ui.list_width.is_finite() { self.ui.list_width.clamp(240.0, 900.0) } else { 380.0 };
+        (self.ui.sync_panel_width, self.ui.sync_panel_height) = sync_panel::sane_size(self.ui.sync_panel_width, self.ui.sync_panel_height);
         self.ui.collapsed_folders.truncate(10_000);
         self.ui.recent.truncate(20);
         self.ui.collapsed_calendar_groups.truncate(200);
