@@ -664,3 +664,29 @@ fn a_file_from_before_shared_mailboxes_opens_and_one_with_nonsense_too() {
     assert!(mb.owner_of(shared).is_none());
     assert_eq!(mb.accounts_in_order().len(), mb.accounts.len());
 }
+
+// ---- mail to keep offline (#143) ----
+
+#[test]
+fn mail_to_keep_offline_is_all_for_a_file_without_it_and_round_trips() {
+    let old: Account = serde_json::from_str(r#"{"id": 3, "email": "noor@example.org", "kind": "microsoft"}"#).unwrap();
+    assert_eq!(old.keep_offline, KeepOffline::All, "nothing is removed without the owner's choosing");
+    assert!(!serde_json::to_string(&old).unwrap().contains("keepOffline"));
+    let odd: Account = serde_json::from_str(r#"{"id": 3, "email": "noor@example.org", "keepOffline": "forever"}"#).unwrap();
+    assert_eq!(odd.keep_offline, KeepOffline::All);
+    let short = Account { keep_offline: KeepOffline::Months3, ..old };
+    let json = serde_json::to_string(&short).unwrap();
+    assert!(json.contains(r#""keepOffline":"3m""#), "{json}");
+    assert_eq!(serde_json::from_str::<Account>(&json).unwrap().keep_offline, KeepOffline::Months3);
+}
+
+#[test]
+fn a_shared_mailbox_keeps_as_much_offline_as_its_owner() {
+    let (mut mb, local, owner) = with_microsoft();
+    mb.account_mut(owner).unwrap().keep_offline = KeepOffline::Weeks2;
+    let shared = mb.add_shared_mailbox(owner, "support@example.org").unwrap();
+    assert_eq!(mb.keep_offline_of(shared), KeepOffline::Weeks2);
+    mb.account_mut(owner).unwrap().keep_offline = KeepOffline::Years5;
+    assert_eq!(mb.keep_offline_of(shared), KeepOffline::Years5, "it follows its owner's as that changes");
+    assert_eq!((mb.keep_offline_of(local), mb.keep_offline_of(999_999)), (KeepOffline::All, KeepOffline::All));
+}

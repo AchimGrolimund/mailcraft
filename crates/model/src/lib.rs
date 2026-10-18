@@ -11,6 +11,7 @@ mod calendar;
 mod contact;
 mod mailbox;
 mod message;
+mod offline;
 pub mod provider;
 pub mod remote;
 pub mod rich;
@@ -37,6 +38,7 @@ pub use mailbox::{
 };
 pub use mailcraft_time as time;
 pub use message::{Answers, Attachment, Body, ContentRef, FlagStatus, Importance, KeptBody, Message, normalize_subject, text_hash};
+pub use offline::KeepOffline;
 pub use remote::Origin;
 pub use rich::{RichBody, RichText};
 pub use rule::{Action, Condition, Rule};
