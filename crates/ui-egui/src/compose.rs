@@ -351,7 +351,14 @@ pub fn show(app: &mut MailApp, ui: &mut Ui) {
             editor::show(app, ui, room, fresh && !focus_to);
             if c.quote {
                 ui.add_space(8.0);
-                crate::reading::show_quote(app, ui);
+                // The original senses the pointer over all of the view it is drawn in: kept to
+                // below where it begins, so that it doesn't lie over the owner's text and take a
+                // click meant for it (the body then never got the keyboard back, #158).
+                let below = Rect::everything_below(ui.cursor().min.y);
+                ui.scope(|ui| {
+                    ui.set_clip_rect(ui.clip_rect().intersect(below));
+                    crate::reading::show_quote(app, ui);
+                });
             }
         });
     });
