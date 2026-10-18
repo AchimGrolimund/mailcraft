@@ -208,6 +208,10 @@ pub struct Services {
     /// computer (a policy in the registry on Windows, a file on macOS and Linux): Install
     /// updates automatically is off and can't be turned on, and only the notice remains.
     pub updates_turned_off_by_organisation: bool,
+    /// Desktop, for a copy that updates itself: what the host found at this start about the last
+    /// update it installed ([`updates::UpdateStart`]): one that wasn't installed after all, or a
+    /// newly installed version that didn't start twice running, with the one it replaced kept.
+    pub update_start: updates::UpdateStart,
 }
 
 /// The system's clipboard with HTML on it ([`Services::clipboard`]).
@@ -534,6 +538,11 @@ pub struct UiState {
     /// Whether a copy that updates itself downloads a new version by itself, while the daily
     /// check is on ([`updates`]): on unless the owner turns it off.
     pub update_install: bool,
+    /// A version that isn't installed by itself: the one the owner went back from because it
+    /// didn't start ([`updates`]). Newer ones are.
+    pub update_skip: String,
+    /// The owner has been told, once, that MailCraft now installs its updates itself.
+    pub update_install_told: bool,
 }
 
 impl Default for UiState {
@@ -568,6 +577,8 @@ impl Default for UiState {
             update_checked: 0,
             update_told: String::new(),
             update_install: true,
+            update_skip: String::new(),
+            update_install_told: false,
         }
     }
 }
@@ -781,6 +792,24 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "Install Updates Automatically",
         "File › Options",
         r#"{"value"?: bool (default: toggle)} — whether a copy that updates itself (the Windows .msi, the macOS app, a Linux AppImage) downloads a newer release by itself while the daily check is on, and checks it by the release's own signature (on unless the owner turns it off). Refused when the organisation has turned it off ("Turned off by your organisation") and for a copy that doesn't update itself. Agents and scripts can't start a download. Answers what `ui.updateCheck` answers"#,
+    ),
+    (
+        "ui.restartToUpdate",
+        "Restart to Update",
+        "Status bar · File › About",
+        r#"{} — once a newer version has been downloaded and checked by its release signature: closes the window as quitting does (what is being written is asked about, Send/Receive stops, the mailbox is saved), installs the new version and starts it. The owner's click only: refused for agents and the control channel ("Restart to update is the owner's click."). Not pressed, the new version is installed when MailCraft is quit. MailCraft never restarts by itself"#,
+    ),
+    (
+        "ui.goBackVersion",
+        "Go Back to the Previous Version",
+        "Above the status bar",
+        r#"{} — offered when a newly installed version didn't start twice running and the one it replaced is kept: closes the window as quitting does, puts the kept version back (and the mailbox file as it was before the new version changed its format, when it did) and starts it; the version gone back from is never installed by itself again. The owner's click only: refused for agents and the control channel"#,
+    ),
+    (
+        "ui.dismissUpdateNotice",
+        "Dismiss Update Notice",
+        "Above the status bar",
+        r#"{"notice": "installsItself" | "didntStart"} — puts away the line that says MailCraft now installs its updates itself (said once), or the offer to go back to the previous version (kept for this run)"#,
     ),
     (
         "ui.toggleCalendarGroup",
@@ -1211,7 +1240,13 @@ impl MailApp {
             return Ok(json!({"pending": "confirm"}));
         }
         // Check for Updates pressed by the owner checks whether the daily check is on or not.
-        let r = if id == updates::CHECK { self.check_for_updates(true) } else { self.execute(id, params) };
+        // So are Restart to update and Go back, which are the owner's clicks alone.
+        let r = match id {
+            updates::CHECK => self.check_for_updates(true),
+            updates::RESTART => self.restart_to_update(),
+            updates::GO_BACK => self.go_back_a_version(),
+            _ => self.execute(id, params),
+        };
         // Sent from a shared mailbox (#70): pressing Send is the owner asking for it to go.
         if id == "compose.send"
             && let Ok(v) = &r

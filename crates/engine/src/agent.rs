@@ -364,6 +364,7 @@ const SETTINGS: &[&str] = &[
     "ui.downloadPicturesAutomatically",
     "ui.updateCheck",
     "ui.updateInstall",
+    "ui.dismissUpdateNotice",
 ];
 
 const NEVER: &[&str] = &[
@@ -396,6 +397,9 @@ const NEVER: &[&str] = &[
     "ui.copyLinkAddress",
     // A file from a message opened with another program: only ever the owner's own doing.
     "mail.openAttachment",
+    // Installing a new version, or going back to the one before: only the owner's click.
+    "ui.restartToUpdate",
+    "ui.goBackVersion",
 ];
 
 /// A command's class by id; `None`: not classified (and so refused).
