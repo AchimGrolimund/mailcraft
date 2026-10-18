@@ -1244,6 +1244,9 @@ fn main() -> eframe::Result {
             session.shared_mailboxes = shared_mailboxes_switch();
             let kept = path.is_some();
             session.path = path;
+            // Search answers from a word index kept beside the mailbox file, built in the
+            // background (R6.2).
+            session.index_words = true;
             // A run that keeps its mailbox and its settings keeps downloaded pictures too.
             let kept_pictures = if kept && !sample && prefs_enabled() { keep_pictures() } else { None };
             let mut app = MailApp::new(session, services(file_dialog, cc.egui_ctx.clone(), kept_pictures));

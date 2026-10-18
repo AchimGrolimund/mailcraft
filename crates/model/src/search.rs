@@ -4,10 +4,16 @@
 //! of a term excludes what it matches. Keywords: `from`, `to`, `cc`, `subject`, `body`,
 //! `category`, `attachment` (file name), `has:attachment`, `is:unread|read|flagged|important`,
 //! `importance:high|normal|low`, `before:`, `after:`, `on:` (dates, `YYYY-MM-DD` or `M/D/YYYY`).
+//!
+//! A word matches the start of a word, ignoring case and accents (`meet` finds "Meeting",
+//! `gvozdar` finds "Gvožđar"); a phrase, its words one after another ([`crate::words`]). A
+//! category matches anywhere in its name. Text with no letters or digits in it (`-`, `@`) asks
+//! for nothing.
 
 use mailcraft_time::{Date, DateTime};
 
-use crate::{Address, FlagStatus, Importance, Message, contains_ci};
+use crate::words::{self, ATTACHMENT, BODY, CC, FROM, SUBJECT, TO};
+use crate::{FlagStatus, Importance, Message, contains_ci};
 
 /// Longest query read and most terms kept (the rest is ignored).
 const MAX_QUERY: usize = 2_000;
@@ -15,14 +21,12 @@ const MAX_TERMS: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Kind {
-    Text(String),
-    From(String),
-    To(String),
-    Cc(String),
-    Subject(String),
-    Body(String),
+    /// Words, one after another, in the parts of a message `fields` names.
+    Words {
+        fields: u8,
+        words: Vec<String>,
+    },
     Category(String),
-    Attachment(String),
     HasAttachment,
     Unread,
     Read,
@@ -81,10 +85,6 @@ fn parse_date(s: &str) -> Option<Date> {
     Date::new(y, m, d)
 }
 
-fn any_address(list: &[Address], needle: &str) -> bool {
-    list.iter().any(|a| contains_ci(&a.name, needle) || contains_ci(&a.email, needle))
-}
-
 impl Query {
     pub fn parse(s: &str) -> Query {
         let mut terms = Vec::new();
@@ -93,18 +93,19 @@ impl Query {
                 Some(rest) if !rest.is_empty() => (true, rest),
                 _ => (false, token.as_str()),
             };
-            let text = || Kind::Text(body.to_string());
+            let text = || Kind::Words { fields: words::ALL, words: words::words(body) };
+            let words_in = |fields: u8, v: &str| Kind::Words { fields, words: words::words(v) };
             let kind = match body.split_once(':') {
                 Some((key, value)) if !value.is_empty() => {
                     let v = value.to_string();
                     match key.to_ascii_lowercase().as_str() {
-                        "from" => Kind::From(v),
-                        "to" => Kind::To(v),
-                        "cc" => Kind::Cc(v),
-                        "subject" => Kind::Subject(v),
-                        "body" => Kind::Body(v),
+                        "from" => words_in(FROM, &v),
+                        "to" => words_in(TO, &v),
+                        "cc" => words_in(CC, &v),
+                        "subject" => words_in(SUBJECT, &v),
+                        "body" => words_in(BODY, &v),
                         "category" | "categories" => Kind::Category(v),
-                        "attachment" | "attachments" => Kind::Attachment(v),
+                        "attachment" | "attachments" => words_in(ATTACHMENT, &v),
                         "has" | "hasattachment" | "hasattachments" => match v.to_ascii_lowercase().as_str() {
                             "attachment" | "attachments" | "yes" | "true" => Kind::HasAttachment,
                             _ => text(),
@@ -126,7 +127,8 @@ impl Query {
                 }
                 _ => text(),
             };
-            if !matches!(&kind, Kind::Text(t) if t.is_empty()) {
+            // Text with no words in it asks for nothing.
+            if !matches!(&kind, Kind::Words { words, .. } if words.is_empty()) {
                 terms.push(Term { negate, kind });
             }
         }
@@ -140,29 +142,42 @@ impl Query {
     /// Whether any term reads a message's text (a bare word, or `body:`): such a search wants the
     /// bodies of the messages it looks at in memory.
     pub fn reads_bodies(&self) -> bool {
-        self.terms.iter().any(|t| matches!(t.kind, Kind::Text(_) | Kind::Body(_)))
+        (0..self.terms.len()).any(|i| self.term_reads_body(i))
+    }
+
+    /// How many terms it has.
+    pub fn len(&self) -> usize {
+        self.terms.len()
+    }
+
+    /// Term `i`, when it is words: the parts of a message it looks in ([`words::ALL`] for a bare
+    /// word) and its words, folded, one after another. Other terms (`is:`, dates, `category:`)
+    /// say `None`.
+    pub fn words_of(&self, i: usize) -> Option<(u8, &[String])> {
+        match &self.terms.get(i)?.kind {
+            Kind::Words { fields, words } => Some((*fields, words)),
+            _ => None,
+        }
+    }
+
+    /// Whether term `i` reads a message's text.
+    pub fn term_reads_body(&self, i: usize) -> bool {
+        self.words_of(i).is_some_and(|(fields, _)| fields & BODY != 0)
     }
 
     /// Whether `m` matches every term. Dates compare in a zone `offset_minutes` east of UTC.
     pub fn matches(&self, m: &Message, offset_minutes: i32) -> bool {
+        self.matches_with(m, offset_minutes, |_| None)
+    }
+
+    /// [`Query::matches`], with what `known` says of a term (whether `m` has what term `i` asks
+    /// for, before its `-`; a word index's answer) in place of looking at `m`; `None`: look.
+    pub fn matches_with(&self, m: &Message, offset_minutes: i32, known: impl Fn(usize) -> Option<bool>) -> bool {
         let day = || DateTime::from_timestamp(m.date, offset_minutes).date;
-        self.terms.iter().all(|t| {
-            let hit = match &t.kind {
-                Kind::Text(x) => {
-                    contains_ci(&m.subject, x)
-                        || any_address(std::slice::from_ref(&m.from), x)
-                        || any_address(&m.to, x)
-                        || any_address(&m.cc, x)
-                        || contains_ci(&m.body.text, x)
-                        || m.attachments.iter().any(|a| contains_ci(&a.name, x))
-                }
-                Kind::From(x) => any_address(std::slice::from_ref(&m.from), x),
-                Kind::To(x) => any_address(&m.to, x),
-                Kind::Cc(x) => any_address(&m.cc, x),
-                Kind::Subject(x) => contains_ci(&m.subject, x),
-                Kind::Body(x) => contains_ci(&m.body.text, x),
+        self.terms.iter().enumerate().all(|(i, t)| {
+            let hit = known(i).unwrap_or_else(|| match &t.kind {
+                Kind::Words { fields, words } => words::texts(m, &m.body.text, |field, text| field & fields != 0 && words::starts_in(text, words)),
                 Kind::Category(x) => m.categories.iter().any(|c| contains_ci(c, x)),
-                Kind::Attachment(x) => m.attachments.iter().any(|a| contains_ci(&a.name, x)),
                 Kind::HasAttachment => m.has_attachments(),
                 Kind::Unread => !m.read,
                 Kind::Read => m.read,
@@ -171,7 +186,7 @@ impl Query {
                 Kind::Before(d) => day() < *d,
                 Kind::After(d) => day() > *d,
                 Kind::On(d) => day() == *d,
-            };
+            });
             hit != t.negate
         })
     }
@@ -180,7 +195,7 @@ impl Query {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Attachment;
+    use crate::{Address, Attachment};
 
     fn msg() -> Message {
         Message {
@@ -232,6 +247,36 @@ mod tests {
         assert!(!hit("after:2026-10-11") && !hit("before:2026-10-11"));
         // In a zone an hour east it is already the 12th.
         assert!(Query::parse("on:2026-10-12").matches(&msg(), 60));
+    }
+
+    /// R6.2: a word matches the start of a word, whatever its case and accents; inside a word it
+    /// doesn't (it used to: substring matching).
+    #[test]
+    fn words_match_word_starts_ignoring_case_and_accents() {
+        assert!(hit("budg") && hit("rev") && hit("ESTIM") && hit("lovelace"));
+        assert!(!hit("udget") && !hit("view") && !hit("ngine") && !hit("ovelace"));
+        assert!(hit("\"budget rev\"") && hit("from:\"ada love\"") && !hit("from:\"ada charles\""));
+        let m = Message { subject: "Sjednica u četvrtak".into(), from: Address::new("Đorđe Gvožđar", "dg@example.org"), ..Default::default() };
+        for q in ["gvozdar", "from:GVOŽĐAR", "dorde", "cetvrtak", "četvrtak", "subject:sjed"] {
+            assert!(Query::parse(q).matches(&m, 0), "{q}");
+        }
+        // Punctuation alone asks for nothing; with words, the words.
+        assert!(Query::parse("- @ ... \"\"").is_empty());
+        assert!(hit("ada@") && hit("@example") && !hit("@nowhere"));
+    }
+
+    #[test]
+    fn what_is_known_of_a_term_stands_in_for_looking() {
+        let q = Query::parse("budget -invoice is:unread");
+        assert_eq!(q.len(), 3);
+        assert_eq!(q.words_of(0), Some((words::ALL, ["budget".to_string()].as_slice())));
+        assert!(q.words_of(2).is_none() && q.term_reads_body(1) && !q.term_reads_body(2));
+        let m = msg();
+        assert!(q.matches(&m, 0));
+        // An index that says the message has "invoice": excluded; that it lacks "budget": too.
+        assert!(!q.matches_with(&m, 0, |i| (i == 1).then_some(true)));
+        assert!(!q.matches_with(&m, 0, |i| (i == 0).then_some(false)));
+        assert!(!Query::parse("subject:x").reads_bodies() && Query::parse("body:x").reads_bodies());
     }
 
     #[test]
