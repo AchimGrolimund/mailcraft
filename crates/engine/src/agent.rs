@@ -387,6 +387,8 @@ const NEVER: &[&str] = &[
     "ui.attach",
     // Anything an agent chooses onto the owner's clipboard.
     "ui.copyLinkAddress",
+    // A file from a message opened with another program: only ever the owner's own doing.
+    "mail.openAttachment",
 ];
 
 /// A command's class by id; `None`: not classified (and so refused).

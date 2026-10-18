@@ -17,6 +17,7 @@ macro_rules! tl {
 mod account_setup;
 pub mod agent_gate;
 pub mod approval;
+mod attachment_open;
 pub mod backstage;
 mod calendar_sync;
 pub mod calendar_view;
@@ -77,6 +78,14 @@ pub struct Services {
     pub open_async: Option<Box<dyn Fn(&str)>>,
     /// Files (name, bytes) delivered asynchronously (the web picker, drag and drop).
     pub inbox: Option<Inbox>,
+    /// Desktop: open an attachment the owner asked to open (`mail.openAttachment`) with the
+    /// system's own program for its kind: the host writes it, under the name given (already
+    /// made safe, and made safe again there), into a folder of MailCraft's own that only this
+    /// user can read and that is emptied when MailCraft quits, and asks the system to open it.
+    /// Only ever called for the owner's own double-click or Open, after the window has refused
+    /// programs and scripts and asked about macros. An error means nothing was opened. Absent in
+    /// the browser (the file is downloaded instead) and the tests.
+    pub open_file: Option<Box<dyn Fn(&str, &[u8]) -> Result<(), String>>>,
     /// Web: hand bytes to the browser as a download. An error means no download started.
     pub download: Option<Box<dyn Fn(&str, &[u8]) -> Result<(), String>>>,
     /// Web: told whether there are unsaved changes after each pass, for the leave-page guard.
@@ -1479,7 +1488,8 @@ impl MailApp {
                     .or_else(|| favorites_sync::ui_command(self, id, p))
                     .or_else(|| approval::ui_command(self, id, p))
                     .or_else(|| graph_switch::ui_command(self, id, p))
-                    .or_else(|| updates::ui_command(self, id, p));
+                    .or_else(|| updates::ui_command(self, id, p))
+                    .or_else(|| attachment_open::ui_command(self, id, p));
             }
         })
     }
