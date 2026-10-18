@@ -1332,6 +1332,41 @@ fn what_cant_be_taken_back_is_asked_about_first() {
     assert_eq!(a.session.mailbox.count(bin), kept);
 }
 
+/// #186: a contact has no Deleted Items to go to, so deleting one by hand is asked about first,
+/// naming it; a script is not asked.
+#[test]
+fn deleting_a_contact_is_asked_about_first() {
+    let mut a = app();
+    let id = a.execute("people.new", json!({"first": "Ivana", "last": "Horvat", "email": "ivana@example.org"})).unwrap()["id"].as_u64().unwrap();
+    let total = a.session.mailbox.contacts.len();
+    assert_eq!(a.run("people.delete", json!({"id": id})).unwrap()["pending"], "confirm");
+    let Some(crate::dialogs::Dialog::Confirm { ask, command, .. }) = &a.dialog else { panic!("no question") };
+    assert_eq!((command.as_str(), ask.title.as_str(), ask.action.as_str()), ("people.delete", "Delete Contact", "Delete"));
+    assert_eq!(ask.text, "\"Ivana Horvat\" will be deleted for good. Contacts don't go to Deleted Items.");
+    // Cancelled: still there. Confirmed: gone, and Undo brings it back.
+    a.dialog = None;
+    assert_eq!(a.session.mailbox.contacts.len(), total);
+    a.run("people.delete", json!({"id": id, "confirmed": true})).unwrap();
+    assert!(a.session.mailbox.contact(id).is_none() && a.dialog.is_none());
+    a.execute("edit.undo", json!({})).unwrap();
+    assert!(a.session.mailbox.contact(id).is_some());
+    // The selected one, from the ribbon or the Delete key, is asked about the same way.
+    a.execute("people.select", json!({"id": id})).unwrap();
+    assert_eq!(a.run("people.delete", json!({})).unwrap()["pending"], "confirm");
+    a.dialog = None;
+    // A script is not asked.
+    a.execute("people.delete", json!({"id": id})).unwrap();
+    assert!(a.session.mailbox.contact(id).is_none());
+    // A contact known by its address alone is named by it; the question lays out, and leaves
+    // the contact where it is.
+    let only = a.execute("people.new", json!({"email": "kim@example.org"})).unwrap()["id"].as_u64().unwrap();
+    a.run("people.delete", json!({"id": only})).unwrap();
+    let Some(crate::dialogs::Dialog::Confirm { ask, .. }) = &a.dialog else { panic!("no question") };
+    assert!(ask.text.starts_with("\"kim@example.org\" will be deleted for good."), "{}", ask.text);
+    let a = frames(a, (1280.0, 800.0), 3);
+    assert!(a.session.mailbox.contact(only).is_some());
+}
+
 /// Typing a recipient offers the people it could be; Enter takes the one that is marked, the
 /// arrows mark another, and typing carries on after it.
 #[test]

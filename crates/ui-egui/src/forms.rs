@@ -4734,7 +4734,14 @@ mod contact {
                 return true;
             }
             let run = if let (true, Some(id)) = (clicked.delete, self.id) {
-                Some(("people.delete", json!({"id": id})))
+                // Asked about first, in the main window (#186): the form gives way to the question.
+                return match app.run("people.delete", json!({"id": id})) {
+                    Ok(_) => true,
+                    Err(e) => {
+                        self.error = e;
+                        false
+                    }
+                };
             } else if clicked.ok || (pass.submit && ready) {
                 Some(self.command())
             } else {
