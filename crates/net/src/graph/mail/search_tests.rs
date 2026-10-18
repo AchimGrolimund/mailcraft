@@ -46,6 +46,19 @@ fn what_goes_to_the_server_is_what_its_search_understands() {
     assert_eq!(search_value("Gvožđar").as_deref(), Some(r#""Gvožđar""#));
 }
 
+/// #194: a space after a keyword's colon sends the keyword with its word; a keyword with nothing
+/// after it yet sends nothing of itself.
+#[test]
+fn a_keyword_with_a_space_after_its_colon_goes_as_one_clause() {
+    let both = Some(r#""from:stuart AND subject:iqa""#);
+    assert_eq!(search_value("from: stuart subject: iqa").as_deref(), both);
+    assert_eq!(search_value("from:stuart subject:iqa").as_deref(), both);
+    assert_eq!(search_value("from: stuart subject:").as_deref(), Some(r#""from:stuart""#));
+    assert_eq!(search_value("from: stuart su").as_deref(), Some(r#""from:stuart AND su""#));
+    assert_eq!(search_value("subject: \"IQA audit\"").as_deref(), Some(r#""subject:\"IQA audit\"""#));
+    assert_eq!(search_value("subject:"), None);
+}
+
 #[test]
 fn the_whole_mailbox_is_searched_fifty_a_page_newest_first_and_the_next_page_follows_the_servers_link() {
     let server = StandIn::start().unwrap();
