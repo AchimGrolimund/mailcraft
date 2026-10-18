@@ -2300,6 +2300,7 @@ dependencies = [
  "rfd",
  "serde_json",
  "webbrowser",
+ "winit",
  "winresource",
 ]
 
