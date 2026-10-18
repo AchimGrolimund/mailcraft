@@ -884,8 +884,11 @@ fn of_two_saves_racing_the_newer_state_wins() {
             .collect();
         let reader = scope.spawn(|| {
             let mut seen = 0;
-            // At least one look, however late the reader gets a turn on a busy machine.
+            let t = Instant::now();
+            // At least one look, however late the reader gets a turn on a busy machine (#75: the
+            // writers could be done before it had looked at all), and never a wait without end.
             while seen == 0 || !stop.load(Ordering::Relaxed) {
+                assert!(t.elapsed() < Duration::from_secs(60), "the mailbox file couldn't be read");
                 // (Where a file being replaced can't be opened that instant, look again.)
                 let Ok(bytes) = fs::read(&path) else { continue };
                 // Read as far as its last commit (an append may be under way).
