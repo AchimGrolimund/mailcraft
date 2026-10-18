@@ -28,6 +28,8 @@ const MAX_DEPTH: usize = 8;
 ///
 /// Work is bounded: at most 100 000 cards are read, 100 e-mail addresses, phone numbers, postal
 /// addresses and web sites per card, and what a line holds beyond 1 MiB is dropped.
+///
+/// A file's bytes go through [`parse_bytes`], which reads raw 8-bit values in their `CHARSET`.
 pub fn parse(text: &str) -> Vec<Contact> {
     let mut lines = Lines::new(text);
     // The cards that are open, outermost first, and the finished ones with the order they began in.
@@ -61,6 +63,13 @@ pub fn parse(text: &str) -> Vec<Contact> {
     }
     done.sort_by_key(|(order, _)| *order);
     done.into_iter().map(|(_, contact)| contact).take(MAX_CARDS).collect()
+}
+
+/// Parse a vCard file as [`parse`] does, from its bytes: a value written as raw 8-bit bytes
+/// (vCard 2.1, `FN;CHARSET=WINDOWS-1250:…`) is read in the `CHARSET` of its property, and one
+/// without a `CHARSET` as UTF-8 when it is valid UTF-8, else as Windows-1252.
+pub fn parse_bytes(bytes: &[u8]) -> Vec<Contact> {
+    parse(&crate::lines::text_from_bytes(bytes))
 }
 
 /// A card being read.
@@ -600,6 +609,41 @@ END:VCARD\r\n",
         assert_eq!(second.title, "Gvožđe i šljunak");
         // A set no standard names is read as UTF-8, as mail is.
         assert_eq!(card("FN;CHARSET=x-unknown;ENCODING=QUOTED-PRINTABLE:Zo=C3=AB").display_name, "Zoë");
+    }
+
+    #[test]
+    fn raw_8_bit_values_are_read_in_their_charset() {
+        // #185: raw Windows-1250 bytes (not quoted-printable) were read as UTF-8 before the charset
+        // was looked at, and đ ć č Š became U+FFFD.
+        let cards = parse_bytes(
+            b"BEGIN:VCARD\r\nVERSION:2.1\r\n\
+N;CHARSET=WINDOWS-1250:Gvo\xf0\xe6i\xe8;Ivana;;;\r\n\
+FN;CHARSET=WINDOWS-1250:Ivana Gvo\xf0\xe6i\xe8\r\n\
+ORG;CHARSET=WINDOWS-1250:\x8akola \xe8e\x9a\xe6e\r\n\
+NOTE;CHARSET=\"iso-8859-2\":Gvo\xbe\xf0e\r\n \xae\xb9\xe8\xe6\r\n\
+TITLE;CHARSET=windows-1250;ENCODING=QUOTED-PRINTABLE:=8Aef\r\n\
+X-SOMETHING:\xff\r\n\
+EMAIL;INTERNET:ivana@example.org\r\n\
+END:VCARD\r\n",
+        );
+        assert_eq!(cards.len(), 1);
+        let c = &cards[0];
+        assert_eq!((c.display_name.as_str(), c.last.as_str(), c.first.as_str()), ("Ivana Gvođćič", "Gvođćič", "Ivana"));
+        assert_eq!(c.company, "Škola češće");
+        // A folded line goes on in the charset of the property it continues (2.1 keeps the space).
+        assert_eq!(c.notes, "Gvožđe Žščć");
+        assert_eq!(c.title, "Šef");
+        assert_eq!(c.emails[0].value, "ivana@example.org");
+        // Without a charset: UTF-8 when it is UTF-8, else Windows-1252; in UTF-8 nothing changes.
+        assert_eq!(parse_bytes(b"BEGIN:VCARD\nFN:Zo\xc3\xab\nEND:VCARD")[0].display_name, "Zoë");
+        assert_eq!(parse_bytes(b"BEGIN:VCARD\nFN:Zo\xeb \x96 caf\xe9\nEND:VCARD")[0].display_name, "Zoë – café");
+        assert_eq!(parse_bytes("\u{feff}BEGIN:VCARD\r\nFN;CHARSET=UTF-8:Đurđica\r\nEND:VCARD".as_bytes())[0].display_name, "Đurđica");
+        // A file in UTF-16 with its byte order mark.
+        let utf16: Vec<u8> = "\u{feff}BEGIN:VCARD\r\nFN:Željko\r\nEND:VCARD\r\n".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(parse_bytes(&utf16)[0].display_name, "Željko");
+        // Bytes and text give the same cards.
+        let text = crate::write(&cards.iter().collect::<Vec<_>>());
+        assert_eq!(parse_bytes(text.as_bytes()), parse(&text));
     }
 
     #[test]
