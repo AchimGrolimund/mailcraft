@@ -15,10 +15,76 @@
 
 use std::collections::HashSet;
 
-use mailcraft_model::{Id, Message, OfflineWindow};
+use mailcraft_model::{AccountKind, Id, KeepOffline, Message, OfflineWindow, size_label};
+use serde_json::{Value, json};
 
-use super::graph_down;
-use crate::{Part, Session};
+use super::{bad, fail, graph_down};
+use crate::{CmdResult, CommandSpec, Part, Session, p};
+
+/// Most messages one `account.thinOffline` takes back.
+const MOST: usize = 100_000;
+
+pub fn specs() -> Vec<CommandSpec> {
+    vec![
+        CommandSpec::new("account.thinOffline", "Remove Older Mail from This Computer", "File › Info", thin_offline)
+            .pure()
+            .params(r#"{"account"?: number (and the shared mailboxes opened through it; default every account), "most"?: number (default and at most 100000)} — mail of a Microsoft account older than its mail to keep offline goes back to its headers and preview here, and its content files leave the disk once the mailbox is saved; it stays on the server and is fetched again when it is opened. Never mail the server lacks (local folders, Drafts, the Outbox, held messages), the message shown, or one fetched this session by opening it (that goes back the next time the mailbox is opened). Not an undo step. The window runs it at start, once a day, and when its owner shortens the window. Answers {"thinned": number, "bytes": number, "left": number (still to go, past "most")}"#)
+            .when(has_graph_account),
+        CommandSpec::new("account.offlineSize", "Space Older Mail Takes", "File › Info", offline_size)
+            .pure()
+            .params(r#"{"account": number, "keepOffline": "3d"|"1w"|"2w"|"1m"|"3m"|"6m"|"12m"|"2y"|"5y"|"10y"|"all"} — how much of the account's mail kept in full here (with the shared mailboxes opened through it) would go back to its headers and preview with that window; changes nothing. Answers {"messages": number, "bytes": number, "size": string ("1.2 GB"), "window": string ("3 months")}"#),
+    ]
+}
+
+fn has_graph_account(s: &Session) -> Option<&'static str> {
+    if s.mailbox.accounts.iter().any(|a| a.kind == AccountKind::Microsoft) {
+        None
+    } else {
+        Some("no account is kept in step through Microsoft Graph")
+    }
+}
+
+/// The Microsoft account a command names (not a shared mailbox: it follows its owner).
+fn account_of(s: &Session, v: &Value, required: bool) -> Result<Option<Id>, crate::CmdError> {
+    let id = match v.get("account") {
+        None | Some(Value::Null) if !required => return Ok(None),
+        _ => p::req_id(v, "account")?,
+    };
+    let a = s.mailbox.account(id).ok_or_else(|| fail(format!("no account with id {id}")))?;
+    if a.kind != AccountKind::Microsoft {
+        return Err(fail(format!("{} isn't kept in step through Microsoft Graph", a.name)));
+    }
+    if a.is_shared() {
+        return Err(fail("a shared mailbox keeps as much mail offline as the account it is opened through: name that account"));
+    }
+    Ok(Some(id))
+}
+
+fn thin_offline(s: &mut Session, v: &Value) -> CmdResult {
+    let account = account_of(s, v, false)?;
+    let most = p::u64(v, "most").map_or(MOST, |n| usize::try_from(n).unwrap_or(MOST).clamp(1, MOST));
+    let done = thin(s, account, most);
+    Ok(json!({"thinned": done.messages, "bytes": done.bytes, "left": done.left}))
+}
+
+/// What `account.offlineSize` answers: what a window would take back.
+pub fn offline_size(s: &mut Session, v: &Value) -> CmdResult {
+    let account = account_of(s, v, true)?.ok_or_else(|| bad("`account` is required"))?;
+    let keep =
+        KeepOffline::parse(p::req_str(v, "keepOffline")?).ok_or_else(|| bad("`keepOffline` is 3d, 1w, 2w, 1m, 3m, 6m, 12m, 2y, 5y, 10y or all"))?;
+    let (messages, bytes) = would_free(s, account, keep);
+    Ok(json!({"messages": messages, "bytes": bytes, "size": size_label(bytes), "window": keep.label()}))
+}
+
+/// How many messages of `account` (with the shared mailboxes opened through it) kept in full
+/// here would go back to their headers and preview with the window `keep`, and the bytes of
+/// content they have. Changes nothing.
+pub fn would_free(s: &Session, account: Id, keep: KeepOffline) -> (usize, u64) {
+    let window = OfflineWindow::proposed(&s.mailbox, s.now(), account, keep);
+    let going = outside_of(s, Some(account), &window);
+    let bytes = going.iter().filter_map(|id| s.mailbox.message(*id)).map(content_bytes).fold(0u64, u64::saturating_add);
+    (going.len(), bytes)
+}
 
 /// How long a preview is: as long as Microsoft Graph's own (`bodyPreview`).
 const PREVIEW: usize = 255;
@@ -36,8 +102,12 @@ pub struct Thinned {
 /// The messages of `account` (and of the shared mailboxes it opens; every account for `None`)
 /// that are whole and outside their window at the session's clock, and may go back.
 fn outside(s: &Session, account: Option<Id>) -> Vec<Id> {
+    outside_of(s, account, &OfflineWindow::of(&s.mailbox, s.now()))
+}
+
+/// [`outside`], of `window`.
+fn outside_of(s: &Session, account: Option<Id>, window: &OfflineWindow) -> Vec<Id> {
     let mb = &s.mailbox;
-    let window = OfflineWindow::of(mb, s.now());
     if window.keeps_all() {
         return Vec::new();
     }

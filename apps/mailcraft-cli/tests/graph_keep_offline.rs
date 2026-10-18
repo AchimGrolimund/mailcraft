@@ -176,9 +176,13 @@ fn mail_outside_a_shortened_window_goes_back_to_its_headers_and_its_files_leave_
     // Opened again, it comes again.
     rig.fetch(Some(id));
     assert!(!rig.here(&ids[2]).unfetched && rig.here(&ids[2]).attachments.len() == 1);
-    // And with nothing outside, nothing goes.
-    assert_eq!(mailcraft_engine::cmd::offline::thin(&mut rig.s, None, 1_000).messages, 1, "the one fetched again, outside");
-    assert_eq!(mailcraft_engine::cmd::offline::thin(&mut rig.s, None, 1_000).messages, 0);
+    // Opened outside the window, it stays whole until the mailbox is opened again.
+    assert_eq!(mailcraft_engine::cmd::offline::thin(&mut rig.s, None, 1_000).messages, 0, "kept until the next start");
+    rig.s.run("file.save", &json!({})).unwrap();
+    rig.s.run("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+    assert_eq!(rig.s.run("account.thinOffline", &json!({})).unwrap()["thinned"], 1);
+    assert!(rig.here(&ids[2]).unfetched);
+    assert_eq!(mailcraft_engine::cmd::offline::thin(&mut rig.s, None, 1_000).messages, 0, "nothing twice");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

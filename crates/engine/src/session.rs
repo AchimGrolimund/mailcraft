@@ -560,6 +560,8 @@ pub struct Session {
     /// keep offline (the owner opened, answered or saved one, #143): kept in full until the
     /// mailbox is opened again, then back to their headers and preview. Never saved.
     pub(crate) kept_for_now: std::collections::HashSet<Id>,
+    /// How many times a mailbox took the place of the one before ([`Session::replace_mailbox`]).
+    openings: u64,
     /// Messages being moved out of a Microsoft account that were whole in the mailbox file when
     /// it was last saved: only for those is the server's copy removed (R3 spec S19). Never saved.
     pub(crate) saved_whole: std::collections::HashSet<Id>,
@@ -689,6 +691,7 @@ impl Session {
             graph_index: Default::default(),
             graph_unfetchable: Default::default(),
             kept_for_now: Default::default(),
+            openings: 0,
             saved_whole: Default::default(),
             graph_said: Vec::new(),
             agent: None,
@@ -825,6 +828,12 @@ impl Session {
     /// Counts every change to the mailbox (caches key on it).
     pub fn rev(&self) -> u64 {
         self.rev
+    }
+
+    /// Changes each time another mailbox (or the same file again) is opened: a host that does
+    /// something once a mailbox is opened looks for it to change.
+    pub fn openings(&self) -> u64 {
+        self.openings
     }
 
     /// The message the reading pane shows.
@@ -1451,6 +1460,7 @@ impl Session {
         self.searched_for = None;
         self.saved_whole.clear();
         self.kept_for_now.clear();
+        self.openings = self.openings.wrapping_add(1);
         self.history.clear();
         self.redo.clear();
         self.sel = Selection::default();

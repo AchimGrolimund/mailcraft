@@ -331,9 +331,14 @@ pub fn kept_in_full(mb: &Mailbox, account: Id, now: Timestamp) -> usize {
 /// the mailbox keeps of it (where it is, its marks, its server state) as it was. Whether there
 /// was such a message.
 pub fn take_fetched(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, id: &str, mime: &[u8]) -> bool {
-    let Some(m) = index.find(mb, account, id).or_else(|| moving_out(mb, account, id)) else { return false };
+    take_fetched_as(mb, index, account, id, mime).is_some()
+}
+
+/// [`take_fetched`], answering which message it was.
+pub fn take_fetched_as(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, id: &str, mime: &[u8]) -> Option<Id> {
+    let here = index.find(mb, account, id).or_else(|| moving_out(mb, account, id))?;
     let read = crate::mime::parse(mime);
-    let Ok(m) = mb.message_mut(m) else { return false };
+    let m = mb.message_mut(here).ok()?;
     m.message_id = read.message_id;
     m.in_reply_to = read.in_reply_to;
     m.references = read.references;
@@ -369,7 +374,7 @@ pub fn take_fetched(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, id: 
             sd.synced = Some(state);
         }
     }
-    true
+    Some(here)
 }
 
 /// Back to its headers and `preview` (#143): what [`take_fetched`] brought in goes, and the
