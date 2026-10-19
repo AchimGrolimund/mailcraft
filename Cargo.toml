@@ -70,6 +70,10 @@ eframe = { version = "0.36", default-features = false }
 egui_kittest = "0.36"
 rfd = "0.17"
 arboard = { version = "3.6", default-features = false }
+# Reading a link's address the way a browser does (WHATWG URL), for the host it really goes to,
+# an international name in its ASCII (`xn--`) form: the tip over a link. MIT OR Apache-2.0, Rust
+# throughout, builds for the browser; already in the tree (the desktop's `webbrowser` uses it).
+url = "2.5"
 
 # craft-libs (https://github.com/storytold/craft-libs): code shared by the Craft apps, taken from
 # git pinned to one commit (`rev`); review the diff before moving the pin. Only `craft-quit`, in

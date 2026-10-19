@@ -3,7 +3,7 @@
 use mailcraft_model::{FlagStatus, FolderKind, Id, Rgb};
 use serde_json::{Value, json};
 
-use super::{bad, deliver, done, fail, file_name, message_json, message_summary, needs_message, select_after_removal, targets};
+use super::{bad, deliver, done, fail, message_json, message_summary, needs_message, select_after_removal, targets};
 use crate::list::position;
 use crate::{CmdResult, CommandSpec, Session, p};
 
@@ -411,13 +411,11 @@ fn attachment_target(s: &Session, v: &Value) -> Result<(Id, usize), crate::CmdEr
 fn save_attachment(s: &mut Session, v: &Value) -> CmdResult {
     let (id, index) = attachment_target(s, v)?;
     let a = s.mailbox.message(id).and_then(|m| m.attachments.get(index)).ok_or_else(|| fail("no such attachment"))?;
-    let (stem, ext) = match a.name.rsplit_once('.') {
-        Some((stem, ext)) if !ext.is_empty() && ext.len() <= 8 && ext.chars().all(char::is_alphanumeric) => (stem, ext),
-        _ => (a.name.as_str(), "bin"),
-    };
+    // A message can name its attachment anything: the name is made safe as for opening it.
+    let name = crate::opening::save_name(&a.name);
     // The file's bytes, from where the mailbox keeps them when they aren't in memory.
     let bytes = s.content(id, crate::Part::Attachment(index))?;
-    deliver(v, &file_name(stem, ext), bytes.as_ref().clone())
+    deliver(v, &name, bytes.as_ref().clone())
 }
 
 /// The window opens attachments (through its host); everywhere else this says why nothing was

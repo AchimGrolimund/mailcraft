@@ -40,10 +40,8 @@ pub struct PendingDialog {
 /// Commands that write a file, and the name they suggest.
 fn export_name(app: &MailApp, id: &str, params: &Value) -> Option<String> {
     let s = &app.session;
-    let clean = |stem: &str, ext: &str| {
-        let stem: String = stem.chars().map(|c| if c.is_control() || "\\/:*?\"<>|".contains(c) { '_' } else { c }).take(80).collect();
-        format!("{}.{ext}", if stem.trim().is_empty() { "untitled" } else { stem.trim() })
-    };
+    // The same names the commands give: made safe by `opening`, as every file named from mail is.
+    let clean = mailcraft_engine::opening::export_name;
     Some(match id {
         "file.saveAs" => format!("mailbox.{}", mailcraft_engine::io::MAILBOX_EXT),
         "file.save" if s.path.is_none() && app.services.persist.is_none() => format!("mailbox.{}", mailcraft_engine::io::MAILBOX_EXT),
@@ -58,12 +56,7 @@ fn export_name(app: &MailApp, id: &str, params: &Value) -> Option<String> {
             let index = params.get("index").and_then(Value::as_u64)? as usize;
             let id = params.get("id").and_then(Value::as_u64).or(s.sel.focus())?;
             // Only the file's own name, cleaned: a message can name its attachment anything.
-            let name = s.mailbox.message(id)?.attachments.get(index)?.name.clone();
-            let leaf = name.rsplit(['/', '\\']).next().unwrap_or("").to_string();
-            match leaf.rsplit_once('.') {
-                Some((stem, ext)) if !ext.is_empty() && ext.len() <= 8 && ext.chars().all(char::is_alphanumeric) => clean(stem, ext),
-                _ => clean(&leaf, "bin"),
-            }
+            mailcraft_engine::opening::save_name(&s.mailbox.message(id)?.attachments.get(index)?.name)
         }
         _ => return None,
     })

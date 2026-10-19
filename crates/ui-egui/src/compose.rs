@@ -187,7 +187,7 @@ struct Shown {
     cc: String,
     bcc: String,
     subject: String,
-    /// Each attachment's name and size.
+    /// Each attachment's name, as it is written to a file (a forward carries the sender's), and size.
     attachments: Vec<(String, String)>,
     quote: bool,
 }
@@ -204,7 +204,7 @@ impl Shown {
             cc: c.cc.clone(),
             bcc: c.bcc.clone(),
             subject: c.subject.clone(),
-            attachments: c.attachments.iter().map(|a| (a.name.clone(), a.size_label())).collect(),
+            attachments: c.attachments.iter().map(|a| (mailcraft_engine::opening::file_name(&a.name), a.size_label())).collect(),
             quote: c.quote.is_some(),
         })
     }
