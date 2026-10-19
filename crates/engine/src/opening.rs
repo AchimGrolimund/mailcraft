@@ -134,6 +134,26 @@ pub const BLOCKED: &[&str] = &[
     "glk",
     "xnk",
     "jnlp",
+    // Files that connect, fetch or run when Windows or Office opens them: remote desktop, web
+    // queries and symbolic links of spreadsheets, Office add-ins, Access shortcuts, Outlook
+    // profiles, help projects and Program Manager groups.
+    "rdp",
+    "iqy",
+    "slk",
+    "vsto",
+    "mam",
+    "maf",
+    "mag",
+    "maq",
+    "mar",
+    "mas",
+    "mat",
+    "mau",
+    "mav",
+    "maw",
+    "prf",
+    "hpj",
+    "grp",
     // Disk images, which open as a drive with whatever is in them.
     "iso",
     "img",
@@ -440,6 +460,14 @@ mod tests {
             "photo\u{202e}gpj.exe",
             "noextension",
             "../x.exe",
+            "office.rdp",
+            "rates.IQY",
+            "sheet.slk",
+            "addin.vsto",
+            "macro.mam",
+            "outlook.prf",
+            "help.hpj",
+            "group.grp",
         ] {
             assert_eq!(verdict(name), Verdict::Blocked, "{name}");
         }

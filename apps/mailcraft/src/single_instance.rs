@@ -7,8 +7,9 @@
 //!
 //! Beside the mailbox: `<mailbox>.lock`, held locked for as long as the first one runs (the
 //! system lets go of it however the program ends, so a crash leaves nothing to clean up), and
-//! `<mailbox>.instance`, the port and a random key (mode 0600 on Unix; the settings folder is the
-//! user's own on every system), removed on exit. The sample mailbox and runs without preferences
+//! `<mailbox>.instance`, the port and a random key (mode 0600 on Unix; elsewhere what the
+//! mailbox's folder allows, which is the user's own unless the mailbox was put somewhere shared),
+//! removed on exit. The sample mailbox and runs without preferences
 //! keep nothing in a file and are not guarded.
 
 use std::fs::{File, OpenOptions, TryLockError};
