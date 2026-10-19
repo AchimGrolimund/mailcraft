@@ -185,8 +185,8 @@ and in the Flatpak (which is granted `org.freedesktop.secrets` for it).
 
 | Date | Change |
 |---|---|
-| 2026-10-18 | How a copy that updates itself installs a release (Windows Installer, the disk image, the AppImage), what the packages must keep for it, and `DISABLEAUTOMATICUPDATES=1` |
 | 2026-10-19 | v0.5.0, the first release signed with MailCraft's own release key |
+| 2026-10-18 | How a copy that updates itself installs a release (Windows Installer, the disk image, the AppImage), what the packages must keep for it, and `DISABLEAUTOMATICUPDATES=1` |
 | 2026-10-18 | MailCraft's own release signature: `SHA256SUMS.txt.sig` made in the `release` environment with `MAILCRAFT_RELEASE_KEY`, `cargo xtask release-key new` and `sign`, `packaging/sign-sums.sh`; the dry run's checksums |
 | 2026-10-16 | Status as it is: v0.1.0 to v0.4.1 published by `release.yml` and `package.yml`, unsigned; riscv64 and the Flathub manifest out of the table (neither is built); what the runners check on every release |
 | 2026-10-16 | Signing secrets in the protected `release` environment, used only for a pushed version tag; dry runs unsigned with no secrets; the workflow makes a draft that a maintainer publishes |
