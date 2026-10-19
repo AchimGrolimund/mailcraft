@@ -15,6 +15,8 @@ Welcome, and thank you for signing up to test MailCraft.
 
 **The beta** counts 14 working days (Monday to Friday, about three weeks) on at least 2 devices. When it starts, we'll ask here, and your 14 working days begin then. Nothing in the alpha counts towards it, so use it as much or as little as you like for now.
 
+**Credit.** Once you've tested a release, you can be credited by name in About › Testers, if you ticked the box above (or say so in this issue).
+
 New releases are announced in #11. **Watch → Custom → Releases** on the repository gets you a notification.
 
 Thanks again! A maintainer will add you to the roster in #11.

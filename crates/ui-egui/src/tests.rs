@@ -229,6 +229,7 @@ fn everything_lays_out_without_panicking() {
         "goToDate",
         "about",
         "contributors",
+        "testers",
         "discardDraft",
         "event",
         "meeting",
@@ -291,6 +292,33 @@ fn about_credits_the_contributors() {
         assert!(harness.query_by_label_contains("Made by its contributors").is_some(), "{id}");
         assert!(harness.query_by_label_contains("github.com/UCS-Care-Group/mailcraft/graphs/contributors").is_some(), "{id}");
         assert!(harness.query_by_label_contains("Initial contributor").is_none(), "{id}");
+    }
+}
+
+/// About › Testers thanks the testers, and while nobody is credited says where to sign up.
+#[test]
+fn about_thanks_the_testers() {
+    use egui_kittest::kittest::Queryable as _;
+    for params in [json!({"name": "testers"}), json!({"name": "about", "tab": "testers"})] {
+        let mut a = app();
+        a.execute("ui.dialog", params.clone()).unwrap();
+        assert_eq!(a.dialog.as_ref().map(|d| d.name()), Some("testers"), "{params}");
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1280.0, 800.0)).build_ui_state(
+            |ui, app: &mut MailApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            a,
+        );
+        harness.run_steps(4);
+        assert!(harness.query_by_label_contains("tell us what goes wrong. Thank you.").is_some(), "{params}");
+        if crate::credits::TESTERS.is_empty() {
+            assert!(harness.query_by_label_contains("No testers credited yet.").is_some(), "{params}");
+            assert!(harness.query_by_label_contains("Sign up in #11").is_some(), "{params}");
+        } else {
+            assert!(harness.query_by_label_contains("No testers credited yet.").is_none(), "{params}");
+        }
     }
 }
 

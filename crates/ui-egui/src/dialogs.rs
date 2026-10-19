@@ -91,12 +91,14 @@ pub enum Dialog {
     Meeting(crate::meeting_dialogs::MeetingDialog),
 }
 
-/// The tabs of About: the program, and the people who made it ([`crate::credits`]).
+/// The tabs of About: the program, the people who made it, and the people who test it
+/// ([`crate::credits`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AboutTab {
     #[default]
     About,
     Contributors,
+    Testers,
 }
 
 /// What a [`Dialog::Confirm`] asks.
@@ -150,6 +152,7 @@ impl Dialog {
             Dialog::Refused { .. } => "refused",
             Dialog::About(AboutTab::About) => "about",
             Dialog::About(AboutTab::Contributors) => "contributors",
+            Dialog::About(AboutTab::Testers) => "testers",
             Dialog::GraphSwitch { .. } => "graphSwitch",
             Dialog::Form(f) => f.name(),
             Dialog::Meeting(d) => d.name(),
@@ -200,9 +203,13 @@ impl Dialog {
             }
             "password" => Dialog::Password { account: id("account")?, password: String::new() },
             "discardDraft" => Dialog::DiscardDraft { then: params.get("then").and_then(Value::as_str).unwrap_or("").to_string() },
-            "about" if params.get("tab").and_then(Value::as_str) == Some("contributors") => Dialog::About(AboutTab::Contributors),
-            "about" => Dialog::About(AboutTab::About),
+            "about" => match params.get("tab").and_then(Value::as_str) {
+                Some("contributors") => Dialog::About(AboutTab::Contributors),
+                Some("testers") => Dialog::About(AboutTab::Testers),
+                _ => Dialog::About(AboutTab::About),
+            },
             "contributors" => Dialog::About(AboutTab::Contributors),
+            "testers" => Dialog::About(AboutTab::Testers),
             // An item that repeats is asked about before it opens: just this one, or the series?
             "editEvent" if opening_question(app, params).is_some() => {
                 Dialog::Confirm { command: "calendar.edit".to_string(), params: json!({}), ask: opening_question(app, params)? }
@@ -1188,18 +1195,26 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
             }
         }
         Dialog::About(tab) => {
-            let width = if *tab == AboutTab::Contributors { 720.0 } else { 420.0 };
+            let width = match tab {
+                AboutTab::About => 420.0,
+                AboutTab::Contributors => 720.0,
+                AboutTab::Testers => 520.0,
+            };
             let open = window(ctx, tl!("About MailCraft"), width, |ui| {
                 ui.horizontal(|ui| {
-                    for (which, label) in [(AboutTab::About, "About"), (AboutTab::Contributors, "Contributors")] {
+                    for (which, label) in [(AboutTab::About, "About"), (AboutTab::Contributors, "Contributors"), (AboutTab::Testers, "Testers")] {
                         if ui.selectable_label(*tab == which, tl!(label)).clicked() {
                             *tab = which;
                         }
                     }
                 });
                 ui.separator();
-                if *tab == AboutTab::Contributors {
-                    crate::credits::contributors_ui(ui, &t);
+                if *tab != AboutTab::About {
+                    if *tab == AboutTab::Testers {
+                        crate::credits::testers_ui(ui, &t);
+                    } else {
+                        crate::credits::contributors_ui(ui, &t);
+                    }
                     ui.add_space(4.0);
                     button_row(ui, |ui| {
                         if primary_button(ui, tl!("Close"), true).clicked() || enter {
