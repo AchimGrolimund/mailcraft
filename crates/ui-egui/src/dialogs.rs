@@ -335,6 +335,24 @@ pub fn confirmation(app: &MailApp, id: &str, params: &Value) -> Option<Question>
             };
             question(tl!("Remove Shared Mailbox"), text, tl!("Remove"))
         }
+        // A shorter window says what it removes from this computer, and that the server keeps it
+        // (#143). Nothing to remove: nothing to ask.
+        "ui.keepOffline" => {
+            let account = mb.account(params.get("account").and_then(Value::as_u64)?)?;
+            let keep = params.get("keepOffline").and_then(Value::as_str).and_then(mailcraft_model::KeepOffline::parse)?;
+            if keep >= account.keep_offline {
+                return None;
+            }
+            let (messages, bytes) = mailcraft_engine::cmd::offline::would_free(&app.session, account.id, keep);
+            if messages == 0 {
+                return None;
+            }
+            let text = crate::i18n::fmt(
+                tl!("About {size} of mail older than {window} will be removed from this computer. It stays on the server."),
+                &[("size", &mailcraft_model::size_label(bytes)), ("window", crate::keep_offline::label(keep))],
+            );
+            question(tl!("Mail to Keep Offline"), text, tl!("OK"))
+        }
         // A check on the account's real calendar says exactly what it is about to do there.
         "ui.checkCalendar" => {
             let named = params.get("account").and_then(Value::as_u64).and_then(|id| mb.account(id));

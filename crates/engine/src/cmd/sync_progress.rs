@@ -250,13 +250,13 @@ impl SyncProgress {
 
     /// Count the account's full messages again, from the mailbox (nothing kept for an account
     /// that isn't a Microsoft one).
-    pub fn count_full(&mut self, mb: &Mailbox, account: Id) {
+    pub fn count_full(&mut self, mb: &Mailbox, account: Id, now: mailcraft_model::time::Timestamp) {
         if mb.account(account).is_none_or(|a| a.kind != AccountKind::Microsoft) {
             self.full.remove(&account);
             return;
         }
-        let all = mb.messages.values().filter(|m| m.account == account && (m.server.is_some() || m.unfetched)).count();
-        let (waiting, large) = graph_down::not_fetched(mb, account);
+        let all = graph_down::kept_in_full(mb, account, now);
+        let (waiting, large) = graph_down::not_fetched(mb, account, now);
         let total = all.saturating_sub(large);
         let done = total.saturating_sub(waiting.saturating_sub(large));
         let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
@@ -265,11 +265,11 @@ impl SyncProgress {
 
     /// Count every Microsoft account's full messages again (what a host said of another account
     /// stays; what was kept for an account that is gone goes).
-    pub fn count_all_full(&mut self, mb: &Mailbox) {
+    pub fn count_all_full(&mut self, mb: &Mailbox, now: mailcraft_model::time::Timestamp) {
         self.full.retain(|account, _| mb.account(*account).is_some());
         let accounts: Vec<Id> = mb.accounts.iter().filter(|a| a.kind == AccountKind::Microsoft).map(|a| a.id).collect();
         for account in accounts {
-            self.count_full(mb, account);
+            self.count_full(mb, account, now);
         }
     }
 
@@ -624,12 +624,12 @@ mod tests {
         assert_eq!((full["total"].as_u64(), full["paused"].as_bool()), (Some(3), Some(true)));
         assert!(full["done"].as_u64() >= Some(1));
         // The IMAP account is never counted; a host may say its own numbers, never past the total.
-        s.sync_progress.count_full(&s.mailbox.clone(), imap);
+        s.sync_progress.count_full(&s.mailbox.clone(), imap, 0);
         s.sync_progress.set_full(ms, 900, 40);
         assert_eq!(s.sync_progress.full(ms), Some(FullMessages { done: 40, total: 40 }));
         assert_eq!(s.sync_progress.full(imap), None);
         s.run("account.remove", &json!({"id": ms})).unwrap();
-        s.sync_progress.count_all_full(&s.mailbox.clone());
+        s.sync_progress.count_all_full(&s.mailbox.clone(), 0);
         assert_eq!(s.sync_progress.full(ms), None);
     }
 

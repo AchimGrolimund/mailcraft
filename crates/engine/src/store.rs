@@ -645,10 +645,15 @@ impl Pins {
 
     /// The content that messages still in memory keep on disk (named on them, not in memory).
     fn kept(&mut self) -> HashSet<Digest> {
+        self.kept_where(|_| true)
+    }
+
+    /// [`Pins::kept`], of the messages `which` chooses.
+    fn kept_where(&mut self, which: impl Fn(&Message) -> bool) -> HashSet<Digest> {
         self.held.retain(|w| w.strong_count() > 0);
         self.after_tidy = self.held.len();
         let mut out = HashSet::new();
-        for m in self.held.iter().filter_map(Weak::upgrade) {
+        for m in self.held.iter().filter_map(Weak::upgrade).filter(|m| which(m)) {
             if let Some(k) = m.kept.as_deref() {
                 out.extend(k.text.iter().chain(&k.html).map(|r| Digest(r.sha256)));
             }
@@ -670,7 +675,15 @@ struct Shared {
     /// How far the save holding `state` has got: read without that lock, which a save holds
     /// from start to end.
     progress: Progress,
+    /// Content that messages let go of when they went back to their headers and preview (#143),
+    /// with the state of the session that let go of it: removed once a state at least that new
+    /// is saved, unless something else still names it ([`forget_when_saved`]).
+    forgetting: Mutex<Vec<(u64, Digest)>>,
 }
+
+/// Most content names waiting to be forgotten ([`forget_when_saved`]); past this the sweep
+/// takes the rest in its own time.
+const MAX_FORGETTING: usize = 4_000_000;
 
 /// Whether message `m` names content it keeps on disk rather than in memory.
 fn names_kept(m: &Message) -> bool {
@@ -1875,6 +1888,13 @@ pub fn save_single(path: &Path, mailbox: &Mailbox) -> Result<u64, String> {
     Ok(bytes.len() as u64)
 }
 
+/// The content files message `m` names as it would be saved: what it keeps on disk, and what of
+/// it in memory is large enough to go outside (#143: what goes when it is let go of).
+pub fn content_names(id: Id, m: &Arc<Message>) -> Vec<ContentRef> {
+    let Ok(prepared) = prepare(id, m, &mut HashMap::new()) else { return Vec::new() };
+    prepared.parts.all().map(|p| ContentRef { sha256: p.r.hash.0, len: p.r.len }).collect()
+}
+
 /// What a message comes to in the mailbox file: itself without the content that goes outside,
 /// and the names of that content.
 fn prepare(id: Id, m: &Arc<Message>, hashes: &mut HashMap<usize, (Weak<Vec<u8>>, Digest)>) -> Result<Prepared, String> {
@@ -2666,6 +2686,68 @@ fn named_by_kept_aside(file: &Path) -> Option<HashSet<Digest>> {
     Some(named)
 }
 
+/// The content `refs` names was let go of by messages of the mailbox at `path` in its state
+/// `rev` (the session's [`crate::Session::rev`]): mail outside its account's mail to keep
+/// offline went back to its headers and preview (#143). Once a state at least that new is saved
+/// ([`forget_due`]), the files go at once, rather than with the sweep hours later; unless the
+/// mailbox file still names them (another message keeps the same file), a file kept aside does,
+/// or a message held in memory that the server can't give again does (an Undo step of local
+/// mail: a Microsoft account's mail that an Undo brings back keeps the content it has now).
+pub fn forget_when_saved(path: &Path, rev: u64, refs: impl IntoIterator<Item = ContentRef>) {
+    let shared = shared(path);
+    let mut forgetting = lock(&shared.forgetting);
+    let room = MAX_FORGETTING.saturating_sub(forgetting.len());
+    forgetting.extend(refs.into_iter().take(room).map(|r| (rev, Digest(r.sha256))));
+}
+
+/// The mailbox at `path` was saved as it was in state `rev`: the content let go of up to then
+/// ([`forget_when_saved`]) that nothing names any more is removed from disk now. What was removed.
+pub fn forget_due(path: &Path, rev: u64) -> Swept {
+    let shared = shared(path);
+    let due: HashSet<Digest> = {
+        let mut forgetting = lock(&shared.forgetting);
+        let due = forgetting.iter().filter(|(at, _)| *at <= rev).map(|(_, d)| *d).collect();
+        forgetting.retain(|(at, _)| *at > rev);
+        due
+    };
+    let mut swept = Swept::default();
+    if due.is_empty() {
+        return swept;
+    }
+    let mut st = lock(&shared.state);
+    let file = resolve(path);
+    let Some(kept_aside) = named_by_kept_aside(&file) else { return swept };
+    let known = st.disk.as_ref().is_some_and(Disk::appendable) && st.stamp.as_ref().is_some_and(|s| s.still(&file));
+    let named: Option<HashSet<Digest>> = if known { Some(st.live.keys().copied().collect()) } else { named_by(&file).ok().flatten() };
+    // Without knowing what the file names, nothing goes: the sweep looks again later.
+    let Some(mut named) = named else { return swept };
+    named.extend(kept_aside);
+    // What can't be fetched again: anything but a message its server has (by its id there).
+    let own = |m: &Message| !m.server.as_ref().is_some_and(|s| !s.id.is_empty()) || m.moving_out.is_some();
+    named.extend(st.pins.kept_where(own));
+    named.extend(lock(&shared.held).kept_where(own));
+    let dir = blob_dir(&file);
+    for hash in due.difference(&named) {
+        let Some((_, stale)) = blob_path(&dir, hash) else { continue };
+        // Only a plain file of ours: a link is never followed.
+        let Ok(meta) = fs::symlink_metadata(&stale) else { continue };
+        if meta.file_type().is_file() && fs::remove_file(&stale).is_ok() {
+            swept.removed += 1;
+            swept.bytes = swept.bytes.saturating_add(meta.len());
+        }
+    }
+    drop(st);
+    if swept.removed > 0 {
+        log::info!(
+            "{}: removed {} content file(s) of mail now kept as its headers and preview ({} bytes)",
+            path.display(),
+            swept.removed,
+            swept.bytes
+        );
+    }
+    swept
+}
+
 /// Remove the content files next to the mailbox file at `path` that it no longer names, and
 /// temporary files a crash left behind, when they are older than `grace` ([`GRACE`]): a save in
 /// flight has written its content before its mailbox file names it. Without a readable mailbox
@@ -2933,6 +3015,10 @@ impl Queue {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| save_as_of(&path, &mailbox, seq)))
                         .unwrap_or_else(|_| Err("saving the mailbox stopped unexpectedly".to_string()));
                     drop(mailbox);
+                    // Content let go of up to this state goes now (#143).
+                    if result.is_ok() && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| forget_due(&path, rev))).is_err() {
+                        log::error!("removing the content of mail kept as its headers stopped unexpectedly");
+                    }
                     let due = result.is_ok() && lock(&shared(&path).state).swept.is_none_or(|at| at.elapsed() >= SWEEP_EVERY);
                     let mut jobs = lock(&self.jobs);
                     (jobs.writing, jobs.since) = (None, None);

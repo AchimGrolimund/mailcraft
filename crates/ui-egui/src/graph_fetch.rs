@@ -230,7 +230,7 @@ impl MailApp {
         match graph_mail::apply_graph_fetch(&mut self.session, result) {
             Ok(said) => {
                 let (waiting, large) = (said["waiting"].as_u64().unwrap_or(0), said["large"].as_u64().unwrap_or(0));
-                let all = self.session.mailbox.messages.values().filter(|m| m.account == account && m.server.is_some()).count() as u64;
+                let all = said["all"].as_u64().unwrap_or(0);
                 self.fetching.progress = match (waiting.saturating_sub(large), large) {
                     (0, 0) => String::new(),
                     (0, large) => crate::i18n::fmt(tl!("{large} large messages download when opened"), &[("large", &large.to_string())]),
@@ -253,7 +253,7 @@ impl MailApp {
         self.session.sync_progress.full_paused = true;
         self.fetching.cancel.store(true, Ordering::Relaxed);
         // (Send/Receive Progress says how far they had got.)
-        self.session.sync_progress.count_all_full(&self.session.mailbox);
+        self.session.sync_progress.count_all_full(&self.session.mailbox, self.session.now());
     }
 
     /// A Send/Receive started: the background may go on.
