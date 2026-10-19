@@ -204,8 +204,22 @@ pub fn take_links(ctx: &egui::Context) -> Vec<String> {
     })
 }
 
+/// The kinds of address the system's opener is ever handed.
+const OPENED: [&str; 4] = ["http:", "https:", "mailto:", "tel:"];
+
+/// Whether an address may reach the system's opener. A link in a message is checked where it is
+/// read; this is the last check before anything leaves the program, whoever asked, so that a
+/// `file:`, `smb:` or `ms-msdt:` address can't be launched by a way in that forgot the first.
+pub fn openable(url: &str) -> bool {
+    !url.chars().any(char::is_control) && OPENED.iter().any(|s| url.get(..s.len()).is_some_and(|p| p.eq_ignore_ascii_case(s)))
+}
+
 /// The system's own way of opening a page (ShellExecute, Launch Services, the desktop's opener).
 pub fn system_open(url: &str) -> bool {
+    if !openable(url) {
+        log::warn!("browser: an address of a kind that is never opened was refused");
+        return false;
+    }
     match webbrowser::open(url) {
         Ok(()) => true,
         Err(e) => {
@@ -380,6 +394,27 @@ mod tests {
         assert_eq!(taken, ["https://news.example/a", "https://news.example/b"]);
         output.textures_delta.clear();
         assert!(matches!(output.platform_output.commands.as_slice(), [egui::OutputCommand::CopyText(t)] if t == "kept"));
+    }
+
+    #[test]
+    fn only_web_mail_and_phone_addresses_reach_the_system() {
+        for url in ["https://a.example/", "HTTP://a.example", "mailto:ada@example.org", "tel:+441234"] {
+            assert!(openable(url), "{url:?}");
+        }
+        for url in [
+            "file:///etc/passwd",
+            "smb://host/share",
+            "ms-msdt:/id",
+            "search-ms:query=x",
+            "javascript:x",
+            "data:,x",
+            "cid:x",
+            "",
+            "https://a.example/\n",
+        ] {
+            assert!(!openable(url), "{url:?}");
+            assert!(!system_open(url), "{url:?}");
+        }
     }
 
     #[test]

@@ -85,7 +85,7 @@ pub(crate) fn random_key() -> Result<String, String> {
 /// the new file is created with mode 0600.
 pub(crate) fn write_key_file(p: &Path, key: &str) -> Result<(), String> {
     if let Some(d) = p.parent() {
-        std::fs::create_dir_all(d).map_err(|e| format!("cannot create {}: {e}", d.display()))?;
+        mailcraft_engine::store::create_private_dir_all(d).map_err(|e| format!("cannot create {}: {e}", d.display()))?;
     }
     let _ = std::fs::remove_file(p);
     let mut open = std::fs::OpenOptions::new();

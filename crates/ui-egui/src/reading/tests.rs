@@ -3190,9 +3190,10 @@ fn the_menu_of_the_body_copies_selects_all_and_knows_a_links_address() {
     // the note would lie over.
     harness.event(egui::Event::PointerMoved(on_link));
     harness.run_steps(3);
-    assert_eq!(named(&harness, &url), 1);
+    let tip = super::view::link_tip(&url);
+    assert_eq!(named(&harness, &tip), 1);
     menu_click(&mut harness, on_link);
-    assert_eq!((named(&harness, "Copy Link Address"), named(&harness, &url)), (1, 0));
+    assert_eq!((named(&harness, "Copy Link Address"), named(&harness, &tip)), (1, 0));
     choose(&mut harness, "Copy Link Address", on_link);
     assert_eq!(copied_within(&mut harness, 3), Some(url));
     // Nothing was followed for any of that.

@@ -284,6 +284,25 @@ fn attachments_come_and_go() {
 }
 
 #[test]
+fn saved_attachments_and_exports_are_named_safely() {
+    let mut s = session();
+    let id = first(&mut s);
+    let names = ["invoice\u{202e}fdp.exe", "CON.txt", "../../x", "a:b", "re\u{200b}port.pdf", ""];
+    for name in names {
+        s.mailbox.message_mut(id).unwrap().attachments.push(mailcraft_model::Attachment::new(name, "application/octet-stream", b"hi".to_vec()));
+    }
+    let base = s.mailbox.message(id).unwrap().attachments.len() - names.len();
+    let saved: Vec<String> = (0..names.len())
+        .map(|i| run(&mut s, "mail.saveAttachment", json!({"id": id, "index": base + i}))["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(saved, ["invoice_fdp.exe", "_CON.txt", "x.bin", "a_b.bin", "re_port.pdf", "attachment.bin"]);
+    s.mailbox.message_mut(id).unwrap().subject = "CON".into();
+    assert_eq!(run(&mut s, "file.exportMessage", json!({"id": id}))["name"], "_CON.eml");
+    s.mailbox.message_mut(id).unwrap().subject = "Q1/Q2\u{202e}fdp".into();
+    assert_eq!(run(&mut s, "file.exportMessage", json!({"id": id}))["name"], "Q1_Q2_fdp.eml");
+}
+
+#[test]
 fn attachments_are_opened_only_in_the_window() {
     let mut s = session();
     run(&mut s, "mail.new", json!({"to": "maya@lumen.example"}));

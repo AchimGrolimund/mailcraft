@@ -4,8 +4,9 @@ use mailcraft_model::{Id, Mailbox};
 use mailcraft_time::Weekday;
 use serde_json::{Value, json};
 
-use super::{bad, deliver, fail, file_name, source};
+use super::{bad, deliver, fail, source};
 use crate::io::{Format, MAILBOX_EXT};
+use crate::opening::export_name;
 use crate::{CmdResult, CommandSpec, Session, p};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -220,7 +221,7 @@ fn export_message(s: &mut Session, v: &Value) -> CmdResult {
     let m = s.loaded_message(id)?;
     // A draft keeps its Bcc line; a sent or received message never had one to show.
     let opts = mailcraft_mime::WriteOptions { include_bcc: m.draft, offset_minutes: s.offset_at(m.date) };
-    let name = file_name(if m.subject.trim().is_empty() { "message" } else { &m.subject }, "eml");
+    let name = export_name(if m.subject.trim().is_empty() { "message" } else { &m.subject }, "eml");
     deliver(v, &name, mailcraft_mime::write(&m, &opts))
 }
 
@@ -236,7 +237,7 @@ fn export_folder(s: &mut Session, v: &Value) -> CmdResult {
     let messages: Vec<&mailcraft_model::Message> = whole.iter().map(|m| m.as_ref()).collect();
     let opts = mailcraft_mime::WriteOptions { include_bcc: false, offset_minutes: s.offset_at(s.now()) };
     let bytes = mailcraft_mime::write_mbox(&messages, &opts);
-    let r = deliver(v, &file_name(&folder.name, "mbox"), bytes)?;
+    let r = deliver(v, &export_name(&folder.name, "mbox"), bytes)?;
     Ok(with(r, "messages", json!(messages.len())))
 }
 
@@ -255,7 +256,7 @@ fn export_calendar(s: &mut Session, v: &Value) -> CmdResult {
     if let Some(id) = p::id(v, "id") {
         let e = s.mailbox.event(id).ok_or_else(|| fail(format!("no event with id {id}")))?;
         let text = mailcraft_ical::write_in(&[e], &[], &opts, zone);
-        return deliver(v, &file_name(if e.title.is_empty() { "event" } else { &e.title }, "ics"), text.into_bytes());
+        return deliver(v, &export_name(if e.title.is_empty() { "event" } else { &e.title }, "ics"), text.into_bytes());
     }
     let calendar = p::id(v, "calendar");
     if let Some(c) = calendar
@@ -267,7 +268,7 @@ fn export_calendar(s: &mut Session, v: &Value) -> CmdResult {
         s.mailbox.events.values().map(|e| e.as_ref()).filter(|e| calendar.is_none_or(|c| e.calendar == c)).collect();
     let tasks: Vec<&mailcraft_model::Task> = if calendar.is_none() { s.mailbox.tasks.values().map(|t| t.as_ref()).collect() } else { Vec::new() };
     let name = calendar.and_then(|c| s.mailbox.calendar(c)).map_or("calendar", |c| c.name.as_str());
-    let r = deliver(v, &file_name(name, "ics"), mailcraft_ical::write_in(&events, &tasks, &opts, zone).into_bytes())?;
+    let r = deliver(v, &export_name(name, "ics"), mailcraft_ical::write_in(&events, &tasks, &opts, zone).into_bytes())?;
     Ok(with(with(r, "events", json!(events.len())), "tasks", json!(tasks.len())))
 }
 
@@ -281,7 +282,7 @@ fn export_contacts(s: &mut Session, v: &Value) -> CmdResult {
         return Err(fail("there are no contacts to export"));
     }
     let name = match contacts.as_slice() {
-        [one] => file_name(&one.name(), "vcf"),
+        [one] => export_name(&one.name(), "vcf"),
         _ => "contacts.vcf".to_string(),
     };
     let r = deliver(v, &name, mailcraft_vcard::write(&contacts).into_bytes())?;

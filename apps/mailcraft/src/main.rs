@@ -279,7 +279,7 @@ fn read_prefs(path: &std::path::Path) -> Option<UiState> {
 /// its owner only.
 fn write_prefs(path: &std::path::Path, ui: &UiState) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+        mailcraft_engine::store::create_private_dir_all(dir)?;
     }
     mailcraft_engine::store::write_atomic(path, &serde_json::to_vec_pretty(ui).map_err(std::io::Error::other)?)
 }
@@ -1148,7 +1148,7 @@ fn services(
 /// The download of a newer release, for a copy that updates itself (the `.msi`, the macOS app,
 /// an AppImage) and is one of the project's packages, into the data folder's `updates/`, on a
 /// background thread; checked by the release's own signature there (`mailcraft_net`). What was
-/// checked, and its SHA-256, is noted for installing it at exit.
+/// checked, and the SHA-256 its signed list gives, is noted for installing it at exit.
 fn update_download(
     ctx: &egui::Context,
     updates: HostUpdates,
@@ -1158,10 +1158,10 @@ fn update_download(
         let updates = updates.clone();
         background(&ctx, "update download", move || {
             let dir = updates.folders.updates();
-            let version = release.version.clone();
-            let got = updater::download(&release, updates.install, &dir, mailcraft_net::update_download::download)?;
-            let sha256 = mailcraft_net::update_download::sha256(&got).ok_or("the download couldn't be read back")?;
-            let verified = self_update::Verified { version, path: got.clone(), sha256 };
+            // The SHA-256 noted is the signed list's, not the file's read back: what is
+            // installed is checked against what the release signed.
+            let verified = updater::download(&release, updates.install, &dir, mailcraft_net::update_download::download)?;
+            let got = verified.path.clone();
             *updates.verified.lock().unwrap_or_else(|e| e.into_inner()) = Some(verified);
             Ok(got)
         })
@@ -1196,7 +1196,7 @@ fn first_mailbox(sample: bool, chosen: Option<PathBuf>) -> (Mailbox, Option<Path
     if !path.exists() {
         // A first start: the settings folder has to be there for the mailbox to be saved in it.
         if ours && let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+            let _ = mailcraft_engine::store::create_private_dir_all(dir);
         }
         return (Mailbox::with_local_account("", ""), Some(path), 0, false);
     }
@@ -1302,6 +1302,14 @@ fn main() -> eframe::Result {
         }
         None => Default::default(),
     };
+    // The settings folder holds the mailbox, the control key and the logs: for the owner alone.
+    // One an earlier version left open to others is closed; best effort, never a reason not to
+    // start (a folder of somebody else's, named by `--mailbox`, is not touched).
+    if let Some(dir) = mailcraft_control_key::settings_dir().filter(|_| prefs_enabled())
+        && let Err(e) = mailcraft_engine::store::make_private(&dir)
+    {
+        log::debug!("the settings folder was not made private: {e}");
+    }
     // One window per mailbox file: started again, MailCraft hands what it was started with to
     // the window that has the mailbox and exits. The sample keeps no file, so it isn't guarded.
     let kept = if sample { None } else { mailbox_path.clone().or_else(|| default_mailbox_path().filter(|_| prefs_enabled())) };

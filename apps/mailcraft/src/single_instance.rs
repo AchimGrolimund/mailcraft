@@ -7,8 +7,9 @@
 //!
 //! Beside the mailbox: `<mailbox>.lock`, held locked for as long as the first one runs (the
 //! system lets go of it however the program ends, so a crash leaves nothing to clean up), and
-//! `<mailbox>.instance`, the port and a random key (mode 0600 on Unix; the settings folder is the
-//! user's own on every system), removed on exit. The sample mailbox and runs without preferences
+//! `<mailbox>.instance`, the port and a random key (mode 0600 on Unix; elsewhere what the
+//! mailbox's folder allows, which is the user's own unless the mailbox was put somewhere shared),
+//! removed on exit. The sample mailbox and runs without preferences
 //! keep nothing in a file and are not guarded.
 
 use std::fs::{File, OpenOptions, TryLockError};
@@ -92,7 +93,7 @@ pub fn start(mailbox: &Path, args: &[String]) -> Start {
 fn start_within(mailbox: &Path, args: &[String], reach: Duration) -> Start {
     let (lock_path, info_path) = (beside(mailbox, "lock"), beside(mailbox, "instance"));
     if let Some(dir) = lock_path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        let _ = mailcraft_engine::store::create_private_dir_all(dir);
     }
     let lock = match OpenOptions::new().create(true).truncate(false).write(true).open(&lock_path) {
         Ok(f) => f,

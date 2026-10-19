@@ -517,10 +517,10 @@ pub fn paint(ui: &mut Ui, laid: &Laid, t: &Tokens, access: Access, mut state: Op
             if let Some(note) = &hover.note {
                 ui.label(clipped(note, TIP_NOTE).as_ref());
             }
-            // A link is shown with where it really leads: the start of its address, which is
-            // where the host is, not a tracking address of a thousand characters over the message.
+            // A link is shown with where it really leads: the host it goes to, then the start of
+            // its address, not a tracking address of a thousand characters over the message.
             if let Some(url) = &link {
-                ui.label(clipped(url, TIP_ADDRESS).as_ref());
+                ui.label(link_tip(url));
             }
         });
     }
@@ -545,6 +545,23 @@ fn clipped(text: &str, max: usize) -> std::borrow::Cow<'_, str> {
         Some((at, _)) => format!("{}…", text.get(..at).unwrap_or_default()).into(),
         None => text.into(),
     }
+}
+
+/// What a link's tip says of where it leads. For a web address, first the host it goes to as a
+/// browser reads it, in ASCII: an international name in its `xn--` form, so that a letter from
+/// another script that looks like ours shows, and the host after an `@`, not the name before it
+/// (`https://bank.example@evil.example/` goes to evil.example); then the address, with its host
+/// written the same way. Anything else (`mailto:`, `tel:`, an address that doesn't read) is the
+/// address as it is. Each line at most [`TIP_ADDRESS`] characters.
+pub(super) fn link_tip(href: &str) -> String {
+    let as_is = || clipped(href, TIP_ADDRESS).into_owned();
+    let Ok(url) = url::Url::parse(href.trim()) else { return as_is() };
+    if !matches!(url.scheme(), "http" | "https") {
+        return as_is();
+    }
+    let Some(host) = url.host_str().filter(|h| !h.is_empty()) else { return as_is() };
+    let goes = crate::i18n::fmt(tl!("Goes to {host}"), &[("host", clipped(host, TIP_ADDRESS).as_ref())]);
+    format!("{goes}\n{}", clipped(url.as_str(), TIP_ADDRESS))
 }
 
 /// What is said of a picture that is not shown, and where it would come from.
@@ -630,7 +647,50 @@ fn stand_in(painter: &egui::Painter, rect: Rect, label: &str, paper: Paper, t: &
 
 #[cfg(test)]
 mod tip_tests {
-    use super::{TIP_ADDRESS, clipped};
+    use super::{TIP_ADDRESS, clipped, link_tip};
+
+    /// The tip's two lines: where the link goes, and its address.
+    fn lines(href: &str) -> (String, String) {
+        let tip = link_tip(href);
+        let (goes, address) = tip.split_once('\n').unwrap();
+        (goes.to_string(), address.to_string())
+    }
+
+    #[test]
+    fn a_link_tip_names_the_host_it_really_goes_to() {
+        let (goes, address) = lines("https://lumen.example/agenda?week=3");
+        assert!(goes.ends_with(" lumen.example"), "{goes}");
+        assert_eq!(address, "https://lumen.example/agenda?week=3");
+        // An international name in its ASCII form, so that a look-alike letter shows.
+        let (goes, address) = lines("https://b\u{fc}cher.example/kasse");
+        assert!(goes.ends_with(" xn--bcher-kva.example"), "{goes}");
+        assert_eq!(address, "https://xn--bcher-kva.example/kasse");
+        let (goes, _) = lines("https://p\u{0430}ypal.example/");
+        assert!(goes.ends_with(" xn--pypal-4ve.example"), "{goes}");
+        // What is before an `@` is a name, not where it goes.
+        let (goes, address) = lines("https://bank.example@evil.example/login");
+        assert!(goes.ends_with(" evil.example") && !goes.contains("bank"), "{goes}");
+        assert!(address.starts_with("https://bank.example@evil.example/"), "{address}");
+        let (goes, _) = lines("HTTP://Lumen.Example:8080/x");
+        assert!(goes.ends_with(" lumen.example"), "{goes}");
+        // A long address is cut as before; the host is shown whole.
+        let long = format!("https://click.lumen.example/track?u={}", "a1b2".repeat(400));
+        let (goes, address) = lines(&long);
+        assert!(goes.ends_with(" click.lumen.example"), "{goes}");
+        assert_eq!(address.chars().count(), TIP_ADDRESS + 1);
+        assert!(address.ends_with('…'));
+    }
+
+    #[test]
+    fn a_link_tip_shows_other_addresses_as_they_are() {
+        assert_eq!(link_tip("mailto:ada@lumen.example?subject=Hi"), "mailto:ada@lumen.example?subject=Hi");
+        assert_eq!(link_tip("tel:+15550100"), "tel:+15550100");
+        // An address that doesn't read: the start of it, as it is.
+        assert_eq!(link_tip("https://[not a host/"), "https://[not a host/");
+        let long = format!("http://[{}", "x".repeat(300));
+        assert_eq!(link_tip(&long).chars().count(), TIP_ADDRESS + 1);
+        assert_eq!(link_tip(""), "");
+    }
 
     #[test]
     fn a_tip_shows_the_start_of_a_long_address_and_all_of_a_short_one() {

@@ -169,35 +169,10 @@ fn quoted(s: &Session, m: &Message) -> String {
 /// owner's (a draft reopens on it).
 pub(crate) const QUOTE_MARK: &str = "<div id=\"mailcraft-quote\">";
 
-/// The inside of a document's `<body>` (all of it when it has no body), and the style sheets of
-/// its head, as they are: the original carried, not written anew. Linear in the document.
-fn original_html(html: &str) -> String {
-    // Lower-casing ASCII keeps every byte where it was, so positions in it are positions in `html`.
-    let lower = html.to_ascii_lowercase();
-    let find = |needle: &str, from: usize| lower.get(from..).and_then(|rest| rest.find(needle)).map(|at| at + from);
-    let body_at = find("<body", 0);
-    let head_end = body_at.unwrap_or(0);
-    let mut styles = String::new();
-    let mut at = 0;
-    while let Some(start) = find("<style", at).filter(|s| *s < head_end) {
-        let Some(end) = find("</style>", start) else { break };
-        let end = end + "</style>".len();
-        styles.push_str(html.get(start..end).unwrap_or(""));
-        at = end;
-    }
-    let inner = match body_at {
-        Some(open) => {
-            let start = find(">", open).map_or(html.len(), |gt| gt + 1);
-            let end = lower.rfind("</body").filter(|end| *end >= start).unwrap_or(html.len());
-            html.get(start..end).unwrap_or("")
-        }
-        None => html,
-    };
-    format!("{styles}{inner}")
-}
-
 /// The original under a reply or forward, in HTML: Outlook's header lines (written here, every
-/// value escaped) and the original's HTML as it came.
+/// value escaped) and the original's look, without anything in it that runs, embeds or tracks
+/// (`mailcraft_html::quotable`): it goes to other people, whose programs might run what ours never
+/// would.
 fn quoted_html(s: &Session, m: &Message, html: &str) -> String {
     let e = mailcraft_html::escape;
     let mut out = String::from(QUOTE_MARK);
@@ -211,7 +186,7 @@ fn quoted_html(s: &Session, m: &Message, html: &str) -> String {
         out.push_str(&format!("<b>Cc:</b> {}<br>", e(&format_list(&m.cc))));
     }
     out.push_str(&format!("<b>Subject:</b> {}</div><br>\r\n", e(&m.subject)));
-    out.push_str(&original_html(html));
+    out.push_str(&mailcraft_html::quotable(html));
     out.push_str("\r\n</div>");
     out
 }
@@ -267,13 +242,14 @@ fn respond(s: &mut Session, v: &Value, mode: ComposeMode) -> CmdResult {
         references.extend(tail);
     }
     let quoting = s.prefs.quote_on_reply || mode == ComposeMode::Forward;
-    // An original in HTML is carried below as it came; one in plain text is quoted in the body.
+    // An original in HTML is carried below with its look; one in plain text is quoted in the body.
     let quote = match &m.body.html {
-        Some(html) if quoting => Some(Quote {
-            text: quoted(s, &m),
-            html: quoted_html(s, &m, html),
-            pictures: if mode == ComposeMode::Forward { Vec::new() } else { shown_pictures(&m, html) },
-        }),
+        Some(html) if quoting => {
+            let html = quoted_html(s, &m, html);
+            // The pictures the quote still shows: not those of what was left out of it.
+            let pictures = if mode == ComposeMode::Forward { Vec::new() } else { shown_pictures(&m, &html) };
+            Some(Quote { text: quoted(s, &m), html, pictures })
+        }
         _ => None,
     };
     let body = if quoting && quote.is_none() { quoted(s, &m) } else { String::new() };
@@ -325,11 +301,13 @@ fn edit_draft(s: &mut Session, v: &Value) -> CmdResult {
         return Err(fail("this draft isn't downloaded yet: open it once you're online, then edit it"));
     }
     // A draft written here with an original quoted below opens as it was: the owner's text in
-    // rich text, the original as it came.
+    // rich text, the original as it was carried. A draft is a file anybody could have written (or
+    // an older MailCraft, which carried the original as it came), so what is below the mark is
+    // made fit to quote again: for what this program wrote, that changes nothing.
     let (own_html, quote) = match m.body.html.as_deref().and_then(|h| h.find(QUOTE_MARK).map(|at| (h, at))) {
         Some((html, at)) => {
             let end = html.rfind("</body>").filter(|end| *end >= at).unwrap_or(html.len());
-            let quoted = html.get(at..end).unwrap_or("").trim_end().to_string();
+            let quoted = mailcraft_html::quotable(html.get(at..end).unwrap_or("")).trim_end().to_string();
             let text = m.body.text.find("\n\n-----Original Message-----").and_then(|at| m.body.text.get(at..)).unwrap_or("").to_string();
             let pictures = shown_pictures(&m, &quoted);
             (Some(html.get(..at).unwrap_or("").to_string()), Some(Quote { text, html: quoted, pictures }))

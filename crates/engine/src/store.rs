@@ -824,6 +824,45 @@ pub(crate) fn create_private(path: &Path) -> std::io::Result<fs::File> {
     open.open(path)
 }
 
+/// A new file for its owner only, at a name something may have been left at (by a run that
+/// stopped halfway): that is removed first, and never written through.
+pub fn create_private_replacing(path: &Path) -> std::io::Result<fs::File> {
+    let _ = fs::remove_file(path);
+    create_private(path)
+}
+
+/// Make the folder `dir` and those above it that are missing, each for its owner only (on Unix;
+/// elsewhere a folder takes what the folder it is in allows, which in the user's own profile is
+/// the user alone). A folder that is already there is left as it is: [`make_private`] closes it.
+pub fn create_private_dir_all(dir: &Path) -> std::io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
+}
+
+/// Close the folder `dir`, when it is one (not a link to one), to everyone but its owner: for a
+/// folder of ours that an earlier version made open to be read by others (Unix; elsewhere
+/// nothing is changed). Nothing there is no error.
+pub fn make_private(dir: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(dir) {
+        Ok(meta) if meta.file_type().is_dir() => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                if meta.permissions().mode() & 0o077 != 0 {
+                    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+                }
+            }
+            Ok(())
+        }
+        Ok(_) => Err(std::io::Error::other("not a folder")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Flush the folder `path` is in, so that a rename in it reaches the disk (where folders can be
 /// flushed).
 fn sync_dir_of(path: &Path) {
