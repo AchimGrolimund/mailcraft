@@ -1753,7 +1753,7 @@ fn safe_url(raw: Option<String>) -> Option<String> {
 /// leaves its scheme out (`//host/picture.png`, which a web page reads as "the way this page
 /// came") is read as `https://`. A message came no such way, and `https` is the one that tells
 /// the networks in between the least. Only for pictures: a link goes where it says, or nowhere.
-fn picture_url(raw: Option<String>) -> Option<String> {
+pub(crate) fn picture_url(raw: Option<String>) -> Option<String> {
     let url: String = raw?.chars().filter(|c| !matches!(c, '\t' | '\n' | '\r')).collect();
     let url = url.trim();
     // Two slashes and then a host: not `///`, and not a path on some file server (`\\host\share`).

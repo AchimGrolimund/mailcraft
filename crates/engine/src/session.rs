@@ -312,15 +312,16 @@ pub enum BodyFormat {
     Plain,
 }
 
-/// The original under a reply or forward that has HTML, carried as it came: it goes out below
-/// the owner's text and is never edited or reduced here.
+/// The original under a reply or forward that has HTML, carried with its look but without
+/// anything in it that runs, embeds or tracks (`mailcraft_html::quotable`): it goes out below the
+/// owner's text and is never edited here.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Quote {
     /// The original's header lines and text, for the plain-text part.
     pub text: String,
-    /// The original's header lines and its HTML as it came (the inside of its `<body>`, and the
-    /// style sheets of its head), for the HTML part.
+    /// The original's header lines and its HTML made fit to quote (the inside of its `<body>`,
+    /// with only the elements and attributes that give it its look), for the HTML part.
     pub html: String,
     /// The original's pictures its HTML shows (`cid:`), sent with a reply so the quote keeps
     /// them. A forward carries every attachment anyway.
