@@ -274,8 +274,9 @@ fn tidy(dir: &Path, keep: &[&Path]) {
     }
 }
 
-/// The SHA-256 of a file's bytes.
-fn sha256(path: &Path) -> Option<[u8; 32]> {
+/// The SHA-256 of a file's bytes; `None` when it can't be read through. A copy that updates
+/// itself checks a download with it again right before installing it.
+pub fn sha256(path: &Path) -> Option<[u8; 32]> {
     let mut file = File::open(path).ok()?;
     let mut context = ring::digest::Context::new(&ring::digest::SHA256);
     let mut buf = vec![0u8; 64 * 1024];

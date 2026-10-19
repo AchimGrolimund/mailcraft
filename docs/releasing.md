@@ -1,6 +1,6 @@
 # Releasing MailCraft
 
-> **Last reviewed:** 2026-10-18 · **Last updated:** 2026-10-18 · **Change:** minor (MailCraft's own release signature: `SHA256SUMS.txt.sig`, the `MAILCRAFT_RELEASE_KEY` secret, `cargo xtask release-key`) · **Status:** releases v0.1.0 to v0.4.2 were built and published by `release.yml` and `package.yml` on GitHub's runners, for every platform in the table below; none is signed yet (gap #18), neither by the operating systems' signatures nor by MailCraft's own (no release key is set yet).
+> **Last reviewed:** 2026-10-18 · **Last updated:** 2026-10-18 · **Change:** minor (how a copy that updates itself installs a release; `DISABLEAUTOMATICUPDATES=1`; MailCraft's own release signature: `SHA256SUMS.txt.sig`, the `MAILCRAFT_RELEASE_KEY` secret, `cargo xtask release-key`) · **Status:** releases v0.1.0 to v0.4.2 were built and published by `release.yml` and `package.yml` on GitHub's runners, for every platform in the table below; none is signed yet (gap #18), neither by the operating systems' signatures nor by MailCraft's own (no release key is set yet).
 
 The canonical recipe is [craftrules `release/playbook.md`](https://github.com/storytold/craftrules/blob/main/release/playbook.md);
 this file has the MailCraft specifics. The scripts in `packaging/` are WordCraft's with MailCraft's
@@ -54,6 +54,16 @@ takes a downloaded file only when that signature verifies by one of the two publ
 (`RELEASE_KEYS` in `crates/net/src/update.rs`: the key in use and a spare), the file's SHA-256 is
 the one the signed list gives for its name, and its version is newer than the running one. Until
 the program carries real keys, it downloads nothing.
+
+Such a file is installed when the owner presses Restart to update or quits: on Windows by Windows
+Installer (`msiexec /i <file> /passive /norestart`, from a copy of the program in the data folder
+once MailCraft has gone), on macOS by attaching the disk image read-only and swapping the app (it
+must pass `codesign --verify` when the running app is signed), and for an AppImage by renaming the
+new file over the old. So a release's packages must keep their names
+(`mailcraft-<version>-<os>-<arch>.<ext>`), the `.dmg` must hold the app at its top, and the `.msi`
+must keep its `UpgradeCode` and `AllowDowngrades` (going back installs the older `.msi` over the
+newer). An organisation installs the `.msi` with `DISABLEAUTOMATICUPDATES=1` to turn updating by
+itself off for every user of the computer.
 
 - **Making the keys (once):** `cargo xtask release-key new <folder>` writes two private keys,
   `mailcraft-release-key-in-use.pkcs8.b64` and `mailcraft-release-key-spare.pkcs8.b64` (base64
@@ -175,6 +185,7 @@ and in the Flatpak (which is granted `org.freedesktop.secrets` for it).
 
 | Date | Change |
 |---|---|
+| 2026-10-18 | How a copy that updates itself installs a release (Windows Installer, the disk image, the AppImage), what the packages must keep for it, and `DISABLEAUTOMATICUPDATES=1` |
 | 2026-10-18 | MailCraft's own release signature: `SHA256SUMS.txt.sig` made in the `release` environment with `MAILCRAFT_RELEASE_KEY`, `cargo xtask release-key new` and `sign`, `packaging/sign-sums.sh`; the dry run's checksums |
 | 2026-10-16 | Status as it is: v0.1.0 to v0.4.1 published by `release.yml` and `package.yml`, unsigned; riscv64 and the Flathub manifest out of the table (neither is built); what the runners check on every release |
 | 2026-10-16 | Signing secrets in the protected `release` environment, used only for a pushed version tag; dry runs unsigned with no secrets; the workflow makes a draft that a maintainer publishes |

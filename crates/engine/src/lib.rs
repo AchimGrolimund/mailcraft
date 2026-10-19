@@ -16,6 +16,8 @@ pub mod sample;
 mod session;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod store_before;
 mod undo;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod words;
