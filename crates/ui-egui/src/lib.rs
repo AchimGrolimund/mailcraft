@@ -33,6 +33,7 @@ pub mod graph_fetch;
 mod graph_switch;
 pub mod i18n;
 pub mod icons;
+mod keep_offline;
 pub mod keys;
 pub mod mail_view;
 mod meeting_dialogs;
@@ -647,6 +648,12 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         r#"{"account": number (a shared mailbox)} — asks the owner, on Microsoft's page in the browser, to let MailCraft send from the shared mailboxes he may send as or on behalf of (Mail.Send.Shared), by itself and never with a sign-in. The window asks first, at the first send from a shared mailbox. Allowed, what waits in its Outbox goes through its own address with the next Send/Receive; refused, it is held there with why, and nothing is sent from another address. Answers {"pending": "signIn", "account": the account it is opened through}"#,
     ),
     (
+        "ui.keepOffline",
+        "Mail to Keep Offline",
+        "File › Info",
+        r#"{"account": number (a Microsoft account, not a shared mailbox), "keepOffline": "3d"|"1w"|"2w"|"1m"|"3m"|"6m"|"12m"|"2y"|"5y"|"10y"|"all", "confirmed"?: true} — the slider's: how far back the account's mail (and its shared mailboxes') is kept in full on this computer. Shorter asks first, saying how much space it frees (`account.offlineSize`), unless "confirmed"; then the mail now outside goes back to its headers and preview at once (`account.thinOffline`, a few hundred messages a frame) and its files leave the disk with the next save. It stays on the server. Longer fetches the newly covered mail in the background, newest first. Answers {"account", "keepOffline", "changed": bool}"#,
+    ),
+    (
         "ui.connectMicrosoft",
         "Connect Calendar and Contacts",
         "File › Info",
@@ -879,6 +886,8 @@ pub struct MailApp {
     graph_after_sign_in: Option<Id>,
     /// Messages of Microsoft accounts being fetched whole ([`graph_fetch`]).
     pub(crate) fetching: graph_fetch::Fetching,
+    /// Mail outside its window taken back to its headers and preview (#143, [`keep_offline`]).
+    pub(crate) thinning: keep_offline::Thinning,
     /// Pages of a search on the server being asked for ([`server_search`]).
     pub(crate) server_searching: server_search::ServerSearching,
     /// When each account's calendar and contacts were last brought down (milliseconds).
@@ -1070,6 +1079,7 @@ impl MailApp {
             graph_pieces_taken: 0,
             graph_after_sign_in: None,
             fetching: Default::default(),
+            thinning: Default::default(),
             server_searching: Default::default(),
             graph_checked: Default::default(),
             graph_consent_needed: Default::default(),
@@ -1474,6 +1484,7 @@ impl MailApp {
                 let one = p.get("event").and_then(Value::as_u64).zip(s("occurrence"));
                 Ok(json!({"snoozed": reminders::snooze(self, one, minutes), "minutes": minutes}))
             }
+            "ui.keepOffline" => self.keep_offline(p),
             "ui.connectMicrosoft" => {
                 let account = p
                     .get("account")
@@ -2671,6 +2682,7 @@ impl MailApp {
         self.sweep_admin_consent();
         self.poll_graph();
         self.drive_fetch();
+        self.offline_tick();
         self.drive_server_search();
         if self.server_searching.busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));

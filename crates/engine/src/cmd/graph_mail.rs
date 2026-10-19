@@ -196,7 +196,7 @@ pub fn graph_fetch_request(s: &Session, account: Id, message: Option<Id>, most: 
             let m = s.mailbox.message(id).filter(|m| m.account == account).ok_or_else(|| fail(format!("no message with id {id} in {}", a.name)))?;
             m.server.as_ref().filter(|_| m.unfetched).map(|server| vec![server.id.clone()]).unwrap_or_default()
         }
-        None => graph_down::fetch_queue_passing_over(&s.mailbox, account, most.clamp(1, 100), &s.graph_unfetchable),
+        None => graph_down::fetch_queue_passing_over(&s.mailbox, account, most.clamp(1, 100), s.now(), &s.graph_unfetchable),
     };
     let shared = shared_mailbox(s, account)?;
     Ok(GraphFetchRequest { account, email: a.email.clone(), shared, ids, background: message.is_none() })
@@ -213,8 +213,15 @@ pub fn apply_graph_fetch(s: &mut Session, result: GraphFetchResult) -> CmdResult
         s.note_saved();
     }
     let mut index = std::mem::take(&mut s.graph_index);
-    let taken = result.fetched.iter().filter(|f| graph_down::take_fetched(&mut s.mailbox, &mut index, account, &f.id, &f.mime)).count();
+    let taken: Vec<Id> =
+        result.fetched.iter().filter_map(|f| graph_down::take_fetched_as(&mut s.mailbox, &mut index, account, &f.id, &f.mime)).collect();
     s.graph_index = index;
+    // Older than its mail to keep offline (the owner opened it): whole until the mailbox is
+    // opened again (#143).
+    let window = mailcraft_model::OfflineWindow::of(&s.mailbox, s.now());
+    let outside: Vec<Id> = taken.iter().copied().filter(|id| s.mailbox.message(*id).is_some_and(|m| !window.within(m))).collect();
+    s.kept_for_now.extend(outside);
+    let taken = taken.len();
     // Gone before it could be fetched: a message being moved out of the account stays as it is.
     let incomplete = graph_up::missing(&mut s.mailbox, account, &result.missing);
     // Refused although there: not asked for again in the background this session.
@@ -222,10 +229,12 @@ pub fn apply_graph_fetch(s: &mut Session, result: GraphFetchResult) -> CmdResult
     if taken + incomplete > 0 {
         s.mailbox_changed();
     }
-    let (waiting, large) = graph_down::not_fetched(&s.mailbox, account);
-    s.sync_progress.count_full(&s.mailbox, account);
+    let now = s.now();
+    let (waiting, large) = graph_down::not_fetched(&s.mailbox, account, now);
+    s.sync_progress.count_full(&s.mailbox, account, now);
+    let all = graph_down::kept_in_full(&s.mailbox, account, now);
     Ok(
-        json!({"fetched": taken, "missing": result.missing.len(), "failed": result.failed.len(), "waiting": waiting, "large": large, "errors": result.errors, "offline": result.offline, "busyFor": result.busy_for}),
+        json!({"fetched": taken, "missing": result.missing.len(), "failed": result.failed.len(), "waiting": waiting, "large": large, "all": all, "errors": result.errors, "offline": result.offline, "busyFor": result.busy_for}),
     )
 }
 
@@ -351,7 +360,7 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
     let piece = Piece { step, folders, new: down.new, sent, problems: &errors, last: !result.partial, stopped: result.stopped };
     s.sync_progress.take(account, piece);
     if !result.pages.is_empty() || result.whole {
-        s.sync_progress.count_full(&s.mailbox, account);
+        s.sync_progress.count_full(&s.mailbox, account, s.now());
     }
     let summary = match (errors.first(), taken.pushed + taken.added + taken.updated + taken.removed) {
         (Some(e), _) => e.clone(),
