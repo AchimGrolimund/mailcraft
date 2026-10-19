@@ -2,7 +2,7 @@
 
 **Stage: early alpha** · next: beta, as the project defines it, by the roadmap reset
 
-> **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-19 · **Change:** minor (v0.5.1 prepared; security review fixes: replies and forwards carry the original's look without what runs or tracks, safe file names, links name their real host, private settings, logs and pictures; v0.5.0 prepared; #73: Use system setting follows the Linux desktop's colour scheme; #196, #195: the search pill on the keyword only, a result's folder under its time; auto-update, second part: installing, Restart to update and going back; #143: Mail to keep offline for Microsoft accounts, 4.9 GB on disk at 200,000 messages down to 184 MB with a 1-month window; Icons: one grammar for the whole set; auto-update, first part: signed releases, and a copy that updates itself downloads and checks a newer one; #196: keywords in the search box drawn as pills; #195: in a search of All Mailboxes each row names its folder; #194: a space after a search keyword's colon (`from: stuart`), and a keyword half typed asks for nothing; R6.2: search everywhere for a word no message has answers in 150–188 ms from the word index at 200,000 messages, peak 849 MB (R6.2, 2026-10-18); R6.2 slice 2: More results on the server, through Graph; #186: deleting a contact is asked about first; #185: mail of Microsoft accounts kept with � fetched again once; #185: a vCard 2.1 file with raw 8-bit values is read in each line's `CHARSET`; R6.2 slice 1: search answered from a word index beside the mailbox, built in the background; the browser build: a section of its own, its review planned after beta; #180: vCard files in every WHATWG character set; a character that couldn't be read draws as � and is explained; R6.4: 200,000 messages measured: open, a save and memory within beta's figures, until a search reads every body; #150: HTML mail's centred layouts: pictures in a line of text, tiles, rows of icons; #154: an original is marked replied or forwarded once its answer has gone; #126: attachments open; After beta: features ranked; #139: Gmail's Archive and Delete for good; #70: mail written in a shared mailbox is from it, kept in its Drafts and sent through it, behind the switch for testing; #70: a shared mailbox's changes go up, behind the switch for testing; #120: Send/Receive Progress; R6.3: the first save after a large download in the background, with progress; R6.1: attachments and older bodies stay on disk; R6: the mailbox file is a log of records; v0.4.3 prepared; R7.3: told when a new version is out; #103: a sign-in as someone else is asked about, never taken silently; R1: docs cleanup, no citations of private plans, releasing and contributing as they are, a revision history here; R3.7: the switch from IMAP to Graph, no switch for testing; R1: quitting on macOS through craft-quit; R3.5: undo for Microsoft accounts kept in step through Graph; R3.6: imported mail for a Microsoft account goes to a local folder; R3.4.2: sending through Graph, held messages, R3.4 done; R3.4.1: drafts up through Graph; R3.3 follow-up: a refused delete for good is put back at once; R3.3.2: message changes up through Graph, R3.3 done; R3.3.1: changes of messages in the Graph stand-in; R1: CodeQL triage, logs carry no addresses; D2: About ▸ Contributors; v0.4.1: MCP agents get only what the owner allows; R1: security hardening; R3.2.3: messages fetched whole; R3.2.2: mail down through Graph; v0.4.0; R3.2.1: messages in the Graph stand-in; D1: Copy Diagnostics in the title bar; R4.5: rich signatures with a logo; R3.1: Graph folders behind the switch for testing; R5: sign-ins remembered on Linux; R2: Exchange Web Services removed; R4: rich-text compose; R4.2: the rich-text editor) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+> **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-19 · **Change:** minor (After beta: reordered for people leaving classic Outlook at work: shared mailboxes, `.pst`/`.msg`, printing, sender warnings first; v0.5.1 prepared; security review fixes: replies and forwards carry the original's look without what runs or tracks, safe file names, links name their real host, private settings, logs and pictures; v0.5.0 prepared; #73: Use system setting follows the Linux desktop's colour scheme; #196, #195: the search pill on the keyword only, a result's folder under its time; auto-update, second part: installing, Restart to update and going back; #143: Mail to keep offline for Microsoft accounts, 4.9 GB on disk at 200,000 messages down to 184 MB with a 1-month window; Icons: one grammar for the whole set; auto-update, first part: signed releases, and a copy that updates itself downloads and checks a newer one; #196: keywords in the search box drawn as pills; #195: in a search of All Mailboxes each row names its folder; #194: a space after a search keyword's colon (`from: stuart`), and a keyword half typed asks for nothing; R6.2: search everywhere for a word no message has answers in 150–188 ms from the word index at 200,000 messages, peak 849 MB (R6.2, 2026-10-18); R6.2 slice 2: More results on the server, through Graph; #186: deleting a contact is asked about first; #185: mail of Microsoft accounts kept with � fetched again once; #185: a vCard 2.1 file with raw 8-bit values is read in each line's `CHARSET`; R6.2 slice 1: search answered from a word index beside the mailbox, built in the background; the browser build: a section of its own, its review planned after beta; #180: vCard files in every WHATWG character set; a character that couldn't be read draws as � and is explained; R6.4: 200,000 messages measured: open, a save and memory within beta's figures, until a search reads every body; #150: HTML mail's centred layouts: pictures in a line of text, tiles, rows of icons; #154: an original is marked replied or forwarded once its answer has gone; #126: attachments open; After beta: features ranked; #139: Gmail's Archive and Delete for good; #70: mail written in a shared mailbox is from it, kept in its Drafts and sent through it, behind the switch for testing; #70: a shared mailbox's changes go up, behind the switch for testing; #120: Send/Receive Progress; R6.3: the first save after a large download in the background, with progress; R6.1: attachments and older bodies stay on disk; R6: the mailbox file is a log of records; v0.4.3 prepared; R7.3: told when a new version is out; #103: a sign-in as someone else is asked about, never taken silently; R1: docs cleanup, no citations of private plans, releasing and contributing as they are, a revision history here; R3.7: the switch from IMAP to Graph, no switch for testing; R1: quitting on macOS through craft-quit; R3.5: undo for Microsoft accounts kept in step through Graph; R3.6: imported mail for a Microsoft account goes to a local folder; R3.4.2: sending through Graph, held messages, R3.4 done; R3.4.1: drafts up through Graph; R3.3 follow-up: a refused delete for good is put back at once; R3.3.2: message changes up through Graph, R3.3 done; R3.3.1: changes of messages in the Graph stand-in; R1: CodeQL triage, logs carry no addresses; D2: About ▸ Contributors; v0.4.1: MCP agents get only what the owner allows; R1: security hardening; R3.2.3: messages fetched whole; R3.2.2: mail down through Graph; v0.4.0; R3.2.1: messages in the Graph stand-in; D1: Copy Diagnostics in the title bar; R4.5: rich signatures with a logo; R3.1: Graph folders behind the switch for testing; R5: sign-ins remembered on Linux; R2: Exchange Web Services removed; R4: rich-text compose; R4.2: the rich-text editor) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
 
 MailCraft aims for complete parity with Microsoft Outlook, then goes further on speed, openness,
 privacy and agent control. This page is the summary; the assessment is
@@ -50,25 +50,29 @@ when needed; system notifications and Copy diagnostics; then a beta run with tes
 
 ## After beta
 
-Not scheduled; in the order of how much each matters to someone leaving Outlook. Each is a
-shortfall in [`docs/gaps.md`](docs/gaps.md).
+Not scheduled; in the order of how much each matters to someone leaving classic Outlook at work,
+the first people MailCraft is for. Each is a shortfall in [`docs/gaps.md`](docs/gaps.md).
 
-1. New mail the moment it arrives on IMAP accounts (IDLE), not at the next run (gap 2).
-2. Undo Send and Delay Delivery, with an Outbox that also holds mail written offline (gap 17).
-3. Calendars and contacts beyond Microsoft (CalDAV, CardDAV, subscribed calendars) and Google
-   accounts (gaps 3, 5).
-4. Microsoft To Do, with My Day and flagged mail; the organisation's directory, and LDAP, when
-   addressing (gap 17).
-5. Focused Inbox kept in step with Outlook; Automatic Replies; rules kept on the server (gap 17).
-6. Snooze, Sweep, Ignore and Clean Up Conversation, Search Folders, Quick Steps (gap 17).
-7. Read receipts, one-click unsubscribe, attachments inside `winmail.dat`, Forward as Attachment
-   (gap 17).
-8. Warnings about a sender (failed authentication, a name that hides another address, outside the
+1. Shared mailboxes finished and out of testing, with their calendars, and delegated calendars
+   with their permissions (gap 5, #70).
+2. Bringing an Outlook archive across: `.pst` and `.msg` files (gap 12).
+3. Printing messages, calendars and contacts (gap 15).
+4. Warnings about a sender (failed authentication, a name that hides another address, outside the
    organisation, a link that goes somewhere other than it says) and Report Phishing (gap 17).
-9. Search that goes on to the server for mail not on this computer (rough edges).
-10. Shared and delegated calendars with their permissions, free/busy across the organisation, rooms
-    (gaps 9, 17).
-11. Spell checking while writing (gap 7).
+5. Undo Send and Delay Delivery, with an Outbox that also holds mail written offline; Snooze
+   (gap 17).
+6. Signed and encrypted mail with S/MIME (gap 16).
+7. New mail the moment it arrives on IMAP accounts (IDLE), not at the next run (gap 2).
+8. Calendars and contacts beyond Microsoft (CalDAV, CardDAV, subscribed calendars) and Google
+   accounts (gaps 3, 5).
+9. Microsoft To Do, with My Day and flagged mail; the organisation's directory, and LDAP, when
+   addressing (gap 17).
+10. Focused Inbox kept in step with Outlook; Automatic Replies; rules kept on the server (gap 17).
+11. Sweep, Ignore and Clean Up Conversation, Search Folders, Quick Steps (gap 17).
+12. Read receipts, one-click unsubscribe, attachments inside `winmail.dat`, Forward as Attachment
+    (gap 17).
+13. Free/busy across the organisation, rooms (gaps 9, 17).
+14. Spell checking while writing (gap 7); other languages than English (gap 14).
 
 ## The browser build
 
@@ -174,6 +178,7 @@ the sample mailbox and mailboxes kept in the browser. Planned, after beta:
 
 | Date | Change |
 |---|---|
+| 2026-10-19 | After beta reordered for people leaving classic Outlook at work: shared mailboxes, `.pst`/`.msg`, printing and sender warnings first; spell checking and languages together |
 | 2026-10-19 | v0.5.1 prepared (progress log) |
 | 2026-10-19 | v0.5.0 published; releases counted to v0.5.0 |
 | 2026-10-19 | Security review fixes (progress log) |
