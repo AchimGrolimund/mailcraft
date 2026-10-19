@@ -22,10 +22,12 @@ impl Write for Server {
 }
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
+    // The sign-in is made of the input too, so what the client refuses to send is fuzzed as well.
+    let secret = String::from_utf8_lossy(data.get(..16).unwrap_or(data)).into_owned();
     let Ok(mut smtp) = mailcraft_proto::smtp::Smtp::connect(Server(Cursor::new(data.to_vec()))) else { return };
     let _ = smtp.hello("localhost");
-    let _ = smtp.auth("ada@example.org", "hunter2");
-    let _ = smtp.auth_xoauth2("ada@example.org", "tok.en-123");
+    let _ = smtp.auth("ada@example.org", &secret);
+    let _ = smtp.auth_xoauth2("ada@example.org", &secret);
     let _ = smtp.send("ada@example.org", &["bob@example.org"], b"Subject: x\r\n\r\n.\r\n");
     let _ = smtp.quit();
 });
