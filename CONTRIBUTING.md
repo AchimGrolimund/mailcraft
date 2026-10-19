@@ -24,7 +24,7 @@ Issues labelled `post-beta` are parked: they aren't open to claims until beta is
 
 - **Sign the [Contributor Licence Agreement](CLA.md) once**, by commenting on your first pull
   request: `I have read the MailCraft CLA and I agree to it.` You keep the copyright in your work;
-  it lets UCS Care Group also release MailCraft under other terms, while MailCraft stays MIT OR
+  it lets UCS Care Group Limited also release MailCraft under other terms, while MailCraft stays MIT OR
   Apache-2.0. The `cla` check on the pull request turns green when every author has signed.
 - **One issue, one pull request**, based on current `main`, small enough to review in one sitting.
   Say `Closes #<issue>` in the description.

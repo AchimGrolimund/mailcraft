@@ -2,7 +2,8 @@
 
 > **Version:** 1.0 · **Written:** 2026-10-19
 
-This agreement is between you and **UCS Care Group** ("UCS", "we"), which looks after MailCraft
+This agreement is between you and **UCS Care Group Limited** ("UCS", "we"), a company registered
+in England and Wales (number 15067831, registered office 2 Deansgate, Bolton, BL1 1BR), which looks after MailCraft
 (<https://github.com/UCS-Care-Group/mailcraft>). It makes clear what you allow us to do with what
 you contribute. **You keep the copyright in your contributions.** You give us a licence to use them.
 
