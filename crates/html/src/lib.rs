@@ -303,14 +303,47 @@ pub fn images(blocks: &[Block]) -> Vec<&Block> {
 /// Whether a link may be followed or a picture loaded: `http`, `https`, `mailto`, `tel` and `cid`
 /// only (the scheme in any letter case). Everything else is refused: `javascript:`, `data:`,
 /// `file:`, `vbscript:`, relative URLs, and anything holding a control character (a tab or line
-/// break inside a URL is an old trick to hide the scheme).
+/// break inside a URL is an old trick to hide the scheme) or a character that changes how text
+/// looks without being seen (a right-to-left override or isolate, a zero-width mark, a byte-order
+/// mark: what is shown of the address would not be where it goes).
 pub fn is_safe_url(url: &str) -> bool {
     let url = url.trim_matches(' ');
-    if url.chars().any(char::is_control) {
+    if url.chars().any(|c| c.is_control() || is_format(c)) {
         return false;
     }
     let Some((scheme, rest)) = url.split_once(':') else { return false };
     !rest.is_empty() && ["http", "https", "mailto", "tel", "cid"].iter().any(|s| scheme.eq_ignore_ascii_case(s))
+}
+
+/// Unicode's format characters (general category Cf), which are not seen but change how what is
+/// around them is shown: bidirectional overrides and isolates, zero-width marks and joiners, the
+/// byte-order mark, a soft hyphen, the Arabic and Syriac number signs, interlinear annotations,
+/// the Mongolian vowel separator, tags.
+fn is_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00ad}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061c}'
+            | '\u{06dd}'
+            | '\u{070f}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08e2}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{110bd}'
+            | '\u{110cd}'
+            | '\u{13430}'..='\u{1343f}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0001}'
+            | '\u{e0020}'..='\u{e007f}'
+    )
 }
 
 /// Whether a picture's address points into the message itself (`cid:`). Any other picture would
@@ -374,6 +407,24 @@ mod tests {
         ] {
             assert!(!is_safe_url(bad), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn urls_with_invisible_characters_are_refused() {
+        for bad in [
+            "https://bank.example/\u{202e}moc.live",
+            "https://bank.example\u{2067}.evil.example\u{2069}/",
+            "https://ba\u{200b}nk.example/",
+            "https://bank.example\u{200d}/",
+            "\u{feff}https://example.org",
+            "https://exa\u{00ad}mple.org",
+            "mailto:ada\u{2066}@example.org",
+            "https://example.org/\u{e0041}",
+        ] {
+            assert!(!is_safe_url(bad), "{bad:?}");
+        }
+        // Letters of any script are not format characters.
+        assert!(is_safe_url("https://bücher.example/straße"));
     }
 
     #[test]
