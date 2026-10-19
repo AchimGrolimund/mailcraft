@@ -60,6 +60,13 @@
 //! token of this session (an invented one), and More results on the server answers each mailbox
 //! with those of the messages whose folder it has, saying there are more when `next` is true, or
 //! that the server can't be reached when `offline` is.
+//!
+//! And the system's notifications (R7.1), which every script has: each desktop alert the window
+//! asks for is taken and shown nowhere, and `ui.alerts` says what it asked for.
+//! `{"host": {"alerts": "noService"}}` (or `"notInstalled"`, `"outsideApp"`, `"turnedOff"`; any
+//! other word: none) has the system refuse them for that reason from that line on, as File ›
+//! Options then says, and `{"host": {"unfocused": true}}` has the window be one that isn't in
+//! front, so that new mail is told of.
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -107,6 +114,27 @@ struct Host {
     uid: u32,
     /// What a search on the server finds (see the header), when the script said.
     server_search: Option<serde_json::Value>,
+    /// Why the system won't show desktop alerts, when the script said (see the header).
+    alert_trouble: Option<mailcraft_ui_egui::alerts::AlertTrouble>,
+    /// The window is not the one in front (see the header).
+    unfocused: bool,
+}
+
+/// A stand-in for the system's notifications: every alert is taken (and shown nowhere), unless
+/// the script said why the system won't show them. The window's own list (`ui.alerts`) says what
+/// it asked for.
+struct StandInAlerts(Arc<Mutex<Host>>);
+
+impl mailcraft_ui_egui::alerts::AlertHost for StandInAlerts {
+    fn show(&self, _: &mailcraft_ui_egui::alerts::DesktopAlert) -> Result<(), String> {
+        match self.trouble() {
+            Some(why) => Err(why.code().to_string()),
+            None => Ok(()),
+        }
+    }
+    fn trouble(&self) -> Option<mailcraft_ui_egui::alerts::AlertTrouble> {
+        self.0.lock().ok().and_then(|host| host.alert_trouble)
+    }
 }
 
 /// A piece of a stand-in Send/Receive, from what the script says: for `account`, whose Inbox is
@@ -196,6 +224,15 @@ impl Host {
 
     /// Take in what a line of the script says, and answer what was waiting for it.
     fn told(&mut self, said: &serde_json::Value) {
+        if let Some(why) = said.get("alerts").and_then(|v| v.as_str()) {
+            use mailcraft_ui_egui::alerts::AlertTrouble;
+            self.alert_trouble = [AlertTrouble::NotInstalled, AlertTrouble::OutsideApp, AlertTrouble::TurnedOff, AlertTrouble::NoService]
+                .into_iter()
+                .find(|t| t.code() == why);
+        }
+        if let Some(unfocused) = said.get("unfocused").and_then(|v| v.as_bool()) {
+            self.unfocused = unfocused;
+        }
         if let Some(who) = said.get("signedInAs").and_then(|v| v.as_str()) {
             self.signed_in_as = who.to_string();
         }
@@ -423,6 +460,8 @@ fn main() {
     let host: Arc<Mutex<Host>> = Default::default();
     let stood_in = lines.iter().any(|l| l.get("host").is_some());
     let mut services = if stood_in { stand_in(&host) } else { Services::default() };
+    // The system's notifications, always (File › Options shows its switches where there are some).
+    services.alert = Some(Box::new(StandInAlerts(host.clone())));
     // The organisation has turned updating by itself off for the computer.
     services.updates_turned_off_by_organisation = lines.iter().any(|l| l.pointer("/host/updates").and_then(|v| v.as_str()) == Some("organisation"));
     // A newly installed version that didn't start twice running, with the one before it kept.
@@ -465,6 +504,8 @@ fn main() {
         if let Some(said) = l.get("host") {
             if let Ok(mut host) = host.lock() {
                 host.told(said);
+                // In front or not, for desktop alerts about new mail.
+                harness.input_mut().focused = !host.unfocused;
             }
             // A search on the server is asked with a token of this session (invented).
             if said.get("serverSearch").is_some() {

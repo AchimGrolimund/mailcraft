@@ -239,6 +239,8 @@ pub fn handle(app: &mut MailApp, ctx: &egui::Context, req: &ControlRequest) -> O
         },
         "ui.inspect" => ok(inspect(app, ctx)),
         "ui.parity" => ok(mailcraft_engine::catalog::parity(&app.session.registry)),
+        // The desktop alerts the window showed (read only: nothing can ask for one).
+        "ui.alerts" => ok(crate::alerts::inspect(app, p)),
         "ui.click" => {
             // By coordinates, or by what to click (`{"kind": "message", "id": 12}`).
             let pos = match (f("x"), f("y")) {
