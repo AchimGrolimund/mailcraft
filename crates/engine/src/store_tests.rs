@@ -1913,3 +1913,46 @@ mod format3;
 
 #[path = "store_session_tests.rs"]
 mod in_session;
+
+/// The folders and files the app keeps beside the mailbox (pictures, logs, its settings) are its
+/// owner's alone too: made so, and an open folder from an earlier version closed.
+#[cfg(unix)]
+#[test]
+fn private_folders_and_files_for_the_app() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let temp = Temp::new("private-helpers");
+    let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    let deep = temp.0.join("settings").join("logs");
+    create_private_dir_all(&deep).unwrap();
+    assert_eq!((mode(&temp.0.join("settings")), mode(&deep)), (0o700, 0o700));
+    // Already there: no error.
+    create_private_dir_all(&deep).unwrap();
+
+    // A file left over is replaced by one of the owner's, not written through.
+    let file = deep.join("index.part");
+    fs::write(&file, "left over").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+    create_private_replacing(&file).unwrap().write_all(b"new").unwrap();
+    assert_eq!((mode(&file), fs::read(&file).unwrap()), (0o600, b"new".to_vec()));
+    let elsewhere = temp.0.join("elsewhere");
+    fs::write(&elsewhere, "untouched").unwrap();
+    let link = deep.join("linked.part");
+    symlink(&elsewhere, &link).unwrap();
+    create_private_replacing(&link).unwrap();
+    assert_eq!(fs::read_to_string(&elsewhere).unwrap(), "untouched");
+
+    // An open folder is closed; nothing there is no error; a link or a file is not a folder.
+    let open = temp.0.join("open");
+    fs::create_dir(&open).unwrap();
+    fs::set_permissions(&open, fs::Permissions::from_mode(0o755)).unwrap();
+    make_private(&open).unwrap();
+    assert_eq!(mode(&open), 0o700);
+    make_private(&temp.0.join("missing")).unwrap();
+    let shared = temp.0.join("shared");
+    fs::create_dir(&shared).unwrap();
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o755)).unwrap();
+    let to_shared = temp.0.join("to-shared");
+    symlink(&shared, &to_shared).unwrap();
+    assert!(make_private(&to_shared).is_err());
+    assert_eq!(mode(&shared), 0o755);
+}

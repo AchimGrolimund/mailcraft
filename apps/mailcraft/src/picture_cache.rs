@@ -31,6 +31,8 @@
 //!   is not five fields of the right shape is skipped; a name is 64 hex digits or nothing, so
 //!   nothing read from the index can become another path; sizes and counts are capped; a file
 //!   that is missing, a link, too long or not what its name says is forgotten, not shown.
+//! - **Private:** on Unix the folder and every file in it are its owner's alone (0700 and
+//!   0600), as the mailbox is; a folder an earlier version left open to others is closed.
 //!
 //! There is none for the sample mailbox or a run without preferences, which keep nothing.
 
@@ -42,7 +44,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use mailcraft_engine::store::Digest;
+use mailcraft_engine::store::{Digest, create_private_dir_all, create_private_replacing, make_private};
 
 /// The folder's name, in the settings folder.
 pub const FOLDER: &str = "pictures.cache";
@@ -229,6 +231,11 @@ impl Cache {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if !state.loaded {
             state.loaded = true;
+            // A folder an earlier version made open to others is closed (it is ours): best
+            // effort, since a picture not kept private is no reason to keep none.
+            if let Err(e) = make_private(&self.dir) {
+                log::debug!("the folder of downloaded pictures was not made private: {e}");
+            }
             state.entries = self.read_index();
             self.count_up(&state);
         }
@@ -369,11 +376,13 @@ impl Cache {
             let _ = fs::OpenOptions::new().write(true).open(&file).and_then(|f| f.set_modified(SystemTime::now()));
             return Ok(());
         }
-        fs::create_dir_all(&folder)?;
+        // For the owner alone, as the mailbox is: what was read is nobody else's business.
+        create_private_dir_all(&folder)?;
         let serial = self.serial.fetch_add(1, Ordering::Relaxed);
         let partial = folder.join(format!("{}.{}-{serial}.part", content.hex(), std::process::id()));
-        let written =
-            fs::File::create(&partial).and_then(|mut f| f.write_all(bytes).and_then(|()| f.flush())).and_then(|()| fs::rename(&partial, &file));
+        let written = create_private_replacing(&partial)
+            .and_then(|mut f| f.write_all(bytes).and_then(|()| f.flush()))
+            .and_then(|()| fs::rename(&partial, &file));
         match written {
             Ok(()) => Ok(()),
             // Another thread kept the same picture at the same moment.
@@ -504,7 +513,7 @@ impl Cache {
             write_lines(&state.entries)
         };
         let (partial, index) = (self.dir.join("index.part"), self.dir.join("index"));
-        let written = fs::File::create(&partial)
+        let written = create_private_replacing(&partial)
             .and_then(|mut f| f.write_all(text.as_bytes()).and_then(|()| f.flush()))
             .and_then(|()| fs::rename(&partial, &index));
         if let Err(e) = written {
@@ -660,6 +669,28 @@ mod tests {
         // The same picture at another address is the same file, counted once.
         assert!(again.put("https://cdn.example/same.png", &picture));
         assert_eq!((again.usage(), temp.files().len()), ((2, 5_000), 2));
+    }
+
+    /// What was read is nobody else's business: the folder and its files are the owner's alone,
+    /// and a folder an earlier version left open to others is closed when it is next used.
+    #[cfg(unix)]
+    #[test]
+    fn the_folder_and_its_files_are_the_owners_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let temp = Temp::new("private");
+        let picture = png(3, 2_000);
+        assert!(temp.cache().put("https://img.example/private.png", &picture));
+        let dir = temp.0.join(FOLDER);
+        let name = Digest::of(&picture).hex();
+        assert_eq!((mode(&temp.0), mode(&dir), mode(&dir.join(&name[..2]))), (0o700, 0o700, 0o700));
+        assert_eq!((mode(&dir.join("index")), mode(&dir.join(&name[..2]).join(&name))), (0o600, 0o600));
+
+        // As an earlier version left it: open to be read by others.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let again = temp.cache();
+        assert_eq!(again.usage(), (1, 2_000));
+        assert_eq!(mode(&dir), 0o700);
     }
 
     #[test]

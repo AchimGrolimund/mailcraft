@@ -279,7 +279,7 @@ fn read_prefs(path: &std::path::Path) -> Option<UiState> {
 /// its owner only.
 fn write_prefs(path: &std::path::Path, ui: &UiState) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+        mailcraft_engine::store::create_private_dir_all(dir)?;
     }
     mailcraft_engine::store::write_atomic(path, &serde_json::to_vec_pretty(ui).map_err(std::io::Error::other)?)
 }
@@ -1196,7 +1196,7 @@ fn first_mailbox(sample: bool, chosen: Option<PathBuf>) -> (Mailbox, Option<Path
     if !path.exists() {
         // A first start: the settings folder has to be there for the mailbox to be saved in it.
         if ours && let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+            let _ = mailcraft_engine::store::create_private_dir_all(dir);
         }
         return (Mailbox::with_local_account("", ""), Some(path), 0, false);
     }
@@ -1302,6 +1302,14 @@ fn main() -> eframe::Result {
         }
         None => Default::default(),
     };
+    // The settings folder holds the mailbox, the control key and the logs: for the owner alone.
+    // One an earlier version left open to others is closed; best effort, never a reason not to
+    // start (a folder of somebody else's, named by `--mailbox`, is not touched).
+    if let Some(dir) = mailcraft_control_key::settings_dir().filter(|_| prefs_enabled())
+        && let Err(e) = mailcraft_engine::store::make_private(&dir)
+    {
+        log::debug!("the settings folder was not made private: {e}");
+    }
     // One window per mailbox file: started again, MailCraft hands what it was started with to
     // the window that has the mailbox and exits. The sample keeps no file, so it isn't guarded.
     let kept = if sample { None } else { mailbox_path.clone().or_else(|| default_mailbox_path().filter(|_| prefs_enabled())) };
