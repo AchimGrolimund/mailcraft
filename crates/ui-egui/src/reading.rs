@@ -132,6 +132,9 @@ pub fn show_message(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, place: Pla
         let t = Tokens::get(ui.ctx());
         let said = if app.fetching.fetching(m.id) {
             tl!("Downloading the whole message…")
+        } else if app.fetching.offline && !app.session.mailbox.within_window(m, app.session.now()) {
+            // Older than its mail to keep offline (#143): only its headers and preview are kept here.
+            tl!("Not connected: the rest of this message is on the server")
         } else if app.fetching.offline {
             tl!("This message isn't on this computer yet. It will download when you're online.")
         } else {

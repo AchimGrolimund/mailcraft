@@ -1871,6 +1871,43 @@ fn fifty_thousand_messages_with_two_gigabytes_of_content_open_under_a_small_budg
 }
 
 /// Format 3: the log of records.
+/// The content files beside the mailbox file at `path`.
+fn content_files(path: &Path) -> usize {
+    fs::read_dir(blob_dir(path)).into_iter().flatten().flatten().flat_map(|sub| fs::read_dir(sub.path()).into_iter().flatten().flatten()).count()
+}
+
+#[test]
+fn content_let_go_of_goes_from_disk_once_a_state_that_new_is_saved_in_the_background() {
+    // #143: mail outside its window went back to its headers and preview.
+    let tmp = Temp::new("forget");
+    let path = tmp.file();
+    let mut mb = mailbox(3);
+    let saver = Saver::spawn(|| {}).unwrap();
+    saver.submit(&path, &mb, 1);
+    saver.flush();
+    let before = content_files(&path);
+    assert!(before >= 4, "{before}");
+    // Message 0's own text goes; the file it shares with another message stays for that one.
+    let id = *mb.messages.keys().next().unwrap();
+    let names = content_names(id, &mb.messages[&id]);
+    assert!(names.len() >= 2, "{names:?}");
+    forget_when_saved(&path, 2, names.clone());
+    // A save of an older state removes nothing.
+    saver.submit(&path, &mb, 1);
+    saver.flush();
+    assert_eq!(content_files(&path), before);
+    let m = mb.message_mut(id).unwrap();
+    (m.body, m.attachments) = (mailcraft_model::Body { text: "The words of it.".into(), html: None }, Vec::new());
+    saver.submit(&path, &mb, 2);
+    saver.flush();
+    let after = content_files(&path);
+    assert!(after < before, "{after} of {before}");
+    let shared_still = names.iter().filter(|r| mb.messages.values().any(|m| m.attachments.iter().any(|a| a.data.len() as u64 == r.len))).count();
+    assert_eq!(before - after, names.len() - shared_still, "the shared file stays");
+    assert!(whole(&path) == mb);
+    assert!(lock(&shared(&path).forgetting).is_empty());
+}
+
 #[path = "store_index_tests.rs"]
 mod format3;
 

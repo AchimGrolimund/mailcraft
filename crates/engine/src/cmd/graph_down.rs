@@ -21,7 +21,8 @@
 use std::collections::{HashMap, HashSet};
 
 use mailcraft_model::sync::{GraphMessage, GraphProgress, MessagePage, ServerMessage, merge_categories};
-use mailcraft_model::{Body, Id, Mailbox, Message};
+use mailcraft_model::time::Timestamp;
+use mailcraft_model::{Body, Id, Mailbox, Message, OfflineWindow};
 
 /// Where each message a server knows is, by its server id: kept between pages, as finding one
 /// otherwise means a walk through every message of the mailbox.
@@ -259,15 +260,16 @@ pub fn progress_words(mb: &Mailbox, account: Id, progress: &GraphProgress) -> St
 }
 
 /// The next messages of `account` to fetch whole in the background (R3 spec S12): not fetched,
-/// not gone, no larger than the account's "Download messages in full", newest first; `most` of
+/// not gone, no larger than the account's "Download messages in full", within its mail to keep
+/// offline at `now` (#143: older mail is fetched when it is opened), newest first; `most` of
 /// them at most, by server id.
-pub fn fetch_queue(mb: &Mailbox, account: Id, most: usize) -> Vec<String> {
-    fetch_queue_passing_over(mb, account, most, &HashSet::new())
+pub fn fetch_queue(mb: &Mailbox, account: Id, most: usize, now: Timestamp) -> Vec<String> {
+    fetch_queue_passing_over(mb, account, most, now, &HashSet::new())
 }
 
 /// [`fetch_queue`] without the messages in `passed_over` (by account and server id): those the
 /// server wouldn't give whole this session.
-pub fn fetch_queue_passing_over(mb: &Mailbox, account: Id, most: usize, passed_over: &HashSet<(Id, String)>) -> Vec<String> {
+pub fn fetch_queue_passing_over(mb: &Mailbox, account: Id, most: usize, now: Timestamp, passed_over: &HashSet<(Id, String)>) -> Vec<String> {
     let skip = |id: &str| passed_over.contains(&(account, id.to_string()));
     // Messages being moved out of the account first, whatever their size: the move ends only
     // once they are whole here (S19).
@@ -278,16 +280,17 @@ pub fn fetch_queue_passing_over(mb: &Mailbox, account: Id, most: usize, passed_o
         .filter_map(|m| m.moving_out.as_ref().filter(|out| out.account == account && !skip(&out.id)).map(|out| out.id.clone()))
         .take(most)
         .collect();
-    out.extend(fetch_queue_of_account(mb, account, most.saturating_sub(out.len()), &skip));
+    out.extend(fetch_queue_of_account(mb, account, most.saturating_sub(out.len()), now, &skip));
     out
 }
 
-fn fetch_queue_of_account(mb: &Mailbox, account: Id, most: usize, skip: &dyn Fn(&str) -> bool) -> Vec<String> {
+fn fetch_queue_of_account(mb: &Mailbox, account: Id, most: usize, now: Timestamp, skip: &dyn Fn(&str) -> bool) -> Vec<String> {
     let limit = keeps_whole(mb, account);
+    let window = OfflineWindow::of(mb, now);
     let mut waiting: Vec<(i64, &str)> = mb
         .messages
         .values()
-        .filter(|m| m.account == account && m.unfetched)
+        .filter(|m| m.account == account && m.unfetched && window.within(m))
         .filter_map(|m| {
             m.server.as_ref().filter(|s| !s.gone && limit.is_none_or(|limit| s.size <= limit) && !skip(&s.id)).map(|s| (m.received, s.id.as_str()))
         })
@@ -305,23 +308,37 @@ fn fetch_queue_of_account(mb: &Mailbox, account: Id, most: usize, skip: &dyn Fn(
     waiting.into_iter().map(|(_, id)| id.to_string()).collect()
 }
 
-/// How many messages of `account` aren't fetched, and how many of those are larger than its
-/// "Download messages in full" (they wait until they are opened).
-pub fn not_fetched(mb: &Mailbox, account: Id) -> (usize, usize) {
+/// How many messages of `account` within its mail to keep offline at `now` aren't fetched, and
+/// how many of those are larger than its "Download messages in full" (they wait until they are
+/// opened). Older mail isn't counted: it stays as its headers and preview (#143).
+pub fn not_fetched(mb: &Mailbox, account: Id, now: Timestamp) -> (usize, usize) {
     let limit = keeps_whole(mb, account);
-    mb.messages.values().filter(|m| m.account == account && m.unfetched).fold((0, 0), |(all, large), m| {
+    let window = OfflineWindow::of(mb, now);
+    mb.messages.values().filter(|m| m.account == account && m.unfetched && window.within(m)).fold((0, 0), |(all, large), m| {
         let size = m.server.as_ref().map_or(0, |s| s.size);
         (all + 1, large + usize::from(limit.is_some_and(|limit| size > limit)))
     })
+}
+
+/// How many messages of `account` from its server are kept in full here at `now`, fetched or
+/// waiting to be: those within its mail to keep offline (#143).
+pub fn kept_in_full(mb: &Mailbox, account: Id, now: Timestamp) -> usize {
+    let window = OfflineWindow::of(mb, now);
+    mb.messages.values().filter(|m| m.account == account && (m.server.is_some() || m.unfetched) && window.within(m)).count()
 }
 
 /// Take in a message fetched whole: its text, attachments and headers from its MIME, with what
 /// the mailbox keeps of it (where it is, its marks, its server state) as it was. Whether there
 /// was such a message.
 pub fn take_fetched(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, id: &str, mime: &[u8]) -> bool {
-    let Some(m) = index.find(mb, account, id).or_else(|| moving_out(mb, account, id)) else { return false };
+    take_fetched_as(mb, index, account, id, mime).is_some()
+}
+
+/// [`take_fetched`], answering which message it was.
+pub fn take_fetched_as(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, id: &str, mime: &[u8]) -> Option<Id> {
+    let here = index.find(mb, account, id).or_else(|| moving_out(mb, account, id))?;
     let read = crate::mime::parse(mime);
-    let Ok(m) = mb.message_mut(m) else { return false };
+    let m = mb.message_mut(here).ok()?;
     m.message_id = read.message_id;
     m.in_reply_to = read.in_reply_to;
     m.references = read.references;
@@ -357,7 +374,19 @@ pub fn take_fetched(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, id: 
             sd.synced = Some(state);
         }
     }
-    true
+    Some(here)
+}
+
+/// Back to its headers and `preview` (#143): what [`take_fetched`] brought in goes, and the
+/// message is not fetched again, as it was when it came down. Everything else stays as it is:
+/// where it is, its marks, the server's state of it, what waits to go up, its headers. It wears
+/// the paperclip still when it had attachments; opening it fetches it whole again.
+pub fn thin_message(m: &mut Message, preview: String) {
+    m.attachments_on_server = m.has_attachments();
+    m.body = Body { text: preview, html: None };
+    m.attachments.clear();
+    m.kept = None;
+    m.unfetched = true;
 }
 
 /// Once a mailbox (#185): the messages of Microsoft accounts fetched whole whose subject, names
@@ -438,12 +467,12 @@ mod tests {
     fn the_newest_not_fetched_within_the_limit_come_first() {
         let (mut mb, account, _) = mailbox();
         // Number 4 is fetched; number 2 is larger than 10 MB; number 3 didn't say its size.
-        assert_eq!(fetch_queue(&mb, account, 10), ["AAkA3", "AAkA1"]);
-        assert_eq!(fetch_queue(&mb, account, 1), ["AAkA3"]);
-        assert_eq!(not_fetched(&mb, account), (3, 1));
+        assert_eq!(fetch_queue(&mb, account, 10, 0), ["AAkA3", "AAkA1"]);
+        assert_eq!(fetch_queue(&mb, account, 1, 0), ["AAkA3"]);
+        assert_eq!(not_fetched(&mb, account, 0), (3, 1));
         mb.accounts[0].download_in_full = DownloadInFull::Everything;
-        assert_eq!(fetch_queue(&mb, account, 10), ["AAkA3", "AAkA2", "AAkA1"]);
-        assert_eq!(not_fetched(&mb, account), (3, 0));
+        assert_eq!(fetch_queue(&mb, account, 10, 0), ["AAkA3", "AAkA2", "AAkA1"]);
+        assert_eq!(not_fetched(&mb, account, 0), (3, 0));
     }
 
     #[test]
@@ -564,7 +593,7 @@ Content-Type: text/html; charset=windows-1250\r\nContent-Transfer-Encoding: quot
         // Nothing disappears meanwhile: its headers and text are as they were until the new copy comes.
         assert!(m.unfetched && m.subject.starts_with("Introduction") && m.body.html.is_some());
         assert!(mb.message(html_only).unwrap().unfetched && !mb.message(draft).unwrap().unfetched);
-        assert!(fetch_queue(&mb, account, 10).contains(&"AAkC1".to_string()));
+        assert!(fetch_queue(&mb, account, 10, 0).contains(&"AAkC1".to_string()));
         // Opened again: not looked through again.
         assert_eq!(refetch_unreadable(&mut mb), 0);
 

@@ -133,7 +133,7 @@ fn a_move_out_of_the_account_waits_for_the_whole_message_and_the_save() {
     assert_eq!(moved.moving_out, Some(MovingOut { account, id: "M-1".into() }));
     assert!(moved.server.is_none() && moved.folder == kept);
     // Fetched first of all, whatever its size.
-    assert_eq!(super::super::graph_down::fetch_queue(&s.mailbox, account, 5), ["M-1"]);
+    assert_eq!(super::super::graph_down::fetch_queue(&s.mailbox, account, 5, s.now()), ["M-1"]);
     assert_eq!(changes(&s, account), []);
     // Whole, but not saved.
     s.mailbox.message_mut(m).unwrap().unfetched = false;
@@ -155,7 +155,7 @@ fn a_move_out_of_the_account_waits_for_the_whole_message_and_the_save() {
     assert_eq!(missing(&mut s.mailbox, account, &["M-1".to_string()]), 1);
     let kept_here = s.mailbox.message(m).unwrap();
     assert!(kept_here.incomplete && kept_here.moving_out.is_none() && kept_here.unfetched);
-    assert!(super::super::graph_down::fetch_queue(&s.mailbox, account, 5).is_empty());
+    assert!(super::super::graph_down::fetch_queue(&s.mailbox, account, 5, s.now()).is_empty());
 }
 
 #[test]

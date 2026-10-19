@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::sync::RemoteFlags;
-use crate::{Action, Calendar, Contact, Event, Id, Message, ModelError, Rgb, Rule, Signature, Task, clean_name};
+use crate::{Action, Calendar, Contact, Event, Id, KeepOffline, Message, ModelError, Rgb, Rule, Signature, Task, clean_name};
 
 /// Deepest a folder tree may nest (a hostile file could otherwise chain folders without end).
 const MAX_DEPTH: usize = 32;
@@ -239,6 +239,13 @@ pub struct Account {
     /// For a Microsoft account: which messages are fetched in the background (R3 spec S12).
     #[serde(skip_serializing_if = "DownloadInFull::is_default", deserialize_with = "crate::sync::lenient_or_default")]
     pub download_in_full: DownloadInFull,
+    /// **Mail to keep offline** (#143): how far back, by received date, this account's mail is
+    /// kept in full on this computer; older mail keeps its headers and preview. A file from
+    /// before there was one says nothing, which is [`KeepOffline::All`]: nothing is removed
+    /// without the owner's choosing. A new account starts at 12 months (`account.add`). A shared
+    /// mailbox follows its owner's ([`Mailbox::keep_offline_of`]).
+    #[serde(skip_serializing_if = "KeepOffline::is_default", deserialize_with = "crate::sync::lenient_or_default")]
+    pub keep_offline: KeepOffline,
     /// For a Microsoft account still kept in step by IMAP: what its owner said to switching it
     /// to Microsoft Graph (R3.7). Nothing for every other account.
     #[serde(skip_serializing_if = "GraphSwitch::is_default", deserialize_with = "crate::sync::lenient_or_default")]
@@ -763,6 +770,12 @@ impl Mailbox {
     /// The account whose sign-in reads the shared mailbox `account`: a Microsoft account that is
     /// no shared mailbox itself. `None` for an account that isn't a shared mailbox, and for one
     /// whose owner is gone or can't be one (a file may say anything).
+    /// The **mail to keep offline** of `account`: its own, and for a shared mailbox its owner's
+    /// (#143: it has none of its own). All for an account that isn't here.
+    pub fn keep_offline_of(&self, account: Id) -> KeepOffline {
+        self.owner_of(account).or(self.account(account)).map(|a| a.keep_offline).unwrap_or_default()
+    }
+
     pub fn owner_of(&self, account: Id) -> Option<&Account> {
         let owner = self.account(account)?.shared_of.filter(|owner| *owner != account)?;
         self.account(owner).filter(|o| o.kind == AccountKind::Microsoft && !o.is_shared())

@@ -268,6 +268,7 @@ const SAFE: &[&str] = &[
     "category.remove",
     "category.list",
     "account.list",
+    "account.offlineSize",
     "account.preset",
     // What Send/Receive is doing, or did: read only.
     "sync.progress",
@@ -324,6 +325,9 @@ const ACCOUNTS: &[&str] = &[
     "account.graphSwitch",
     "account.addSharedMailbox",
     "account.removeSharedMailbox",
+    // Mail to keep offline (#143): what is kept on this computer; the server keeps it all.
+    "account.thinOffline",
+    "ui.keepOffline",
     "calendar.moveToAccount",
     "ui.connectMicrosoft",
     "ui.connectFavorites",

@@ -556,6 +556,12 @@ pub struct Session {
     /// Messages of Microsoft accounts the server wouldn't give whole this session, by account and
     /// server id: the background passes them over (opening one still asks). Never saved.
     pub(crate) graph_unfetchable: std::collections::HashSet<(Id, String)>,
+    /// Messages fetched whole this session although they are outside their account's mail to
+    /// keep offline (the owner opened, answered or saved one, #143): kept in full until the
+    /// mailbox is opened again, then back to their headers and preview. Never saved.
+    pub(crate) kept_for_now: std::collections::HashSet<Id>,
+    /// How many times a mailbox took the place of the one before ([`Session::replace_mailbox`]).
+    openings: u64,
     /// Messages being moved out of a Microsoft account that were whole in the mailbox file when
     /// it was last saved: only for those is the server's copy removed (R3 spec S19). Never saved.
     pub(crate) saved_whole: std::collections::HashSet<Id>,
@@ -684,6 +690,8 @@ impl Session {
             sync_progress: Default::default(),
             graph_index: Default::default(),
             graph_unfetchable: Default::default(),
+            kept_for_now: Default::default(),
+            openings: 0,
             saved_whole: Default::default(),
             graph_said: Vec::new(),
             agent: None,
@@ -820,6 +828,12 @@ impl Session {
     /// Counts every change to the mailbox (caches key on it).
     pub fn rev(&self) -> u64 {
         self.rev
+    }
+
+    /// Changes each time another mailbox (or the same file again) is opened: a host that does
+    /// something once a mailbox is opened looks for it to change.
+    pub fn openings(&self) -> u64 {
+        self.openings
     }
 
     /// The message the reading pane shows.
@@ -1244,6 +1258,20 @@ impl Session {
         let _ = keep;
     }
 
+    /// Messages `ids` have no content in memory any more (they went back to their headers and
+    /// preview, #143): what was counted for them is let go of.
+    pub(crate) fn let_go(&mut self, ids: &std::collections::HashSet<Id>) {
+        let mut freed = 0u64;
+        self.resident.retain(|(id, bytes)| {
+            let goes = ids.contains(id);
+            if goes {
+                freed = freed.saturating_add(*bytes);
+            }
+            !goes
+        });
+        self.resident_bytes = self.resident_bytes.saturating_sub(freed);
+    }
+
     /// How many bytes brought into messages this session keeps there now.
     pub fn resident_bytes(&self) -> u64 {
         self.resident_bytes
@@ -1431,6 +1459,8 @@ impl Session {
         self.search_pass = None;
         self.searched_for = None;
         self.saved_whole.clear();
+        self.kept_for_now.clear();
+        self.openings = self.openings.wrapping_add(1);
         self.history.clear();
         self.redo.clear();
         self.sel = Selection::default();

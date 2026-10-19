@@ -2,6 +2,12 @@
 //!
 //! `cargo run --release -p mailcraft-engine --example mailbox_bench [-- --messages 5000 --attachments 300 --keep DIR --split-only]`
 //! `cargo run --release -p mailcraft-engine --example mailbox_bench -- --open DIR`
+//! `cargo run --release -p mailcraft-engine --example mailbox_bench -- --open COPY --keep-offline 1m`
+//!
+//! `--keep-offline 1m` (with `--open`): the mailbox's account made a Microsoft account's, its
+//! mail to keep offline set to a month (or another step) as of its newest message, and the disk
+//! it takes before and after older mail goes back to its headers and preview (#143). It changes
+//! the mailbox for good: give it a copy (`cp -r --reflink=auto DIR COPY`).
 //!
 //! Builds an invented mailbox the size of a few years of somebody's mail (5,000 messages with plain
 //! and HTML bodies, 300 attachments from 20 KB to 5 MB, about 300 MB in all), then times saving and
@@ -569,9 +575,80 @@ fn open_only(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Mail to keep offline (#143) on the mailbox kept in `dir`: its account is made a Microsoft
+/// account's (every folder and message given a server id, as if Graph had brought them down),
+/// its window set to `keep`, the clock put at its newest message, and what is outside goes back
+/// to its headers and preview: how long that takes, and the disk the mailbox takes before and
+/// after. It changes the mailbox in `dir` for good: run it on a copy.
+fn keep_offline_only(dir: &Path, keep: &str) -> Result<(), String> {
+    use mailcraft_engine::store;
+    use mailcraft_model::sync::ServerMessage;
+    use mailcraft_model::{AccountKind, ServerFolder};
+    let path = dir.join("mailbox.mailcraft");
+    let disk = |what: &str| {
+        let (content, files) = dir_size(&store::blob_dir(&path));
+        let file = std::fs::metadata(&path).map_or(0, |m| m.len());
+        println!("  on disk {what}: mailbox file {}, content {} in {files} files, {} in all", mb(file), mb(content), mb(file + content));
+    };
+    let (opened, took) = timed(|| store::open(&path));
+    let opened = opened?;
+    println!("{}: {} messages, opened in {}", path.display(), opened.mailbox.messages.len(), ms(took).trim());
+    disk("as opened");
+    let mut mb_ = opened.mailbox;
+    let newest = mb_.messages.values().map(|m| m.received).max().unwrap_or(0);
+    let ids: Vec<u64> = mb_.accounts.iter().map(|a| a.id).collect();
+    for a in &mut mb_.accounts {
+        a.kind = AccountKind::Microsoft;
+    }
+    for f in &mut mb_.folders {
+        f.server = Some(ServerFolder { id: format!("F{}", f.id), ..Default::default() });
+    }
+    let messages: Vec<u64> = mb_.messages.keys().copied().collect();
+    for id in messages {
+        let m = mb_.message_mut(id).map_err(|e| e.to_string())?;
+        m.server = Some(ServerMessage { id: format!("M{id}"), folder: format!("F{}", m.folder), ..Default::default() });
+    }
+    let mut s = Session::at(mb_, newest, 0);
+    s.path = Some(path.clone());
+    for id in ids {
+        s.run("account.edit", &serde_json::json!({"id": id, "keepOffline": keep})).map_err(|e| e.to_string())?;
+    }
+    let (saved, took) = timed(|| s.run("file.save", &serde_json::json!({})));
+    saved.map_err(|e| e.to_string())?;
+    println!("  as a Microsoft account's, window {keep}, the clock at its newest message: saved in {}", ms(took).trim());
+    let (size, took) =
+        timed(|| s.run("account.offlineSize", &serde_json::json!({"account": s.mailbox.accounts.first().map_or(0, |a| a.id), "keepOffline": keep})));
+    let size = size.map_err(|e| e.to_string())?;
+    println!("  account.offlineSize {}: {} messages, {}", ms(took).trim(), size["messages"], size["size"]);
+    let started = Instant::now();
+    let (mut thinned, mut rounds) = (0u64, 0u32);
+    loop {
+        let said = s.run("account.thinOffline", &serde_json::json!({"most": 100_000})).map_err(|e| e.to_string())?;
+        thinned += said["thinned"].as_u64().unwrap_or(0);
+        rounds += 1;
+        if said["left"].as_u64().unwrap_or(0) == 0 || rounds > 100 {
+            break;
+        }
+    }
+    let thin_took = started.elapsed();
+    println!("  {thinned} messages back to headers and preview in {} ({rounds} calls)", ms(thin_took).trim());
+    let (saved, took) = timed(|| s.run("file.save", &serde_json::json!({})));
+    saved.map_err(|e| e.to_string())?;
+    println!("  saved, and their content files removed, in {}", ms(took).trim());
+    disk("after");
+    match memory() {
+        Some((rss, peak)) => println!("  memory: {} resident, peak {}", mb(rss), mb(peak)),
+        None => println!("  memory: not readable on this system"),
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(dir) = args.iter().position(|a| a == "--open").and_then(|i| args.get(i + 1)) {
+        if let Some(keep) = args.iter().position(|a| a == "--keep-offline").and_then(|i| args.get(i + 1)) {
+            return keep_offline_only(Path::new(dir), keep);
+        }
         return open_only(Path::new(dir));
     }
     let arg = |name: &str, default: usize| {
