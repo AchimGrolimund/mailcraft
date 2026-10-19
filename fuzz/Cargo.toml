@@ -1,0 +1,73 @@
+# Fuzz targets for the code that reads what arrives from outside: messages, mbox files, HTML,
+# iCalendar, vCard, character sets and IMAP/SMTP servers. Not part of the main workspace (it needs
+# nightly): `cargo +nightly fuzz run <target>` from the repository root; `cargo fuzz list` names them.
+[package]
+name = "mailcraft-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+mailcraft-charset = { path = "../crates/charset" }
+mailcraft-html = { path = "../crates/html" }
+mailcraft-ical = { path = "../crates/ical" }
+mailcraft-mime = { path = "../crates/mime" }
+mailcraft-proto = { path = "../crates/proto" }
+mailcraft-vcard = { path = "../crates/vcard" }
+
+# Its own workspace, so the main one's builds, lints and cargo-deny leave it alone.
+[workspace]
+
+[[bin]]
+name = "mime"
+path = "fuzz_targets/mime.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "html"
+path = "fuzz_targets/html.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ical"
+path = "fuzz_targets/ical.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vcard"
+path = "fuzz_targets/vcard.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "charset"
+path = "fuzz_targets/charset.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "imap"
+path = "fuzz_targets/imap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "smtp"
+path = "fuzz_targets/smtp.rs"
+test = false
+doc = false
+bench = false
