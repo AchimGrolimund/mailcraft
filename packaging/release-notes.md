@@ -1,12 +1,7 @@
-**What's new in 0.5.1** (an alpha for testers; sign up in [#11](https://github.com/GITHUB_REPOSITORY/issues/11)): security fixes, and the first release a copy of 0.5.0 updates itself to.
-- **Replies and forwards keep the original's look, and nothing that runs or tracks.** The original under your text keeps its layout, tables, styles and pictures, but scripts, style sheets, embedded objects, forms, unsafe links, tracking pixels and text the sender hid no longer go out to your recipients.
-- **Safer file names.** Saving an attachment, Save As and exports clean every name that comes from mail: no hidden direction-reversing characters (`invoice‮fdp.exe` showing as a PDF), invisible characters or reserved Windows names. Attachment chips show the cleaned name.
-- **Links say where they really go.** A link's tip names the real host first, in plain ASCII (`xn--…` for an international name), so `https://bank.example@evil.example` reads as evil.example. Links with invisible formatting characters are refused, and only web, mail and phone addresses are ever handed to the system.
-- **More attachment kinds are saved, never opened:** remote desktop, web query, SYLK, Office add-in, Access shortcut, Outlook profile, help project and Program Manager group files.
-- **Private files.** On Linux, macOS and FreeBSD the settings folder, logs and downloaded pictures are readable by you alone.
-- **Updating.** A downloaded update is trusted by the digest in the signed list, and the installer is handed a checked copy in a fresh private folder.
-- GNOME under Wayland draws the window's title bar (#207, thanks to @ragelfundionctrumnar).
-- Every reader of mail, calendars, contacts and server replies is now fuzzed in CI.
+**What's new in 0.5.2** (an alpha for testers; sign up in [#11](https://github.com/GITHUB_REPOSITORY/issues/11)): desktop alerts, a new Microsoft registration, and thanks to our testers.
+- **Desktop alerts.** A reminder that falls due, and new mail in the Inbox of your own accounts while MailCraft is in the background, show as the system's notifications (Windows, macOS, Linux and FreeBSD). Only the sender and the subject are shown, never the message text; more than three at once become one. Click one to open the message. Turn either kind off in File › Options › Desktop alerts. On Windows they need the `.msi` install, not the portable zip; on macOS the system asks once whether MailCraft may show them.
+- **Sign in once more to Microsoft accounts.** MailCraft now signs in with the project's new Microsoft registration, so a sign-in remembered by 0.5.1 or earlier is asked for again, once. In an organisation that approves applications centrally, the administrator approves the new one too.
+- **About › Testers** thanks, by name, the testers who said yes to being credited. Sign up in #11.
 
 **Early alpha.** The foundations are in place and tested, but much of what a daily mail program needs is not there yet, and most of the Microsoft 365 behaviour has only been tested against stand-ins. What works is in the [README](https://github.com/GITHUB_REPOSITORY#what-works-today).
 
