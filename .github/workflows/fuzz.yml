@@ -1,0 +1,44 @@
+# The fuzz targets (fuzz/): a minute each on every hostile-input reader, when a pull request
+# changes one of them, and every week. A crash leaves the input that made it as an artifact;
+# reproduce with `cargo +nightly fuzz run <target> <file>`. (`--target`: the cargo-fuzz CI installs is built for musl, which sanitizers refuse.)
+name: Fuzz
+
+on:
+  pull_request:
+    paths: [fuzz/**, crates/charset/**, crates/html/**, crates/ical/**, crates/mime/**, crates/proto/**, crates/vcard/**]
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [mime, html, ical, vcard, charset, imap, smtp]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: nightly
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-fuzz@0.13.2
+      - run: cargo fuzz run --target x86_64-unknown-linux-gnu "$TARGET" -- -max_total_time=60 -rss_limit_mb=2048
+        env:
+          TARGET: ${{ matrix.target }}
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
