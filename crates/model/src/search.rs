@@ -122,6 +122,41 @@ pub fn keyword_spans(s: &str) -> Vec<KeywordSpan> {
     out
 }
 
+/// Where the search box draws a pill (#196): around a keyword and its colon (after a `-`, when
+/// there is one: `-is:`), never its value. A pill is a keyword [`keyword_spans`] finds, or a
+/// known keyword whose value is still being typed: nothing after its colon yet at the end of the
+/// query, or a value the cursor (a byte offset, `None` while the box isn't being edited) is in or
+/// at the end of, so `is:u` on the way to `is:unread` keeps its pill. Bytes, in order.
+pub fn keyword_pills(s: &str, cursor: Option<usize>) -> Vec<Range<usize>> {
+    let read: Vec<usize> = keyword_spans(s).into_iter().map(|k| k.range.start).collect();
+    let all: Vec<(String, Range<usize>)> = tokens(s).into_iter().take(MAX_TERMS).collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some((_, at)) = all.get(i) {
+        i = i.saturating_add(1);
+        let raw = s.get(at.clone()).unwrap_or_default();
+        let dash = usize::from(raw.starts_with('-') && raw.len() > 1);
+        let body = raw.get(dash..).unwrap_or_default();
+        let Some(colon) = body.find(':').filter(|&c| body.get(..c).is_some_and(is_keyword)) else { continue };
+        let head = at.start..at.start.saturating_add(dash).saturating_add(colon).saturating_add(1);
+        // `from: stuart`: the value is the next word, unless that is a keyword of its own.
+        let mut end = at.end;
+        let mut last = i >= all.len();
+        if head.end == at.end
+            && let Some((_, next)) = all.get(i).filter(|(next, _)| !starts_with_keyword(next))
+        {
+            end = next.end;
+            i = i.saturating_add(1);
+            last = false;
+        }
+        let typing = cursor.is_some_and(|c| at.start <= c && c <= end);
+        if read.contains(&at.start) || typing || (last && head.end == end) {
+            out.push(head);
+        }
+    }
+    out
+}
+
 /// What `body` (`key:value`) asks for when its key is a keyword the search box knows and its value
 /// one the keyword takes; `None`: it is text.
 fn keyword_kind(body: &str) -> Option<Kind> {
@@ -563,6 +598,36 @@ mod tests {
         for q in ["\"from:\"x", "-", "-:", "\u{301}from:\u{301}", "from:\"", &"from: ".repeat(500)] {
             for k in keyword_spans(q) {
                 assert!(q.get(k.range.clone()).is_some() && q.get(k.key.clone()).is_some(), "{q}");
+            }
+        }
+    }
+
+    /// #196: the pills are around the keywords alone, and a keyword being typed keeps its pill.
+    #[test]
+    fn pills_are_around_the_keywords() {
+        fn heads(q: &str, cursor: Option<usize>) -> Vec<&str> {
+            keyword_pills(q, cursor).into_iter().map(|r| &q[r]).collect()
+        }
+        assert_eq!(heads("from: stuart smith subject: iqa", None), ["from:", "subject:"]);
+        assert_eq!(heads("budget -is:unread From:ada", None), ["-is:", "From:"]);
+        // As soon as the colon is typed, and while a value is on its way.
+        assert_eq!(heads("from:", None), ["from:"]);
+        assert_eq!(heads("budget subject:", Some(15)), ["subject:"]);
+        assert_eq!(heads("is:u", Some(4)), ["is:"]);
+        assert_eq!(heads("is: u", Some(5)), ["is:"]);
+        // Left as what the parser reads as text: no pill.
+        assert!(heads("is:u", None).is_empty());
+        assert!(heads("is:banana x", Some(11)).is_empty());
+        assert_eq!(heads("from: subject:iqa", None), ["subject:"]);
+        for q in ["re: budget", "10:30", "nosuch:thing", "-", "-:", "", ":"] {
+            assert!(heads(q, None).is_empty(), "{q}");
+        }
+        // Hostile text: never a panic, every range on a character boundary.
+        for q in ["\"from:\"x", "\u{301}from:\u{301}", "-from:\"", "Đ-is:", &"from: ".repeat(500)] {
+            for c in [None, Some(0), Some(1), Some(q.len()), Some(usize::MAX)] {
+                for r in keyword_pills(q, c) {
+                    assert!(q.get(r).is_some(), "{q}");
+                }
             }
         }
     }

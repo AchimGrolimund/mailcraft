@@ -98,7 +98,7 @@ fn search_box(app: &mut MailApp, ui: &mut Ui, rect: Rect) {
     };
     // The tabs' size in the tall box of the title row; the small one in the macOS title bar.
     let font = if rect.height() >= 30.0 { regular(13.0) } else { TypeRung::Control.regular() };
-    // Keywords and their values as pills (#196), drawn under the text in a place kept for them.
+    // Keywords as pills (#196), drawn under the text in a place kept for them.
     let cursor = if focused { egui::TextEdit::load_state(ui.ctx(), id).and_then(|s| s.cursor.char_range()).map(|r| r.primary.index.0) } else { None };
     let pill_slot = ui.painter().add(egui::Shape::Noop);
     let mut drawn: Vec<crate::search_pills::Pill> = Vec::new();

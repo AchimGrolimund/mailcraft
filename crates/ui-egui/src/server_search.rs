@@ -257,6 +257,53 @@ mod tests {
         assert!(app.session.server_search.results.is_empty() && app.server_link() == Link::Ask);
     }
 
+    /// The section On the server, with its rows' folders under the time and one row selected, in
+    /// light and dark at 100 % and 200 %, as PNG files to look at:
+    /// `MAILCRAFT_SHOTS_DIR=<dir> cargo test -p mailcraft-ui-egui shots_of_server_results -- --ignored`
+    #[test]
+    #[ignore = "writes screenshots, for looking at them"]
+    fn shots_of_server_results() {
+        let Ok(dir) = std::env::var("MAILCRAFT_SHOTS_DIR") else {
+            eprintln!("set MAILCRAFT_SHOTS_DIR to the directory to write to");
+            return;
+        };
+        for theme in ["light", "dark"] {
+            for scale in [1.0, 2.0] {
+                let (mut app, _, jobs, _) = window(true);
+                app.execute("ui.theme", json!({"value": theme})).unwrap();
+                app.run("view.search", json!({"query": "budget", "scope": "everywhere"})).unwrap();
+                app.run("ui.moreResultsOnServer", json!({})).unwrap();
+                let (job, tx) = jobs.lock().unwrap().pop().unwrap();
+                let mut messages: Vec<GraphMessage> = (0..4).map(|i| found(&format!("AAkA-{i}"), &format!("Budget {i}"), NOW - i * 3_600)).collect();
+                messages[1].server.folder = "in".into();
+                for (i, m) in messages.iter_mut().enumerate() {
+                    m.server.read = i != 2;
+                }
+                tx.send(answer(&job, messages, "")).unwrap();
+                app.drive_server_search();
+                app.open_server_result(0);
+                let mut harness = egui_kittest::Harness::builder()
+                    .with_size(egui::vec2(1440.0, 900.0))
+                    .with_pixels_per_point(scale)
+                    .with_step_dt(1.0 / 60.0)
+                    .wgpu()
+                    .build_ui_state(
+                        |ui, app: &mut MailApp| {
+                            let ctx = ui.ctx().clone();
+                            app.logic(&ctx);
+                            app.ui(ui);
+                        },
+                        app,
+                    );
+                harness.input_mut().max_texture_side = Some(8192);
+                harness.run_steps(14);
+                let path = std::path::Path::new(&dir).join(format!("server-results-{theme}-{scale}x.png"));
+                harness.render().unwrap().save(&path).unwrap();
+                println!("{}", path.display());
+            }
+        }
+    }
+
     #[test]
     fn without_a_sign_in_or_a_network_the_link_says_not_connected() {
         let (mut app, account, jobs, _) = window(false);
