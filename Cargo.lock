@@ -2274,7 +2274,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "mailcraft"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "apple-native-keyring-store",
  "arboard",
@@ -2310,7 +2310,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-charset"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "encoding_rs",
  "proptest",
@@ -2318,7 +2318,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-cli"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64",
  "mailcraft-engine",
@@ -2331,11 +2331,11 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-control-key"
-version = "0.4.3"
+version = "0.5.0"
 
 [[package]]
 name = "mailcraft-engine"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64",
  "log",
@@ -2354,7 +2354,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-html"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "proptest",
  "serde",
@@ -2362,7 +2362,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-ical"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "mailcraft-model",
  "mailcraft-time",
@@ -2371,7 +2371,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-mcp"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "log",
  "mailcraft-control-key",
@@ -2381,7 +2381,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-mime"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64",
  "mailcraft-charset",
@@ -2394,7 +2394,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-model"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64",
  "mailcraft-time",
@@ -2406,7 +2406,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-net"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64",
  "flate2",
@@ -2426,7 +2426,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-proto"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64",
  "log",
@@ -2436,7 +2436,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-time"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "jiff",
  "js-sys",
@@ -2446,7 +2446,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-ui-egui"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "egui",
  "egui_kittest",
@@ -2464,7 +2464,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-vcard"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64",
  "mailcraft-charset",
@@ -2475,7 +2475,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-web"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "eframe",
  "egui",
@@ -5318,7 +5318,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64",
  "image",
