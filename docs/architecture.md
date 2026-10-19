@@ -1,6 +1,6 @@
 # MailCraft architecture
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-18 · **Change:** minor (`charset`, L0: one decoder of character sets for mail and vCard files, #180; R6: the mailbox file is a log of records, format 3, `store_index.rs`; a damaged later save stops the reading there, a damaged item of the first save costs only itself, and `file.open` says so; files kept aside are never removed and keep their content from the sweep; no citations of private decision records; R3.7: the switch from IMAP to Graph, no switch for testing; quitting on macOS through craft-quit, the first crate from craft-libs, for the apps alone; cargo-deny, pinned actions, zizmor, Scorecard, the threat model; R3.1: a Microsoft account kept in step through Graph behind a switch for testing, server ids, `graph::pace`; the Secret Service on Linux and FreeBSD behind `Services::secrets`; `StoreTrouble`; Exchange Web Services removed: the Favorites of Outlook are read through Microsoft Graph alone, and there is no choice of a way) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-19 · **Change:** minor (fuzz targets for every reader, run in CI; `charset`, L0: one decoder of character sets for mail and vCard files, #180; R6: the mailbox file is a log of records, format 3, `store_index.rs`; a damaged later save stops the reading there, a damaged item of the first save costs only itself, and `file.open` says so; files kept aside are never removed and keep their content from the sweep; no citations of private decision records; R3.7: the switch from IMAP to Graph, no switch for testing; quitting on macOS through craft-quit, the first crate from craft-libs, for the apps alone; cargo-deny, pinned actions, zizmor, Scorecard, the threat model; R3.1: a Microsoft account kept in step through Graph behind a switch for testing, server ids, `graph::pace`; the Secret Service on Linux and FreeBSD behind `Services::secrets`; `StoreTrouble`; Exchange Web Services removed: the Favorites of Outlook are read through Microsoft Graph alone, and there is no choice of a way) · **Target:** Microsoft Outlook (Microsoft 365)
 
 How MailCraft is built today. Rules for working in the code are in [`AGENTS.md`](../AGENTS.md). The
 shape — layers, "everything is a command", the swappable egui front end, the control channel, MCP,
@@ -182,7 +182,9 @@ code, taken from git pinned to one commit) is for the apps alone.
 
 - Unit tests in every crate; property tests feeding arbitrary bytes to the readers (`mime`,
   `ical`, `vcard`, `proto`) and round-tripping what the writers produce; in-process fake IMAP and
-  SMTP servers on loopback for `net`; `engine/src/tests.rs::hostile_params_never_panic` runs every
+  SMTP servers on loopback for `net`; cargo-fuzz targets in `fuzz/` (its own workspace, nightly)
+  for each reader (`mime`, `html`, `ical`, `vcard`, `charset`, IMAP and SMTP replies), run a minute
+  each by `fuzz.yml` weekly and when a pull request changes a reader; `engine/src/tests.rs::hostile_params_never_panic` runs every
   command with junk params; an MCP acceptance test drives a realistic triage through the protocol.
 - `cargo xtask ci`: fmt, clippy `-D warnings`, tests, asset attribution, layering, wasm build,
   `cargo deny check` ([`deny.toml`](../deny.toml): RustSec advisories, licences, sources; skipped
@@ -215,3 +217,4 @@ code, taken from git pinned to one commit) is for the apps alone.
 | 2026-10-16 | patch | The Graph-only account described without citing private decision records |
 | 2026-10-16 | minor | R3.7: the switch from IMAP to Graph (`cmd/graph_switch.rs`, `Account::graph_switch`, `Folder::awaiting_listing`); the switch for testing is gone |
 | 2026-10-18 | minor | `charset` (L0): the decoder of character sets moved out of `mime` so that `vcard` reads `CHARSET=` by the same rules, #180 |
+| 2026-10-19 | minor | Fuzz targets (`fuzz/`, cargo-fuzz) for every reader, run by `fuzz.yml` |

@@ -21,7 +21,7 @@ privacy and agent control. This page is the summary; the assessment is
 | Tests | 1,642 `#[test]`s (`cargo xtask stats`); property tests on every reader | measured |
 | Builds verified | Windows, macOS and Linux (CI on each), FreeBSD and Windows ARM64 (scheduled), the browser build (wasm) | measured |
 | 200,000 messages (R6.4, 2026-10-18) | open **1.5 s** cold (1.1 s warm), a save after a change **8 ms**, **770 MB** held after opening (peak 840 MB); a search everywhere answers from the word index in **0.16 s**, the process at most **849 MB** (R6.2) | measured (`mailbox_bench`, see the progress log) |
-| Releases | eight published, v0.1.0 to v0.4.2 ([Releases](https://github.com/UCS-Care-Group/mailcraft/releases)); unsigned | measured |
+| Releases | nine published, v0.1.0 to v0.5.0 ([Releases](https://github.com/UCS-Care-Group/mailcraft/releases)); v0.5.0 carries MailCraft's own release signature, none is signed by Windows or macOS | measured |
 
 The gap between the two readiness numbers is the story of this release: the mailbox, the
 commands, the interface and the file formats are in good shape, and the connection to real mail
@@ -173,6 +173,7 @@ the sample mailbox and mailboxes kept in the browser. Planned, after beta:
 
 | Date | Change |
 |---|---|
+| 2026-10-19 | v0.5.0 published; releases counted to v0.5.0 |
 | 2026-10-19 | Security review fixes (progress log) |
 | 2026-10-19 | v0.5.0 prepared (progress log) |
 | 2026-10-19 | #73: Use system setting follows the Linux desktop's colour scheme (progress log) |

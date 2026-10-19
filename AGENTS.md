@@ -12,7 +12,7 @@ People trust MailCraft with years of correspondence; a crash loses their work an
 - **Errors are `Result<T, E>`** through the crate's error type and `?`. An unfinished feature returns an error or is disabled; it never panics.
 - **Everything from outside is hostile:** message files, server responses, command and MCP/control params, saved mailboxes. `get()` instead of `[i]`, slice strings only at char boundaries, checked/saturating arithmetic, clamp sizes, cap allocations, bound recursion and loops. A mail server or a message can be written by an attacker.
 - **Last-resort guard:** `Session::run` turns an escaped panic into an error and restores the mailbox; a command that returns an error leaves the mailbox as it was. It's a safety net, not a licence.
-- **Prove it:** every crash fix lands with a regression test. `crates/engine/src/tests.rs::hostile_params_never_panic` runs every command with junk params — keep it green. The format and protocol crates each have property tests that feed arbitrary bytes.
+- **Prove it:** every crash fix lands with a regression test. `crates/engine/src/tests.rs::hostile_params_never_panic` runs every command with junk params — keep it green. The format and protocol crates each have property tests that feed arbitrary bytes, and `fuzz/` has a cargo-fuzz target for each reader (`cargo +nightly fuzz run mime`; CI runs them weekly and when a reader changes).
 - Production crate roots carry `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]`; new crates start with it. Tests may `unwrap` (`clippy.toml`).
 
 ## Mail is private and mail is hostile
