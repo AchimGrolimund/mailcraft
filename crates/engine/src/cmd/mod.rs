@@ -236,10 +236,3 @@ pub(crate) fn source(v: &Value) -> Result<(String, Vec<u8>), CmdError> {
         Err(fail(format!("{path}: the browser can't read files by path; pass `data`")))
     }
 }
-
-/// A file name without characters file systems refuse.
-pub(crate) fn file_name(stem: &str, ext: &str) -> String {
-    let clean: String = stem.chars().map(|c| if c.is_control() || "\\/:*?\"<>|".contains(c) { '_' } else { c }).take(80).collect();
-    let clean = clean.trim().trim_matches('.').to_string();
-    format!("{}.{ext}", if clean.is_empty() { "untitled" } else { &clean })
-}

@@ -426,14 +426,17 @@ fn attachments(app: &mut MailApp, ui: &mut Ui, m: &Message, t: &Tokens) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
         for (index, a) in files {
-            let name_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(a.name.clone(), regular(12.0), t.text).size().x).min(220.0);
+            // The name it is opened and saved under, not the one the sender wrote: a right-to-left
+            // override can make `fdp.exe` read as `exe.pdf`.
+            let shown = mailcraft_engine::opening::file_name(&a.name);
+            let name_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(shown.clone(), regular(12.0), t.text).size().x).min(220.0);
             let (r, resp) = ui.allocate_exact_size(vec2(name_w + 44.0, 38.0), Sense::click());
             ui.painter().rect(r, 5.0, if resp.hovered() { t.hover } else { t.panel }, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
             icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 17.0, r.center().y), vec2(20.0, 20.0)), "attach", t.icon, t.accent);
-            paint_clipped(ui.painter(), pos2(r.min.x + 34.0, r.min.y + 13.0), name_w + 4.0, &a.name, regular(12.0), t.text);
+            paint_clipped(ui.painter(), pos2(r.min.x + 34.0, r.min.y + 13.0), name_w + 4.0, &shown, regular(12.0), t.text);
             ui.painter().text(pos2(r.min.x + 34.0, r.min.y + 27.0), Align2::LEFT_CENTER, a.size_label(), regular(10.5), t.text_dim);
             // Double-click opens it, as in Outlook; its menu opens or saves it.
-            let resp = resp.on_hover_text(crate::i18n::fmt(tl!("Double-click to open {name}; right-click to save it"), &[("name", &a.name)]));
+            let resp = resp.on_hover_text(crate::i18n::fmt(tl!("Double-click to open {name}; right-click to save it"), &[("name", &shown)]));
             if resp.double_clicked() {
                 let _ = app.run("mail.openAttachment", json!({"id": m.id, "index": index}));
             }

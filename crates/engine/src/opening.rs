@@ -260,10 +260,41 @@ pub fn blocked_message(name: &str) -> String {
 /// The name an attachment is written under to be opened: only the last part of a path the
 /// sender put in its name; no control characters or characters a folder can't have; no leading
 /// dots, dashes or spaces (hidden files, options); no trailing dots or spaces (Windows drops
-/// them, and with them what the name said it was); not a name Windows keeps for a device; at
-/// most [`MAX_NAME`] characters with its kind kept. Never empty.
+/// them, and with them what the name said it was); no characters that change how it looks
+/// without being seen; not a name Windows keeps for a device; at most [`MAX_NAME`] characters
+/// with its kind kept. Never empty. Every file named from mail is named through here (see
+/// [`save_name`] and [`export_name`]), and so is an attachment where it is shown, so that the
+/// name seen is the name written.
 pub fn file_name(name: &str) -> String {
     let leaf = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let out = clean(leaf);
+    if out.is_empty() { "attachment".to_string() } else { out }
+}
+
+/// The name an attachment is saved under (Save As): its [`file_name`], with `.bin` after it when
+/// it has no short kind of letters and digits, so that the computer doesn't guess one.
+pub fn save_name(name: &str) -> String {
+    let safe = file_name(name);
+    match safe.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() && ext.chars().count() <= 8 && ext.chars().all(char::is_alphanumeric) => safe,
+        _ => format!("{safe}.bin"),
+    }
+}
+
+/// The name a file made from the mailbox is offered under: `stem` (a message's subject, a
+/// folder's name, an event's title; at most 80 characters of it) made safe as [`file_name`]
+/// makes a name, a slash in it being a character and not a folder, then `.ext`. `untitled` when
+/// nothing of `stem` is left.
+pub fn export_name(stem: &str, ext: &str) -> String {
+    let stem: String = stem.chars().take(80).map(|c| if matches!(c, '/' | '\\') { '_' } else { c }).collect();
+    let stem = clean(&stem);
+    let stem = if stem.is_empty() { "untitled" } else { stem.as_str() };
+    let ext: String = ext.chars().filter(|c| c.is_alphanumeric()).take(16).collect();
+    if ext.is_empty() { clean(stem) } else { clean(&format!("{stem}.{ext}")) }
+}
+
+/// [`file_name`] of a name with no folders in it, which may come out empty.
+fn clean(leaf: &str) -> String {
     let cleaned: String = leaf.chars().map(|c| if c.is_control() || "\\/:*?\"<>|".contains(c) || is_invisible(c) { '_' } else { c }).collect();
     let trimmed = cleaned.trim_start_matches(['.', '-', ' ', '_', '~']).trim_end_matches(['.', ' ']);
     let mut out = shorten(trimmed);
@@ -271,13 +302,25 @@ pub fn file_name(name: &str) -> String {
     if RESERVED.contains(&stem_lower.as_str()) {
         out = format!("_{out}");
     }
-    if out.is_empty() { "attachment".to_string() } else { out }
+    out
 }
 
 /// Characters that change how a name looks without being seen (right-to-left overrides that turn
-/// `gpj.exe` into what reads as `exe.jpg`, zero-width marks).
+/// `gpj.exe` into what reads as `exe.jpg`, isolates, zero-width marks and joiners, the byte-order
+/// mark, a soft hyphen, the Arabic letter mark, the Mongolian vowel separator, tags).
 fn is_invisible(c: char) -> bool {
-    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}' | '\u{00ad}')
+    matches!(
+        c,
+        '\u{00ad}'
+            | '\u{061c}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{e0000}'..='\u{e007f}'
+    )
 }
 
 /// At most [`MAX_NAME`] characters, the kind kept when there is a short one.
@@ -333,6 +376,46 @@ mod tests {
             let safe = file_name(name);
             assert!(!safe.is_empty() && !safe.contains(['/', '\\']) && !safe.starts_with(['.', '-']), "{name:?} -> {safe:?}");
         }
+    }
+
+    #[test]
+    fn saved_and_exported_names_are_made_safe() {
+        let cases = [
+            ("invoice\u{202e}fdp.exe", "invoice_fdp.exe"),
+            ("in\u{2067}voice\u{2069}.pdf", "in_voice_.pdf"),
+            ("re\u{200b}port.pdf", "re_port.pdf"),
+            ("\u{feff}\u{200d}", "attachment.bin"),
+            ("CON.txt", "_CON.txt"),
+            ("../../x", "x.bin"),
+            ("..\\..\\x.pdf", "x.pdf"),
+            ("a:b", "a_b.bin"),
+            ("a:b.txt", "a_b.txt"),
+            ("", "attachment.bin"),
+            ("notes", "notes.bin"),
+            ("report.pdf", "report.pdf"),
+            ("archive.tar.gz", "archive.tar.gz"),
+            ("x.p\u{0434}f", "x.p\u{0434}f"),
+            ("x.a b", "x.a b.bin"),
+        ];
+        for (name, want) in cases {
+            assert_eq!(save_name(name), want, "{name:?}");
+        }
+        let cases = [
+            ("Q1/Q2 report", "eml", "Q1_Q2 report.eml"),
+            ("invoice\u{202e}fdp", "eml", "invoice_fdp.eml"),
+            ("CON", "mbox", "_CON.mbox"),
+            ("../../x", "ics", "x.ics"),
+            ("a:b", "vcf", "a_b.vcf"),
+            ("", "eml", "untitled.eml"),
+            ("   ", "eml", "untitled.eml"),
+            ("\u{200b}\u{202e}", "eml", "untitled.eml"),
+            ("Hello.", "eml", "Hello.eml"),
+            ("x", "e/m:l", "x.eml"),
+        ];
+        for (stem, ext, want) in cases {
+            assert_eq!(export_name(stem, ext), want, "{stem:?}.{ext}");
+        }
+        assert_eq!(export_name(&"a".repeat(500), "eml").chars().count(), 84);
     }
 
     #[test]
