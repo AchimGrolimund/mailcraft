@@ -1,0 +1,98 @@
+# The Contributor Licence Agreement (CLA.md): every author of a pull request's commits signs it once,
+# by commenting the sentence below on a pull request. Signatures are kept on the `cla-signatures`
+# branch (signatures.tsv: login, user id, CLA version, date, pull request). The result is the commit
+# status `cla` on the pull request's head.
+#
+# pull_request_target runs with a write token, so this never checks out or runs anything from the
+# pull request: it reads only the commit list and comments through the API, and never writes commit
+# author names or comment text into anything it posts (a commit without a GitHub account is named
+# by its hash).
+name: CLA
+
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
+    types: [opened, reopened, synchronize]
+  issue_comment: # zizmor: ignore[dangerous-triggers]
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: cla-${{ github.event.pull_request.number || github.event.issue.number }}
+
+jobs:
+  cla:
+    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Sign and check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          EVENT: ${{ github.event_name }}
+          COMMENT: ${{ github.event.comment.body }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+          COMMENTER_ID: ${{ github.event.comment.user.id }}
+          # UCS's own maintainers, whose work is UCS's already.
+          EXEMPT: benandez
+          VERSION: "1.0"
+          SENTENCE: I have read the MailCraft CLA and I agree to it
+        run: |
+          set -euo pipefail
+          BRANCH=cla-signatures
+          FILE=signatures.tsv
+          MARK='<!-- mailcraft-cla -->'
+          signatures() { gh api "repos/$REPO/contents/$FILE?ref=$BRANCH" -q .content | base64 -d; }
+
+          # A signing comment: the sentence alone, ignoring case, spaces and a final full stop.
+          norm() { tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//; s/\.$//'; }
+          if [ "$EVENT" = issue_comment ]; then
+            [ "$(printf '%s' "$COMMENT" | norm)" = "$(printf '%s' "$SENTENCE" | norm)" ] || exit 0
+            for try in 1 2 3; do
+              sha=$(gh api "repos/$REPO/contents/$FILE?ref=$BRANCH" -q .sha)
+              current=$(signatures)
+              if printf '%s\n' "$current" | cut -f2 | grep -qx "$COMMENTER_ID"; then break; fi
+              line=$(printf '%s\t%s\t%s\t%s\t#%s' "$COMMENTER" "$COMMENTER_ID" "$VERSION" "$(date -u +%F)" "$PR")
+              body=$(printf '%s\n%s\n' "$current" "$line" | sed '/^$/d' | base64 -w0)
+              if gh api -X PUT "repos/$REPO/contents/$FILE" -f branch="$BRANCH" -f sha="$sha" \
+                   -f content="$body" -f message="CLA $VERSION signed by $COMMENTER (#$PR)" > /dev/null; then break; fi
+              sleep $((try * 3))
+            done
+          fi
+
+          # Who still has to sign: every commit author and the pull request's author.
+          signed=$(signatures | cut -f2)
+          head=$(gh api "repos/$REPO/pulls/$PR" -q .head.sha)
+          authors=$( { gh api "repos/$REPO/pulls/$PR" -q '"\(.user.id) \(.user.login)"'
+            gh api --paginate "repos/$REPO/pulls/$PR/commits" -q '.[] | "\(.author.id // "none") \(.author.login // ("commit " + .sha[0:7]))"'; } | sort -u)
+          missing=""
+          while read -r id login rest; do
+            case "$login" in *'[bot]') continue ;; esac
+            case " $EXEMPT " in *" $login "*) continue ;; esac
+            if [ "$id" = none ]; then
+              missing="$missing"$'\n'"- commit $rest: its author's email isn't linked to a GitHub account. Add the email to your GitHub account, or amend the commit with one that is."
+            elif ! printf '%s\n' "$signed" | grep -qx "$id"; then
+              missing="$missing"$'\n'"- @$login"
+            fi
+          done <<< "$authors"
+
+          old=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            -q ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$MARK\"))) | .id" | head -1)
+          if [ -n "$missing" ]; then
+            state=failure; desc="Waiting for the CLA to be signed"
+            text="$MARK"$'\n'"Thank you for contributing. Before this can be merged, each author below signs the [Contributor Licence Agreement](https://github.com/$REPO/blob/main/CLA.md) once, by commenting on this pull request:"$'\n\n'"> $SENTENCE."$'\n\n'"You keep the copyright in your work. MailCraft stays MIT OR Apache-2.0.$missing"
+          else
+            state=success; desc="Every author has signed the CLA"
+            text="$MARK"$'\n'"Every author has signed the [CLA](https://github.com/$REPO/blob/main/CLA.md). Thank you."
+          fi
+          if [ -n "$old" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$old" -f body="$text" > /dev/null
+          elif [ "$state" = failure ]; then
+            gh api "repos/$REPO/issues/$PR/comments" -f body="$text" > /dev/null
+          fi
+          gh api "repos/$REPO/statuses/$head" -f state="$state" -f context=cla -f description="$desc" > /dev/null
