@@ -167,7 +167,10 @@ fn save(s: &mut Session, v: &Value) -> CmdResult {
         let saved = if elsewhere {
             crate::store::save(std::path::Path::new(&path), &s.loaded_mailbox()?).map_err(fail)?
         } else {
-            crate::store::save(std::path::Path::new(&path), &s.mailbox).map_err(fail)?
+            let saved = crate::store::save(std::path::Path::new(&path), &s.mailbox).map_err(fail)?;
+            // What mail outside its window let go of goes from disk now (#143).
+            crate::store::forget_due(std::path::Path::new(&path), s.rev());
+            saved
         };
         json!({"path": path, "bytes": saved.bytes, "blobs": saved.blobs})
     };

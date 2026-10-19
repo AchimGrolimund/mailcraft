@@ -23,6 +23,9 @@ pub mod graph_send;
 pub mod graph_switch;
 pub mod graph_up;
 pub mod mail;
+pub mod offline;
+#[cfg(test)]
+mod offline_tests;
 pub mod people;
 #[cfg(test)]
 mod quote_tests;
@@ -65,6 +68,7 @@ pub fn registry() -> Registry {
     v.extend(rules::specs());
     v.extend(category::specs());
     v.extend(account::specs());
+    v.extend(offline::specs());
     v.extend(signature::specs());
     v.extend(graph_mail::specs());
     v.extend(shared::specs());
