@@ -36,6 +36,8 @@ finish-args:
   # Remembered sign-ins: a password or refresh token goes to the desktop's Secret Service
   # (GNOME Keyring, KWallet) over D-Bus, never to a file in the sandbox.
   - --talk-name=org.freedesktop.secrets
+  # Desktop alerts (reminders, new mail) go to the notification service of the desktop.
+  - --talk-name=org.freedesktop.Notifications
   # Deliberately not granted: network (the optional --control server listens on 127.0.0.1 in
   # the sandbox; `flatpak override --user --share=network io.github.billsecond.mailcraft` exposes it to
   # host agents) and home/host filesystem access.
