@@ -24,6 +24,8 @@ mod browser;
 mod calendar_flow;
 mod clipboard;
 mod control_server;
+#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))]
+mod desktop_theme;
 mod diagnostics;
 #[cfg(test)]
 mod favorites_flow;
@@ -100,6 +102,12 @@ impl eframe::App for App {
         quit::on_frame(ctx, &mut self.0);
     }
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // On Linux and the BSDs, the desktop's light or dark preference (`desktop_theme`), for
+        // "Use system setting": winit has none there.
+        #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))]
+        if let Some(desktop) = DESKTOP_THEME.get() {
+            desktop.apply(raw);
+        }
         self.0.raw_input_hook(raw);
     }
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -290,6 +298,11 @@ fn open_in_browser(url: &str) -> bool {
     }
     browser::system_open(url)
 }
+
+/// The desktop's light or dark preference, read from its portal and followed (`desktop_theme`),
+/// set once as the window is made.
+#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))]
+static DESKTOP_THEME: std::sync::OnceLock<desktop_theme::DesktopTheme> = std::sync::OnceLock::new();
 
 /// The pages waiting for the window's activation token (`browser`), set once before the window opens.
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -1273,6 +1286,9 @@ fn main() -> eframe::Result {
             if let Some(browser) = BROWSER.get() {
                 browser.set_window(&cc.egui_ctx);
             }
+            // Before the first frame, so a dark desktop's window doesn't come up light.
+            #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))]
+            let _ = DESKTOP_THEME.set(desktop_theme::follow(&cc.egui_ctx));
             let (mailbox, path, unavailable, damaged) = first_mailbox(sample, mailbox_path);
             let (file_dialog, dialogs) = file_dialogs::hook(&cc.egui_ctx);
             let mut session = Session::new(mailbox);

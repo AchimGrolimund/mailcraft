@@ -83,6 +83,13 @@ arboard = { version = "3.6", default-features = false, features = ["wayland-data
 # (`browser.rs`). Already in the tree: eframe runs on it; the same version and features.
 winit = { version = "0.30", default-features = false, features = ["wayland", "x11"] }
 
+[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies]
+# "Use system setting" follows the desktop's light or dark preference, which winit doesn't report
+# on these systems: read from the XDG desktop portal's settings over the session's D-Bus, and
+# followed as it changes (`desktop_theme.rs`, #73). Already in the tree (accesskit's, the Secret
+# Service store's): the blocking calls on its own async-io runtime, nothing more.
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd = { workspace = true }
 # Waits for an `rfd::AsyncFileDialog` on a background thread (the dialogs don't block the UI);
