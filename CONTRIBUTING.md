@@ -1,6 +1,6 @@
 # Contributing to MailCraft
 
-> **Status:** current · **Written:** 2026-10-15 · **Last updated:** 2026-10-16 · **Change:** minor (review of sync, store, sign-in and secrets stated as it is done)
+> **Status:** current · **Written:** 2026-10-15 · **Last updated:** 2026-10-19 · **Change:** minor (the Contributor Licence Agreement, signed once by a comment; review of sync, store, sign-in and secrets stated as it is done)
 
 Thank you for wanting to help. MailCraft holds people's mail, so the way work comes in matters as
 much as the work.
@@ -22,6 +22,10 @@ Issues labelled `post-beta` are parked: they aren't open to claims until beta is
 
 ## The pull request
 
+- **Sign the [Contributor Licence Agreement](CLA.md) once**, by commenting on your first pull
+  request: `I have read the MailCraft CLA and I agree to it.` You keep the copyright in your work;
+  it lets UCS Care Group Limited also release MailCraft under other terms, while MailCraft stays MIT OR
+  Apache-2.0. The `cla` check on the pull request turns green when every author has signed.
 - **One issue, one pull request**, based on current `main`, small enough to review in one sitting.
   Say `Closes #<issue>` in the description.
 - **`cargo xtask ci` passes** on your machine before every commit (fmt, clippy, tests, assets,
@@ -57,3 +61,4 @@ Found something wrong? Use the
 |---|---|---|
 | 2026-10-15 | major | First version: claim before you build, one issue per pull request, decisions kept for the owners, tester sign-up |
 | 2026-10-16 | minor | Changes to sync, the store, sign-in and secrets are read by a maintainer before they land (no promise of enforced code-owner review); `CLAUDE.md` is a link to `AGENTS.md` |
+| 2026-10-19 | minor | The Contributor Licence Agreement ([CLA.md](CLA.md)), signed once by a comment on a pull request |

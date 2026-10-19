@@ -1,6 +1,6 @@
 # Releasing MailCraft
 
-> **Last reviewed:** 2026-10-18 · **Last updated:** 2026-10-18 · **Change:** minor (how a copy that updates itself installs a release; `DISABLEAUTOMATICUPDATES=1`; MailCraft's own release signature: `SHA256SUMS.txt.sig`, the `MAILCRAFT_RELEASE_KEY` secret, `cargo xtask release-key`) · **Status:** releases v0.1.0 to v0.4.2 were built and published by `release.yml` and `package.yml` on GitHub's runners, for every platform in the table below; none is signed yet (gap #18), neither by the operating systems' signatures nor by MailCraft's own (no release key is set yet).
+> **Last reviewed:** 2026-10-18 · **Last updated:** 2026-10-19 · **Change:** minor (v0.5.0, the first release with MailCraft's own signature; how a copy that updates itself installs a release; `DISABLEAUTOMATICUPDATES=1`; MailCraft's own release signature: `SHA256SUMS.txt.sig`, the `MAILCRAFT_RELEASE_KEY` secret, `cargo xtask release-key`) · **Status:** releases v0.1.0 to v0.5.0 were built and published by `release.yml` and `package.yml` on GitHub's runners, for every platform in the table below; v0.5.0 is the first with MailCraft's own release signature (`SHA256SUMS.txt.sig`, verified by the in-use key), and none is signed by the operating systems' signatures yet (gap #18).
 
 The canonical recipe is [craftrules `release/playbook.md`](https://github.com/storytold/craftrules/blob/main/release/playbook.md);
 this file has the MailCraft specifics. The scripts in `packaging/` are WordCraft's with MailCraft's
@@ -185,6 +185,7 @@ and in the Flatpak (which is granted `org.freedesktop.secrets` for it).
 
 | Date | Change |
 |---|---|
+| 2026-10-19 | v0.5.0, the first release signed with MailCraft's own release key |
 | 2026-10-18 | How a copy that updates itself installs a release (Windows Installer, the disk image, the AppImage), what the packages must keep for it, and `DISABLEAUTOMATICUPDATES=1` |
 | 2026-10-18 | MailCraft's own release signature: `SHA256SUMS.txt.sig` made in the `release` environment with `MAILCRAFT_RELEASE_KEY`, `cargo xtask release-key new` and `sign`, `packaging/sign-sums.sh`; the dry run's checksums |
 | 2026-10-16 | Status as it is: v0.1.0 to v0.4.1 published by `release.yml` and `package.yml`, unsigned; riscv64 and the Flathub manifest out of the table (neither is built); what the runners check on every release |

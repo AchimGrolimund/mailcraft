@@ -233,6 +233,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrayref"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76a2e8124351fda1ef8aaaa3bbd7ebbcb486bbcd4225aca0aa0d84bb2db8fecb"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2274,7 +2280,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "mailcraft"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "apple-native-keyring-store",
  "arboard",
@@ -2310,7 +2316,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-charset"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "encoding_rs",
  "proptest",
@@ -2318,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-cli"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64",
  "mailcraft-engine",
@@ -2331,11 +2337,11 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-control-key"
-version = "0.4.3"
+version = "0.5.0"
 
 [[package]]
 name = "mailcraft-engine"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64",
  "log",
@@ -2354,7 +2360,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-html"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "proptest",
  "serde",
@@ -2362,7 +2368,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-ical"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "mailcraft-model",
  "mailcraft-time",
@@ -2371,7 +2377,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-mcp"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "log",
  "mailcraft-control-key",
@@ -2381,7 +2387,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-mime"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64",
  "mailcraft-charset",
@@ -2394,7 +2400,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-model"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64",
  "mailcraft-time",
@@ -2406,7 +2412,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-net"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64",
  "flate2",
@@ -2426,7 +2432,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-proto"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64",
  "log",
@@ -2436,7 +2442,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-time"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "jiff",
  "js-sys",
@@ -2446,7 +2452,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-ui-egui"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "egui",
  "egui_kittest",
@@ -2464,7 +2470,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-vcard"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64",
  "mailcraft-charset",
@@ -2475,7 +2481,7 @@ dependencies = [
 
 [[package]]
 name = "mailcraft-web"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "eframe",
  "egui",
@@ -3741,6 +3747,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "sctk-adwaita"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6277f0217056f77f1d8f49f2950ac6c278c0d607c45f5ee99328d792ede24ec"
+dependencies = [
+ "log",
+ "smithay-client-toolkit 0.19.2",
+ "tiny-skia",
+]
+
+[[package]]
 name = "secret-service"
 version = "5.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4037,6 +4054,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "strict-num"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4149,6 +4172,31 @@ dependencies = [
  "quick-error 2.0.1",
  "weezl",
  "zune-jpeg",
+]
+
+[[package]]
+name = "tiny-skia"
+version = "0.11.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83d13394d44dae3207b52a326c0c85a8bf87f1541f23b0d143811088497b09ab"
+dependencies = [
+ "arrayref",
+ "arrayvec",
+ "bytemuck",
+ "cfg-if",
+ "log",
+ "tiny-skia-path",
+]
+
+[[package]]
+name = "tiny-skia-path"
+version = "0.11.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c9e7fc0c2e86a30b117d0462aa261b72b7a99b7ebd7deb3a14ceda95c5bdc93"
+dependencies = [
+ "arrayref",
+ "bytemuck",
+ "strict-num",
 ]
 
 [[package]]
@@ -5176,6 +5224,7 @@ dependencies = [
  "raw-window-handle",
  "redox_syscall 0.4.1",
  "rustix 0.38.44",
+ "sctk-adwaita",
  "smithay-client-toolkit 0.19.2",
  "smol_str",
  "tracing",
@@ -5318,7 +5367,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "base64",
  "image",
