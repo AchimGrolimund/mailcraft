@@ -15,11 +15,7 @@ on:
   issue_comment: # zizmor: ignore[dangerous-triggers]
     types: [created]
 
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
-  statuses: write
+permissions: {}
 
 concurrency:
   group: cla-${{ github.event.pull_request.number || github.event.issue.number }}
@@ -28,6 +24,12 @@ jobs:
   cla:
     if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
     runs-on: ubuntu-24.04
+    # Writes the signatures branch (contents), comments (issues, pull-requests), sets `cla` (statuses).
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      statuses: write
     steps:
       - name: Sign and check
         env:
