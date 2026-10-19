@@ -1,6 +1,6 @@
 # Threat model
 
-> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-19 · **Change:** minor (the settings folder, logs and kept pictures are the owner's alone) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-19 · **Change:** minor (agents with a shell or the owner's files are outside the agent gate; the settings folder, logs and kept pictures are the owner's alone) · **Target:** Microsoft Outlook (Microsoft 365)
 
 What MailCraft protects, from whom, and how, with the code that does it. Rules for working in the
 code are in [`CLAUDE.md`](../CLAUDE.md) and [`AGENTS.md`](../AGENTS.md); how to report a
@@ -105,6 +105,12 @@ An `.eml`, `.mbox`, `.ics`, `.vcf` or `.mailcraft` file from somewhere else.
   0600 on Unix and compared in constant time (`apps/mailcraft/src/control_server.rs`,
   `crates/control-key`). Another user can't drive the app; another program running as the owner
   can read the key, which is the next item's problem.
+- **Agents on the same computer.** The agent gate ([MCP](mcp.md#agents-get-only-what-the-owner-allows))
+  binds agents that reach MailCraft only through MCP. The control channel takes a request without
+  the bridge's `agent` marking for the owner's own script, so an agent that can run a shell or read
+  files as the owner (it could read the control key in the settings folder, or the mailbox file
+  itself, or run `mailcraft-cli`) is outside the gate. Run such an agent as another user or in a
+  sandbox, and don't start the app with `--control` while one is around.
 
 ### A supply-chain compromise
 
@@ -148,6 +154,7 @@ A malicious or vulnerable dependency, GitHub Action or build step.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-19 | minor | Agents on the same computer: the agent gate binds agents that reach MailCraft only through MCP; one with a shell or the owner's files is outside it |
 | 2026-10-19 | minor | The settings folder, the logs and the pictures kept from the web are created for the owner alone on Unix (0700, 0600); open ones from earlier versions are closed |
 | 2026-10-16 | minor | Release signing in the protected `release` environment; draft releases |
 | 2026-10-16 | minor | Pinned build tools with checksums; build provenance for release files |

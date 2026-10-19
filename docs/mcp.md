@@ -1,6 +1,6 @@
 # MCP server
 
-> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-18 · **Change:** minor (`mail.openAttachment` never for agents, #126; `sync.progress`'s `fullMessages`, `ui.skipSync` allowed, #120; `sync.progress`, its problems framed as untrusted, #120) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-19 · **Change:** minor (whom the gate binds: agents with a shell or the owner's files are outside it; `mail.openAttachment` never for agents, #126; `sync.progress`'s `fullMessages`, `ui.skipSync` allowed, #120) · **Target:** Microsoft Outlook (Microsoft 365)
 
 MailCraft speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio, so
 agents can read, file and write mail and keep a calendar.
@@ -62,6 +62,13 @@ attachment (report.pdf)." with Send and Don't Send (or Delete, Allow), Don't bei
 (Enter and Escape say no). The command runs only on the owner's yes; no answer in 50 seconds is a
 no. While the question is up, no click or key from the control channel reaches the window.
 
+**Whom the gate binds.** An agent that reaches MailCraft only through MCP. The control channel
+takes a request without the bridge's `agent` marking for the owner's own script, and runs it
+without asking. An agent that can run a shell or read files as the same user is outside the gate:
+it could read the control key in the settings folder, or the mailbox file itself, or run
+`mailcraft-cli`. Run such an agent as another user or in a sandbox, and don't start the app with
+`--control` while one is around.
+
 **Message text is untrusted.** `read_message`, `list_messages`, `list_events`, `list_contacts`,
 `list_tasks` and the same commands through `execute` (`mail.get`, `mail.list`, `calendar.list`,
 `people.get`, …) answer with `"untrusted": true`, and each piece of text from a message, an event,
@@ -115,3 +122,4 @@ parameters.
 | 2026-10-17 | minor | `sync.progress` (Send/Receive Progress, #120): safe for agents, its problems framed as untrusted message content |
 | 2026-10-17 | minor | `sync.progress`'s `fullMessages`; `ui.skipSync` allowed to agents (#120) |
 | 2026-10-18 | minor | `mail.openAttachment` (#126): never for agents |
+| 2026-10-19 | minor | Whom the gate binds: agents that reach MailCraft only through MCP; one with a shell or the owner's files is outside it |
