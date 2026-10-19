@@ -81,7 +81,9 @@ arboard = { version = "3.6", default-features = false, features = ["wayland-data
 # when it is handed an activation token (xdg-activation under Wayland, startup notification under
 # X11), which the window asks winit for and winit hands back as a window event that eframe drops
 # (`browser.rs`). Already in the tree: eframe runs on it; the same version and features.
-winit = { version = "0.30", default-features = false, features = ["wayland", "x11"] }
+# GNOME draws no title bars for Wayland windows, so winit draws one: its Adwaita one, buttons
+# drawn, without the title (that would bring in ttf-parser, which `cargo deny` refuses) (#207).
+winit = { version = "0.30", default-features = false, features = ["wayland", "x11", "wayland-csd-adwaita-notitle"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies]
 # "Use system setting" follows the desktop's light or dark preference, which winit doesn't report
