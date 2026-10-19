@@ -82,6 +82,18 @@ body:
       label: What do you use mail for most? (optional)
       description: e.g. lots of shared mailboxes, many meetings, many folders and rules. No names, please.
   - type: checkboxes
+    id: credit
+    attributes:
+      label: Credit (optional)
+      options:
+        - label: "Credit me in About › Testers once I've tested a release. My GitHub username (or the display name below) is built into later releases; I can ask to be left out of future ones, but copies already published keep it."
+          required: false
+  - type: input
+    id: display_name
+    attributes:
+      label: Display name for the credit
+      description: Optional. Without one you're credited as @your-github-username.
+  - type: checkboxes
     id: agree
     attributes:
       label: Understood

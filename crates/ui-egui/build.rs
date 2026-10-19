@@ -3,7 +3,7 @@
 //! and the web build has them too.
 //!
 //! A missing or malformed file is not a reason to fail a build: the About window then shows no
-//! contributors and the build says why in a warning. The tests read the repository's own files
+//! contributors (or no testers) and the build says why in a warning. The tests read the repository's own files
 //! with the same code (`credits_data.rs`), so a malformed file fails `cargo xtask ci`.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
@@ -29,8 +29,16 @@ fn main() {
         println!("cargo::warning=contributor credits: {e}; the About window shows no contributors");
         credits_data::Credits::default()
     });
-    let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default()).join("credits.rs");
-    if let Err(e) = std::fs::write(&out, credits_data::render(&credits)) {
-        println!("cargo::warning=writing {}: {e}", out.display());
+    let testers = read(&dir.join("testers.toml")).and_then(|toml| credits_data::parse_testers(&toml));
+    let testers = testers.unwrap_or_else(|e| {
+        println!("cargo::warning=tester credits: {e}; the About window shows no testers");
+        Vec::new()
+    });
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default());
+    for (name, src) in [("credits.rs", credits_data::render(&credits)), ("testers.rs", credits_data::render_testers(&testers))] {
+        let out = out_dir.join(name);
+        if let Err(e) = std::fs::write(&out, src) {
+            println!("cargo::warning=writing {}: {e}", out.display());
+        }
     }
 }
