@@ -1,6 +1,6 @@
 # Contributors in the About window
 
-> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-15 · **Change:** major (first version, D2) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-19 · **Change:** minor (AI help credited by a plain line, no trailer) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
 
 **About ▸ Contributors** credits everyone who contributed to MailCraft. This follows the shared
 craftrules standard
@@ -27,8 +27,9 @@ as WordCraft does; this page is the local copy of the decision.
 ### Where MailCraft differs from the standard
 
 - **No About ▸ Models.** The standard also credits the AI models named in `Co-Authored-By`
-  trailers. MailCraft's owner's rule is that commits and PRs carry no AI attribution, so from now on
-  that tab would be empty (the older trailers in the history are not counted), and it is left out.
+  trailers. MailCraft's commits and PRs credit AI help with a plain line instead,
+  `Human-reviewed, AI-assisted, nobody's mailbox harmed.`, and carry no such trailer, so that tab
+  would be empty (the older trailers in the history are not counted), and it is left out.
   `build.rs` reads no `models` list.
 - **Both files are read as hostile.** They arrive in pull requests. A username GitHub would not
   give (not 1–39 letters, digits and hyphens) is left out, as is a second entry for the same
@@ -87,3 +88,4 @@ Commit the updated `contributors/contributors.json`. Git author names and emails
 | Date | Change | What |
 |---|---|---|
 | 2026-10-15 | major | First version (D2): About ▸ Contributors, no Models tab |
+| 2026-10-19 | minor | AI help credited by the line "Human-reviewed, AI-assisted, nobody's mailbox harmed." rather than a `Co-Authored-By` trailer |

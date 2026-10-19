@@ -228,7 +228,7 @@ pub fn title_bar(app: &mut MailApp, ui: &mut Ui) {
 /// How tall the status bar is.
 pub const STATUS_BAR_H: f32 = 30.0;
 /// The size of the status bar's text.
-const STATUS_TEXT: f32 = 12.0;
+pub(crate) const STATUS_TEXT: f32 = 12.0;
 /// The bar a Send/Receive under way fills, in the status bar.
 const SYNC_BAR: egui::Vec2 = egui::Vec2::new(120.0, 6.0);
 /// The most of the bar's width a message at its left takes, so the right side keeps room.
@@ -351,6 +351,8 @@ pub fn status_bar(app: &mut MailApp, ui: &mut Ui) {
                         }
                         ui.add_space(10.0);
                     }
+                    // A new version downloaded and checked: Restart to update.
+                    crate::updates::status_item(app, ui, &t);
                     // The last Send/Receive had problems: one click shows them, in Send/Receive
                     // Progress under their accounts.
                     if app.has_sync_problems() {

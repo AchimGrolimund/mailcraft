@@ -44,6 +44,7 @@ mod opened_files;
 mod picture_cache;
 mod quit;
 mod secrets;
+mod self_update;
 #[cfg(test)]
 mod shared_send_flow;
 mod single_instance;
@@ -64,21 +65,47 @@ use mailcraft_ui_egui::{
 
 /// The app, the restored window geometry until the first frame has checked it, the control
 /// server's key file (removed on exit), the file dialogs the app asked for, the hold on the
-/// mailbox that later starts hand their files and links to and, on macOS, the files opened from
-/// Finder.
+/// mailbox that later starts hand their files and links to, a copy that updates itself's part in
+/// that (installing at exit) and, on macOS, the files opened from Finder.
 struct App(
     MailApp,
     Option<WindowGeometry>,
     Option<control_server::KeyFile>,
     file_dialogs::Launcher,
     Option<single_instance::Guard>,
+    Option<HostUpdates>,
     #[cfg(target_os = "macos")] fmv_macos_events::Inbox,
 );
+
+/// A copy that updates itself (`self_update`): where it keeps what it needs, what it is, and what
+/// the download checked in this run.
+#[derive(Clone)]
+struct HostUpdates {
+    folders: self_update::Folders,
+    install: install::Install,
+    verified: self_update::Shared,
+}
+
+impl HostUpdates {
+    /// For a copy that updates itself and is one of the project's packages, in a run that keeps
+    /// its settings.
+    fn of_this_copy() -> Option<HostUpdates> {
+        if build_sha() == "dev" || !prefs_enabled() {
+            return None;
+        }
+        let install = install::this_copy();
+        if install == install::Install::NoticeOnly {
+            return None;
+        }
+        let folders = self_update::Folders::new(mailcraft_control_key::settings_dir()?);
+        Some(HostUpdates { folders, install, verified: Default::default() })
+    }
+}
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
-        apple_events::poll(&self.5, &mut self.0, ctx);
+        apple_events::poll(&self.6, &mut self.0, ctx);
         // MailCraft was started again (the shortcut, a `mailto:` link, a file opened from the
         // file manager): what it was started with opens here, and the window comes forward.
         if let Some(asked) = self.4.as_ref().and_then(single_instance::Guard::handed_over) {
@@ -135,6 +162,19 @@ impl eframe::App for App {
         }
         if let Some(guard) = &self.4 {
             guard.close();
+        }
+        // A new version downloaded and checked is installed now (and started, when the owner
+        // pressed Restart to update), or the version before is put back (`self_update`).
+        if let Some(updates) = &self.5 {
+            let running = env!("CARGO_PKG_VERSION");
+            self_update::settle(&updates.folders, running);
+            if let Some(what) = self.0.update_on_exit() {
+                let verified = updates.verified.lock().map(|v| v.clone()).unwrap_or_else(|e| e.into_inner().clone());
+                match self_update::on_exit(&updates.folders, updates.install, what, verified, self.0.session.path.as_deref()) {
+                    Ok(()) => log::info!("the new version of MailCraft is being installed"),
+                    Err(e) => log::error!("the new version of MailCraft couldn't be installed: {e}"),
+                }
+            }
         }
     }
 }
@@ -992,7 +1032,12 @@ fn free_busy(request: FreeBusyRequest) -> FreeBusyResult {
 /// mail servers, checking an account, asking whether a new version is out), each on a background
 /// thread; and the credential store.
 /// `kept_pictures` is where downloaded pictures are kept between runs, when they are.
-fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: Option<std::sync::Arc<picture_cache::Cache>>) -> Services {
+fn services(
+    file_dialog: file_dialogs::Hook,
+    ctx: egui::Context,
+    kept_pictures: Option<std::sync::Arc<picture_cache::Cache>>,
+    updates: Option<&HostUpdates>,
+) -> Services {
     let pictures_ctx = ctx.clone();
     let pictures_kept = kept_pictures.clone();
     let busy_ctx = ctx.clone();
@@ -1094,7 +1139,7 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
         // A build that isn't one of the project's packages (they name their commit) never asks.
         development_build: build_sha() == "dev",
         // A copy that updates itself downloads a newer release, checked by its signature.
-        update_download: update_download(&download_ctx),
+        update_download: updates.map(|updates| update_download(&download_ctx, updates.clone())),
         updates_turned_off_by_organisation: updater::turned_off_by_organisation(),
         ..Default::default()
     }
@@ -1102,24 +1147,25 @@ fn services(file_dialog: file_dialogs::Hook, ctx: egui::Context, kept_pictures: 
 
 /// The download of a newer release, for a copy that updates itself (the `.msi`, the macOS app,
 /// an AppImage) and is one of the project's packages, into the data folder's `updates/`, on a
-/// background thread; checked by the release's own signature there (`mailcraft_net`). None for
-/// any other copy, and for a run that keeps no files.
+/// background thread; checked by the release's own signature there (`mailcraft_net`). What was
+/// checked, and its SHA-256, is noted for installing it at exit.
 fn update_download(
     ctx: &egui::Context,
-) -> Option<Box<dyn Fn(mailcraft_model::update::Release) -> std::sync::mpsc::Receiver<Result<PathBuf, String>>>> {
-    if build_sha() == "dev" || !prefs_enabled() {
-        return None;
-    }
-    let install = install::this_copy();
-    if install == install::Install::NoticeOnly {
-        return None;
-    }
-    let dir = mailcraft_control_key::settings_dir()?.join(updater::FOLDER);
+    updates: HostUpdates,
+) -> Box<dyn Fn(mailcraft_model::update::Release) -> std::sync::mpsc::Receiver<Result<PathBuf, String>>> {
     let ctx = ctx.clone();
-    Some(Box::new(move |release: mailcraft_model::update::Release| {
-        let dir = dir.clone();
-        background(&ctx, "update download", move || updater::download(&release, install, &dir, mailcraft_net::update_download::download))
-    }))
+    Box::new(move |release: mailcraft_model::update::Release| {
+        let updates = updates.clone();
+        background(&ctx, "update download", move || {
+            let dir = updates.folders.updates();
+            let version = release.version.clone();
+            let got = updater::download(&release, updates.install, &dir, mailcraft_net::update_download::download)?;
+            let sha256 = mailcraft_net::update_download::sha256(&got).ok_or("the download couldn't be read back")?;
+            let verified = self_update::Verified { version, path: got.clone(), sha256 };
+            *updates.verified.lock().unwrap_or_else(|e| e.into_inner()) = Some(verified);
+            Ok(got)
+        })
+    })
 }
 
 /// Window, Dock and taskbar icon.
@@ -1206,16 +1252,31 @@ fn main() -> eframe::Result {
     // First, so the panic hook and every start-up warning are recorded (`logging`).
     let logger = logging::install();
     logging::install_panic_hook();
+    // A copy of the program in the data folder that installs an `.msi` once MailCraft has gone
+    // (Windows), and does nothing else (`self_update`).
+    let all: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if all.first().is_some_and(|a| a == self_update::FINISH_UPDATE) {
+        // (This copy runs from the data folder, not from where the installer put MailCraft.)
+        let folders = mailcraft_control_key::settings_dir().filter(|_| prefs_enabled()).map(self_update::Folders::new);
+        let code = match (self_update::Job::parse(&all), folders) {
+            (Some(job), Some(folders)) => self_update::finish(&job, &folders),
+            _ => 2,
+        };
+        std::process::exit(code);
+    }
     let mut control_port: Option<u16> = std::env::var("MAILCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
     let mut files = Vec::new();
     let mut sample = false;
     let mut mailbox_path: Option<PathBuf> = None;
+    let mut after_update = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--control" => control_port = args.next().and_then(|p| p.parse().ok()),
             "--sample" => sample = true,
             "--mailbox" => mailbox_path = args.next().map(PathBuf::from),
+            // Started by the version this one replaced: it is let go first.
+            self_update::AFTER_UPDATE => after_update = true,
             "--version" => {
                 println!("mailcraft {} ({})", env!("CARGO_PKG_VERSION"), build_sha());
                 return Ok(());
@@ -1223,6 +1284,24 @@ fn main() -> eframe::Result {
             _ => files.push(a),
         }
     }
+    // A copy that updates itself: a new version waits for the one it replaced to have gone, and
+    // finds out what came of the last update (`self_update`); a start that lasts a minute worked.
+    let updates = HostUpdates::of_this_copy();
+    let update_start = match &updates {
+        Some(updates) => {
+            if after_update {
+                self_update::wait_for_the_old_one(&updates.folders);
+            }
+            let start = self_update::at_start(&updates.folders, env!("CARGO_PKG_VERSION"));
+            let folders = updates.folders.clone();
+            let _ = std::thread::Builder::new().name("update settle".into()).spawn(move || {
+                std::thread::sleep(self_update::SETTLED_AFTER);
+                self_update::settle(&folders, env!("CARGO_PKG_VERSION"));
+            });
+            start
+        }
+        None => Default::default(),
+    };
     // One window per mailbox file: started again, MailCraft hands what it was started with to
     // the window that has the mailbox and exits. The sample keeps no file, so it isn't guarded.
     let kept = if sample { None } else { mailbox_path.clone().or_else(|| default_mailbox_path().filter(|_| prefs_enabled())) };
@@ -1300,7 +1379,9 @@ fn main() -> eframe::Result {
             session.index_words = true;
             // A run that keeps its mailbox and its settings keeps downloaded pictures too.
             let kept_pictures = if kept && !sample && prefs_enabled() { keep_pictures() } else { None };
-            let mut app = MailApp::new(session, services(file_dialog, cc.egui_ctx.clone(), kept_pictures));
+            let mut services = services(file_dialog, cc.egui_ctx.clone(), kept_pictures, updates.as_ref());
+            services.update_start = update_start;
+            let mut app = MailApp::new(session, services);
             // Nowhere to keep the mailbox (the sample, a run without preferences): don't try.
             app.autosave = kept;
             if let Some(path) = &app.session.path {
@@ -1357,6 +1438,7 @@ fn main() -> eframe::Result {
                 key_file,
                 dialogs,
                 guard,
+                updates,
                 #[cfg(target_os = "macos")]
                 apple_events.connect(&cc.egui_ctx),
             )))

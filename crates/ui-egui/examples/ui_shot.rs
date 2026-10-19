@@ -29,7 +29,9 @@
 //! security"` (and it fixes a security problem), `"same"` (the running version), or `"fails"`.
 //! The stand-in host is a copy that updates itself, whose downloads are checked at once (nothing
 //! is downloaded); `{"host": {"updates": "organisation"}}` on any line has the organisation
-//! turn that off for the computer from the start.
+//! turn that off for the computer from the start, and `{"host": {"updates": "didntStart 0.4.2"}}`
+//! has the running version be one newly installed that didn't start twice running, with 0.4.2
+//! kept to go back to.
 //! And a Graph job (`{"host": {"graph": …}}`): `"consent"` (Microsoft wants the owner's
 //! permission first), `"refused"` (it refused the sign-in) or `"sendConsent"` (a shared
 //! mailbox's mail waits for permission to send from shared mailboxes, #70); anything else
@@ -423,6 +425,12 @@ fn main() {
     let mut services = if stood_in { stand_in(&host) } else { Services::default() };
     // The organisation has turned updating by itself off for the computer.
     services.updates_turned_off_by_organisation = lines.iter().any(|l| l.pointer("/host/updates").and_then(|v| v.as_str()) == Some("organisation"));
+    // A newly installed version that didn't start twice running, with the one before it kept.
+    if let Some(kept) =
+        lines.iter().find_map(|l| l.pointer("/host/updates").and_then(|v| v.as_str())?.strip_prefix("didntStart ").map(str::to_string))
+    {
+        services.update_start.didnt_start = Some((env!("CARGO_PKG_VERSION").to_string(), kept));
+    }
     let mut app = MailApp::new(session, services).with_control(rx);
     app.autosave = false;
     // (With a host that answers, nothing is to happen by itself: what a shot shows, its script asked for.)
