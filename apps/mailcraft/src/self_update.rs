@@ -18,8 +18,10 @@
 //!   it; the old one is copied to the data folder first.
 //!
 //! Nothing is run before it is checked: the file installed is the one downloaded and checked by
-//! the release's signature in this run, and its SHA-256 is worked out again right before it is
-//! used. Programs are started through `std::process::Command` with fixed arguments, never a
+//! the release's signature in this run, and its SHA-256, the one the signed list gives, is
+//! worked out again right before it is used. A file handed to another program (Windows
+//! Installer, `hdiutil`) is a copy of it in a folder made for that alone, checked as it is
+//! opened and held open until the program is done ([`Handed`]). Programs are started through `std::process::Command` with fixed arguments, never a
 //! shell. A new version that is started waits for the old one to have gone ([`AFTER_UPDATE`]),
 //! which holds a lock in the data folder ([`hold_lock`]) until it exits.
 //!
@@ -103,6 +105,10 @@ impl Folders {
     /// On macOS: where the disk image is attached.
     fn mount(&self) -> PathBuf {
         self.root.join("update-mount")
+    }
+    /// The folders a checked file is copied into, each made for one hand-over ([`Handed`]).
+    fn handed(&self) -> PathBuf {
+        self.updates().join("handed")
     }
 }
 
@@ -215,6 +221,7 @@ pub fn at_start(folders: &Folders, running: &str) -> UpdateStart {
     // What is left of an `.msi` installed from a copy of the program: it has done its work.
     let _ = fs::remove_dir_all(folders.helper().join("program"));
     let _ = fs::remove_dir_all(folders.mount());
+    let _ = fs::remove_dir_all(folders.handed());
     let Some(record) = read_record(folders) else { return out };
     if record.to == running {
         if !record.settled {
@@ -450,12 +457,7 @@ impl Job {
 /// again when it was asked to. Returns the process's exit code.
 pub fn finish(job: &Job, folders: &Folders) -> i32 {
     wait_for_the_old_one(folders);
-    let installed = if mailcraft_net::update_download::sha256(&job.msi) == Some(job.sha256) {
-        let code = msiexec(&job.msi, &folders.helper().join("install.log")).wait();
-        code.is_some_and(|c| MSI_DONE.contains(&c))
-    } else {
-        false
-    };
+    let installed = install_msi(job, folders, &mut |run| run.wait());
     if installed {
         let _ = keep_installed_msi(folders, job);
     }
@@ -463,6 +465,94 @@ pub fn finish(job: &Job, folders: &Folders) -> i32 {
         let _ = start_program(start).spawn_detached();
     }
     if installed { 0 } else { 1 }
+}
+
+/// The `.msi` installed by Windows Installer, run by `run`, from a checked copy of it
+/// ([`Handed`]), never from the file in the data folder; whether it was installed.
+fn install_msi(job: &Job, folders: &Folders, run: &mut dyn FnMut(&Run) -> Option<i32>) -> bool {
+    let handed = match Handed::new(&job.msi, job.sha256, &folders.handed()) {
+        Ok(handed) => handed,
+        Err(e) => {
+            log::warn!("the installer wasn't run: {e}");
+            return false;
+        }
+    };
+    let code = run(&msiexec(&handed.path, &folders.helper().join("install.log")));
+    // (The copy is held open until here, and its folder deleted after.)
+    drop(handed);
+    code.is_some_and(|c| MSI_DONE.contains(&c))
+}
+
+/// A checked file handed to a program of the system's (Windows Installer, `hdiutil`): copied
+/// into a folder made for this hand-over alone (for the owner only, on Unix), checked once more
+/// by its SHA-256 as it is opened, and held open until the program is done with it (on Windows
+/// shared for reading only, so that nothing changes it meanwhile). The program is given the
+/// copy, so that what it reads is what was checked rather than a file in the data folder that
+/// may have been changed since. The folder goes when this does.
+struct Handed {
+    dir: PathBuf,
+    path: PathBuf,
+    held: Option<File>,
+}
+
+impl Handed {
+    /// Most tries at a name for the folder that nothing has.
+    const TRIES: u32 = 8;
+
+    /// `file`, which must have the SHA-256 `expected`, copied into a new folder in `within`.
+    fn new(file: &Path, expected: [u8; 32], within: &Path) -> io::Result<Handed> {
+        let name = file.file_name().and_then(OsStr::to_str).filter(|n| plain_name(n)).ok_or_else(|| io::Error::other("no name"))?;
+        mailcraft_engine::store::create_private_dir_all(within)?;
+        let dir = Handed::fresh_dir(within)?;
+        let mut handed = Handed { path: dir.join(name), dir, held: None };
+        fs::copy(file, &handed.path)?;
+        let mut held = Handed::open(&handed.path)?;
+        if mailcraft_net::update_download::sha256_of(&mut held) != Some(expected) {
+            // (Dropped: the folder and the copy go.)
+            return Err(io::Error::other("the copy isn't the file that was checked"));
+        }
+        handed.held = Some(held);
+        Ok(handed)
+    }
+
+    /// A folder that wasn't there, made now: for its owner only on Unix; on Windows it takes what
+    /// the data folder in the user's own profile allows, which is the user alone.
+    fn fresh_dir(within: &Path) -> io::Result<PathBuf> {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        for n in 0..Handed::TRIES {
+            let dir = within.join(format!("{}-{nanos:09}-{n}", std::process::id()));
+            match builder.create(&dir) {
+                Ok(()) => return Ok(dir),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Err(io::Error::other("no new folder could be made for the update"))
+    }
+
+    /// The copy opened for reading; on Windows nobody may write to it or delete it while it is.
+    fn open(path: &Path) -> io::Result<File> {
+        let mut open = fs::OpenOptions::new();
+        open.read(true);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            // FILE_SHARE_READ
+            open.share_mode(0x0000_0001);
+        }
+        open.open(path)
+    }
+}
+
+impl Drop for Handed {
+    fn drop(&mut self) {
+        // Closed first: on Windows an open file can't be deleted.
+        drop(self.held.take());
+        let _ = fs::remove_dir_all(&self.dir);
+    }
 }
 
 /// After an `.msi` installed: the one the running version came from becomes the one kept back,
@@ -678,6 +768,11 @@ pub fn on_exit(folders: &Folders, install: Install, what: OnExit, verified: Opti
                     start_program(&target)
                 }
                 Install::MacApp => {
+                    // The kept app is a folder with no signed SHA-256 to check it by: the disk
+                    // image it came from was deleted once it was installed, and a checksum of
+                    // our own, kept beside it in the data folder, would be no better than the
+                    // app itself against whoever can change that folder. It is copied into
+                    // place by this program (`replace`); no other program is handed it.
                     replace(&target, &file, None, None).map_err(|e| e.to_string())?;
                     open_app(&target)
                 }
@@ -716,19 +811,32 @@ fn install_appimage(folders: &Folders, image: &Path, new: &Path, sha256: [u8; 32
 
 /// macOS: the app in the disk image in place of the running one, the old one kept.
 fn install_mac_app(folders: &Folders, app: &Path, dmg: &Path, sha256: [u8; 32], running: &str) -> Result<(), String> {
+    install_mac_app_with(folders, app, dmg, sha256, running, &mut |run| run.wait())
+}
+
+/// [`install_mac_app`] with `run` running `hdiutil`.
+fn install_mac_app_with(
+    folders: &Folders,
+    app: &Path,
+    dmg: &Path,
+    sha256: [u8; 32],
+    running: &str,
+    run: &mut dyn FnMut(&Run) -> Option<i32>,
+) -> Result<(), String> {
+    // Attached from a copy made for it and checked once more ([`Handed`]), held open until the
+    // image is detached. The app copied out of it is what that copy holds: an image attached
+    // read-only can't be changed while it is attached.
+    let handed = Handed::new(dmg, sha256, &folders.handed()).map_err(|e| format!("the disk image wasn't attached: {e}"))?;
     let mount = folders.mount();
     let _ = remove_any(&mount);
     fs::create_dir_all(&mount).map_err(|e| e.to_string())?;
-    // Checked once more right before it is attached.
-    if mailcraft_net::update_download::sha256(dmg) != Some(sha256) {
-        return Err("the disk image changed since it was checked".into());
-    }
-    if hdiutil_attach(dmg, &mount).wait() != Some(0) {
+    if run(&hdiutil_attach(&handed.path, &mount)) != Some(0) {
         let _ = fs::remove_dir(&mount);
         return Err("the disk image couldn't be attached".into());
     }
     let result = mac_swap(folders, app, &mount, running);
-    let _ = hdiutil_detach(&mount).wait();
+    let _ = run(&hdiutil_detach(&mount));
+    drop(handed);
     let _ = fs::remove_dir(&mount);
     if result.is_ok() {
         let _ = fs::remove_file(dmg);
@@ -738,7 +846,10 @@ fn install_mac_app(folders: &Folders, app: &Path, dmg: &Path, sha256: [u8; 32], 
 
 fn mac_swap(folders: &Folders, app: &Path, mount: &Path, running: &str) -> Result<(), String> {
     let new = app_in(mount).ok_or("the disk image has no app")?;
-    // A signed MailCraft is replaced only by one whose signature holds.
+    // A signed MailCraft is replaced only by one whose signature holds. (Any valid signature,
+    // for now: the project has no Apple Team ID yet. Once it has, the new app's signature is to
+    // be required to be the project's: `-R '=anchor apple generic and certificate leaf[subject.OU]
+    // = "<Team ID>"'`.)
     if codesign_verify(app).wait() == Some(0) && codesign_verify(&new).wait() != Some(0) {
         return Err("the new app's signature doesn't hold".into());
     }
@@ -929,6 +1040,103 @@ mod tests {
         assert_eq!(read_kept(&folders.this_version()).unwrap().version, "0.5.0");
         assert!(folders.this_version().join("m-0.5.0.msi").is_file());
         assert!(!folders.previous().exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// What is left in the folders of the hand-overs.
+    fn left_handed(folders: &Folders) -> usize {
+        fs::read_dir(folders.handed()).map(|d| d.count()).unwrap_or(0)
+    }
+
+    #[test]
+    fn the_installer_is_handed_a_checked_copy_and_never_the_download() {
+        let dir = scratch("handed-msi");
+        let folders = Folders::new(dir.join("data"));
+        let msi = folders.updates().join("mailcraft-0.5.0-windows-x64.msi");
+        fs::create_dir_all(folders.updates()).unwrap();
+        fs::write(&msi, b"the checked installer").unwrap();
+        let job = Job { msi: msi.clone(), sha256: sum(b"the checked installer"), from: "0.4.3".into(), to: "0.5.0".into(), back: false, start: None };
+        let mut handed = Vec::new();
+        let installed = install_msi(&job, &folders, &mut |run| {
+            let given = PathBuf::from(&run.args[1]);
+            assert_ne!(given, msi, "the installer is given the copy");
+            assert!(given.starts_with(folders.handed()), "{}", given.display());
+            assert_eq!(given.file_name(), msi.file_name(), "and by the same name");
+            // The download changed while the installer runs doesn't change what it reads.
+            fs::write(&msi, b"swapped").unwrap();
+            assert_eq!(fs::read(&given).unwrap(), b"the checked installer");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                assert_eq!(fs::metadata(given.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+            }
+            handed.push(given);
+            Some(0)
+        });
+        assert!(installed);
+        assert_eq!(handed.len(), 1);
+        assert!(!handed[0].exists() && left_handed(&folders) == 0, "the copy and its folder are gone");
+        // A file that isn't the one checked (here, the one swapped above) isn't run at all.
+        let installed = install_msi(&job, &folders, &mut |_| panic!("the installer was run on a file that wasn't checked"));
+        assert!(!installed);
+        assert_eq!(left_handed(&folders), 0);
+        // Windows Installer's answer is believed only for what it says installed.
+        fs::write(&msi, b"the checked installer").unwrap();
+        assert!(!install_msi(&job, &folders, &mut |_| Some(1603)));
+        assert!(install_msi(&job, &folders, &mut |_| Some(3010)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_signed_digest_is_trusted_even_when_the_download_changes_afterwards() {
+        let dir = scratch("signed-digest");
+        let folders = Folders::new(dir.join("data"));
+        let release =
+            mailcraft_model::update::Release { version: Version::parse("9.9.9").unwrap(), page: String::new(), security: false, assets: Vec::new() };
+        // The release's signed list gives this digest; the file is swapped once it is in place,
+        // before anything reads it back.
+        let fetch = |_: &mailcraft_model::update::Release, name: &str, d: &Path| {
+            fs::create_dir_all(d).unwrap();
+            let path = d.join(name);
+            fs::write(&path, b"swapped after the download").unwrap();
+            Ok(mailcraft_net::update_download::Downloaded { path, sha256: sum(b"the signed installer") })
+        };
+        let verified = crate::updater::download(&release, Install::Msi, &folders.updates(), fetch).unwrap();
+        assert_eq!(verified.sha256, sum(b"the signed installer"));
+        assert_eq!(verified.version, release.version);
+        // So what is installed later is checked against what the release signed, and refused.
+        let job = Job { msi: verified.path, sha256: verified.sha256, from: "0.4.3".into(), to: "9.9.9".into(), back: false, start: None };
+        assert!(!install_msi(&job, &folders, &mut |_| panic!("the installer was run on a file that wasn't signed")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_disk_image_is_attached_from_a_checked_copy() {
+        let dir = scratch("handed-dmg");
+        let folders = Folders::new(dir.join("data"));
+        let dmg = folders.updates().join("mailcraft-0.5.0-macos-universal.dmg");
+        fs::create_dir_all(folders.updates()).unwrap();
+        fs::write(&dmg, b"the checked image").unwrap();
+        let app = dir.join("Applications").join("MailCraft.app");
+        let mut asked = Vec::new();
+        let got = install_mac_app_with(&folders, &app, &dmg, sum(b"the checked image"), "0.4.3", &mut |run| {
+            let given = PathBuf::from(run.args.last().unwrap());
+            assert_eq!(run.args[0], "attach");
+            assert_ne!(given, dmg);
+            assert!(given.starts_with(folders.handed()), "{}", given.display());
+            assert_eq!(fs::read(&given).unwrap(), b"the checked image");
+            asked.push(given);
+            // (Not attached here: nothing more is done.)
+            Some(1)
+        });
+        assert_eq!(got, Err("the disk image couldn't be attached".to_string()));
+        assert_eq!(asked.len(), 1);
+        assert_eq!(left_handed(&folders), 0);
+        // One that changed since it was checked: `hdiutil` is never asked.
+        let got = install_mac_app_with(&folders, &app, &dmg, sum(b"another image"), "0.4.3", &mut |_| panic!("hdiutil was asked"));
+        assert!(got.is_err());
+        assert_eq!(left_handed(&folders), 0);
+        assert!(dmg.is_file(), "the download is left for the next try");
         let _ = fs::remove_dir_all(&dir);
     }
 

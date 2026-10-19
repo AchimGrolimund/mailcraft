@@ -1148,7 +1148,7 @@ fn services(
 /// The download of a newer release, for a copy that updates itself (the `.msi`, the macOS app,
 /// an AppImage) and is one of the project's packages, into the data folder's `updates/`, on a
 /// background thread; checked by the release's own signature there (`mailcraft_net`). What was
-/// checked, and its SHA-256, is noted for installing it at exit.
+/// checked, and the SHA-256 its signed list gives, is noted for installing it at exit.
 fn update_download(
     ctx: &egui::Context,
     updates: HostUpdates,
@@ -1158,10 +1158,10 @@ fn update_download(
         let updates = updates.clone();
         background(&ctx, "update download", move || {
             let dir = updates.folders.updates();
-            let version = release.version.clone();
-            let got = updater::download(&release, updates.install, &dir, mailcraft_net::update_download::download)?;
-            let sha256 = mailcraft_net::update_download::sha256(&got).ok_or("the download couldn't be read back")?;
-            let verified = self_update::Verified { version, path: got.clone(), sha256 };
+            // The SHA-256 noted is the signed list's, not the file's read back: what is
+            // installed is checked against what the release signed.
+            let verified = updater::download(&release, updates.install, &dir, mailcraft_net::update_download::download)?;
+            let got = verified.path.clone();
             *updates.verified.lock().unwrap_or_else(|e| e.into_inner()) = Some(verified);
             Ok(got)
         })
