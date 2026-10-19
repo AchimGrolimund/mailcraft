@@ -556,6 +556,34 @@ fn list(app: &mut MailApp, ui: &mut Ui) {
 
 /// Whether a row names the folder its message is in, before its preview: in a search of every
 /// mailbox, as Outlook's rows do (#195); in one folder the owner knows which it is.
+/// How wide the folder a search result is in may be drawn: the time's column.
+const FOLDER_W: f32 = TEXT_RIGHT - TIME_RIGHT;
+
+/// The folder a search result is in (#195), in the time's column: a folder's mark and its name
+/// in `text_dim` (4.5:1 or more on every row's background, selected, flagged or under the
+/// pointer, in both palettes), ending at `end` and cut short with an ellipsis to the column's
+/// width. Where it starts.
+fn paint_result_folder(p: &egui::Painter, end: egui::Pos2, label: &str, t: &Tokens) -> f32 {
+    const ICON: f32 = 12.0;
+    const GAP: f32 = 3.0;
+    let width = FOLDER_W - ICON - GAP;
+    if label.is_empty() {
+        return end.x;
+    }
+    let mut job = egui::text::LayoutJob::single_section(
+        label.to_string(),
+        egui::text::TextFormat { font_id: regular(LIST_TEXT), color: t.text_dim, ..Default::default() },
+    );
+    job.wrap = egui::text::TextWrapping { max_width: width, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+    let galley = p.layout_job(job);
+    let size = galley.size();
+    let x = end.x - size.x;
+    p.galley(pos2(x, end.y - size.y / 2.0), galley, t.text_dim);
+    let icon = x - GAP - ICON;
+    icons::paint(p, Rect::from_min_size(pos2(icon, end.y - ICON / 2.0), vec2(ICON, ICON)), "folder", t.text_dim, t.accent);
+    icon
+}
+
 fn shows_folder(s: &mailcraft_engine::Session) -> bool {
     s.view.scope == mailcraft_engine::Scope::Everywhere && !mailcraft_model::search::Query::parse(&s.view.search).is_empty()
 }
@@ -807,12 +835,17 @@ fn message_row(app: &mut MailApp, ui: &mut Ui, row: &Row, rect: Rect) {
     let date_w = p.text(pos2(time_end, line2), Align2::RIGHT_CENTER, &date, date_font, date_color).width();
     let mut subject_end = text_end.min(time_end - date_w - 8.0);
 
-    // Category marks and the size of a conversation: at the right of the preview's first line,
-    // under the time, or before the time when no preview is shown.
+    // In a search of every mailbox the folder it is in, then category marks and the size of a
+    // conversation: at the right of the preview's first line, under the time, or before the time
+    // when no preview is shown.
     let lines = app.session.prefs.preview_lines.min(3);
-    let searched_everywhere = shows_folder(&app.session);
     let preview_y = rect.min.y + PREVIEW_TOP + PREVIEW_PITCH / 2.0 + 0.5;
     let (mut sx, tail_y) = if lines > 0 { (time_end, preview_y) } else { (time_end - date_w - 8.0, line2) };
+    if let Some(folder) = shows_folder(&app.session).then(|| app.session.mailbox.folder(m.folder)).flatten() {
+        let label = crate::nav::result_folder_label(&app.session.mailbox, folder);
+        sx = paint_result_folder(p, pos2(sx, tail_y), &label, &t) - 6.0;
+        app.hit.add("messageFolder", row.id, Rect::from_min_max(pos2(sx + 6.0, tail_y - 7.0), pos2(time_end, tail_y + 7.0)));
+    }
     for c in m.categories.iter().take(4) {
         let color = crate::theme::c32(app.session.mailbox.category_color(c));
         p.rect_filled(Rect::from_center_size(pos2(sx - 5.0, tail_y), vec2(10.0, 10.0)), 2.0, color);
@@ -844,14 +877,7 @@ fn message_row(app: &mut MailApp, ui: &mut Ui, row: &Row, rect: Rect) {
         let format =
             egui::text::TextFormat { font_id: regular(LIST_TEXT), color: t.text_dim, line_height: Some(PREVIEW_PITCH), ..Default::default() };
         let mut job = egui::text::LayoutJob::default();
-        // In a search of every mailbox, the folder it is in first, as on the server's rows (#195).
-        if let Some(folder) = searched_everywhere.then(|| app.session.mailbox.folder(m.folder)).flatten() {
-            let label = crate::nav::result_folder_label(&app.session.mailbox, folder);
-            job.append(&label, 0.0, egui::text::TextFormat { font_id: semibold(LIST_TEXT), ..format.clone() });
-            job.append(&said, 8.0, format);
-        } else {
-            job.append(&said, 0.0, format);
-        }
+        job.append(&said, 0.0, format);
         job.wrap =
             egui::text::TextWrapping { max_width: preview_end - left, max_rows: usize::from(lines), break_anywhere: false, overflow_character: None };
         let galley = p.layout_job(job);
