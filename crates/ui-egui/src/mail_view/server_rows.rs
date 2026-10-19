@@ -1,7 +1,8 @@
 //! Below the local results of a search: More results on the server, and the section On the
 //! server with what came back (R6.2, [`crate::server_search`]). Laid out as the list's rows are,
 //! so that a server result reads as any other message: the sender, the subject and the time,
-//! then the folder it is in and its preview; read, flag, importance, categories, paperclip.
+//! then its preview, and in a search of every mailbox the folder it is in under the time; read,
+//! flag, importance, categories, paperclip.
 
 use std::collections::HashSet;
 
@@ -201,22 +202,28 @@ fn result_row(app: &mut MailApp, ui: &mut Ui, index: usize, rect: Rect) {
         mailcraft_time::list_label(mailcraft_engine::list::when(&m), app.session.now(), app.session.offset_at(m.date), app.session.prefs.twelve_hour);
     let (font, color) = if unread { (semibold(LIST_TEXT), t.accent_text) } else { (regular(LIST_TEXT), t.text) };
     let date_w = p.text(pos2(time_end, line2), Align2::RIGHT_CENTER, &date, font.clone(), color).width();
-    let subject = if m.subject.trim().is_empty() { tl!("(no subject)") } else { m.subject.as_str() };
-    paint_clipped(p, pos2(left, line2), (text_end.min(time_end - date_w - 8.0) - left).max(0.0), subject, font, color);
-    // The folder it is in, then its preview; its categories at the end of that line.
+    // In a search of every mailbox the folder it is in, under the time (or before it, with no
+    // preview), then its categories; its preview before them.
+    let lines = app.session.prefs.preview_lines;
     let preview_y = rect.min.y + PREVIEW_TOP + 7.0;
-    let mut sx = time_end;
+    let (mut sx, tail_y) = if lines > 0 { (time_end, preview_y) } else { (time_end - date_w - 8.0, line2) };
+    if let Some(folder) = super::shows_folder(&app.session).then(|| app.session.mailbox.folder(r.folder)).flatten() {
+        let label = crate::nav::result_folder_label(&app.session.mailbox, folder);
+        sx = super::paint_result_folder(p, pos2(sx, tail_y), &label, &t) - 6.0;
+        app.hit.add("serverResultFolder", index as u64, Rect::from_min_max(pos2(sx + 6.0, tail_y - 7.0), pos2(time_end, tail_y + 7.0)));
+    }
     for c in m.categories.iter().take(4) {
         let color = crate::theme::c32(app.session.mailbox.category_color(c));
-        p.rect_filled(Rect::from_center_size(pos2(sx - 5.0, preview_y), vec2(10.0, 10.0)), 2.0, color);
+        p.rect_filled(Rect::from_center_size(pos2(sx - 5.0, tail_y), vec2(10.0, 10.0)), 2.0, color);
         sx -= 13.0;
     }
-    if app.session.prefs.preview_lines > 0 {
-        let folder = app.session.mailbox.folder(r.folder).map(|f| crate::nav::result_folder_label(&app.session.mailbox, f)).unwrap_or_default();
+    let subject_end = if lines > 0 { text_end.min(time_end - date_w - 8.0) } else { text_end.min(sx - 6.0) };
+    let subject = if m.subject.trim().is_empty() { tl!("(no subject)") } else { m.subject.as_str() };
+    paint_clipped(p, pos2(left, line2), (subject_end - left).max(0.0), subject, font, color);
+    if lines > 0 {
         let end = text_end.min(sx - 6.0);
-        let w = paint_clipped(p, pos2(left, preview_y), (end - left).max(0.0), &folder, semibold(LIST_TEXT), t.text_dim);
         let preview: String = m.body.text.split_whitespace().collect::<Vec<_>>().join(" ");
-        paint_clipped(p, pos2(left + w + 8.0, preview_y), (end - left - w - 8.0).max(0.0), &preview, regular(LIST_TEXT), t.text_dim);
+        paint_clipped(p, pos2(left, preview_y), (end - left).max(0.0), &preview, regular(LIST_TEXT), t.text_dim);
     }
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{who}, {subject}")));
     if resp.clicked() {

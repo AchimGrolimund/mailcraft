@@ -1,9 +1,11 @@
-//! The search box draws each keyword the query language reads, with its value, as a pill
-//! (`[From: stuart] [Subject: iqa]`), so the owner sees which part of a message is searched
-//! (#196). The text is the query as typed and stays the only truth: a pill is only how the box
-//! lays it out ([`mailcraft_model::search::keyword_spans`] says where the keywords are). The pill
-//! the cursor is in or at the end of is drawn as the plain text it is, so Backspace into one
-//! edits it as text; while the box isn't focused every one is drawn.
+//! The search box draws each keyword the query language reads as a pill around the keyword and
+//! its colon (`[From:] stuart smith [Subject:] iqa`), so the owner sees which part of a message is
+//! searched (#196); what is typed after it stays plain text, so a full name reads as words. The
+//! text is the query as typed and stays the only truth: a pill is only how the box lays it out
+//! ([`mailcraft_model::search::keyword_pills`] says where they are). A pill appears as soon as a
+//! known keyword's colon is typed and keeps it while its value is being typed; it holds the same
+//! characters as the text (only the keyword's first letter is drawn as a capital), so the cursor
+//! and Backspace go through it as through any text.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -13,12 +15,13 @@ use egui::{FontId, Galley, Pos2, Rect, Shape, pos2};
 
 use crate::theme::{Tokens, semibold};
 
-/// Room before a pill's keyword and after its value.
+/// Room before a pill and after it.
 const PAD: f32 = 6.0;
 /// How far a pill's edge is from its text.
 const INSET: f32 = 4.0;
 
-/// A keyword and its value drawn as a pill: where they stand in the text, in characters.
+/// A keyword and its colon drawn as a pill: where it stands in the text, in characters, with a
+/// `-` before the keyword (in `range`, not in `key`) when there is one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Pill {
     pub range: Range<usize>,
@@ -29,16 +32,20 @@ pub(crate) struct Pill {
 /// being edited).
 pub(crate) fn pills(text: &str, cursor: Option<usize>) -> Vec<Pill> {
     let chars = |byte: usize| text.get(..byte).map_or(0, |s| s.chars().count());
-    mailcraft_model::search::keyword_spans(text)
+    let cursor = cursor.map(|c| text.char_indices().nth(c).map_or(text.len(), |(b, _)| b));
+    mailcraft_model::search::keyword_pills(text, cursor)
         .into_iter()
-        .map(|k| Pill { range: chars(k.range.start)..chars(k.range.end), key: chars(k.key.start)..chars(k.key.end) })
-        .filter(|p| cursor.is_none_or(|c| c < p.range.start || c > p.range.end))
+        .map(|r| {
+            let dash = usize::from(text.get(r.clone()).is_some_and(|h| h.starts_with('-')));
+            let range = chars(r.start)..chars(r.end);
+            Pill { key: range.start.saturating_add(dash).min(range.end)..range.end, range }
+        })
         .collect()
 }
 
 /// `text` laid out with `pills`: a pill's keyword in semibold and the accent's colour with its
 /// first letter as a capital (the same characters otherwise, so the cursor stands where it
-/// would), its value as the rest of the text, and room around it for the pill's edge.
+/// would), and room around it for the pill's edge; everything else as the rest of the text.
 pub(crate) fn layout(text: &str, pills: &[Pill], font: FontId, t: &Tokens) -> LayoutJob {
     let plain = TextFormat { font_id: font.clone(), color: t.text, ..Default::default() };
     let key = TextFormat { font_id: semibold(font.size), color: t.accent_text, ..Default::default() };
@@ -53,7 +60,7 @@ pub(crate) fn layout(text: &str, pills: &[Pill], font: FontId, t: &Tokens) -> La
     let mut at = 0;
     let mut lead = 0.0;
     for p in pills {
-        if p.range.start < at || p.range.end > chars.len() {
+        if p.range.start < at || p.range.end > chars.len() || p.key.start < p.range.start || p.key.end != p.range.end {
             continue;
         }
         add(part(at..p.range.start), lead, &plain);
@@ -64,7 +71,6 @@ pub(crate) fn layout(text: &str, pills: &[Pill], font: FontId, t: &Tokens) -> La
             keyword = format!("{}{}", first.to_ascii_uppercase(), keyword.get(1..).unwrap_or_default());
         }
         add(keyword, if p.key.start == p.range.start { PAD } else { 0.0 }, &key);
-        add(part(p.key.end..p.range.end), 0.0, &plain);
         at = p.range.end;
         lead = PAD;
     }
@@ -102,16 +108,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keywords_and_their_values_are_pills_unless_the_cursor_is_in_one() {
-        let q = "from: stuart subject: iqa budget";
-        assert_eq!(pills(q, None), [Pill { range: 0..12, key: 0..5 }, Pill { range: 13..25, key: 13..21 }]);
-        // Being typed (the cursor in it or at its end): text.
-        assert_eq!(pills(q, Some(25)), [Pill { range: 0..12, key: 0..5 }]);
-        assert_eq!(pills(q, Some(3)), [Pill { range: 13..25, key: 13..21 }]);
-        assert_eq!(pills(q, Some(32)).len(), 2);
+    fn a_pill_is_around_the_keyword_alone() {
+        let q = "from: stuart smith subject: iqa";
+        let expected = [Pill { range: 0..5, key: 0..5 }, Pill { range: 19..27, key: 19..27 }];
+        assert_eq!(pills(q, None), expected);
+        // The cursor in a value or at the end: the pills are the same.
+        for c in [0, 3, 12, 31, 99] {
+            assert_eq!(pills(q, Some(c)), expected, "{c}");
+        }
+        // As soon as the colon is typed.
+        assert_eq!(pills("budget from:", Some(12)), [Pill { range: 7..12, key: 7..12 }]);
         // Characters, not bytes; a `-` before the keyword is in its pill.
-        assert_eq!(pills("Grüße -from:Đorđe", None), [Pill { range: 6..17, key: 7..12 }]);
-        for q in ["subject:", "re: x", "is:nothing", ""] {
+        assert_eq!(pills("Grüße -from:Đorđe", None), [Pill { range: 6..12, key: 7..12 }]);
+        for q in ["re: x", "is:nothing", "10:30", ""] {
             assert!(pills(q, None).is_empty(), "{q}");
         }
     }
@@ -119,18 +128,20 @@ mod tests {
     #[test]
     fn a_pill_is_laid_out_with_the_same_characters_and_its_keyword_marked() {
         let t = Tokens::light();
-        let q = "budget -from: stuart x";
+        let q = "budget -from: stuart smith";
         let p = pills(q, None);
         let job = layout(q, &p, egui::FontId::proportional(13.0), &t);
-        assert_eq!(job.text, "budget -From: stuart x", "only the keyword's first letter is a capital");
+        assert_eq!(job.text, "budget -From: stuart smith", "only the keyword's first letter is a capital");
         assert_eq!(job.text.chars().count(), q.chars().count(), "the cursor stands where it would");
         assert_eq!(key_color(&job, 8), Some(t.accent_text));
-        assert_eq!(key_color(&job, 15), Some(t.text));
+        assert_eq!(key_color(&job, 12), Some(t.accent_text), "the colon is in the pill");
+        assert_eq!(key_color(&job, 14), Some(t.text), "the value is text");
         assert_eq!(key_color(&job, 0), Some(t.text));
         assert!(job.keep_trailing_whitespace);
         // Nothing to mark: the text as it is.
         assert_eq!(layout("plain words", &[], egui::FontId::proportional(13.0), &t).text, "plain words");
         // Pills that don't fit the text are passed over, never a panic.
-        let _ = layout("ab", &[Pill { range: 1..9, key: 1..3 }, Pill { range: 0..1, key: 0..1 }], egui::FontId::proportional(13.0), &t);
+        let bad = [Pill { range: 1..9, key: 1..9 }, Pill { range: 0..1, key: 0..1 }, Pill { range: 1..2, key: 0..2 }];
+        assert_eq!(layout("ab", &bad, egui::FontId::proportional(13.0), &t).text.to_lowercase(), "ab");
     }
 }
