@@ -92,7 +92,7 @@ pub fn start(mailbox: &Path, args: &[String]) -> Start {
 fn start_within(mailbox: &Path, args: &[String], reach: Duration) -> Start {
     let (lock_path, info_path) = (beside(mailbox, "lock"), beside(mailbox, "instance"));
     if let Some(dir) = lock_path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        let _ = mailcraft_engine::store::create_private_dir_all(dir);
     }
     let lock = match OpenOptions::new().create(true).truncate(false).write(true).open(&lock_path) {
         Ok(f) => f,

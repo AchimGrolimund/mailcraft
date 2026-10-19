@@ -28,6 +28,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::SystemTime;
 
 use log::LevelFilter;
+use mailcraft_engine::store::{create_private_dir_all, create_private_replacing, make_private};
 
 /// The current log file's name inside the log directory.
 pub const LOG_FILE: &str = "mailcraft.log";
@@ -124,9 +125,10 @@ fn numbered(dir: &Path, n: usize) -> PathBuf {
 }
 
 /// Shift the previous logs up one (`.log` → `.1.log` → … → `.<KEEP>.log`, the oldest dropped)
-/// and create a fresh, empty log file in `dir` (created if missing).
+/// and create a fresh, empty log file in `dir` (created if missing). The folder and the file are
+/// the owner's alone on Unix (0700, 0600): a log names folders, accounts and servers.
 pub fn rotate(dir: &Path) -> std::io::Result<(PathBuf, File)> {
-    std::fs::create_dir_all(dir)?;
+    create_private_dir_all(dir)?;
     for n in (1..=KEEP).rev() {
         match std::fs::rename(numbered(dir, n - 1), numbered(dir, n)) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
@@ -134,7 +136,7 @@ pub fn rotate(dir: &Path) -> std::io::Result<(PathBuf, File)> {
         }
     }
     let path = numbered(dir, 0);
-    let file = File::create(&path)?;
+    let file = create_private_replacing(&path)?;
     Ok((path, file))
 }
 
@@ -234,6 +236,11 @@ impl AppLogger {
     /// Rotate the logs in `dir` and send records to the fresh file; returns its path. On an error
     /// standard error stays the only sink.
     pub fn attach_dir(&self, dir: &Path) -> Result<PathBuf, String> {
+        // A folder an earlier version left open to others is closed: best effort, a log is no
+        // reason not to start. (Said before the sink is taken, which saying something takes too.)
+        if let Err(e) = make_private(dir) {
+            log::debug!("the log folder was not made private: {e}");
+        }
         // A thread that panicked while logging leaves the sink usable: take it back.
         let mut sink = self.sink.lock().unwrap_or_else(PoisonError::into_inner);
         match rotate(dir) {
@@ -464,6 +471,25 @@ mod tests {
         assert_eq!(read(&dir.join("mailcraft.1.log")), "run 3");
         assert_eq!(read(&dir.join("mailcraft.2.log")), "run 2");
         assert!(!dir.join("mailcraft.3.log").exists(), "only {KEEP} old logs are kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A log names folders, accounts and servers: the folder and the file are the owner's alone,
+    /// and a folder an earlier version left open to others is closed.
+    #[cfg(unix)]
+    #[test]
+    fn the_logs_are_the_owners_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &Path| std::fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+        let dir = temp_dir("private");
+        let logger = AppLogger::new(Filter::parse(""), false);
+        let path = logger.attach_dir(&dir).expect("attach");
+        assert_eq!((mode(&dir), mode(&path)), (0o700, 0o600));
+        // As an earlier version left them: the folder and the last log open to others.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("open the folder");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("open the file");
+        let path = logger.attach_dir(&dir).expect("attach again");
+        assert_eq!((mode(&dir), mode(&path)), (0o700, 0o600));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

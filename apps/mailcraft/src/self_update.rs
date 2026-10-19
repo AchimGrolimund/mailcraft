@@ -174,7 +174,8 @@ fn read_json(path: &Path) -> Option<Value> {
 /// Written whole beside and renamed over.
 fn write_json(path: &Path, value: &Value) -> io::Result<()> {
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
+        // (The settings folder, when it isn't there yet: for the owner alone.)
+        mailcraft_engine::store::create_private_dir_all(dir)?;
     }
     let mut part = path.as_os_str().to_os_string();
     part.push(".part");
@@ -259,7 +260,7 @@ pub fn settle(folders: &Folders, running: &str) {
 static HELD: OnceLock<File> = OnceLock::new();
 
 fn open_lock(folders: &Folders) -> io::Result<File> {
-    fs::create_dir_all(&folders.root)?;
+    mailcraft_engine::store::create_private_dir_all(&folders.root)?;
     fs::OpenOptions::new().create(true).truncate(false).write(true).open(folders.lock())
 }
 

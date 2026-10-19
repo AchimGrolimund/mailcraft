@@ -1,6 +1,6 @@
 # Threat model
 
-> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-16 · **Change:** minor (pinned build tools, build provenance; release signing in a protected environment) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-19 · **Change:** minor (the settings folder, logs and kept pictures are the owner's alone) · **Target:** Microsoft Outlook (Microsoft 365)
 
 What MailCraft protects, from whom, and how, with the code that does it. Rules for working in the
 code are in [`CLAUDE.md`](../CLAUDE.md) and [`AGENTS.md`](../AGENTS.md); how to report a
@@ -91,7 +91,10 @@ An `.eml`, `.mbox`, `.ics`, `.vcf` or `.mailcraft` file from somewhere else.
 ### Other programs and users on the same computer
 
 - **Files are the owner's alone:** on Unix the mailbox file and its message content are created
-  0600 and their folders 0700 (`crates/engine/src/store.rs`); on Windows they live in the owner's
+  0600 and their folders 0700 (`crates/engine/src/store.rs`), and so are the settings folder, the
+  logs and the pictures kept from the web (`apps/mailcraft/src/logging.rs`,
+  `apps/mailcraft/src/picture_cache.rs`); a settings, log or picture folder that an earlier version
+  left open to others is closed when MailCraft next uses it. On Windows they live in the owner's
   profile.
 - **Secrets are in the operating system's credential store** (Windows Credential Manager, the macOS
   keychain, the Secret Service: GNOME Keyring, KWallet; `apps/mailcraft/src/secrets.rs`), never in
@@ -145,6 +148,7 @@ A malicious or vulnerable dependency, GitHub Action or build step.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-19 | minor | The settings folder, the logs and the pictures kept from the web are created for the owner alone on Unix (0700, 0600); open ones from earlier versions are closed |
 | 2026-10-16 | minor | Release signing in the protected `release` environment; draft releases |
 | 2026-10-16 | minor | Pinned build tools with checksums; build provenance for release files |
 | 2026-10-15 | major | First version: assets, adversaries, mechanisms with their files, known limits |
