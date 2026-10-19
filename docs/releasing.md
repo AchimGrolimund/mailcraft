@@ -1,6 +1,6 @@
 # Releasing MailCraft
 
-> **Last reviewed:** 2026-10-18 · **Last updated:** 2026-10-18 · **Change:** minor (how a copy that updates itself installs a release; `DISABLEAUTOMATICUPDATES=1`; MailCraft's own release signature: `SHA256SUMS.txt.sig`, the `MAILCRAFT_RELEASE_KEY` secret, `cargo xtask release-key`) · **Status:** releases v0.1.0 to v0.4.2 were built and published by `release.yml` and `package.yml` on GitHub's runners, for every platform in the table below; none is signed yet (gap #18), neither by the operating systems' signatures nor by MailCraft's own (no release key is set yet).
+> **Last reviewed:** 2026-10-19 · **Last updated:** 2026-10-19 · **Change:** minor (what to do when a release key leaks: there is no taking it back from copies already out) · **Status:** releases v0.1.0 to v0.4.2 were built and published by `release.yml` and `package.yml` on GitHub's runners, for every platform in the table below; none is signed yet (gap #18), neither by the operating systems' signatures nor by MailCraft's own (no release key is set yet).
 
 The canonical recipe is [craftrules `release/playbook.md`](https://github.com/storytold/craftrules/blob/main/release/playbook.md);
 this file has the MailCraft specifics. The scripts in `packaging/` are WordCraft's with MailCraft's
@@ -59,7 +59,9 @@ Such a file is installed when the owner presses Restart to update or quits: on W
 Installer (`msiexec /i <file> /passive /norestart`, from a copy of the program in the data folder
 once MailCraft has gone), on macOS by attaching the disk image read-only and swapping the app (it
 must pass `codesign --verify` when the running app is signed), and for an AppImage by renaming the
-new file over the old. So a release's packages must keep their names
+new file over the old. Windows Installer and `hdiutil` are given a copy of the file in a folder
+made for it alone, checked against the signed list's SHA-256 as it is opened, never the download
+itself. So a release's packages must keep their names
 (`mailcraft-<version>-<os>-<arch>.<ext>`), the `.dmg` must hold the app at its top, and the `.msi`
 must keep its `UpgradeCode` and `AllowDowngrades` (going back installs the older `.msi` over the
 newer). An organisation installs the `.msi` with `DISABLEAUTOMATICUPDATES=1` to turn updating by
@@ -81,9 +83,27 @@ itself off for every user of the computer.
   such a release has no `.sig`, and no copy of MailCraft installs it by itself.
 - **Checking by hand:** the signature is a plain ed25519 signature over the bytes of
   `SHA256SUMS.txt`; any ed25519 tool verifies it with the public key from `RELEASE_KEYS`.
-- **A lost or stolen key:** a release signed with the spare that drops the old key from
-  `RELEASE_KEYS` (and adds a new spare), said loudly in its notes. Copies that never install that
-  release go on trusting the old key.
+- **A lost or stolen key:** there is no way to take a key back from copies already out. Every
+  copy shipped trusts both keys in its `RELEASE_KEYS` for good, and asks nobody whether one of
+  them has been withdrawn, so whoever holds a leaked key can sign a release those copies will
+  install, for as long as they run. When the key in use leaks (or may have):
+  1. Take `MAILCRAFT_RELEASE_KEY` out of the `release` environment at once, and put the spare in
+     its place; the leaked key never signs again.
+  2. Make a new spare (`cargo xtask release-key new <another folder>`; keep its private half
+     offline as before), and set `RELEASE_KEYS` to the old spare and the new one, dropping the
+     leaked key.
+  3. Ship that as a release straight away, signed with the old spare, said loudly in its notes:
+     which key leaked (its public key) and from when.
+  4. Tell owners, on the release page, the website and wherever else they listen, to update by
+     hand from the release page rather than wait for the copy to do it, and to check what they
+     download: its SHA-256 against `SHA256SUMS.txt`, the signature against the new public keys,
+     and the build provenance (`gh attestation verify`, below). A copy that has installed this
+     release no longer trusts the leaked key.
+
+  Copies that never install that release, by hand or by themselves, go on trusting the leaked
+  key; nothing can be done about them from here. When the spare leaks, the same steps, keeping
+  the key in use and replacing the spare. When both leak, the release that drops them can't be
+  signed by a key the copies out there trust: owners can only be told to install it by hand.
 
 Every file of a release also gets a build provenance attestation (`actions/attest-build-provenance`):
 a signed statement, kept by GitHub outside the release, of the workflow run and commit that made
@@ -185,6 +205,7 @@ and in the Flatpak (which is granted `org.freedesktop.secrets` for it).
 
 | Date | Change |
 |---|---|
+| 2026-10-19 | A leaked release key: copies already out trust both keys for good; moving to the spare, a release that drops the leaked key, owners told to update by hand and check what they download |
 | 2026-10-18 | How a copy that updates itself installs a release (Windows Installer, the disk image, the AppImage), what the packages must keep for it, and `DISABLEAUTOMATICUPDATES=1` |
 | 2026-10-18 | MailCraft's own release signature: `SHA256SUMS.txt.sig` made in the `release` environment with `MAILCRAFT_RELEASE_KEY`, `cargo xtask release-key new` and `sign`, `packaging/sign-sums.sh`; the dry run's checksums |
 | 2026-10-16 | Status as it is: v0.1.0 to v0.4.1 published by `release.yml` and `package.yml`, unsigned; riscv64 and the Flathub manifest out of the table (neither is built); what the runners check on every release |

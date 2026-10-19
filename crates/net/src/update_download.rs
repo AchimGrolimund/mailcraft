@@ -182,6 +182,15 @@ pub fn verify(sums: &[u8], signature: &[u8], keys: &[[u8; 32]]) -> Result<Sums, 
     parse_sums(sums).ok_or_else(|| refused("the release's list of checksums isn't one"))
 }
 
+/// A file downloaded and checked: where it is, and the SHA-256 the signed list gives for it. That
+/// digest, and never one worked out again from the file, is what it is checked against later:
+/// the file may have been changed since.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Downloaded {
+    pub path: PathBuf,
+    pub sha256: [u8; 32],
+}
+
 /// Where and how files may be downloaded from.
 pub(crate) struct Reach<'a> {
     /// Whether an address may be asked.
@@ -197,10 +206,10 @@ fn on_github(url: &Url) -> bool {
 }
 
 /// Download file `name` of `release` into `dir` (the data folder's `updates/`), check it against
-/// the release's signed list, and give where it is. It is downloaded whole, carried on where an
+/// the release's signed list, and give where it is and the signed SHA-256. It is downloaded whole, carried on where an
 /// earlier try stopped; one already there and checked is not downloaded again. Every other file
 /// in `dir` is deleted. Blocks for as long as the download takes; call it on a background thread.
-pub fn download(release: &Release, name: &str, dir: &Path) -> Result<PathBuf, DownloadError> {
+pub fn download(release: &Release, name: &str, dir: &Path) -> Result<Downloaded, DownloadError> {
     let reach = Reach {
         allowed: &on_github,
         large: StreamPatience { connect: Duration::from_secs(10), idle: Duration::from_secs(30), total: Duration::from_secs(3_600) },
@@ -212,13 +221,13 @@ pub fn download(release: &Release, name: &str, dir: &Path) -> Result<PathBuf, Do
 /// [`download`] from a stand-in release server on this machine (`http://127.0.0.1:…`), trusting
 /// `keys` rather than the build's: for the tests of the crates that sit on this one.
 #[cfg(feature = "stand-in")]
-pub fn download_from_stand_in(release: &Release, name: &str, dir: &Path, keys: &[[u8; 32]]) -> Result<PathBuf, DownloadError> {
+pub fn download_from_stand_in(release: &Release, name: &str, dir: &Path, keys: &[[u8; 32]]) -> Result<Downloaded, DownloadError> {
     let loopback = |url: &Url| crate::transport::is_loopback(&url.host);
     let quick = StreamPatience { connect: Duration::from_secs(5), idle: Duration::from_secs(5), total: Duration::from_secs(20) };
     download_with(release, name, dir, keys, &Reach { allowed: &loopback, large: quick, small: quick })
 }
 
-pub(crate) fn download_with(release: &Release, name: &str, dir: &Path, keys: &[[u8; 32]], reach: &Reach<'_>) -> Result<PathBuf, DownloadError> {
+pub(crate) fn download_with(release: &Release, name: &str, dir: &Path, keys: &[[u8; 32]], reach: &Reach<'_>) -> Result<Downloaded, DownloadError> {
     if keys.is_empty() {
         return Err(refused("this build carries no release key"));
     }
@@ -242,7 +251,7 @@ pub(crate) fn download_with(release: &Release, name: &str, dir: &Path, keys: &[[
     tidy(dir, &[done.as_path(), part.as_path()]);
     if done.is_file() {
         if sha256(&done).is_some_and(|d| d == digest) {
-            return Ok(done);
+            return Ok(Downloaded { path: done, sha256: digest });
         }
         let _ = fs::remove_file(&done);
     }
@@ -259,7 +268,7 @@ pub(crate) fn download_with(release: &Release, name: &str, dir: &Path, keys: &[[
         return Err(refused("the file's checksum isn't the one the signed list gives"));
     }
     fs::rename(&part, &done).map_err(|e| failed(&format!("the download couldn't be put in place: {}", e.kind())))?;
-    Ok(done)
+    Ok(Downloaded { path: done, sha256: digest })
 }
 
 /// Delete every file in `dir` but `keep`: what is left of an older version's download.
@@ -277,11 +286,16 @@ fn tidy(dir: &Path, keep: &[&Path]) {
 /// The SHA-256 of a file's bytes; `None` when it can't be read through. A copy that updates
 /// itself checks a download with it again right before installing it.
 pub fn sha256(path: &Path) -> Option<[u8; 32]> {
-    let mut file = File::open(path).ok()?;
+    sha256_of(&mut File::open(path).ok()?)
+}
+
+/// The SHA-256 of what is read from `reader`, to its end; `None` when it can't be read through.
+/// For a file kept open from its check to its use, so that what was checked is what is used.
+pub fn sha256_of(reader: &mut dyn Read) -> Option<[u8; 32]> {
     let mut context = ring::digest::Context::new(&ring::digest::SHA256);
     let mut buf = vec![0u8; 64 * 1024];
     loop {
-        match file.read(&mut buf) {
+        match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => context.update(buf.get(..n)?),
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
@@ -550,8 +564,16 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("mailcraft-9.9.8-linux-x86_64.AppImage.part"), b"an older one").unwrap();
         let got = download_with(&release(&r.server, file.len() as u64), NAME, &dir, &[public(&pair)], &reach()).unwrap();
-        assert_eq!(got, dir.join(NAME));
-        assert_eq!(fs::read(&got).unwrap(), file);
+        assert_eq!(got.path, dir.join(NAME));
+        assert_eq!(fs::read(&got.path).unwrap(), file);
+        // The digest given is the signed list's, not one worked out from the file afterwards:
+        // the file changed once it is in place doesn't change it.
+        let signed_digest = parse_sums(&r.stand.lock().unwrap().sums).unwrap().digest(NAME).unwrap();
+        assert_eq!(got.sha256, signed_digest);
+        fs::write(&got.path, b"changed after the download").unwrap();
+        assert_eq!(got.sha256, signed_digest);
+        assert_ne!(sha256(&got.path), Some(got.sha256));
+        fs::write(&got.path, &file).unwrap();
         // What was there of another version is gone; nothing else is left.
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         // Asked again: the list and its signature, and not the file.
@@ -624,7 +646,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(NAME), b"tampered").unwrap();
         let got = download_with(&release(&r.server, file.len() as u64), NAME, &dir, &[public(&pair)], &reach()).unwrap();
-        assert_eq!(fs::read(got).unwrap(), file);
+        assert_eq!(fs::read(got.path).unwrap(), file);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -671,7 +693,7 @@ mod tests {
         // The next try asks for the rest, and gets it.
         r.stand.lock().unwrap().cut_at = None;
         let got = download_with(&release(&r.server, size), NAME, &dir, &[public(&pair)], &reach()).unwrap();
-        assert_eq!(fs::read(&got).unwrap(), file);
+        assert_eq!(fs::read(&got.path).unwrap(), file);
         let last = r.server.request(r.server.asked() - 1);
         assert!(last.contains("Range: bytes=20000-"), "{last}");
         assert!(!part.exists());
@@ -684,7 +706,7 @@ mod tests {
         assert!(download_with(&release(&r.server, size), NAME, &dir, &[public(&pair)], &reach()).is_err());
         r.stand.lock().unwrap().cut_at = None;
         let got = download_with(&release(&r.server, size), NAME, &dir, &[public(&pair)], &reach()).unwrap();
-        assert_eq!(fs::read(&got).unwrap(), file);
+        assert_eq!(fs::read(&got.path).unwrap(), file);
         // A part as long as the whole file that is not the file.
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -706,7 +728,7 @@ mod tests {
         let r = signed(&pair, &file, |s| s.redirect = Some(format!("http://127.0.0.1:{{port}}/cdn/{NAME}")));
         let dir = scratch("redirect");
         let got = download_with(&release(&r.server, file.len() as u64), NAME, &dir, &[public(&pair)], &reach()).unwrap();
-        assert_eq!(fs::read(got).unwrap(), file);
+        assert_eq!(fs::read(got.path).unwrap(), file);
         // Somewhere else: refused, and nothing asked of it.
         let _ = fs::remove_dir_all(&dir);
         for elsewhere in ["https://evil.example/x", "http://192.0.2.1/x", "javascript:alert(1)", "/relative", ""] {

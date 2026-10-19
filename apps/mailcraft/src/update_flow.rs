@@ -94,7 +94,7 @@ fn window(found: Release, trusted: [u8; 32], dir: &Path) -> MailApp {
             let dir = dir.clone();
             std::thread::spawn(move || {
                 let fetch = |r: &Release, name: &str, d: &Path| mailcraft_net::update_download::download_from_stand_in(r, name, d, &[trusted]);
-                let _ = tx.send(super::updater::download(&release, Install::AppImage, &dir, fetch));
+                let _ = tx.send(super::updater::download(&release, Install::AppImage, &dir, fetch).map(|v| v.path));
             });
             rx
         })),
