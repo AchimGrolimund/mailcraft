@@ -1,6 +1,6 @@
 # Contributors in the About window
 
-> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-19 · **Change:** minor (AI help credited by a plain line, no trailer) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-19 · **Change:** minor (About ▸ Testers, from `contributors/testers.toml`) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
 
 **About ▸ Contributors** credits everyone who contributed to MailCraft. This follows the shared
 craftrules standard
@@ -51,7 +51,39 @@ as WordCraft does; this page is the local copy of the decision.
 - The About window is `Dialog::About` in `crates/ui-egui/src/dialogs.rs` (Help › About MailCraft;
   File › About › Show Contributors). Its Contributors tab is `crates/ui-egui/src/credits.rs`.
 - From the control channel: `ui.dialog {"name": "contributors"}` (or `{"name": "about", "tab":
-  "contributors"}`) opens the tab; `ui.inspect` then names the dialog `contributors`.
+  "contributors"}`) opens the tab; `ui.inspect` then names the dialog `contributors`. The same
+  with `testers` opens About ▸ Testers.
+
+## Testers
+
+**About ▸ Testers** thanks, by name, the testers who said yes to being credited. A tester is
+someone who has used a MailCraft release on their own mail and reported what went wrong; signing
+up alone doesn't count. Anyone who also contributes code is credited in both tabs.
+
+- **Consent.** A tester says yes by ticking "Credit me in About › Testers" in the
+  [sign-up form](../.github/ISSUE_TEMPLATE/tester-signup.yml), or by saying so in their sign-up
+  issue. The number of that issue is recorded with their entry, for the maintainers' audit; it is
+  never shown or built into the program.
+- **A maintainer adds the entry by hand** to
+  [`contributors/testers.toml`](../contributors/testers.toml), once the tester has tested a
+  release. It is compiled in by `crates/ui-egui/build.rs` as the other two files are, and read as
+  hostile in the same way: a bad or repeated username is left out, a date that isn't a day is no
+  date, at most 10,000 testers are built in, and a malformed or missing file never fails a build
+  (it warns, and the tab says nobody is credited yet).
+- **Fields**, one table per tester:
+
+  ```toml
+  [testers.their-github-username]  # 1–39 letters, digits and hyphens
+  display_name = "Nickname"        # optional; trimmed, no control characters, at most 100 characters
+  since = 2026-10-19               # the day they qualified as a tester
+  consent = 11                     # the issue where they said yes; an entry without one is left out
+  ```
+
+- **Shown** as the display name, else `@username`, each linking to the GitHub profile (opened
+  only when clicked), earliest `since` first (no date last), then by username. No statistics and
+  no sorting.
+- **Removal.** Delete the entry. Later releases leave the tester out; copies already published
+  keep the name.
 
 ## Credit yourself
 
@@ -89,3 +121,4 @@ Commit the updated `contributors/contributors.json`. Git author names and emails
 |---|---|---|
 | 2026-10-15 | major | First version (D2): About ▸ Contributors, no Models tab |
 | 2026-10-19 | minor | AI help credited by the line "Human-reviewed, AI-assisted, nobody's mailbox harmed." rather than a `Co-Authored-By` trailer |
+| 2026-10-19 | minor | Testers: About ▸ Testers, `contributors/testers.toml`, consent recorded by issue number |

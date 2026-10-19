@@ -1,0 +1,16 @@
+# Testers credited in About › Testers (docs/contributors.md, "Testers").
+#
+# A tester is someone who has used a MailCraft release on their own mail and reported what went
+# wrong. Signing up alone doesn't count. Only a tester who said yes to being credited, in their
+# sign-up issue or in a comment on it, is added, and a maintainer adds them by hand, recording the
+# number of that issue in consent.
+#
+# Copy this block, replacing your-github-username:
+#
+#   [testers.your-github-username]
+#   display_name = "Nickname"      # optional: shown instead of @your-github-username
+#   since = 2026-10-19             # the day they qualified as a tester (YYYY-MM-DD)
+#   consent = 11                   # the issue where they said yes; kept for audit, never shown
+#
+# An entry without consent is left out. To remove a tester, delete their entry: later releases
+# leave them out, but copies already published keep the name.
