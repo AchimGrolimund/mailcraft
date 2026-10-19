@@ -6,4 +6,4 @@ xtask = "run --package xtask --"
 # registration (multitenant, personal accounts too, public client with the redirect URI
 # http://localhost). An identifier, not a secret; it is compiled into the desktop app and the CLI
 # as the default. Set the variable yourself to build with another registration.
-MAILCRAFT_MS_CLIENT_ID = "9d3f1e86-4dc3-4061-a8b9-00d51c0bdaa5"
+MAILCRAFT_MS_CLIENT_ID = "6e83816e-f26c-455a-9253-494b784e61fa"
