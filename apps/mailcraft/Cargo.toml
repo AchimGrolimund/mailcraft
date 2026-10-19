@@ -51,6 +51,21 @@ winresource = "0.1"
 fmv-macos-events = "=0.1.0"
 # The macOS keychain (the owner's login keychain), for the credential store below.
 apple-native-keyring-store = { version = "1", features = ["keychain"] }
+# Desktop alerts through the UserNotifications framework (`alerts.rs`), through the generated
+# bindings' safe calls only. objc2, its Foundation and block2 are already in the tree (the GUI
+# stack's); the UserNotifications bindings are the same project's (MIT, Zlib or Apache-2.0).
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSBundle", "NSError", "NSString"] }
+block2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "UNUserNotificationCenter",
+    "UNNotificationContent",
+    "UNNotificationRequest",
+    "UNNotificationSound",
+    "UNNotificationTrigger",
+] }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 # A password or sign-in the owner asks to be remembered goes to the operating system's credential
@@ -65,6 +80,9 @@ windows-native-keyring-store = "1.1"
 # Two registry values read, never written: where the `.msi` put the program (whether this copy
 # updates itself) and an organisation's policy that turns updating off (`install.rs`, `updater.rs`).
 winreg = "0.55"
+# Desktop alerts as toasts (`alerts.rs`): Windows.UI.Notifications and the XML they are made of.
+# Already in the tree (the GUI stack's), the same version; only these features are added.
+windows = { version = "0.62", features = ["Foundation", "Data_Xml_Dom", "UI_Notifications"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 # On Linux and FreeBSD the store is the desktop's Secret Service (GNOME Keyring, KWallet,
