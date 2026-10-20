@@ -92,7 +92,7 @@ passes; each is checked by testers' reports and GitHub issues, not by estimate. 
 | B6 | Accepting and declining a meeting; reminders come up as system notifications while MailCraft runs | In progress: meetings are answered from the reading pane and the calendar; desktop alerts (R7.1, 0.5.2) seen on Linux; Windows and macOS still to be seen ([#25](https://github.com/UCS-Care-Group/mailcraft/issues/25)) |
 | B7 | Every account in step with Outlook on the web, checked by each tester at the end | Built: Microsoft accounts are kept in step through Microsoft Graph (R3); R3.8, no IMAP or SMTP left for a Microsoft account, waits on testers ([#19](https://github.com/UCS-Care-Group/mailcraft/issues/19)); the check is the beta run's last step |
 | B8 | Accounts of up to 200,000 messages: open under 3 s, a save under 1 s, under 1 GB of memory, measured on the reference machine and reported by testers | Met on the reference machine (R6.4, R6.2: open 1.5 s, a save 8 ms, at most 849 MB with a search); testers' reports to come |
-| B9 | Sign-ins remembered on every beta platform | In progress: Windows and macOS done; Linux through the Secret Service (R5), across a restart on GNOME and KDE still to be seen |
+| B9 | Sign-ins remembered on every beta platform | In progress: built for Windows and macOS, not yet seen there by a tester; Linux through the Secret Service (R5), across a restart on GNOME and KDE still to be seen |
 | B10 | The Windows and macOS builds signed; the Microsoft registration publisher-verified | In progress: publisher verification under way; signing the Windows and macOS builds not started |
 
 ## What stands between here and beta
