@@ -203,7 +203,7 @@ impl When {
         if self.all_day {
             let last = self.end.add_minutes(-1).date.max(first);
             let days = if last == first { long(first) } else { format!("{} – {}", long(first), long(last)) };
-            return format!("{days} ({})", tl!("all day"));
+            return crate::i18n::fmt(tl!("{days} (all day)"), &[("days", &days)]);
         }
         let (from, to) = (clock(self.start, twelve_hour), clock(self.end, twelve_hour));
         if first == last { format!("{} {from} – {to}", long(first)) } else { format!("{} {from} – {} {to}", long(first), long(last)) }
@@ -495,7 +495,9 @@ fn button(ui: &mut Ui, t: &Tokens, icon: &str, label: &str, checked: bool, menu:
     main.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     let more = menu.then(|| {
         let more = ui.interact(Rect::from_min_max(pos2(main_rect.max.x, rect.min.y), rect.max), id.with("menu"), Sense::click());
-        more.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{label}: {}", tl!("more ways to answer"))));
+        more.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, crate::i18n::fmt(tl!("{answer}: more ways to answer"), &[("answer", label)]))
+        });
         more
     });
     let p = ui.painter();
@@ -575,7 +577,7 @@ fn names(people: &[Person], count: usize) -> String {
     }
     match count.saturating_sub(people.len()) {
         0 => out,
-        more => format!("{out} {}", crate::i18n::fmt(tl!("and {n} more"), &[("n", &more.to_string())])),
+        more => crate::i18n::fmt(tl!("{names} and {n} more"), &[("names", &out), ("n", &more.to_string())]),
     }
 }
 
@@ -588,13 +590,13 @@ fn listed(slots: &[&Slot], twelve_hour: bool) -> String {
             (false, Some(start), Some(end)) => {
                 format!("{title} ({} – {})", crate::dates::clock(start, twelve_hour), crate::dates::clock(end, twelve_hour))
             }
-            _ => format!("{title} ({})", tl!("all day")),
+            _ => crate::i18n::fmt(tl!("{title} (all day)"), &[("title", &title)]),
         }
     };
     let shown: Vec<String> = slots.iter().take(3).map(one).collect();
     match slots.len().saturating_sub(shown.len()) {
         0 => shown.join("; "),
-        more => format!("{} {}", shown.join("; "), crate::i18n::fmt(tl!("and {n} more"), &[("n", &more.to_string())])),
+        more => crate::i18n::fmt(tl!("{names} and {n} more"), &[("names", &shown.join("; ")), ("n", &more.to_string())]),
     }
 }
 
@@ -1027,11 +1029,13 @@ fn details(app: &MailApp, ui: &mut Ui, t: &Tokens, info: &Info, when: Option<&Wh
         row(ui, t, tl!("Calendar"), tl!("Nothing else is on your calendar at that time."), 1, width);
     }
     if !taking.is_empty() {
-        row(ui, t, tl!("Calendar"), &format!("{} {}", tl!("At the same time:"), listed(&taking, twelve_hour)), 2, width);
+        let said = crate::i18n::fmt(tl!("At the same time: {items}"), &[("items", &listed(&taking, twelve_hour))]);
+        row(ui, t, tl!("Calendar"), &said, 2, width);
     }
     if !beside.is_empty() {
         let name = if taking.is_empty() { tl!("Calendar") } else { "" };
-        row(ui, t, name, &format!("{} {}", tl!("Right before or after:"), listed(&beside, twelve_hour)), 2, width);
+        let said = crate::i18n::fmt(tl!("Right before or after: {items}"), &[("items", &listed(&beside, twelve_hour))]);
+        row(ui, t, name, &said, 2, width);
     }
 }
 

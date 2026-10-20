@@ -1502,7 +1502,10 @@ pub(crate) fn work_hours_option(app: &mut MailApp, ui: &mut Ui) {
     let mut in_order = theirs.days.clone();
     in_order.sort_by_key(|day| (i64::from(day.index()) - first).rem_euclid(7));
     let days: Vec<&str> = in_order.iter().take(7).map(|day| tl!(day.short())).collect();
-    let mut said = format!("{} {} · {} – {}", tl!("Your mailbox has:"), days.join(", "), clock(theirs.start), clock(theirs.end));
+    let mut said = crate::i18n::fmt(
+        tl!("Your mailbox has: {days} · {from} – {to}"),
+        &[("days", &days.join(", ")), ("from", &clock(theirs.start)), ("to", &clock(theirs.end))],
+    );
     if !theirs.zone.is_empty() {
         said.push_str(&format!(" ({})", clip_text(&theirs.zone, 64)));
     }
@@ -3257,7 +3260,11 @@ fn tab_strip(app: &mut MailApp, ui: &mut Ui, blocks: &Blocks, panes: &[PaneView]
             // The calendar being worked in has its name the heavier.
             let font = if tab.id == current { semibold(12.0) } else { medium(12.0) };
             paint_clipped(&p, pos2(text_left, rect.center().y), text_right - text_left, name, font, ink);
-            let tip = if tab.read_only { format!("{name} · {}", tl!("This calendar can only be read")) } else { name.to_string() };
+            let tip = if tab.read_only {
+                crate::i18n::fmt(tl!("{calendar} · This calendar can only be read"), &[("calendar", name)])
+            } else {
+                name.to_string()
+            };
             if resp.on_hover_text(tip).clicked() {
                 let _ = app.run("view.frontCalendar", json!({"calendar": tab.id}));
             }

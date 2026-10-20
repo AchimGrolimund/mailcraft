@@ -323,7 +323,7 @@ fn day_strip(app: &MailApp, ui: &Ui, rect: Rect, day: Date, span: Option<(DateTi
     let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
     p.rect(rect, 4.0, t.surface, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
     let head = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.min.y + 20.0));
-    let label = format!("{}: {}", tl!("Your calendar"), crate::dates::long(day));
+    let label = crate::i18n::fmt(tl!("Your calendar: {day}"), &[("day", &crate::dates::long(day))]);
     paint_clipped(&p, pos2(head.min.x + 8.0, head.center().y), head.width() - 16.0, &label, semibold(11.0), t.text_dim);
     p.line_segment([pos2(rect.min.x, head.max.y), pos2(rect.max.x, head.max.y)], Stroke::new(1.0, t.border));
     let grid = Rect::from_min_max(pos2(rect.min.x, head.max.y), rect.max);
@@ -487,7 +487,7 @@ impl ForwardMeeting {
             tl!("Name who it is to go to. Nobody is written to until you press Send.").to_string()
         } else {
             let list = if more > 0 {
-                format!("{} {}", names.join(", "), crate::i18n::fmt(tl!("and {n} more"), &[("n", &more.to_string())]))
+                crate::i18n::fmt(tl!("{names} and {n} more"), &[("names", &names.join(", ")), ("n", &more.to_string())])
             } else {
                 names.join(", ")
             };

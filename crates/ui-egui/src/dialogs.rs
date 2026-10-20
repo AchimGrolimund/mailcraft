@@ -294,21 +294,21 @@ pub fn confirmation(app: &MailApp, id: &str, params: &Value) -> Option<Question>
             if mb.count(f.id) == 0 {
                 return None;
             }
-            let text = format!("{} \"{}\" {}{}", tl!("Everything in"), f.name, tl!("will be deleted for good."), server_too(on_server(f.account)));
+            let everything = crate::i18n::fmt(tl!("Everything in \"{folder}\" will be deleted for good."), &[("folder", crate::nav::folder_name(f))]);
+            let text = format!("{everything}{}", server_too(on_server(f.account)));
             question(tl!("Empty Folder"), text, tl!("Empty"))
         }
         "folder.delete" => {
             let f = folder("id")?;
-            let text = format!("{} \"{}\" {}", tl!("The folder"), f.name, tl!("and everything in it will be deleted."));
+            let text =
+                crate::i18n::fmt(tl!("The folder \"{folder}\" and everything in it will be deleted."), &[("folder", crate::nav::folder_name(f))]);
             question(tl!("Delete Folder"), text, tl!("Delete"))
         }
         "account.remove" => {
             let a = mb.account(params.get("id").and_then(Value::as_u64)?)?;
-            let text = format!(
-                "{} {} {}",
-                a.email,
-                tl!("and the mail kept for it on this device will be removed."),
-                tl!("Mail on the server is not touched.")
+            let text = crate::i18n::fmt(
+                tl!("{address} and the mail kept for it on this device will be removed. Mail on the server is not touched."),
+                &[("address", &a.email)],
             );
             // (The shared mailboxes opened through it go with it, #70.)
             let shared = mb.shared_mailboxes(a.id).len();
@@ -900,7 +900,7 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
             let mut submit = false;
             let open = window(ctx, title, 380.0, |ui| {
                 if let FolderMode::New { parent } = mode {
-                    let place = parent.map(|p| app.session.mailbox.folder_path(p)).unwrap_or_else(|| tl!("the top level").to_string());
+                    let place = parent.map(|p| crate::nav::folder_path(&app.session.mailbox, p)).unwrap_or_else(|| tl!("the top level").to_string());
                     ui.label(egui::RichText::new(crate::i18n::fmt(tl!("In {place}"), &[("place", &place)])).color(t.text_dim));
                 }
                 let resp = ui.add(egui::TextEdit::singleline(name).hint_text(tl!("Folder name")).desired_width(f32::INFINITY));
