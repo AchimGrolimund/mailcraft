@@ -247,7 +247,7 @@ Calendar|Manage Calendars|Add Calendar|calendar.addCalendar
 Calendar|Manage Calendars|Delete Calendar|calendar.removeCalendar
 Calendar|Manage Calendars|Show Calendar|calendar.showCalendar
 Calendar|Manage Calendars|Calendar Groups|calendar.groups
-Calendar|Manage Calendars|Overlay Mode|calendar.overlay
+Calendar|Manage Calendars|Overlay Mode|view.overlay
 Calendar|Share|Email Calendar|calendar.email
 Calendar|Share|Share Calendar|calendar.share
 Calendar|Share|Publish Online|calendar.publish
@@ -261,7 +261,7 @@ Appointment|Actions|Delete Occurrence|calendar.delete
 Appointment|Actions|Forward|calendar.forward
 Appointment|Actions|Save as iCalendar|file.exportCalendar
 Appointment|Actions|Copy to My Calendar|calendar.copy
-Appointment|Show|Scheduling Assistant|calendar.scheduling
+Appointment|Show|Scheduling Assistant|calendar.freeBusy
 Appointment|Show|Tracking|calendar.tracking
 Appointment|Attendees|Invite Attendees|calendar.edit
 Appointment|Attendees|Cancel Meeting|calendar.cancel
