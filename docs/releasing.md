@@ -1,6 +1,6 @@
 # Releasing MailCraft
 
-> **Last reviewed:** 2026-10-18 · **Last updated:** 2026-10-19 · **Change:** minor (what to do when a release key leaks: there is no taking it back from copies already out; v0.5.0, the first release with MailCraft's own signature; how a copy that updates itself installs a release; `DISABLEAUTOMATICUPDATES=1`; MailCraft's own release signature: `SHA256SUMS.txt.sig`, the `MAILCRAFT_RELEASE_KEY` secret, `cargo xtask release-key`) · **Status:** releases v0.1.0 to v0.5.0 were built and published by `release.yml` and `package.yml` on GitHub's runners, for every platform in the table below; v0.5.0 is the first with MailCraft's own release signature (`SHA256SUMS.txt.sig`, verified by the in-use key), and none is signed by the operating systems' signatures yet (gap #18).
+> **Last reviewed:** 2026-10-18 · **Last updated:** 2026-10-20 · **Change:** minor (one pinned Rust version, 1.98.1, for every build; what to do when a release key leaks: there is no taking it back from copies already out; v0.5.0, the first release with MailCraft's own signature; how a copy that updates itself installs a release; `DISABLEAUTOMATICUPDATES=1`; MailCraft's own release signature: `SHA256SUMS.txt.sig`, the `MAILCRAFT_RELEASE_KEY` secret, `cargo xtask release-key`) · **Status:** releases v0.1.0 to v0.5.0 were built and published by `release.yml` and `package.yml` on GitHub's runners, for every platform in the table below; v0.5.0 is the first with MailCraft's own release signature (`SHA256SUMS.txt.sig`, verified by the in-use key), and none is signed by the operating systems' signatures yet (gap #18).
 
 The canonical recipe is [craftrules `release/playbook.md`](https://github.com/storytold/craftrules/blob/main/release/playbook.md);
 this file has the MailCraft specifics. The scripts in `packaging/` are WordCraft's with MailCraft's
@@ -176,6 +176,15 @@ packaging/linux/package.sh
 Both write to `dist/release/`. Also: `packaging/macos/package.sh --arch universal`,
 `packaging/linux/flatpak-bundle.sh` (after `package.sh`) and `packaging/web/package.sh`.
 
+## The Rust toolchain
+
+Every workflow that builds MailCraft (CI, the packages, the release, FreeBSD) uses one pinned Rust
+version, **1.98.1**, not whatever `stable` is that day, so a release built again from its tag uses
+the same compiler, with `Cargo.lock` pinning the crates and the actions pinned by commit. Fuzzing
+alone uses nightly, as cargo-fuzz needs. Moving to a newer Rust is a change of its own: replace the
+version in `.github/workflows/ci.yml`, `package.yml` and `release.yml` together, and run
+`cargo xtask ci` with it first.
+
 ## What has been checked, and what has not
 
 Checked on 2026-10-12, on a Windows 11 machine and an Ubuntu 22.04 WSL distribution:
@@ -205,6 +214,7 @@ and in the Flatpak (which is granted `org.freedesktop.secrets` for it).
 
 | Date | Change |
 |---|---|
+| 2026-10-20 | One pinned Rust version, 1.98.1, for CI, the packages and the release |
 | 2026-10-19 | v0.5.0, the first release signed with MailCraft's own release key |
 | 2026-10-19 | A leaked release key: copies already out trust both keys for good; moving to the spare, a release that drops the leaked key, owners told to update by hand and check what they download |
 | 2026-10-18 | How a copy that updates itself installs a release (Windows Installer, the disk image, the AppImage), what the packages must keep for it, and `DISABLEAUTOMATICUPDATES=1` |
