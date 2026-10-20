@@ -2,9 +2,9 @@
   "schema": 1,
   "repo": "UCS-Care-Group/mailcraft",
   "branch": "main",
-  "head": "324bc34242c2b05734a02683cd96f1830500a35a",
-  "head_date": "2026-10-20T21:07:50Z",
-  "commits": 320,
+  "head": "bd21f1d2682f3d01b7edfda99821220750ee712e",
+  "head_date": "2026-10-20T21:52:20Z",
+  "commits": 321,
   "unattributed_commits": 2,
   "contributors": [
     {
@@ -58,6 +58,19 @@
       "binary_deleted": 0,
       "first_commit": "2026-10-19T18:45:37Z",
       "last_commit": "2026-10-20T09:32:52Z"
+    },
+    {
+      "login": "mickeyr",
+      "people_entry": false,
+      "github_name": null,
+      "prs": 1,
+      "commits": 1,
+      "lines_added": 40,
+      "lines_deleted": 5,
+      "binary_added": 0,
+      "binary_deleted": 0,
+      "first_commit": "2026-10-19T21:36:26Z",
+      "last_commit": "2026-10-19T21:36:26Z"
     }
   ]
 }
