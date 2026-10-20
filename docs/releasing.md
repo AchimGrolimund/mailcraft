@@ -1,6 +1,6 @@
 # Releasing MailCraft
 
-> **Last reviewed:** 2026-10-18 · **Last updated:** 2026-10-20 · **Change:** minor (reproducible builds, checked weekly; one pinned Rust version, 1.98.1, for every build; what to do when a release key leaks: there is no taking it back from copies already out; v0.5.0, the first release with MailCraft's own signature; how a copy that updates itself installs a release; `DISABLEAUTOMATICUPDATES=1`; MailCraft's own release signature: `SHA256SUMS.txt.sig`, the `MAILCRAFT_RELEASE_KEY` secret, `cargo xtask release-key`) · **Status:** releases v0.1.0 to v0.5.0 were built and published by `release.yml` and `package.yml` on GitHub's runners, for every platform in the table below; v0.5.0 is the first with MailCraft's own release signature (`SHA256SUMS.txt.sig`, verified by the in-use key), and none is signed by the operating systems' signatures yet (gap #18).
+> **Last reviewed:** 2026-10-18 · **Last updated:** 2026-10-20 · **Change:** minor (build provenance as a file beside each release; reproducible builds, checked weekly; one pinned Rust version, 1.98.1, for every build; what to do when a release key leaks: there is no taking it back from copies already out; v0.5.0, the first release with MailCraft's own signature; how a copy that updates itself installs a release; `DISABLEAUTOMATICUPDATES=1`; MailCraft's own release signature: `SHA256SUMS.txt.sig`, the `MAILCRAFT_RELEASE_KEY` secret, `cargo xtask release-key`) · **Status:** releases v0.1.0 to v0.5.0 were built and published by `release.yml` and `package.yml` on GitHub's runners, for every platform in the table below; v0.5.0 is the first with MailCraft's own release signature (`SHA256SUMS.txt.sig`, verified by the in-use key), and none is signed by the operating systems' signatures yet (gap #18).
 
 The canonical recipe is [craftrules `release/playbook.md`](https://github.com/storytold/craftrules/blob/main/release/playbook.md);
 this file has the MailCraft specifics. The scripts in `packaging/` are WordCraft's with MailCraft's
@@ -124,6 +124,11 @@ and keeps the files as workflow artifacts (FreeBSD only when asked for: it is sl
 `SHA256SUMS.txt` as `dry-run-sums` (the signing step says "unsigned"). A dry run names no
 environment, is given no secrets and publishes nothing.
 
+
+Each release also carries `mailcraft-<version>.intoto.jsonl`: the build provenance GitHub attests
+(which workflow run, at which commit, made each file), as a file, so it can be checked without
+GitHub's command line (`gh attestation verify <file> -R UCS-Care-Group/mailcraft` does the same
+online).
 ## ArtCraft Launcher
 
 The launcher installs a Craft app from its GitHub releases, finding the right file by name
@@ -225,6 +230,7 @@ and in the Flatpak (which is granted `org.freedesktop.secrets` for it).
 
 | Date | Change |
 |---|---|
+| 2026-10-20 | Build provenance attached to each release as `mailcraft-<version>.intoto.jsonl` |
 | 2026-10-20 | Reproducible builds: the Linux app and CLI built twice in different folders and compared, weekly |
 | 2026-10-20 | One pinned Rust version, 1.98.1, for CI, the packages and the release |
 | 2026-10-19 | v0.5.0, the first release signed with MailCraft's own release key |
