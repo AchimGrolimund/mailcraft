@@ -92,8 +92,7 @@ impl Row {
 
     /// What the row says under the account's name, in one line.
     pub fn line(&self) -> String {
-        let count = |n: usize, one: &str, many: &str| i18n::fmt(if n == 1 { tl!(one) } else { tl!(many) }, &[("n", &n.to_string())]);
-        let problems = || count(self.problems.len(), "{n} problem", "{n} problems");
+        let problems = || tln!(self.problems.len(), "{n} problem", "{n} problems");
         let Some(run) = &self.run else { return problems() };
         match run.state {
             RunState::Waiting => tl!("Waiting").to_string(),

@@ -100,7 +100,7 @@ pub fn show(app: &mut MailApp, ui: &mut Ui) {
     };
     if picked > 1 {
         let r = ui.available_rect_before_wrap();
-        let text = crate::i18n::fmt(tl!("{n} items selected"), &[("n", &picked.to_string())]);
+        let text = tln!(picked, "{n} item selected", "{n} items selected");
         ui.painter().text(pos2(r.center().x, r.min.y + r.height() * 0.4), Align2::CENTER_CENTER, text, semibold(15.0), t.text_dim);
         return;
     }
@@ -397,7 +397,7 @@ fn notes(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, t: &Tokens, pictures:
     if thread.len() > 1 {
         ui.horizontal_wrapped(|ui| {
             ui.label(
-                egui::RichText::new(crate::i18n::fmt(tl!("{n} messages in this conversation:"), &[("n", &thread.len().to_string())]))
+                egui::RichText::new(tln!(thread.len(), "{n} message in this conversation:", "{n} messages in this conversation:"))
                     .font(regular(11.5))
                     .color(t.text_dim),
             );

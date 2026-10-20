@@ -1900,7 +1900,8 @@ mod event {
                                 if ui.add(egui::DragValue::new(&mut self.repeat.count).range(1..=9999).speed(0.05)).changed() {
                                     self.repeat.ends = Ends::After;
                                 }
-                                ui.label(if self.repeat.count == 1 { tl!("time") } else { tl!("times") });
+                                // (The number is in the box before it: only the word follows it.)
+                                ui.label(tln!(self.repeat.count, "time", "times"));
                             });
                             ui.horizontal(|ui| {
                                 if ui.radio(self.repeat.ends == Ends::Until, tl!("By")).clicked() {
@@ -3115,11 +3116,7 @@ mod event {
             // Other times that people invited proposed (a meeting the owner organizes).
             if self.proposals > 0 && !self.guest {
                 row(ui, tl!("Proposals"), |ui| {
-                    let words = if self.proposals == 1 {
-                        tl!("1 person proposed another time.").to_string()
-                    } else {
-                        crate::i18n::fmt(tl!("{n} people proposed another time."), &[("n", &self.proposals.to_string())])
-                    };
+                    let words = tln!(self.proposals, "{n} person proposed another time.", "{n} people proposed another time.");
                     ui.label(egui::RichText::new(words).color(t.text));
                     if ui.link(tl!("View All Proposals…")).clicked() {
                         asked = Some("proposals");
@@ -5812,11 +5809,7 @@ mod rules {
                         run = Some(("rules.run", json!({})));
                     }
                     if let Some(n) = self.ran {
-                        let found = if n == 1 {
-                            tl!("1 message matched").to_string()
-                        } else {
-                            crate::i18n::fmt(tl!("{n} messages matched"), &[("n", &n.to_string())])
-                        };
+                        let found = tln!(n, "{n} message matched", "{n} messages matched");
                         ui.label(egui::RichText::new(found).color(t.text_dim));
                     }
                 });

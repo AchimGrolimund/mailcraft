@@ -622,6 +622,11 @@ pub struct Session {
     /// host that wants it (the desktop app), never by a command's params. Off, a search reads
     /// the messages themselves, as it always does in the browser. Never saved.
     pub index_words: bool,
+    /// The language of the window the owner reads this session in, set by the host (the desktop
+    /// and the browser follow the owner's choice; the CLI and a headless MCP server leave it
+    /// English). What the engine writes for a person is to follow it; commands, their parameters
+    /// and what agents read stay English. Never saved in the mailbox file.
+    pub interface_language: mailcraft_i18n::Lang,
     /// The word index of the mailbox file, while [`Session::index_words`] is on and the mailbox
     /// is kept in a file ([`crate::words`]).
     #[cfg(not(target_arch = "wasm32"))]
@@ -712,6 +717,7 @@ impl Session {
             search_pass: None,
             searched_for: None,
             index_words: false,
+            interface_language: mailcraft_i18n::Lang::English,
             #[cfg(not(target_arch = "wasm32"))]
             words: None,
         };

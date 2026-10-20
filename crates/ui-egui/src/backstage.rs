@@ -269,11 +269,11 @@ fn info(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
         let n = |k: &str| v.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
         let line = format!(
             "{} · {} · {} · {} · {}",
-            crate::i18n::fmt(tl!("{n} messages"), &[("n", &n("messages").to_string())]),
-            crate::i18n::fmt(tl!("{n} unread"), &[("n", &n("unread").to_string())]),
-            crate::i18n::fmt(tl!("{n} contacts"), &[("n", &n("contacts").to_string())]),
-            crate::i18n::fmt(tl!("{n} events"), &[("n", &n("events").to_string())]),
-            crate::i18n::fmt(tl!("{n} tasks"), &[("n", &n("tasks").to_string())]),
+            tln!(n("messages"), "{n} message", "{n} messages"),
+            tln!(n("unread"), "{n} unread", "{n} unread"),
+            tln!(n("contacts"), "{n} contact", "{n} contacts"),
+            tln!(n("events"), "{n} event", "{n} events"),
+            tln!(n("tasks"), "{n} task", "{n} tasks"),
         );
         ui.label(egui::RichText::new(line).color(t.text));
         let place = match (&app.session.path, app.services.persist.is_some()) {
@@ -388,6 +388,25 @@ fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
             }
         });
     });
+    row(ui, tl!("Language"), |ui| {
+        // Each language by its own name, so the owner finds theirs whatever the window speaks.
+        let name = |l: crate::i18n::Lang| {
+            if l.preview() { crate::i18n::fmt(tl!("{language} (preview)"), &[("language", l.native_name())]) } else { l.native_name().to_string() }
+        };
+        let auto = app.ui.language == crate::i18n::AUTO;
+        let cur = app.language();
+        let shown = if auto { tl!("Automatic").to_string() } else { name(cur) };
+        egui::ComboBox::from_id_salt("opt_language").selected_text(shown).show_ui(ui, |ui| {
+            if ui.selectable_label(auto, tl!("Automatic")).clicked() {
+                let _ = app.run("ui.language", json!({"language": crate::i18n::AUTO}));
+            }
+            for l in crate::i18n::Lang::available() {
+                if ui.selectable_label(!auto && l == cur, name(l)).clicked() {
+                    let _ = app.run("ui.language", json!({"language": l.code()}));
+                }
+            }
+        });
+    });
     row(ui, tl!("Interface size"), |ui| {
         let cur = app.ui.interface_size.percent();
         egui::ComboBox::from_id_salt("opt_size").selected_text(format!("{cur}%")).show_ui(ui, |ui| {
@@ -474,7 +493,7 @@ fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
         let label = |n: u32| match n {
             0 => tl!("Only when I ask").to_string(),
             1 => tl!("Every minute").to_string(),
-            n => format!("{} {n} {}", tl!("Every"), tl!("minutes")),
+            n => crate::i18n::fmt(tl!("Every {n} minutes"), &[("n", &n.to_string())]),
         };
         egui::ComboBox::from_id_salt("opt_sync_minutes").selected_text(label(prefs.sync_minutes)).show_ui(ui, |ui| {
             for n in [1u32, 5, 15, 30, 60, 0] {
@@ -535,7 +554,7 @@ fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     row(ui, tl!("Time scale"), |ui| {
         // What one row of the calendar's hours stands for.
         let current = mailcraft_engine::cmd::calendar_extra::time_scale(&app.session);
-        let label = |minutes: u8| crate::i18n::fmt(tl!("{n} minutes"), &[("n", &minutes.to_string())]);
+        let label = |minutes: u8| tln!(minutes, "{n} minute", "{n} minutes");
         egui::ComboBox::from_id_salt("opt_time_scale").selected_text(label(current)).show_ui(ui, |ui| {
             for minutes in mailcraft_engine::cmd::calendar_extra::TIME_SCALES {
                 if ui.selectable_label(minutes == current, label(minutes)).clicked() {
