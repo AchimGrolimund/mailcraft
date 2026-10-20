@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Content kept on disk as a session uses it: what Undo holds through a sweep, a search and a
 //! rule that read bodies, and what bringing content in counts as (review of #87).
 

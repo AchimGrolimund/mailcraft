@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Keeping the calendar current with an account's server, by itself and without a mail run.
 //!
 //! What is made, moved, changed or deleted in the calendar here is noted by the engine

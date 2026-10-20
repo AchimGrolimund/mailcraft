@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mail: the folder pane, the message list and the reading pane (or the message being written).
 //!
 //! The message list is laid out to the pixel from classic Outlook's at 100 %: every number below

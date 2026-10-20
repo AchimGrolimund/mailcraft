@@ -1,6 +1,6 @@
 # File formats and protocols
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-18 · **Change:** minor (vCard 2.1's raw 8-bit values in their own `CHARSET`, #185; the word index beside the mailbox file, R6.2; vCard files in every character set of the WHATWG Encoding Standard, #180; mail in every character set of the WHATWG Encoding Standard, #178; the mailbox file in format 3, a log of records, R6; files kept aside never removed; earlier: time zones in the mailbox file and in `.ics`) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
+> **Last reviewed:** 2026-10-20 · **Last updated:** 2026-10-20 · **Change:** minor (#70: shared mailboxes out of testing, mail moved between mailboxes; protocols brought up to date: IMAP two-way with MOVE and UIDPLUS, XOAUTH2 for IMAP and SMTP, Microsoft Graph as the protocol of Microsoft accounts, no Exchange Web Services; vCard 2.1's raw 8-bit values in their own `CHARSET`, #185; the word index beside the mailbox file, R6.2; vCard files in every character set of the WHATWG Encoding Standard, #180; mail in every character set of the WHATWG Encoding Standard, #178; the mailbox file in format 3, a log of records, R6; files kept aside never removed; earlier: time zones in the mailbox file and in `.ics`) · **Target:** Microsoft Outlook (Microsoft 365, classic desktop)
 
 What MailCraft reads, writes and speaks, and how far each goes. Everything is implemented from the
 public specifications; every reader is fed arbitrary bytes by property tests and must never panic.
@@ -28,13 +28,15 @@ Output is always UTF-8.
 
 | Protocol | State | Notes |
 |---|---|---|
-| **SMTP submission** (RFC 5321, 4954, 3207) | send | EHLO/HELO, STARTTLS or TLS from the start, AUTH PLAIN and LOGIN, dot-stuffing, multi-line replies. No OAuth, SMTPUTF8, DSN, pipelining |
-| **IMAP4rev1** (RFC 3501, special-use 6154) | download | LOGIN, LIST, EXAMINE, UID FETCH (flags, sizes, whole messages with literals), modified UTF-7 names, UIDVALIDITY handling; `uid_store` and `append` exist but sync doesn't use them yet (gap #2). No IDLE, CONDSTORE/QRESYNC, AUTHENTICATE, COMPRESS, partial fetch |
+| **SMTP submission** (RFC 5321, 4954, 3207) | send | EHLO/HELO, STARTTLS or TLS from the start, AUTH PLAIN, LOGIN and XOAUTH2, dot-stuffing, multi-line replies. Used for accounts other than Microsoft's, which send through Microsoft Graph. No SMTPUTF8, DSN, pipelining |
+| **IMAP4rev1** (RFC 3501, special-use 6154, MOVE 6851, UIDPLUS 4315) | two-way | LOGIN and AUTHENTICATE XOAUTH2, LIST, SELECT and EXAMINE, UID FETCH (flags, sizes, headers, whole messages with literals), modified UTF-7 names, UIDVALIDITY handling (changes not yet sent are made again on the new copies). Up to the server: read marks and flags (UID STORE), moves (UID MOVE, else UID COPY and UID EXPUNGE, never a plain EXPUNGE), deletes, folders a move needs (CREATE, SUBSCRIBE) and a copy of sent mail (APPEND). Not sent: folder renames, moves and deletes, drafts, copies, categories, importance (gap #2). Gmail's All Mail and Trash for Archive and Delete for good. No IDLE, CONDSTORE/QRESYNC, COMPRESS, partial fetch, SEARCH on the server |
+| **Microsoft Graph** (HTTPS, JSON) | two-way | For accounts that sign in with Microsoft (OAuth 2.0), with no IMAP or SMTP: folders both ways by server id; mail down by delta and fetched whole (`$value`) within Mail to keep offline; changes up (read, flag, categories, importance, moves, copies, deletes, twenty to a `$batch`); drafts and sending (`sendMail`, send-draft); search on the server (`$search`); the calendars both ways (events, series, meetings, free/busy); contacts down, read-only; working hours and the category list read; Outlook's Favorites read. Shared mailboxes at their own address, mail moved and copied between them and their owner's mailbox made at the destination's own address (#70). Immutable ids for mail; requests paced and asked again after `Retry-After` |
 | **TLS** | rustls with the Mozilla root set | Certificate and host name verified; unencrypted connections refused except to loopback; a missing STARTTLS offer is an error |
-| POP3 | no | Not planned before M6 |
-| Exchange (EWS, MAPI), Microsoft Graph, JMAP, CalDAV, CardDAV | no | Gap #5; JMAP and Graph are how the browser build will get a server connection |
+| POP3 | no | An account is IMAP or, for Microsoft, Graph |
+| Exchange (EWS, MAPI), JMAP, CalDAV, CardDAV | no | Gap #5. Exchange Web Services, used for Outlook's Favorites in 0.2.x, is gone. JMAP is being contributed, for the browser build first ([#226](https://github.com/UCS-Care-Group/mailcraft/issues/226)) |
 
-Interoperability with real servers has not been tested (gap #1).
+In daily use on one Microsoft 365 mailbox through Graph; otherwise tested against in-process fake
+IMAP and SMTP servers and a Graph stand-in, not yet against other real servers (gap #1).
 
 ## Revision history
 
@@ -48,3 +50,5 @@ Interoperability with real servers has not been tested (gap #1).
 | 2026-10-18 | minor | Mail in every character set of the WHATWG Encoding Standard (Windows-1250, ISO-8859-2, KOI8-R, Shift_JIS…), #178 |
 | 2026-10-18 | minor | vCard files in every character set of the WHATWG Encoding Standard, through mail's decoder, #180 |
 | 2026-10-18 | minor | vCard 2.1's raw 8-bit values read in their own `CHARSET`, #185 |
+| 2026-10-20 | minor | Protocols brought up to date with the code: IMAP two-way (UID STORE, MOVE, UIDPLUS, APPEND), XOAUTH2 for IMAP and SMTP, Microsoft Graph as the protocol of Microsoft accounts (mail, calendars, contacts, search, Favorites), Exchange Web Services gone, POP not planned |
+| 2026-10-20 | minor | Microsoft Graph: shared mailboxes out of testing; mail moved or copied between a shared mailbox and its owner's mailbox is made at the destination's own address (#70) |

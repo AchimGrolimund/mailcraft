@@ -1,7 +1,12 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! About ▸ Contributors: everyone who contributed to MailCraft, by GitHub username always, and by
 //! a display or real name only when they chose one for themselves (`docs/contributors.md`,
 //! craftrules standards/contributors.md). The tables are baked into the binary by `build.rs`
 //! from `contributors/`; nothing is read at run time.
+//!
+//! About ▸ Testers thanks the testers who said yes to being credited, from
+//! `contributors/testers.toml`, baked in the same way.
 //!
 //! There is no About ▸ Models: the owner's commits carry no AI attribution, so it would be empty.
 
@@ -28,6 +33,32 @@ pub struct Contributor {
 }
 
 include!(concat!(env!("OUT_DIR"), "/credits.rs"));
+
+/// A tester who said yes to being credited, in About ▸ Testers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tester {
+    pub login: &'static str,
+    pub display_name: Option<&'static str>,
+    /// The day they became a tester, `YYYY-MM-DD`; empty when not known.
+    pub since: &'static str,
+}
+
+include!(concat!(env!("OUT_DIR"), "/testers.rs"));
+
+/// Where to sign up to test: the roster issue of the repository the build came from.
+pub const TESTERS_SIGN_UP: &str = concat!(env!("CARGO_PKG_REPOSITORY"), "/issues/11");
+
+impl Tester {
+    /// The display name they chose, else `@username`.
+    pub fn name(&self) -> String {
+        self.display_name.map_or_else(|| format!("@{}", self.login), str::to_string)
+    }
+
+    /// The tester's GitHub profile.
+    pub fn url(&self) -> String {
+        format!("https://github.com/{}", self.login)
+    }
+}
 
 /// Which name to show. Display and real names fall back to the `@username` when not given.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -289,6 +320,41 @@ pub fn contributors_ui(ui: &mut egui::Ui, t: &Tokens) {
     ui.data_mut(|d| d.insert_temp(id, v));
 }
 
+/// About ▸ Testers: a thank-you, and the testers' names flowing as text in the order they are
+/// built in (the earliest tester first). Nothing to sort and no numbers.
+pub fn testers_ui(ui: &mut egui::Ui, t: &Tokens) {
+    ui.label(
+        RichText::new(tl!("MailCraft is tested on real mail, by people who use it every day and tell us what goes wrong. Thank you.")).color(t.text),
+    );
+    ui.separator();
+    egui::ScrollArea::vertical().auto_shrink([false, true]).max_height(340.0).show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            if TESTERS.is_empty() {
+                ui.label(RichText::new(tl!("No testers credited yet.")).color(t.text_dim));
+                if ui.link(tl!("Want to be one? Sign up in #11")).on_hover_text(TESTERS_SIGN_UP).clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(TESTERS_SIGN_UP));
+                }
+                return;
+            }
+            for (i, tester) in TESTERS.iter().enumerate() {
+                if i > 0 {
+                    ui.label(RichText::new("·").color(t.text_dim));
+                }
+                let url = tester.url();
+                let who = if tester.since.is_empty() {
+                    format!("@{}", tester.login)
+                } else {
+                    crate::i18n::fmt(tl!("@{login}, testing since {since}"), &[("login", tester.login), ("since", tester.since)])
+                };
+                if ui.link(tester.name()).on_hover_text(format!("{who}\n{url}")).clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                }
+            }
+        });
+    });
+    ui.label(RichText::new(tl!("Testers are credited when they say so; see docs/contributors.md.")).small().color(t.text_dim));
+}
+
 fn table(ui: &mut egui::Ui, list: &[&Contributor], v: &mut View, t: &Tokens) {
     egui::Grid::new("credits_table").striped(true).num_columns(SortKey::ALL.len()).show(ui, |ui| {
         for k in SortKey::ALL {
@@ -330,7 +396,7 @@ mod credits_data;
 
 #[cfg(test)]
 mod tests {
-    use super::credits_data::{MAX_NAME_CHARS, parse, render, valid_login};
+    use super::credits_data::{MAX_NAME_CHARS, parse, parse_testers, render, render_testers, valid_login};
     use super::*;
 
     fn c(
@@ -527,5 +593,104 @@ mod tests {
         assert!(!got.contributors.is_empty());
         assert_eq!(got.contributors.len(), CONTRIBUTORS.len());
         assert!(CONTRIBUTORS.iter().all(|c| valid_login(c.login)));
+        // testers.toml likewise, and nobody in it without a recorded yes.
+        let testers = parse_testers(include_str!("../../../contributors/testers.toml")).unwrap();
+        assert_eq!(testers.len(), TESTERS.len());
+        assert!(TESTERS.iter().all(|t| valid_login(t.login)));
+    }
+
+    fn testers(src: &str) -> Vec<(String, Option<String>, String)> {
+        parse_testers(src).unwrap().into_iter().map(|r| (r.login, r.display_name, r.since)).collect()
+    }
+
+    #[test]
+    fn testers_are_read_as_hostile() {
+        let long = "é".repeat(MAX_NAME_CHARS * 3);
+        let src = format!(
+            r#"
+            [testers.ANN]
+            display_name = "  Ann\u0000 Example\n "
+            since = 2026-10-19
+            consent = 11
+            [testers.ann]
+            since = 2026-01-01
+            consent = 12
+            [testers.-bad]
+            consent = 11
+            [testers."a b"]
+            consent = 11
+            [testers.{too_long}]
+            consent = 11
+            [testers.no-yes]
+            since = 2026-10-01
+            [testers.zero-yes]
+            consent = 0
+            [testers.text-yes]
+            consent = "11"
+            [testers.long]
+            display_name = "{long}"
+            since = "2026-10-02"
+            consent = 11
+            [testers.bad-day]
+            since = "2026-02-30"
+            consent = 11
+            [testers.timed]
+            since = 2026-10-03T10:00:00Z
+            consent = 11
+            [testers.odd]
+            since = "<script>"
+            display_name = 7
+            consent = 11
+            [testers.leap]
+            since = "2024-02-29"
+            consent = 11
+            "#,
+            too_long = "a".repeat(40),
+        );
+        let got = testers(&src);
+        let logins: Vec<&str> = got.iter().map(|r| r.0.as_str()).collect();
+        // Dated first, earliest first; undated after, by username whatever the case. The second
+        // "ann", impossible usernames and entries without a yes are left out.
+        assert_eq!(logins, ["leap", "long", "ANN", "bad-day", "odd", "timed"]);
+        let ann = got.iter().find(|r| r.0 == "ANN").unwrap();
+        assert_eq!((ann.1.as_deref(), ann.2.as_str()), (Some("Ann Example"), "2026-10-19"));
+        let long = got.iter().find(|r| r.0 == "long").unwrap();
+        assert_eq!(long.1.as_ref().map(|s| s.chars().count()), Some(MAX_NAME_CHARS));
+        // A date that isn't a day is no date; a name that isn't text is no name.
+        assert!(got.iter().filter(|r| ["bad-day", "timed", "odd"].contains(&r.0.as_str())).all(|r| r.2.is_empty()));
+        assert_eq!(got.iter().find(|r| r.0 == "odd").unwrap().1, None);
+        // Rendered as Rust, every string a literal, and the consent issue not in it.
+        let src = render_testers(&parse_testers(&src).unwrap());
+        assert!(src.starts_with("pub static TESTERS: &[Tester] = &["));
+        assert!(src.contains(r#"Tester { login: "ANN", display_name: Some("Ann Example"), since: "2026-10-19" }"#));
+        assert!(!src.contains("consent"));
+        assert_eq!(src.matches("Tester {").count(), 6);
+    }
+
+    #[test]
+    fn testers_ordering_and_names() {
+        let got = testers(
+            "[testers.zed]\nconsent = 1\n[testers.Bob]\nconsent = 1\n[testers.amy]\nsince = 2026-11-01\nconsent = 1\n[testers.cy]\nsince = 2026-10-01\nconsent = 1\n",
+        );
+        let logins: Vec<&str> = got.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(logins, ["cy", "amy", "Bob", "zed"]);
+        let t = Tester { login: "bob", display_name: None, since: "" };
+        assert_eq!((t.name(), t.url()), ("@bob".to_string(), "https://github.com/bob".to_string()));
+        assert_eq!(Tester { display_name: Some("Bobby"), ..t }.name(), "Bobby");
+        assert!(TESTERS_SIGN_UP.starts_with("https://github.com/") && TESTERS_SIGN_UP.ends_with("/issues/11"));
+    }
+
+    #[test]
+    fn a_malformed_testers_file_is_an_error_not_a_panic() {
+        for bad in ["[testers.x", "testers = 3", "testers = []"] {
+            assert!(parse_testers(bad).is_err(), "{bad:?}");
+        }
+        assert!(testers("").is_empty());
+        assert!(testers("[other]\nx = 1").is_empty());
+        assert!(testers("[testers]\nx = 1\ny = \"z\"").is_empty());
+        let src = "[testers.ann]\ndisplay_name = \"Ann\"\nsince = 2026-10-19\nconsent = 11\n";
+        for n in 0..=src.len() {
+            let _ = parse_testers(src.get(..n).unwrap_or(""));
+        }
     }
 }

@@ -1,6 +1,6 @@
 # Threat model
 
-> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-19 · **Change:** minor (agents with a shell or the owner's files are outside the agent gate; the settings folder, logs and kept pictures are the owner's alone) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-20 · **Change:** minor (an assurance case: claim, trust boundaries, design principles, common weaknesses and the evidence; releases carry MailCraft's own signature; agents with a shell or the owner's files are outside the agent gate; the settings folder, logs and kept pictures are the owner's alone) · **Target:** Microsoft Outlook (Microsoft 365)
 
 What MailCraft protects, from whom, and how, with the code that does it. Rules for working in the
 code are in [`CLAUDE.md`](../CLAUDE.md) and [`AGENTS.md`](../AGENTS.md); how to report a
@@ -135,6 +135,63 @@ A malicious or vulnerable dependency, GitHub Action or build step.
   (`gh attestation verify <file> -R UCS-Care-Group/mailcraft`).
 - Pure-Rust TLS (rustls), and no handwritten JavaScript.
 
+## Assurance case
+
+Why MailCraft's security requirements are met, and the evidence for it.
+
+**Claim.** MailCraft keeps the owner's correspondence and sign-ins confidential and intact against
+the adversaries above: nothing in a message runs or reaches out by itself, sign-ins never leave
+memory or the operating system's credential store, and hostile input never crashes it or
+corrupts the mailbox.
+
+**Threat model.** The assets and adversaries above, each with the mechanism that answers it and
+the file that holds it.
+
+**Trust boundaries.** Everything from outside is hostile and checked where it crosses in:
+messages and attachments (`crates/mime`, `crates/html`, `crates/ical`, `crates/vcard`,
+`crates/charset`); mail servers and Microsoft Graph (`crates/proto`, `crates/net`); the web, for
+pictures the owner asked for (`mailcraft_net::pictures::fetch`, the only way out); mailbox and
+settings files (`crates/engine/src/store.rs`); commands from the control channel and MCP
+(`crates/engine`, the agent gate in `docs/mcp.md`).
+
+**Secure design principles applied.**
+
+| Principle | How |
+|---|---|
+| Least privilege | Agents get only what the owner grants (Safe, Owner, Never); the Microsoft permissions are only those used, optional ones asked for by themselves; settings, logs and kept pictures are for the owner alone |
+| Fail-safe defaults | Pictures from the web off; an unencrypted connection only to loopback; a missing STARTTLS is an error; an update that doesn't verify is not kept |
+| Economy of mechanism | No web view, no script or CSS engine: HTML becomes display blocks from a short whitelist (`crates/html/src/style.rs`) |
+| Complete mediation | Every action is a command through one registry, whichever surface asked for it; every picture through one fetcher, checked on every redirect |
+| Separation | The engine does no I/O with servers; the host does it on a background thread and the engine only applies results |
+| Input validation | Sizes, counts and depths clamped; `get()` instead of indexing; strings sliced at character boundaries; CR, LF and NUL stripped from headers |
+
+**Common weaknesses countered.**
+
+| Weakness | Countered by |
+|---|---|
+| Memory safety (CWE-119, -416, -787) | Rust, with `unsafe_code = "forbid"` in every crate |
+| Crashes and panics (CWE-248, -400) | No `unwrap`, `expect` or `panic!` in production code (denied by lint); a command that fails leaves the mailbox as it was |
+| Injection into headers and protocol lines (CWE-93, -113) | CR, LF and NUL stripped from every header value and protocol argument |
+| Cross-site scripting and active content (CWE-79) | No script engine; HTML reduced to display blocks |
+| Server-side request forgery from a message (CWE-918) | Pictures only on the owner's say-so, public hosts only, re-checked on every redirect and connection |
+| Cleartext transmission (CWE-319) | TLS or STARTTLS for everything of the owner's; rustls, TLS 1.2 and 1.3 only |
+| Insecure storage of credentials (CWE-256, -522) | Sign-ins in memory or the operating system's credential store only; redacted from logs and errors |
+| Path traversal and deceptive file names (CWE-22, -451) | Every name from mail cleaned before saving: no directions reversed, invisible characters or reserved names |
+| Download of code without integrity check (CWE-494) | Updates kept only when MailCraft's own ed25519 signature over `SHA256SUMS.txt` verifies and the checksum matches |
+
+**Evidence.**
+
+- Tests: 2,286, including a test that runs every command with junk parameters
+  (`crates/engine/src/tests.rs::hostile_params_never_panic`), property tests that feed arbitrary
+  bytes to every reader, and in-process fake servers (`crates/net/src/fake.rs`).
+- Fuzzing: a cargo-fuzz target for each reader (`fuzz/`), run in CI weekly and when a reader changes.
+- Static analysis on every pull request: clippy with warnings as errors, CodeQL, `cargo deny`
+  (advisories, licences, sources), zizmor for the workflows; OpenSSF Scorecard.
+- Reviews: changes to sync, the store, sign-in and secrets are read by a code owner
+  (`.github/CODEOWNERS`); an external security review's findings were fixed in 0.5.1.
+- Vulnerabilities reported privately ([`SECURITY.md`](../SECURITY.md)) are fixed and published as
+  advisories crediting the reporter.
+
 ## Out of scope and known limits
 
 - **Malware running as the owner.** A program with the owner's rights can read the mailbox, the
@@ -144,9 +201,10 @@ A malicious or vulnerable dependency, GitHub Action or build step.
   signatures aren't checked.
 - **The mailbox isn't encrypted at rest.** It relies on the operating system's disk encryption
   (BitLocker, FileVault, LUKS, GELI).
-- **Unsigned builds.** The Windows and macOS builds aren't code-signed until signing and publisher
-  verification are done (B10, roadmap reset step R8.1); check a download against
-  the release's checksums.
+- **Builds not signed by Windows or macOS.** Releases carry MailCraft's own signature over their
+  checksums, which the program checks before it installs an update, but the Windows and macOS
+  builds aren't code-signed yet, so the systems warn before running them; check a first download
+  against the release's checksums.
 - **The web build** runs in the browser's sandbox and inherits the browser's security; it has no
   connection to mail servers of its own.
 
@@ -154,6 +212,7 @@ A malicious or vulnerable dependency, GitHub Action or build step.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | minor | An assurance case: the claim, trust boundaries, secure design principles, common weaknesses countered, evidence; releases carry MailCraft's own signature |
 | 2026-10-19 | minor | Agents on the same computer: the agent gate binds agents that reach MailCraft only through MCP; one with a shell or the owner's files is outside it |
 | 2026-10-19 | minor | The settings folder, the logs and the pictures kept from the web are created for the owner alone on Unix (0700, 0600); open ones from earlier versions are closed |
 | 2026-10-16 | minor | Release signing in the protected `release` environment; draft releases |

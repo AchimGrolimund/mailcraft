@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Sending from a shared mailbox (#70), the whole way: the window's Send/Receive, this host's
 //! Graph job and `mailcraft-net`, against the strict stand-in. The first send finds that sending
 //! from shared mailboxes isn't allowed yet: nothing is sent, the window asks the owner, and once
@@ -42,7 +44,6 @@ fn the_first_send_from_a_shared_mailbox_waits_for_its_permission_and_then_goes_t
     let session = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
     let mut app = MailApp::new(session, Services::default());
     (app.autosave, app.auto_sync) = (false, false);
-    app.session.shared_mailboxes = true;
     // Whether the owner has allowed sending from shared mailboxes yet, as the provider says when
     // a token for it is asked for; and how often one was.
     let allowed: Arc<Mutex<(bool, usize)>> = Arc::default();

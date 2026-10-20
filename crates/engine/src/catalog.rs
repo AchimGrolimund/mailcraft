@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The mail-client feature catalog: the incumbent's ribbon and menu commands (feature names
 //! only) mapped to our command ids. `parity()` compares it with the registry; the gap is the
 //! work list (`cargo xtask parity` → docs/parity-checklist.md).
@@ -247,7 +249,7 @@ Calendar|Manage Calendars|Add Calendar|calendar.addCalendar
 Calendar|Manage Calendars|Delete Calendar|calendar.removeCalendar
 Calendar|Manage Calendars|Show Calendar|calendar.showCalendar
 Calendar|Manage Calendars|Calendar Groups|calendar.groups
-Calendar|Manage Calendars|Overlay Mode|calendar.overlay
+Calendar|Manage Calendars|Overlay Mode|view.overlay
 Calendar|Share|Email Calendar|calendar.email
 Calendar|Share|Share Calendar|calendar.share
 Calendar|Share|Publish Online|calendar.publish
@@ -261,7 +263,7 @@ Appointment|Actions|Delete Occurrence|calendar.delete
 Appointment|Actions|Forward|calendar.forward
 Appointment|Actions|Save as iCalendar|file.exportCalendar
 Appointment|Actions|Copy to My Calendar|calendar.copy
-Appointment|Show|Scheduling Assistant|calendar.scheduling
+Appointment|Show|Scheduling Assistant|calendar.freeBusy
 Appointment|Show|Tracking|calendar.tracking
 Appointment|Attendees|Invite Attendees|calendar.edit
 Appointment|Attendees|Cancel Meeting|calendar.cancel
@@ -381,7 +383,7 @@ pub fn parity_markdown(reg: &Registry) -> String {
         p.get("percent").and_then(Value::as_f64).unwrap_or(0.0),
         n("commands")
     ));
-    out.push_str("A command existing means the behaviour is reachable by id (ribbon, shortcut, CLI, control channel, MCP); how complete it is against the incumbent is tracked in `docs/target-app-parity.md`.\n\n");
+    out.push_str("A command existing means the behaviour is reachable by id (ribbon, shortcut, CLI, control channel, MCP); how complete it is against the incumbent is tracked in `docs/gaps.md` and the per-area parity checklists.\n\n");
     out.push_str("| Tab | Implemented | Total |\n|---|---|---|\n");
     for t in p.get("tabs").and_then(Value::as_array).into_iter().flatten() {
         out.push_str(&format!(

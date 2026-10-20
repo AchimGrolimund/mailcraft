@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The desktop's light or dark appearance on Linux and the BSDs (#73), for File › Options ›
 //! Theme › "Use system setting".
 //!

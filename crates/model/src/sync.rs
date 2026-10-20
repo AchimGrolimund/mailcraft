@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! What a mail-server synchronisation is asked to do and what it brings back.
 //!
 //! Plain data, so the pieces stay apart: the engine builds a [`SyncRequest`] and applies a
@@ -10,9 +12,13 @@ use crate::{Account, Address, FlagStatus, FolderKind, Id, Importance, Message};
 use mailcraft_time::Timestamp;
 
 mod drafts;
+mod jmap;
+mod place;
 mod progress;
 mod search;
 pub use drafts::*;
+pub use jmap::*;
+pub use place::*;
 pub use progress::*;
 pub use search::*;
 
@@ -208,6 +214,12 @@ pub struct ServerMessage {
     /// The server id of the folder it is in.
     pub folder: String,
     pub read: bool,
+    /// The server's `$answered` and `$forwarded` marks as last said (JMAP keywords). A Graph
+    /// server says neither: they stay false for a Microsoft account, and nothing is written.
+    #[serde(skip_serializing_if = "is_false")]
+    pub answered: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub forwarded: bool,
     pub flag: FlagStatus,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
@@ -242,6 +254,10 @@ pub struct ServerMessage {
 pub struct MovingOut {
     pub account: Id,
     pub id: String,
+    /// The server id of the folder the copy is in there, when it is known: where the message goes
+    /// back to when its move into another mailbox of the same owner's is refused (#70).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub folder: String,
 }
 
 /// Whether two names are the same category's. Outlook's categories are matched by name and a
@@ -710,6 +726,10 @@ pub struct GraphMailRequest {
     /// What waits in the Outbox, sent after the drafts (R3.4.2).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sends: Vec<SendUp>,
+    /// Messages to make in its folders, moved or copied here from another mailbox of the same
+    /// owner's (#70).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub places: Vec<PlaceUp>,
 }
 
 /// Most changes of messages one Graph run is asked to make; more go over several runs.
@@ -994,6 +1014,9 @@ pub struct GraphMailResult {
     /// What became of the messages sent (R3.4.2).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sent: Vec<SendDone>,
+    /// What became of the messages put into it from another mailbox of the same owner's (#70).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub placed: Vec<PlaceDone>,
     /// Every folder of the mailbox, when it could be listed at all.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub listing: Option<FolderListing>,
@@ -1170,7 +1193,7 @@ mod tests {
         assert!(odd.moving_out.is_none() && odd.incomplete);
 
         let mut m = old.clone();
-        m.moving_out = Some(MovingOut { account: 2, id: "AAkA".into() });
+        m.moving_out = Some(MovingOut { account: 2, id: "AAkA".into(), ..Default::default() });
         m.incomplete = true;
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains(r#""movingOut":{"account":2,"id":"AAkA"}"#) && json.contains(r#""incomplete":true"#), "{json}");

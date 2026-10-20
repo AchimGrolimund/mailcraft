@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The words of the approval help: what a host's answer is taken for, and what the message for
 //! an administrator says. (The pages and the commands are tried in the window, with Add
 //! Account: `account_setup`'s tests.)

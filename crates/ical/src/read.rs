@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Reading iCalendar text into events and to-dos.
 
 use std::collections::{HashMap, HashSet};

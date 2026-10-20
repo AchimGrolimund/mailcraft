@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! HTML character references (`&amp;`, `&#233;`, `&#xE9;`) and escaping.
 
 /// The Latin-1 names in code point order, from U+00A0 (`nbsp`) to U+00FF (`yuml`).

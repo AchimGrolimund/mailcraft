@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Rules: what to do with arriving mail.
 
 use mailcraft_model::{Action, Condition, Id, Importance, Rule, clean_name};

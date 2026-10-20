@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `cargo xtask version [set X.Y.Z[-pre]]`: the workspace version, the single source of truth.
 //!
 //! The version lives in `[workspace.package] version` in the root `Cargo.toml`; every crate

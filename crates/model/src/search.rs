@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The search box's query language: words, `"exact phrases"`, and `keyword:value` filters.
 //!
 //! `budget from:ada has:attachment -draft after:2026-10-01`. Every term must match; `-` in front

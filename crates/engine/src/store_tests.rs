@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use std::time::{Duration, Instant, SystemTime};
 
 use mailcraft_model::{Address, Attachment, Mailbox, Message};
@@ -225,6 +227,41 @@ fn the_split_form_round_trips() {
     assert!(whole(&path) == mb);
     // Saving the same state again writes nothing at all.
     assert_eq!(save(&path, &mb).unwrap(), Saved { unchanged: true, ..Saved::default() });
+}
+
+/// An account a newer MailCraft added goes into the mailbox file as its file had it, in the first
+/// save and in every one after it, and a mailbox opened and saved as it is isn't written at all.
+#[test]
+fn an_account_a_newer_version_added_is_saved_as_its_file_had_it() {
+    let tmp = Temp::new("newer-account");
+    let path = tmp.file();
+    let mut mb = mailbox(3);
+    let newer = mb.add_account(mailcraft_model::Account { email: "ada@jmap.example".into(), ..Default::default() });
+    let mut file = serde_json::to_value(&mb).unwrap();
+    let written = json!({
+        "id": newer,
+        "name": "ada@jmap.example",
+        "email": "ada@jmap.example",
+        "kind": "fromANewerVersion",
+        "settings": {"session": "https://jmap.example/.well-known/jmap", "auth": "bearer"},
+        "comesLater": [1, 2.5, {"deep": null}],
+    });
+    *file["accounts"].as_array_mut().unwrap().iter_mut().find(|a| a["id"] == newer).unwrap() = written.clone();
+    let mb: Mailbox = serde_json::from_value(file).unwrap();
+    let account = |mb: &Mailbox| serde_json::to_value(mb).unwrap()["accounts"].as_array().unwrap().iter().find(|a| a["id"] == newer).cloned();
+    save(&path, &mb).unwrap();
+    assert!(String::from_utf8_lossy(&fs::read(&path).unwrap()).contains(r#""comesLater":[1,2.5,{"deep":null}]"#));
+    let back = whole(&path);
+    assert!(back == mb);
+    assert_eq!(account(&back), Some(written.clone()));
+    let opened = open(&path).unwrap();
+    assert!(save(&path, &opened.mailbox).unwrap().unchanged);
+    let mut changed = whole(&path);
+    let first = *changed.messages.keys().next().unwrap();
+    changed.message_mut(first).unwrap().read = true;
+    assert!(!save(&path, &changed).unwrap().unchanged);
+    assert!(whole(&path) == changed);
+    assert_eq!(account(&whole(&path)), Some(written));
 }
 
 /// The mailbox the files at `path` hold, read from a copy of them: what is known about `path`

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The owner's text in a message being written, drawn as it will be sent: bold, italic,
 //! underline, a font size, links, bulleted and numbered lists, and a signature's pictures
 //! (`mailcraft_model::rich`). The same editor edits a signature in File › Signatures

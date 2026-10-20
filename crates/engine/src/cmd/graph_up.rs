@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Changes of messages up through Microsoft Graph (R3.3; R3 spec S16–S22, ADR 0003).
 //!
 //! What goes up is the difference between each message of a Microsoft account and its last
@@ -63,14 +65,21 @@ pub fn message_changes(s: &Session, account: Id, limit: usize) -> (Vec<MessageCh
                 note(&|| MessageChange::Copy { copy: *copy, id: id.clone(), to: to.clone(), to_folder, marker: marker.clone() });
             }
             Queued::DeleteMessage { id, .. } => note(&|| MessageChange::Delete { id: id.clone() }),
-            Queued::DeleteFolder { .. } => {}
+            // (Made by the run with the whole message: `graph_place`.)
+            Queued::DeleteFolder { .. } | Queued::PlaceMessage { .. } => {}
         }
     }
-    // Moved out of the account, whole, and saved so: the server's copy goes.
+    // Moved out of the account, whole, and saved so: the server's copy goes. Moved into another
+    // mailbox of the same owner's (#70): once the copy is on that mailbox's server.
     let current = s.file_is_current();
     for m in mb.messages.values() {
         let Some(out) = m.moving_out.as_ref().filter(|out| out.account == account) else { continue };
-        if !m.unfetched && !m.incomplete && (current || s.saved_whole.contains(&m.id)) {
+        let safe = if mb.is_graph(m.account) {
+            m.server.as_ref().is_some_and(|server| !server.gone && !server.id.is_empty())
+        } else {
+            !m.unfetched && !m.incomplete && (current || s.saved_whole.contains(&m.id))
+        };
+        if safe {
             note(&|| MessageChange::MovedOut { message: m.id, id: out.id.clone() });
         }
     }
@@ -80,7 +89,7 @@ pub fn message_changes(s: &Session, account: Id, limit: usize) -> (Vec<MessageCh
 /// The server's id of the folder `folder` of `account`, and the folder itself when the server
 /// is to make it in the same run (`to` empty then). `None` for a folder that isn't the account's
 /// or isn't to be on the server.
-fn destination(mb: &Mailbox, account: Id, folder: Id) -> Option<(String, Option<Id>)> {
+pub(super) fn destination(mb: &Mailbox, account: Id, folder: Id) -> Option<(String, Option<Id>)> {
     let f: &Folder = mb.folder(folder).filter(|f| f.account == account)?;
     match &f.server {
         Some(server) => Some((server.id.clone(), None)),
@@ -126,7 +135,7 @@ fn update_of(m: &Message, server: &ServerMessage, today: Timestamp, now: Timesta
 
 /// A kind of change, for saying refusals once per run and kind (S20).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Kind {
+pub(super) enum Kind {
     Read(bool),
     Flag,
     Categories,
@@ -140,14 +149,14 @@ enum Kind {
 
 /// Why the server said no.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Why {
+pub(super) enum Why {
     Gone,
     Denied,
     Invalid,
 }
 
 impl Why {
-    fn of(outcome: &MessageOutcome) -> Option<Why> {
+    pub(super) fn of(outcome: &MessageOutcome) -> Option<Why> {
         match outcome {
             MessageOutcome::Done { .. } => None,
             MessageOutcome::Gone => Some(Why::Gone),
@@ -175,7 +184,7 @@ pub struct Refusals {
 }
 
 impl Refusals {
-    fn note(&mut self, kind: Kind, why: Why, subject: &str, to: Option<String>) {
+    pub(super) fn note(&mut self, kind: Kind, why: Why, subject: &str, to: Option<String>) {
         // A delete for good of a message nothing is known of here is of "a message".
         let subject = if kind == Kind::Delete && subject.trim().is_empty() { String::new() } else { shown(subject) };
         let entry = self.said.entry((kind, why)).or_insert_with(|| (0, subject, to.clone()));
@@ -223,7 +232,7 @@ fn shown(subject: &str) -> String {
 }
 
 /// The name of the folder of `account` the server calls `id`, for a line about it.
-fn folder_name(mb: &Mailbox, account: Id, id: &str, local: Option<Id>) -> Option<String> {
+pub(super) fn folder_name(mb: &Mailbox, account: Id, id: &str, local: Option<Id>) -> Option<String> {
     let folder = local.or_else(|| mb.folder_by_server(account, id))?;
     mb.folder(folder).map(|f| f.name.chars().filter(|c| !c.is_control()).take(60).collect())
 }

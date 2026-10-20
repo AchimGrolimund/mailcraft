@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! More results on the server (R6.2): what the engine asks a host to search, and what it makes
 //! of what comes back. (Against the Graph stand-in: `crates/net/src/graph/mail/search_tests.rs`,
 //! and the window's part in `crates/ui-egui/src/server_search.rs`.)
@@ -19,7 +21,6 @@ const NOW: i64 = 1_790_000_000;
 /// each Microsoft mailbox with its Inbox, Deleted Items and Archive listed; their ids.
 fn session() -> (Session, Id, Id, Id) {
     let mut s = Session::empty();
-    s.shared_mailboxes = true;
     let local = s.run("account.add", &json!({"email": "ada@example.org"})).unwrap()["id"].as_u64().unwrap();
     let owner = s.run("account.add", &json!({"email": OWNER, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     let shared = s.run("account.addSharedMailbox", &json!({"address": SHARED})).unwrap()["id"].as_u64().unwrap();
@@ -95,8 +96,8 @@ fn all_mailboxes_asks_each_microsoft_mailbox_once_and_current_folder_that_folder
     search(&mut s, "budget", "folder");
     assert!(crate::cmd::search_server::offered_reason(&s).is_some());
     assert!(s.run("sync.graphSearchRequest", &json!({})).is_err());
-    // Shared mailboxes switched off: only the owner's own.
-    s.shared_mailboxes = false;
+    // The shared mailbox closed: only the owner's own.
+    s.run("account.removeSharedMailbox", &json!({"address": SHARED})).unwrap();
     search(&mut s, "budget", "everywhere");
     assert_eq!(asked(&mut s).iter().map(|r| r.account).collect::<Vec<_>>(), [owner]);
 }
@@ -104,7 +105,7 @@ fn all_mailboxes_asks_each_microsoft_mailbox_once_and_current_folder_that_folder
 #[test]
 fn results_come_fifty_a_page_newest_first_and_mail_here_shows_once_locally() {
     let (mut s, _, owner, _) = session();
-    s.shared_mailboxes = false;
+    s.run("account.removeSharedMailbox", &json!({"address": SHARED})).unwrap();
     // One message the server will find is here already.
     let inbox = s.mailbox.folder_by_server(owner, "in").unwrap();
     let page = MessagePage {
@@ -142,7 +143,7 @@ fn results_come_fifty_a_page_newest_first_and_mail_here_shows_once_locally() {
 #[test]
 fn what_graph_doesnt_understand_is_checked_here_and_deleted_mail_stays_out_of_everywhere() {
     let (mut s, _, owner, _) = session();
-    s.shared_mailboxes = false;
+    s.run("account.removeSharedMailbox", &json!({"address": SHARED})).unwrap();
     search(&mut s, "budget is:unread -draft", "everywhere");
     let request = asked(&mut s).remove(0);
     assert!(s.server_search.checked_here);
@@ -170,7 +171,7 @@ fn what_graph_doesnt_understand_is_checked_here_and_deleted_mail_stays_out_of_ev
 #[test]
 fn a_new_search_forgets_the_results_and_an_answer_for_an_old_one_is_not_taken() {
     let (mut s, _, owner, _) = session();
-    s.shared_mailboxes = false;
+    s.run("account.removeSharedMailbox", &json!({"address": SHARED})).unwrap();
     search(&mut s, "budget", "everywhere");
     let old = asked(&mut s).remove(0);
     answer(&mut s, &old, vec![found("AAkA-1", "in", "Budget", NOW)], "next");

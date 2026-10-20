@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! More results on the server (R6.2): below the local results of a search that involves a
 //! Microsoft account, a link that asks its server, and its mailbox's shared mailboxes', for more;
 //! the results come in a section of their own, On the server, 50 at a time. Nothing goes to the

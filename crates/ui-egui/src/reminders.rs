@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Reminders that fire: a small window listing the events whose reminder time has come, with
 //! Dismiss and Snooze, as the incumbent has. What is due is the engine's answer
 //! (`view::due_reminders`); what was dismissed is kept with the window's settings, what was put
@@ -21,10 +23,10 @@ const REMEMBERED: usize = 400;
 pub struct State {
     /// What is due and neither dismissed nor put off, soonest first.
     pub(crate) showing: Vec<Reminder>,
-    looked: f64,
+    pub(crate) looked: f64,
     looked_rev: u64,
     /// Reminders put off, and until when (milliseconds).
-    snoozed: HashMap<String, f64>,
+    pub(crate) snoozed: HashMap<String, f64>,
     /// Reminders the owner has been told about (the taskbar is only asked for attention once).
     announced: HashSet<String>,
     /// The owner asked for the window (View › Reminders Window): shown even with nothing due.
@@ -62,13 +64,17 @@ pub fn tick(app: &mut MailApp, ctx: &egui::Context) {
     app.reminders.looked = now;
     app.reminders.looked_rev = rev;
     refresh(app);
-    let mut fresh = false;
+    let mut fresh = Vec::new();
     for r in &app.reminders.showing {
-        fresh |= app.reminders.announced.insert(key_of(r));
+        if app.reminders.announced.insert(key_of(r)) {
+            fresh.push(r.clone());
+        }
     }
-    if fresh && !ctx.input(|i| i.focused) {
+    if !fresh.is_empty() && !ctx.input(|i| i.focused) {
         ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
     }
+    // And a desktop alert for each, in front or not ([`crate::alerts`]).
+    crate::alerts::reminders_due(app, &fresh);
     if !app.session.mailbox.events.is_empty() {
         ctx.request_repaint_after(std::time::Duration::from_millis(LOOK_EVERY as u64));
     }
@@ -113,6 +119,8 @@ pub fn snooze(app: &mut MailApp, one: Option<(u64, &str)>, minutes: u64) -> usiz
     };
     let n = keys.len();
     for k in keys {
+        // Due again once the time is up: told of again then.
+        app.reminders.announced.remove(&k);
         app.reminders.snoozed.insert(k, until);
     }
     refresh(app);
@@ -135,7 +143,10 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
     let (mut dismiss_all, mut closed) = (false, false);
     let title = if rows.len() == 1 { tl!("1 Reminder").to_string() } else { format!("{} {}", rows.len(), tl!("Reminders")) };
     let height = (rows.len().clamp(1, 6) as f32) * 46.0 + 96.0;
-    let builder = egui::ViewportBuilder::default().with_title(title).with_inner_size([420.0, height]).with_min_inner_size([340.0, 150.0]);
+    let builder = crate::windows::like_main(
+        ctx,
+        egui::ViewportBuilder::default().with_title(title).with_inner_size([420.0, height]).with_min_inner_size([340.0, 150.0]),
+    );
     ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("mailcraft_reminders"), builder, |ui, class| {
         let own_window = class != egui::ViewportClass::EmbeddedWindow;
         if own_window {

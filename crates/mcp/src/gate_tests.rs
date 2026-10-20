@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Agents get only what the owner allows: the reported exploit and its variants, end to end
 //! through the MCP tools, headless and against a stand-in for the app.
 

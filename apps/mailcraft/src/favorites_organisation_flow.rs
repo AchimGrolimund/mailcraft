@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Outlook's Favorites for an account of an organisation, the whole way: the window's commands,
 //! this host's job for Microsoft Graph, `mailcraft-net` and the engine, against a stand-in that
 //! takes only what the documented service takes (`mailcraft_net::graph::standin`). Nothing here

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! What a server's mailboxes are for: special-use flags (RFC 6154) first, well-known names second.
 
 use mailcraft_model::FolderKind;

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Reading vCards (2.1, 3.0 and 4.0) into contacts.
 
 use std::collections::HashMap;

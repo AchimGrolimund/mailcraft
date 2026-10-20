@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mail rules: conditions on an arriving message and what to do with it.
 
 use serde::{Deserialize, Serialize};

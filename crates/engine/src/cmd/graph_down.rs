@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mail down through Microsoft Graph (R3.2; R3 spec S5, S9–S11, S15).
 //!
 //! A folder's mail arrives as pages of its message delta, each taken in by itself with the link

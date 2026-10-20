@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Changes of messages of a Microsoft account, as the engine works them out and takes in what
 //! became of them. (Against the Graph stand-in itself: `apps/mailcraft-cli/tests/graph_changes.rs`.)
 
@@ -130,7 +132,7 @@ fn a_move_out_of_the_account_waits_for_the_whole_message_and_the_save() {
     s.mailbox.message_mut(m).unwrap().unfetched = true;
     s.run("mail.move", &json!({"ids": [m], "folder": kept})).unwrap();
     let moved = s.mailbox.message(m).unwrap();
-    assert_eq!(moved.moving_out, Some(MovingOut { account, id: "M-1".into() }));
+    assert_eq!(moved.moving_out, Some(MovingOut { account, id: "M-1".into(), folder: "F-in".into() }));
     assert!(moved.server.is_none() && moved.folder == kept);
     // Fetched first of all, whatever its size.
     assert_eq!(super::super::graph_down::fetch_queue(&s.mailbox, account, 5, s.now()), ["M-1"]);
@@ -142,12 +144,13 @@ fn a_move_out_of_the_account_waits_for_the_whole_message_and_the_save() {
     // Saved (as the host's own saver says, or a file that holds it as it is).
     s.note_saved();
     assert_eq!(changes(&s, account), [MessageChange::MovedOut { message: m, id: "M-1".into() }]);
-    // Moved back before that went: it is the server's message again, and goes where it was put.
+    // Moved back before that went: it is the server's message again, where the server still has it.
+    // (Back into the folder it came from: nothing goes up at all.)
     let inbox = s.mailbox.folder_of_kind(account, FolderKind::Inbox).unwrap();
     s.run("mail.move", &json!({"ids": [m], "folder": inbox})).unwrap();
     let back = s.mailbox.message(m).unwrap();
     assert!(back.moving_out.is_none() && back.server.as_ref().is_some_and(|server| server.id == "M-1"));
-    assert_eq!(changes(&s, account), [MessageChange::Move { message: m, id: "M-1".into(), to: "F-in".into(), to_folder: None }]);
+    assert_eq!(changes(&s, account), []);
     // Gone from the server before it was fetched: kept as it is, incomplete.
     let (mut s, account, m, kept) = setup();
     s.mailbox.message_mut(m).unwrap().unfetched = true;

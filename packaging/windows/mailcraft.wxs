@@ -80,7 +80,12 @@
         <File Id="MailcraftExe" Source="$(var.BinDir)\mailcraft.exe" KeyPath="yes">
           <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="MailCraft"
               Description="MailCraft mail and calendar" WorkingDirectory="INSTALLFOLDER" Advertise="yes"
-              Icon="MailcraftIcon.ico" IconIndex="0" />
+              Icon="MailcraftIcon.ico" IconIndex="0">
+            <!-- The AppUserModelID Windows knows MailCraft by: it shows the program's desktop
+                 alerts (toasts) only for a program it knows by such a shortcut
+                 (apps/mailcraft/src/alerts.rs). -->
+            <ShortcutProperty Key="System.AppUserModel.ID" Value="MailCraft.MailCraft" />
+          </Shortcut>
         </File>
 
         <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\mailcraft.exe" Value="[#MailcraftExe]" Type="string" />

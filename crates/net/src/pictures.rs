@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Pictures from the web, for a message whose owner asked to see its pictures.
 //!
 //! A message names these addresses, so whoever wrote the message chose them. Asking for one must

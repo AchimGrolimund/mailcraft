@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! An IMAP server that answers with any bytes, through a whole session.
 #![no_main]
 

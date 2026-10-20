@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Workspace tooling: `cargo xtask <command>`.
 //!
 //! Pure Rust (std + serde_json). `cargo` and `git` are invoked through `std::process::Command`.
@@ -8,6 +10,7 @@ mod icon;
 mod layers;
 mod parity;
 mod release_key;
+mod spdx;
 mod stats;
 mod version;
 
@@ -19,10 +22,11 @@ usage: cargo xtask <command>
 
 commands:
   assets          check that every icon/image/font/asset is attributed in ATTRIBUTION.md
+  spdx [--fix]    check that every Rust file starts with its SPDX copyright and licence lines
   layers          enforce the crate dependency layering (docs/architecture.md)
   wasm            cargo check --target wasm32-unknown-unknown for the wasm-safe crates
   deny            cargo deny check (advisories, licences, bans, sources; see deny.toml)
-  ci              fmt --check, clippy -D warnings, test, assets, layers, wasm, deny (stops at first failure)
+  ci              fmt --check, clippy -D warnings, test, assets, spdx, layers, wasm, deny (stops at first failure)
   stats [--exact] count tests and lines per crate (--exact: ask the test harness via `-- --list`)
   parity          recompute the Outlook feature-parity summary in docs/parity-checklist.md
   ico <out.ico> <in.png>...
@@ -40,6 +44,7 @@ fn main() -> ExitCode {
     let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
     let result = match args.first().map(String::as_str) {
         Some("assets") => assets::run(&root()),
+        Some("spdx") => spdx::run(&root(), rest.contains(&"--fix")),
         Some("layers") => cmd_layers(),
         Some("wasm") => cmd_wasm(),
         Some("deny") => cmd_deny(),
@@ -201,6 +206,7 @@ fn cmd_ci() -> Result<(), String> {
             }),
         ),
         ("assets", Box::new(|| assets::run(&root()))),
+        ("spdx", Box::new(|| spdx::run(&root(), false))),
         ("layers", Box::new(cmd_layers)),
         ("wasm", Box::new(cmd_wasm)),
         ("deny", Box::new(cmd_deny)),

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! E-mail addresses as people type and read them.
 
 use serde::{Deserialize, Serialize};

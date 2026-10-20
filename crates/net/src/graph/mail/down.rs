@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A Microsoft account's mail down through Graph's message delta (R3.2; R3 spec S9–S11, S14, S15).
 //!
 //! After the folders, each folder's messages are read by `GET
@@ -389,6 +391,9 @@ fn entry_of(value: &Value, folder: &str) -> Option<Entry> {
         id,
         folder: folder.to_string(),
         read: read.unwrap_or(false),
+        // Graph says neither of the marks a JMAP server keeps as keywords.
+        answered: false,
+        forwarded: false,
         flag,
         categories,
         importance,

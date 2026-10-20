@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `mail.openAttachment` in the window (#126): an attachment opened with the computer's own
 //! program for that kind of file, as Outlook's double-click and Open do.
 //!

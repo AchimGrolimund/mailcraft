@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Whole-message tests: what is written reads back, and nothing that is read can panic.
 
 use std::sync::Arc;

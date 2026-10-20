@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MailCraft HTML for mail.
 //!
 //! Mail HTML is hostile: it comes from strangers, it is often broken, and it may try to run
@@ -323,7 +325,7 @@ pub fn is_safe_url(url: &str) -> bool {
 /// around them is shown: bidirectional overrides and isolates, zero-width marks and joiners, the
 /// byte-order mark, a soft hyphen, the Arabic and Syriac number signs, interlinear annotations,
 /// the Mongolian vowel separator, tags.
-fn is_format(c: char) -> bool {
+pub fn is_format(c: char) -> bool {
     matches!(
         c,
         '\u{00ad}'

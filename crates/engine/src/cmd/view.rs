@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The view: which module is in front, how the message list is sorted and filtered, the search,
 //! the calendar's range, the panes.
 

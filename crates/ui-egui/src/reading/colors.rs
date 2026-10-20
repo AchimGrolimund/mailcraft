@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A message's colours on the window's colours.
 //!
 //! A message is written for a white page; the window may be dark, and the message may be out to

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Calendar: appointments, meetings, recurrence, calendars.
 
 use mailcraft_model::{Address, Attendee, Calendar, Event, Freq, Id, Recurrence, Response, Rgb, ShowAs, clean_name};

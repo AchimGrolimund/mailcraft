@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Media types and file names.
 
 /// File extensions and their media types. The first row for a type gives its usual extension.

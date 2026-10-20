@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The reading pane on the corpus of `mailcraft-html`: every message laid out in both themes and
 //! at every width, what is shown of pictures and what is not, tables, contrast, and time.
 //!
@@ -214,7 +216,7 @@ fn large_newsletter() -> Message {
 fn in_frame<R>(dark: bool, f: impl FnOnce(&egui::Context) -> R) -> R {
     let ctx = egui::Context::default();
     ctx.set_fonts(crate::theme::font_definitions());
-    crate::theme::apply(&ctx, if dark { Appearance::Dark } else { Appearance::Light });
+    crate::theme::apply(&ctx, if dark { Appearance::Dark } else { Appearance::Light }.preference(None));
     ctx.run_ui(egui::RawInput::default(), |_| {}).drop_without_applying_deltas();
     let mut out = None;
     let mut f = Some(f);

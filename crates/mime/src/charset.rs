@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Bytes to text, for the character sets mail still arrives in: `mailcraft-charset`'s decoder,
 //! which vCard files are read with too, and line endings.
 

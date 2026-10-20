@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Design tokens (light and dark), UI fonts and the egui style.
 
 use std::sync::Arc;
@@ -47,12 +49,20 @@ impl Appearance {
         }
     }
 
-    /// The egui theme preference: `System` stays automatic rather than resolving to a fixed theme.
-    pub fn preference(self) -> egui::ThemePreference {
+    /// The egui theme preference, with "Use system setting" settled to the theme the system
+    /// reports for the main window (`system`; light when it reports none). egui is never left on
+    /// `System` itself: it would settle that for each window from the window's own input, and a
+    /// window of its own (a reminder, an opened item) has none of the desktop's preference on
+    /// Linux, so it would be light beside a dark main window; two windows on different themes
+    /// rebuild the font atlas they share every frame, which garbles the text of both.
+    pub fn preference(self, system: Option<egui::Theme>) -> egui::ThemePreference {
         match self {
             Appearance::Light => egui::ThemePreference::Light,
             Appearance::Dark => egui::ThemePreference::Dark,
-            Appearance::System => egui::ThemePreference::System,
+            Appearance::System => match system {
+                Some(egui::Theme::Dark) => egui::ThemePreference::Dark,
+                Some(egui::Theme::Light) | None => egui::ThemePreference::Light,
+            },
         }
     }
 }
@@ -571,11 +581,10 @@ pub fn paint_clipped(painter: &egui::Painter, pos: egui::Pos2, width: f32, text:
     size.x
 }
 
-/// Apply the interface theme setting to egui. Both palettes go in, our light one as egui's light
-/// style and our dark one as its dark style, and egui picks between them each frame: `System`
-/// leaves egui's theme preference on `System`, so it follows the OS appearance it reports; a
-/// manual Light or Dark pins egui (and the window decorations) to that theme.
-pub fn apply(ctx: &egui::Context, appearance: Appearance) {
+/// Apply the interface theme to egui. Both palettes go in, our light one as egui's light style
+/// and our dark one as its dark style, and `preference` ([`Appearance::preference`]) pins egui
+/// (and the window decorations) to one of them.
+pub fn apply(ctx: &egui::Context, preference: egui::ThemePreference) {
     ctx.set_visuals_of(egui::Theme::Light, visuals(&Tokens::light()));
     ctx.set_visuals_of(egui::Theme::Dark, visuals(&Tokens::dark()));
     ctx.all_styles_mut(|s| {
@@ -592,7 +601,7 @@ pub fn apply(ctx: &egui::Context, appearance: Appearance) {
     });
     ctx.options_mut(|o| {
         o.fallback_theme = egui::Theme::Light;
-        o.theme_preference = appearance.preference();
+        o.theme_preference = preference;
     });
 }
 
@@ -959,5 +968,17 @@ mod tests {
         assert_eq!(serde_json::from_str::<InterfaceSize>("9000").unwrap().percent(), 200);
         assert_eq!(serde_json::from_str::<InterfaceSize>("\"big\"").unwrap().percent(), 100);
         assert_eq!(InterfaceSize::from_percent(f64::NAN), None);
+    }
+
+    /// "Use system setting" is settled from the main window's input: a window of its own (a
+    /// reminder) whose input says nothing of the desktop's preference, as on Linux, has the same
+    /// theme, so the two don't rebuild the font atlas they share every frame, garbling the text.
+    #[test]
+    fn a_window_of_its_own_has_the_main_windows_theme() {
+        let ctx = egui::Context::default();
+        super::apply(&ctx, super::Appearance::System.preference(Some(egui::Theme::Dark)));
+        ctx.run_ui(egui::RawInput { system_theme: None, ..Default::default() }, |_| {}).textures_delta.clear();
+        assert_eq!(ctx.theme(), egui::Theme::Dark);
+        assert_eq!(super::Appearance::System.preference(None), egui::ThemePreference::Light);
     }
 }

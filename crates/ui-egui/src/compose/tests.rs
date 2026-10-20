@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The body of a message being written, driven with the keyboard and the pointer in a window
 //! without a window: typing, the formatting keys (the body's only while it has the keyboard),
 //! lists, moving about, the clipboard, and a long message.

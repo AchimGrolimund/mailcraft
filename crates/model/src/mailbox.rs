@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The mailbox: everything MailCraft keeps, with the primitives that edit it.
 
 use std::collections::{BTreeMap, HashSet};
@@ -6,7 +8,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::sync::RemoteFlags;
-use crate::{Action, Calendar, Contact, Event, Id, KeepOffline, Message, ModelError, Rgb, Rule, Signature, Task, clean_name};
+use crate::{Action, Calendar, Contact, Event, Id, JmapServer, KeepOffline, Message, ModelError, Rgb, Rule, Signature, Task, clean_name};
 
 /// Deepest a folder tree may nest (a hostile file could otherwise chain folders without end).
 const MAX_DEPTH: usize = 32;
@@ -191,12 +193,39 @@ pub enum AccountKind {
     /// settings and signs in with Microsoft ([`Account::oauth`]). One that was kept in step by
     /// IMAP becomes one when its owner switches it ([`GraphSwitch`]).
     Microsoft,
+    /// A mailbox on a JMAP server (RFC 8620 and 8621), kept in step over HTTPS alone, never by
+    /// IMAP or SMTP. It has no mail server settings and no OAuth sign-in: its server is
+    /// [`Account::jmap`], and the secret it is opened with (a password, or a bearer token) is
+    /// given by whoever holds the connection and is never written anywhere.
+    Jmap,
+    /// A kind this version doesn't know: an account that a newer MailCraft added, in a file that
+    /// one wrote (or one whose kind can't be read at all). Only what says which account it is
+    /// is read of it; the whole of it is kept as the file had it and written back so
+    /// ([`Account::as_written`]), so that the newer MailCraft finds it as it left it. It is never
+    /// kept in step, sent from or changed here: whatever it is, this version doesn't know how.
+    #[serde(other)]
+    Unknown,
 }
 
 impl AccountKind {
-    /// Whether the account is kept in step with a server (by IMAP or by Microsoft Graph).
+    /// Whether the account is kept in step with a server (by IMAP, by Microsoft Graph or by JMAP).
+    /// Not an account of a kind this version doesn't know: whatever server it has, this version
+    /// can't use it.
     pub fn has_server(self) -> bool {
+        matches!(self, AccountKind::Imap | AccountKind::Microsoft | AccountKind::Jmap)
+    }
+
+    /// Whether a Send/Receive sends the mail that waits in the account's Outbox (through SMTP, or
+    /// through Microsoft Graph). Not yet for a JMAP account: its sending comes after its reading,
+    /// and until then no mail is put in its Outbox, where it would wait for ever.
+    pub fn sends_mail(self) -> bool {
         matches!(self, AccountKind::Imap | AccountKind::Microsoft)
+    }
+
+    /// Whether the account's folders and messages are known to its server by the ids the server
+    /// hands out (Microsoft Graph, JMAP), rather than by IMAP's paths and UIDs.
+    pub fn server_ids(self) -> bool {
+        matches!(self, AccountKind::Microsoft | AccountKind::Jmap)
     }
 }
 
@@ -258,6 +287,98 @@ pub struct Account {
     /// in). `None` for every other account, and in a file from before there were any.
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "crate::sync::lenient")]
     pub shared_of: Option<Id>,
+    /// For a [`AccountKind::Jmap`] account: where its server's session resource is and how the
+    /// secret is sent ([`JmapServer`]). Plain settings: the secret is never kept here. `None` for
+    /// every other account, and in a file from before there were any.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "crate::sync::lenient")]
+    pub jmap: Option<JmapServer>,
+    /// For an account of a kind this version doesn't know ([`AccountKind::Unknown`]): the account
+    /// as its file had it, every field but its id, which is what a mailbox file gets in its place
+    /// ([`Mailbox::accounts`]). `None` for every other account.
+    #[serde(skip)]
+    pub as_written: Option<AsWritten>,
+}
+
+/// An account of a kind this version doesn't know, as a mailbox file had it: every field but its
+/// id (the mailbox's to give: a repair may give it another), those this version doesn't know among
+/// them, value for value ([`Account::as_written`]). What it holds is the account's settings, which
+/// its debug output leaves out: it says how many fields there are.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AsWritten(serde_json::Map<String, serde_json::Value>);
+
+impl std::fmt::Debug for AsWritten {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AsWritten").field("fields", &self.0.len()).finish()
+    }
+}
+
+/// What is read of an account of a kind this version doesn't know: what says which account it is,
+/// each field as it is when it can be read, and as nothing when it can't.
+#[derive(Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct Identity {
+    #[serde(deserialize_with = "crate::sync::lenient_or_default")]
+    id: Id,
+    #[serde(deserialize_with = "crate::sync::lenient_or_default")]
+    name: String,
+    #[serde(deserialize_with = "crate::sync::lenient_or_default")]
+    email: String,
+    #[serde(deserialize_with = "crate::sync::lenient_or_default")]
+    display_name: String,
+    #[serde(deserialize_with = "crate::sync::lenient")]
+    shared_of: Option<Id>,
+}
+
+/// The accounts of a mailbox file. One of a kind this version doesn't know (its `kind` is a word
+/// it doesn't know, or can't be read) is read for what says which account it is, and no more: not
+/// its servers or its sign-in, which nothing here could use for it, and every other field is kept
+/// as it was ([`AsWritten`]). Every other account is read as it always was.
+fn read_accounts<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Account>, D::Error> {
+    let written = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    let mut accounts = Vec::with_capacity(written.len());
+    for value in written {
+        // (Only an object has a `kind`; one without says nothing, which is a local account.)
+        let unknown = value.get("kind").is_some_and(|kind| AccountKind::deserialize(kind).unwrap_or(AccountKind::Unknown) == AccountKind::Unknown);
+        if !unknown {
+            accounts.push(Account::deserialize(&value).map_err(serde::de::Error::custom)?);
+            continue;
+        }
+        let who = Identity::deserialize(&value).unwrap_or_default();
+        let mut fields = match value {
+            serde_json::Value::Object(fields) => fields,
+            _ => serde_json::Map::new(),
+        };
+        fields.remove("id");
+        accounts.push(Account {
+            id: who.id,
+            name: who.name,
+            email: who.email,
+            display_name: who.display_name,
+            kind: AccountKind::Unknown,
+            shared_of: who.shared_of,
+            as_written: Some(AsWritten(fields)),
+            ..Default::default()
+        });
+    }
+    Ok(accounts)
+}
+
+/// The accounts as a mailbox file has them: each as the model writes it, but one of a kind this
+/// version doesn't know, which is written as its file had it, with the id it has here.
+fn write_accounts<S: serde::Serializer>(accounts: &[Account], serializer: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeSeq as _;
+    let mut list = serializer.serialize_seq(Some(accounts.len()))?;
+    for account in accounts {
+        match &account.as_written {
+            Some(AsWritten(fields)) => {
+                let mut fields = fields.clone();
+                fields.insert("id".into(), account.id.into());
+                list.serialize_element(&fields)?;
+            }
+            None => list.serialize_element(account)?,
+        }
+    }
+    list.end()
 }
 
 /// What the owner of a Microsoft account kept in step by IMAP said to switching it to Microsoft
@@ -478,12 +599,29 @@ pub enum Queued {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kept: Option<Box<Message>>,
     },
+    /// The message `message` was moved or copied here into a folder of `account` from another
+    /// mailbox of the same owner's (#70): the server of `account` is to make it, from the whole
+    /// message, carrying MailCraft's marker of the value `marker` (by which a make whose answer
+    /// was lost is found). Of a move, the original goes from its own mailbox once this copy is
+    /// there ([`Message::moving_out`]). `copy`: it was copied, and the message it was copied from
+    /// is still where it was (a copy refused is taken away here again).
+    #[serde(rename_all = "camelCase")]
+    PlaceMessage {
+        account: Id,
+        message: Id,
+        marker: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        copy: bool,
+    },
 }
 
 impl Queued {
     pub fn account(&self) -> Id {
         match self {
-            Queued::DeleteFolder { account, .. } | Queued::CopyMessage { account, .. } | Queued::DeleteMessage { account, .. } => *account,
+            Queued::DeleteFolder { account, .. }
+            | Queued::CopyMessage { account, .. }
+            | Queued::DeleteMessage { account, .. }
+            | Queued::PlaceMessage { account, .. } => *account,
         }
     }
 }
@@ -578,6 +716,9 @@ fn default_categories() -> Vec<Category> {
 pub struct Mailbox {
     /// File format version.
     pub version: u32,
+    /// An account of a kind this version doesn't know goes back into the file as it came
+    /// ([`Account::as_written`]).
+    #[serde(serialize_with = "write_accounts", deserialize_with = "read_accounts")]
     pub accounts: Vec<Account>,
     pub folders: Vec<Folder>,
     pub messages: BTreeMap<Id, Arc<Message>>,
@@ -659,10 +800,11 @@ impl Default for Mailbox {
 /// Why nothing from elsewhere goes into a Microsoft account's folders yet (R3 spec S19).
 pub const INTO_GRAPH: &str = "Mail can't be moved or copied into a Microsoft account from another account or a local folder yet: this version can't put a message on Microsoft's server";
 
-/// Why mail doesn't move or copy between a shared mailbox and another mailbox (#70): Microsoft
-/// Graph moves and copies a message only within its own mailbox, and what it makes from a message
-/// elsewhere is always a draft (R3 spec S30).
-pub const BETWEEN_MAILBOXES: &str = "Microsoft moves and copies mail only within one mailbox, so it can't go between a shared mailbox and another mailbox: move it within its own mailbox, or into a folder on this computer";
+/// Why mail doesn't move or copy between a shared mailbox and a mailbox of another account's
+/// (#70): it goes between a shared mailbox and its owner's mailbox, or another shared mailbox of
+/// the same owner's, whose sign-in reaches both.
+pub const BETWEEN_MAILBOXES: &str =
+    "Mail moves and copies between a shared mailbox and its own account's mailboxes only: move it there, or into a folder on this computer";
 
 /// Why received mail in a local folder (imported mail, say) doesn't go into a Microsoft
 /// account's folders (R3 spec S30): what Graph makes there is always a draft.
@@ -670,6 +812,11 @@ pub const STAYS_LOCAL: &str = "Microsoft doesn't let a mail program put received
 
 /// The local folder that mail imported for a Microsoft account goes to (R3 spec S30).
 pub const IMPORTED: &str = "Imported";
+
+/// Why nothing is sent from a JMAP account ([`AccountKind::sends_mail`]): its sending comes after
+/// its reading. Until then nothing goes into its Outbox, where it would wait for ever, and nothing
+/// is filed as sent that wasn't.
+pub const NOT_SENDING_YET: &str = "MailCraft doesn't send mail from a JMAP account yet";
 
 fn not_found(what: &'static str, id: Id) -> ModelError {
     ModelError::NotFound(what, id)
@@ -1294,12 +1441,70 @@ impl Mailbox {
         self.account(account).is_some_and(|a| a.kind == AccountKind::Microsoft)
     }
 
+    /// The mailbox a sign-in reaches `account` through: its own for a Microsoft account, its
+    /// owner's for a shared mailbox (#70). `None` for any other account.
+    fn reached_through(&self, account: Id) -> Option<Id> {
+        let a = self.account(account).filter(|a| a.kind == AccountKind::Microsoft)?;
+        if a.is_shared() { self.owner_of(account).map(|o| o.id) } else { Some(a.id) }
+    }
+
+    /// Whether mail goes between the Microsoft accounts `from` and `to` as between two mailboxes
+    /// of one owner's (#70): a shared mailbox and its owner's mailbox, or two shared mailboxes of
+    /// the same owner's. It is made in `to` by `to`'s own run, and a move's original goes from
+    /// `from` once that copy is there ([`Queued::PlaceMessage`]).
+    pub fn between_mailboxes(&self, from: Id, to: Id) -> bool {
+        let shared = |id: Id| self.account(id).is_some_and(Account::is_shared);
+        from != to && (shared(from) || shared(to)) && self.reached_through(from).is_some_and(|owner| self.reached_through(to) == Some(owner))
+    }
+
+    /// Why `m` can't go to another mailbox (#70), when it can't: what goes there is made of the
+    /// whole message, and a draft stays in its own mailbox.
+    fn not_whole(m: &Message, doing: &str) -> Option<String> {
+        let subject: String = m.subject.chars().filter(|c| !c.is_control()).take(80).collect();
+        if m.incomplete {
+            Some(format!("Only the headers of \"{subject}\" are here, so it can't be {doing} to another mailbox"))
+        } else if m.unfetched {
+            Some(format!("\"{subject}\" isn't downloaded yet: open it, then try again"))
+        } else if m.draft || m.server_draft.is_some() || !m.held.is_empty() {
+            Some(format!("The draft \"{subject}\" stays in its own mailbox: send it from there"))
+        } else {
+            None
+        }
+    }
+
+    /// A marker for a copy made in another mailbox: a value used once in this mailbox's life, and
+    /// of the source's server id, so that copies of different messages never share one.
+    fn place_marker(&mut self, id: Id, source: &str) -> String {
+        let n = self.alloc_id();
+        let source = crate::sync::fingerprint(source.as_bytes());
+        format!("mailcraft-place-{id:x}-{n:x}-{source:016x}")
+    }
+
+    /// `id` is no longer to be made on any server for where it lay: its wait is called off, and a
+    /// copy of it made already in a mailbox it is being moved on from is deleted there (the
+    /// original still is where it came from).
+    fn place_called_off(&mut self, id: Id) {
+        self.queued.retain(|q| !matches!(q, Queued::PlaceMessage { message, .. } if *message == id));
+        let Some(m) = self.message(id) else { return };
+        if m.moving_out.is_none() || !self.is_graph(m.account) {
+            return;
+        }
+        if let Some(server) = m.server.as_ref().filter(|s| !s.gone && !s.id.is_empty()) {
+            let delete = Queued::DeleteMessage { account: m.account, id: server.id.clone(), kept: None };
+            self.queued.push(delete);
+        }
+    }
+
     /// A move between accounts where one of them is kept in step through Microsoft Graph (R3
     /// spec S19). Whether it was one (and is done).
     ///
     /// - Out of a Microsoft account (into a local folder or another account): the message is
     ///   there at once, **being moved** ([`Message::moving_out`]); the server's copy is removed
     ///   once it is fetched whole and saved here.
+    /// - Between two mailboxes of one owner's (a shared mailbox and its owner's, or two of his
+    ///   shared mailboxes, #70): there at once, being moved, and waiting to be made on the
+    ///   destination's server ([`Queued::PlaceMessage`]); the original is removed once that copy
+    ///   is there. Refused for a message that isn't whole here, and for a draft.
     /// - Back into the account it is being moved out of: it is that server message again.
     /// - Anything else into a Microsoft account is refused, with the reason, until a whole
     ///   message can be put on its server (R3.4).
@@ -1310,31 +1515,57 @@ impl Mailbox {
             return Ok(false);
         }
         if self.is_graph(to_account) {
-            let Some(out) = m.moving_out.clone().filter(|out| out.account == to_account) else {
+            if let Some(out) = m.moving_out.clone().filter(|out| out.account == to_account) {
+                // Where the server has it isn't known here when it wasn't said: the next run
+                // moves it where it is now.
+                let server = crate::sync::ServerMessage {
+                    id: out.id,
+                    folder: out.folder,
+                    read: m.read,
+                    flag: m.flag,
+                    flag_due: m.flag_due,
+                    categories: m.categories.clone(),
+                    importance: m.importance,
+                    ..Default::default()
+                };
+                self.place_called_off(id);
+                let m = self.message_mut(id)?;
+                (m.server, m.moving_out) = (Some(server), None);
+                (m.folder, m.account, m.uid, m.synced) = (folder, to_account, 0, None);
+                return Ok(true);
+            }
+            if !self.between_mailboxes(from_account, to_account) {
                 return Err(invalid(self.refusal_into_graph(m, to_account)));
-            };
-            // Where the server has it isn't known here: the next run moves it where it is now.
-            let server = crate::sync::ServerMessage {
-                id: out.id,
-                read: m.read,
-                flag: m.flag,
-                flag_due: m.flag_due,
-                categories: m.categories.clone(),
-                importance: m.importance,
-                ..Default::default()
-            };
+            }
+            if let Some(why) = Mailbox::not_whole(m, "moved") {
+                return Err(invalid(why));
+            }
+            let source = m.server.clone().filter(|s| !s.gone && !s.id.is_empty());
+            let first = m.moving_out.is_some();
+            self.place_called_off(id);
+            let marker = self.place_marker(id, source.as_ref().map_or("", |s| s.id.as_str()));
             let m = self.message_mut(id)?;
-            (m.server, m.moving_out) = (Some(server), None);
+            // Being moved out of where it lay first, it goes on being moved out of there.
+            if let (Some(server), false) = (source, first) {
+                m.moving_out = Some(crate::sync::MovingOut { account: from_account, id: server.id, folder: server.folder });
+            }
+            m.server = None;
             (m.folder, m.account, m.uid, m.synced) = (folder, to_account, 0, None);
+            self.queued.push(Queued::PlaceMessage { account: to_account, message: id, marker, copy: false });
             return Ok(true);
         }
         if !self.is_graph(from_account) {
             return Ok(false);
         }
-        let Some(server) = m.server.clone() else { return Ok(false) };
+        let first = m.moving_out.is_some();
+        let Some(server) = m.server.clone() else {
+            self.place_called_off(id);
+            return Ok(false);
+        };
+        self.place_called_off(id);
         let m = self.message_mut(id)?;
-        if !server.gone {
-            m.moving_out = Some(crate::sync::MovingOut { account: from_account, id: server.id });
+        if !server.gone && !first {
+            m.moving_out = Some(crate::sync::MovingOut { account: from_account, id: server.id, folder: server.folder });
         }
         m.server = None;
         (m.folder, m.account, m.uid, m.synced) = (folder, to_account, 0, None);
@@ -1342,8 +1573,8 @@ impl Mailbox {
     }
 
     /// Why `m` can't go into the Microsoft account `to` from elsewhere: received mail in a local
-    /// folder never can (S30); between a shared mailbox and another mailbox, Microsoft moves and
-    /// copies only within one (#70); anything else not yet (S19).
+    /// folder never can (S30); between a shared mailbox and another account's mailbox, Microsoft
+    /// reaches only the mailboxes of the one sign-in (#70); anything else not yet (S19).
     fn refusal_into_graph(&self, m: &Message, to: Id) -> &'static str {
         let local = self.account(m.account).is_some_and(|a| a.kind == AccountKind::Local);
         let shared = |id: Id| self.account(id).is_some_and(Account::is_shared);
@@ -1395,6 +1626,20 @@ impl Mailbox {
         let to_account = self.folder(folder).ok_or(not_found("folder", folder))?.account;
         let m = self.message(id).ok_or(not_found("message", id))?;
         let from_account = m.account;
+        if self.between_mailboxes(from_account, to_account) {
+            // Made on the destination's server by its own run, from the whole message (#70).
+            if let Some(why) = Mailbox::not_whole(m, "copied") {
+                return Err(invalid(why));
+            }
+            let source = m.server.as_ref().map(|s| s.id.clone()).unwrap_or_default();
+            let mut copy = m.clone();
+            (copy.id, copy.folder, copy.account, copy.uid, copy.synced) = (0, folder, to_account, 0, None);
+            (copy.server, copy.moving_out) = (None, None);
+            let new = self.add_message(copy)?;
+            let marker = self.place_marker(new, &source);
+            self.queued.push(Queued::PlaceMessage { account: to_account, message: new, marker, copy: true });
+            return Ok(new);
+        }
         if from_account != to_account && self.is_graph(to_account) {
             return Err(invalid(self.refusal_into_graph(m, to_account)));
         }
@@ -1434,7 +1679,11 @@ impl Mailbox {
             deletes.push(Queued::DeleteMessage { account: out.account, id: out.id.clone(), kept: Some(Box::new(m.clone())) });
         }
         if !self.queued.is_empty() {
-            self.queued.retain(|q| !matches!(q, Queued::CopyMessage { copy, .. } if *copy == id));
+            self.queued.retain(|q| match q {
+                Queued::CopyMessage { copy, .. } => *copy != id,
+                Queued::PlaceMessage { message, .. } => *message != id,
+                _ => true,
+            });
         }
         for delete in deletes {
             let Queued::DeleteMessage { account, id, .. } = &delete else { continue };

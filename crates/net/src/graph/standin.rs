@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A stand-in for Microsoft Graph's calendar that behaves like the documented service, for the
 //! tests. Nothing here leaves this machine, and nothing here is in a build that isn't a test's.
 //!
@@ -61,6 +63,11 @@
 //!   of a message (read, flag, categories, importance, extended properties), move, copy and
 //!   delete, a folder's messages found by an extended property, and faults on demand per
 //!   message (404, 403, 400, 429, an answer lost): [`changes`].
+//! - **Messages made in a folder** (#70): `POST /me/mailFolders/{id}/messages` (and a shared
+//!   mailbox's) makes a message there from JSON, as a draft unless `PidTagMessageFlags` written
+//!   with it say it isn't unsent ([`State::drafts_only`] makes it a draft whatever they say);
+//!   its sender, read state, flag, and the time it was received (`PidTagMessageDeliveryTime`)
+//!   and its `Message-ID` (`PidTagInternetMessageId`) as written.
 //! - **Drafts and attachments.** Drafts made from JSON or MIME, answers and forwards made with
 //!   create-reply, create-reply-all and create-forward, a draft's subject, body and recipients
 //!   changed in place, attachments added, listed and deleted, large ones through upload
@@ -373,6 +380,10 @@ pub struct State {
     /// Requests to carry out and then lose the answer to, one each: a method and an address,
     /// `*` for any one piece of it (`POST /v1.0/me/messages`, `PUT /upload/*`).
     pub lose_next: Vec<String>,
+    /// A message made in a folder from JSON is a draft whatever its `PidTagMessageFlags` say, as
+    /// the reference has every message made so (#70). Otherwise flags written with it that say
+    /// it isn't unsent make it received mail, as Exchange does.
+    pub drafts_only: bool,
     /// What it sent, in order ([`send`]).
     pub sent: Vec<Sent>,
     /// What every search of messages is answered with instead (a status and Graph's code), when
@@ -1098,6 +1109,7 @@ impl State {
             ("GET", Some(named), ["messages", "delta"]) => self.message_delta(asked, named),
             ("GET", Some(named), ["messages"]) if asked.param("$search").is_some() => self.search_messages(asked, Some(named)),
             ("GET", Some(named), ["messages"]) => self.folder_messages(asked, named),
+            ("POST", Some(named), ["messages"]) => self.create_in_folder(asked, named),
             (_, Some(named), ["messages", id, action @ ..]) if action.len() <= 1 => {
                 self.mail_folder(named)?;
                 self.message_at(asked, method, id, action.first().copied())

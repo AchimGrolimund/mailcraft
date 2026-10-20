@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A tolerant HTML tokenizer: text, start tags and end tags.
 //!
 //! It follows the general syntax of the HTML Living Standard closely enough for mail, and reads

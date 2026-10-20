@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MailCraft vCard: contacts as vCard text (`.vcf` files).
 //!
 //! [`parse`] reads vCard 2.1, 3.0 and 4.0, one card or many in a text ([`parse_bytes`] in a file,

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Whole-crate properties: what is written reads back the same, and no text makes the reader panic.
 
 use mailcraft_model::{Contact, Labeled, PostalAddress};

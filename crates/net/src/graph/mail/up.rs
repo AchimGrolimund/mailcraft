@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A Microsoft account's changes of messages up through Graph (R3.3.2; R3 spec S16–S22).
 //!
 //! After the folder changes and before the listing, the changes of messages the engine worked
@@ -127,7 +129,7 @@ fn date_time(at: Timestamp) -> Value {
     json!({"dateTime": DateTime::from_timestamp(at, 0).iso(), "timeZone": "UTC"})
 }
 
-fn flag_body(flag: &FlagUp) -> Value {
+pub(super) fn flag_body(flag: &FlagUp) -> Value {
     let mut body = Map::new();
     let status = match flag.status {
         FlagStatus::None => "notFlagged",

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! More results on the server (R6.2, slice 2): a search of a Microsoft account's mailbox, or a
 //! shared mailbox's, on its server, when the owner asks for it.
 //!
@@ -133,7 +135,7 @@ pub fn mailboxes_for(s: &Session) -> Vec<(Id, String)> {
     let usable = |account: Id| {
         mb.account(account).is_some_and(|a| {
             a.kind == AccountKind::Microsoft
-                && (!a.is_shared() || (s.shared_mailboxes && mb.owner_of(account).is_some() && mailcraft_model::mailbox_address(&a.email).is_some()))
+                && (!a.is_shared() || (mb.owner_of(account).is_some() && mailcraft_model::mailbox_address(&a.email).is_some()))
         })
     };
     match s.view.scope {

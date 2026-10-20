@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The whole way of a calendar change, from the command to the server and back: the engine, the
 //! window's calendar timer, this host's Microsoft Graph job and `mailcraft-net`, against a
 //! stand-in that takes only what the documented service takes

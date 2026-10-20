@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Telling the owner when a new version of MailCraft is out (File › About, File › Options, the
 //! status bar), and, for a copy that updates itself, downloading it and having the host install
 //! it. Any other copy's owner is told, with a link to the release's page.

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Command implementations, one module per area. Each module exposes `specs()`.
 
 pub mod account;
@@ -19,10 +21,15 @@ mod format_tests;
 pub mod graph_down;
 pub mod graph_drafts;
 pub mod graph_mail;
+pub mod graph_place;
 pub mod graph_send;
 pub mod graph_switch;
 pub mod graph_up;
+#[cfg(test)]
+mod jmap_sending_tests;
 pub mod mail;
+#[cfg(test)]
+mod newer_account_tests;
 pub mod offline;
 #[cfg(test)]
 mod offline_tests;

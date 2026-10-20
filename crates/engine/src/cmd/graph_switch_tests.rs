@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Switching a Microsoft account kept in step by IMAP over to Microsoft Graph (R3.7), as the
 //! engine does it. (From end to end, against the fake IMAP server and the Graph stand-in:
 //! `apps/mailcraft-cli/tests/graph_switch.rs`.)

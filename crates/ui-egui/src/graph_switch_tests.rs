@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The page that offers the switch to Microsoft Graph, and what the window does with the answer
 //! (R3.7). Nothing here leaves this machine: the hosts are stand-ins, the mail invented.
 

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Leaving MailCraft: the window's close button, Quit in the macOS app menu and ⌘Q, Quit from the
 //! Dock (an Apple event), and the app's own quit once a question about unsaved work is answered.
 //!

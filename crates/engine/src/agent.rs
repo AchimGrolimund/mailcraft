@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! What an agent may do (MCP, headless or bridged to the app): every command is classified, a
 //! command that isn't is refused, and what reaches other people, deletes for good, touches the
 //! accounts, the mailbox file or the options waits for the owner.
@@ -366,6 +368,7 @@ const SETTINGS: &[&str] = &[
     "signature.close",
     "ui.alwaysDownloadPictures",
     "ui.downloadPicturesAutomatically",
+    "ui.desktopAlerts",
     "ui.updateCheck",
     "ui.updateInstall",
     "ui.dismissUpdateNotice",

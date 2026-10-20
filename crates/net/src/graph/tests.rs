@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Microsoft Graph against a stand-in on loopback. Nothing here leaves this machine.
 
 use std::sync::Arc;

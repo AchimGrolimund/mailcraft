@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Signatures (R4.5): making them, their pictures, and which one each account starts its
 //! messages with. The model and its caps are `mailcraft_model::signature`; what goes into a
 //! message is `compose.signature`.
@@ -9,7 +11,7 @@
 use mailcraft_model::RichBody;
 use mailcraft_model::rich::{Paragraph, RichText, Run, Style};
 use mailcraft_model::signature::{Layout, Signature};
-use mailcraft_model::{Id, clean_name};
+use mailcraft_model::{AccountKind, Id, clean_name};
 use serde_json::{Value, json};
 
 use super::{bad, done, fail};
@@ -192,12 +194,17 @@ fn set(s: &mut Session, v: &Value) -> CmdResult {
     done()
 }
 
-/// The account a command names, or the default one.
+/// The account a command names, or the default one: one whose signatures can be chosen here.
 fn account_of(s: &Session, v: &Value) -> Result<Id, CmdError> {
-    match p::id(v, "account") {
-        Some(id) if s.mailbox.account(id).is_some() => Ok(id),
-        Some(id) => Err(fail(format!("no account with id {id}"))),
-        None => s.mailbox.default_account().map(|a| a.id).ok_or_else(|| fail("add an account first")),
+    let id = match p::id(v, "account") {
+        Some(id) if s.mailbox.account(id).is_some() => id,
+        Some(id) => return Err(fail(format!("no account with id {id}"))),
+        None => s.mailbox.default_account().map(|a| a.id).ok_or_else(|| fail("add an account first"))?,
+    };
+    // (Its settings are written back as its file had them: a choice made here would be lost.)
+    match s.mailbox.account(id) {
+        Some(a) if a.kind == AccountKind::Unknown => Err(super::account::added_by_newer(a, "which keeps its signatures: choose them there")),
+        _ => Ok(id),
     }
 }
 
@@ -211,7 +218,8 @@ fn remove(s: &mut Session, v: &Value) -> CmdResult {
     if s.signature_edit.as_ref().is_some_and(|e| e.signature.name.eq_ignore_ascii_case(&name)) {
         s.signature_edit = None;
     }
-    for a in &mut s.mailbox.accounts {
+    // (An account a newer MailCraft added keeps its own, as its file has them.)
+    for a in s.mailbox.accounts.iter_mut().filter(|a| a.kind != AccountKind::Unknown) {
         // An account that had it for one kind of message has none there now; the other stays.
         let reply = a.reply_signature().to_string();
         if a.signature.eq_ignore_ascii_case(&name) {
@@ -235,7 +243,7 @@ fn rename(s: &mut Session, v: &Value) -> CmdResult {
     if let Some(e) = s.signature_edit.as_mut().filter(|e| e.signature.name.eq_ignore_ascii_case(&from)) {
         e.signature.name = to.clone();
     }
-    for a in &mut s.mailbox.accounts {
+    for a in s.mailbox.accounts.iter_mut().filter(|a| a.kind != AccountKind::Unknown) {
         let reply = a.reply_signature().to_string();
         if a.signature.eq_ignore_ascii_case(&from) {
             a.signature = to.clone();

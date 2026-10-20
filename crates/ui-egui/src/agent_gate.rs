@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! What an agent may do through the window (`mailcraft-cli mcp --connect`): the bridge marks
 //! every request it sends as an agent's (`ControlRequest::agent`, with what the owner allowed it
 //! in advance), and those go through [`mailcraft_engine::agent`]'s gate here. A command that is
@@ -53,7 +55,7 @@ pub fn screen(app: &mut MailApp, req: &ControlRequest, allow: &[Class]) -> Optio
     let p = &req.params;
     let given = |k: &str| p.get(k).is_some_and(|v| !v.is_null());
     match req.method.as_str() {
-        "engine.commands" | "mailbox.inspect" | "ui.inspect" | "ui.parity" | "ui.resize" | "ui.focus" => None,
+        "engine.commands" | "mailbox.inspect" | "ui.inspect" | "ui.alerts" | "ui.parity" | "ui.resize" | "ui.focus" => None,
         "ui.screenshot" if given("path") => Some(err("agents don't name files: the screenshot comes back in the answer (leave out `path`)")),
         "ui.screenshot" => None,
         "ui.click" | "ui.move" | "ui.drag" | "ui.key" | "ui.text" => {

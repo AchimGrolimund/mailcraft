@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MailCraft desktop app.
 //!
 //! Usage: `mailcraft [--control <port>] [--sample] [--mailbox <file>] [files or mailto: links…]`
@@ -15,6 +17,7 @@
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod alerts;
 #[cfg(target_os = "macos")]
 mod apple_events;
 #[cfg(test)]
@@ -233,17 +236,6 @@ fn opened_files() -> Option<&'static opened_files::Opened> {
 /// Where the log files live: `logs` in the preferences folder (see `logging`).
 fn log_dir() -> Option<PathBuf> {
     Some(prefs_path()?.parent()?.join("logs"))
-}
-
-/// The switch for testing shared mailboxes through Microsoft Graph (#70):
-/// `MAILCRAFT_SHARED_MAILBOXES=1`. Off, Add Shared Mailbox isn't offered and none is read, so
-/// that nobody is asked for a shared mailbox's permission by a build that only reads one.
-fn shared_mailboxes_switch() -> bool {
-    let on = std::env::var("MAILCRAFT_SHARED_MAILBOXES").is_ok_and(|value| value.trim() == "1");
-    if on {
-        log::info!("shared mailboxes may be added and read (MAILCRAFT_SHARED_MAILBOXES=1, for testing)");
-    }
-    on
 }
 
 /// Runs without preferences (`MAILCRAFT_NO_PREFS`, agents' test runs) neither read nor write them,
@@ -1048,6 +1040,7 @@ fn services(
     let update_ctx = ctx.clone();
     let download_ctx = ctx.clone();
     let copy_ctx = ctx.clone();
+    let alert_ctx = ctx.clone();
     let (sync_ctx, sign_in_ctx, graph_ctx, mx_ctx, test_ctx) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone(), ctx);
     let sync_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel = sync_cancel.clone();
@@ -1127,6 +1120,8 @@ fn services(
         open_file: opened_files()
             .map(|opened| Box::new(move |name: &str, bytes: &[u8]| opened.open(name, bytes)) as Box<dyn Fn(&str, &[u8]) -> Result<(), String>>),
         secrets: secrets::store(),
+        // Desktop alerts, through the system's notifications (`alerts`).
+        alert: alerts::host(alert_ctx),
         clipboard: clipboard::board(),
         // Help › Copy Diagnostics: the version, the platform and the redacted end of the logs.
         diagnostics: Some(Box::new(|| diagnostics::report(env!("CARGO_PKG_VERSION"), build_sha(), log_dir().filter(|_| prefs_enabled()).as_deref()))),
@@ -1379,7 +1374,6 @@ fn main() -> eframe::Result {
             let (mailbox, path, unavailable, damaged) = first_mailbox(sample, mailbox_path);
             let (file_dialog, dialogs) = file_dialogs::hook(&cc.egui_ctx);
             let mut session = Session::new(mailbox);
-            session.shared_mailboxes = shared_mailboxes_switch();
             let kept = path.is_some();
             session.path = path;
             // Search answers from a word index kept beside the mailbox file, built in the

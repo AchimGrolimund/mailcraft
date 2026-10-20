@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Test streams: a scripted server, and a stream that only fails.
 
 use std::io::{Error, ErrorKind, Read, Write};

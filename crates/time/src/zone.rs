@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Time zones: the rules of every zone of the IANA Time Zone Database (with their history, so a
 //! date in 1995 gets the daylight-saving rule of 1995), the names Windows and Microsoft's services
 //! call zones by, and this computer's own zone.

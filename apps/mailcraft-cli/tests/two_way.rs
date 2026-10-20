@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Send/Receive from end to end: the engine's `sync_request` and `apply_sync` with
 //! `mailcraft_net::sync` in between, against the in-process fake servers; and the same with the
 //! answer taken in piece by piece (`sync_with`, `apply_sync_part`), as the desktop app does it.

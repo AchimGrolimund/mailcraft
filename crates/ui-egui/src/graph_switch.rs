@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Switching a Microsoft account kept in step by IMAP over to Microsoft Graph (R3.7): the page
 //! that offers it, once for each such account, and what the window does after the owner's answer.
 //!

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Calendars, events and recurrence.
 //!
 //! Event times are wall-clock times in the zone the calendar is shown in, which the mailbox names

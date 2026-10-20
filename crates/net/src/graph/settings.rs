@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The mailbox's own settings, of which the calendar wants one: the working hours the owner set
 //! (the days of the week, from when to when, and the time zone that is meant in).
 //!

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The sign-in end to end, on loopback: a fake token endpoint, and an `open` that plays the
 //! owner's browser. Nothing here leaves this machine.
 

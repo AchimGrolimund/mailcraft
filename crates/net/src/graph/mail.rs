@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A Microsoft account's folders through Microsoft Graph (R3.1; R3 spec S4, S6–S8, S14, S21).
 //!
 //! [`sync_folders`] takes a [`GraphMailRequest`] (what the engine worked out from the mailbox)
@@ -205,6 +207,31 @@ pub(crate) fn sync_folders_with(base: &str, token: &str, request: &GraphMailRequ
                     Some(retry_after.unwrap_or(0).max(gate.paused_for().map_or(0, |left| u32::try_from(left.as_secs()).unwrap_or(u32::MAX))));
             }
             out.errors.push(format!("Couldn't send the changes of messages to Microsoft: {e}"));
+            if e.is_refused_sign_in() || matches!(e, NetError::Busy { .. }) {
+                return out;
+            }
+        }
+    }
+    // Then what was moved or copied here from another mailbox of the same owner's (#70), which
+    // may go into a folder just made too.
+    match place::places(&graph, &made, &request.places, &mut out.placed) {
+        Ok(0) => {}
+        Ok(1) => out.errors.push("Microsoft refused a message moved or copied into this shared mailbox; it waits on this computer.".into()),
+        Ok(held) => {
+            out.errors.push(format!("Microsoft refused {held} messages moved or copied into this shared mailbox; they wait on this computer."))
+        }
+        Err(e @ NetError::SharedRefused(_)) => {
+            log::info!("graph places: the shared mailbox refused the owner; the messages wait for the next run");
+            stop(&mut out, &e);
+            return out;
+        }
+        Err(e) => {
+            log::info!("graph places: the messages from other mailboxes stopped; the rest wait for the next run");
+            if let NetError::Busy { retry_after, .. } = &e {
+                out.busy_for =
+                    Some(retry_after.unwrap_or(0).max(gate.paused_for().map_or(0, |left| u32::try_from(left.as_secs()).unwrap_or(u32::MAX))));
+            }
+            out.errors.push(format!("Couldn't put the messages moved from another mailbox on Microsoft's server: {e}"));
             if e.is_refused_sign_in() || matches!(e, NetError::Busy { .. }) {
                 return out;
             }
@@ -593,6 +620,7 @@ fn child_named(graph: &Graph<'_>, known: &Known, parent: &str, name: &str) -> Re
 mod down;
 mod drafts;
 mod fetch;
+mod place;
 mod search;
 mod send;
 mod up;

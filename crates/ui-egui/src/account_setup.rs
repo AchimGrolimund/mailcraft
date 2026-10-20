@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Add Account: the wizard that sets an account up from its address, and the page that changes
 //! the settings of one that exists.
 //!
@@ -412,6 +414,9 @@ pub struct AccountSetup {
     /// and as the slider has it now (#143). Saved through `ui.keepOffline`, which asks first
     /// when it is shorter.
     keep_offline: Option<(KeepOffline, KeepOffline)>,
+    /// The settings are of an account a newer MailCraft added: nothing of it can be changed
+    /// here, and the page says why.
+    newer: bool,
     /// The window's context, once a frame has run: what the password field left in its memory
     /// is cleared through it.
     ctx: Option<egui::Context>,
@@ -491,6 +496,7 @@ impl AccountSetup {
             directory: Directory::Unknown,
             edit: None,
             keep_offline: None,
+            newer: false,
             ctx: None,
         }
     }
@@ -536,6 +542,7 @@ impl AccountSetup {
         if a.kind == AccountKind::Microsoft && !a.is_shared() {
             w.keep_offline = Some((a.keep_offline, a.keep_offline));
         }
+        w.newer = a.kind == AccountKind::Unknown;
         w
     }
 
@@ -1437,6 +1444,9 @@ impl AccountSetup {
     }
 
     fn settings_page(&mut self, app: &MailApp, ui: &mut Ui, pass: &mut Pass) -> Option<Action> {
+        if self.newer {
+            return self.newer_page(ui, pass);
+        }
         let t = pass.t;
         let asks = self.oauth.is_none() && (app.services.test_account.is_some() || app.services.sync.is_some());
         let how = match &self.oauth {
@@ -1479,6 +1489,30 @@ impl AccountSetup {
             cancel = button(ui, tl!("Cancel"), false, true).clicked();
         });
         if cancel { Some(Action::Back) } else { (save || entered(ui, pass)).then_some(Action::Go) }
+    }
+
+    /// The settings of an account a newer MailCraft added: what it is, and nothing to change (its
+    /// settings go back into the mailbox file as that version wrote them).
+    fn newer_page(&mut self, ui: &mut Ui, pass: &Pass) -> Option<Action> {
+        let t = pass.t;
+        page(ui, &t, |ui| {
+            heading(ui, &shown(self.email.trim(), 120), &t);
+            note(
+                ui,
+                tl!(
+                    "This account was added by a newer version of MailCraft. This version keeps it as it is and doesn't send or receive with it: use the newer version for that, and to change its settings."
+                ),
+                t.text_dim,
+            );
+            note(
+                ui,
+                tl!("Its mail can be read here. What you change in it is kept in this mailbox, and this version tells no mail server about it."),
+                t.text_dim,
+            );
+        });
+        let mut close = false;
+        strip(ui, self.page, |ui| close = button(ui, tl!("Close"), true, true).clicked());
+        (close || entered(ui, pass)).then_some(Action::Back)
     }
 
     /// The password, masked. It is never shown, copied or spoken.
@@ -2926,6 +2960,29 @@ mod tests {
         assert_eq!(page(&h), None);
         // An account that isn't there has no settings to open.
         assert!(h.state_mut().execute("ui.dialog", json!({"name": "account", "id": 999_999})).is_err());
+    }
+
+    /// The settings of an account a newer MailCraft added say what it is and offer nothing to
+    /// change: Close, or Enter, shuts them, and nothing is run.
+    #[test]
+    fn the_settings_of_an_account_a_newer_version_added_say_so_and_change_nothing() {
+        let mut a = app(true);
+        // (Nothing else on screen has a Close button.)
+        let _ = a.execute("ui.dismissReminder", json!({"all": true}));
+        let id = a.session.mailbox.add_account(Account { email: "ada@jmap.example".into(), kind: AccountKind::Unknown, ..Default::default() });
+        let before = a.session.mailbox.accounts.clone();
+        let mut h = open(a, json!({"id": id}));
+        assert_eq!((page(&h), wizard(&h).map(|w| w.title())), (Some(Page::Settings), Some("Account Settings".to_string())));
+        assert!(says(&h, "This account was added by a newer version of MailCraft") && says(&h, "this version tells no mail server"));
+        assert!(!says(&h, "User name") && !says(&h, "Incoming mail (IMAP)") && h.query_by_role(Role::PasswordInput).is_none());
+        assert!(wizard(&h).and_then(AccountSetup::edit_command).is_none());
+        click(&mut h, "Close");
+        assert_eq!(page(&h), None);
+        h.state_mut().execute("ui.dialog", json!({"name": "account", "id": id})).unwrap();
+        h.run_steps(4);
+        press(&mut h, Key::Enter);
+        assert_eq!(page(&h), None);
+        assert_eq!(h.state().session.mailbox.accounts, before);
     }
 
     /// The password is typed in confidence: it is in no command, no debug text, and gone from the

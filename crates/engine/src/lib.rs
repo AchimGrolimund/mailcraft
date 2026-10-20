@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MailCraft engine: the session and its commands.
 //!
 //! **Everything is a command.** Each user-visible action is a [`CommandSpec`] with a stable id
@@ -7,6 +9,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod agent;
+pub mod arrivals;
 pub mod catalog;
 pub mod cmd;
 pub mod io;

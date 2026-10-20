@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MailCraft's data model: everything a mailbox holds, and the primitives that edit it.
 //!
 //! A [`Mailbox`] owns accounts, folders, messages, contacts, calendars, events, tasks, categories,
@@ -9,6 +11,7 @@
 mod address;
 mod calendar;
 mod contact;
+mod jmap_server;
 mod mailbox;
 mod message;
 mod offline;
@@ -32,9 +35,10 @@ pub use calendar::{
     ShowAs,
 };
 pub use contact::{Contact, Labeled, PostalAddress};
+pub use jmap_server::JmapServer;
 pub use mailbox::{
-    Account, AccountKind, BETWEEN_MAILBOXES, Category, Directory, DownloadInFull, Folder, FolderKind, GraphSwitch, IMPORTED, INTO_GRAPH, MAX_SHARED,
-    Mailbox, OAuth, OAuthProvider, Pending, Queued, STAYS_LOCAL, Security, Server, ServerFavorites, ServerFolder,
+    Account, AccountKind, AsWritten, BETWEEN_MAILBOXES, Category, Directory, DownloadInFull, Folder, FolderKind, GraphSwitch, IMPORTED, INTO_GRAPH,
+    MAX_SHARED, Mailbox, NOT_SENDING_YET, OAuth, OAuthProvider, Pending, Queued, STAYS_LOCAL, Security, Server, ServerFavorites, ServerFolder,
 };
 pub use mailcraft_time as time;
 pub use message::{Answers, Attachment, Body, ContentRef, FlagStatus, Importance, KeptBody, Message, normalize_subject, size_label, text_hash};

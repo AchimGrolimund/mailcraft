@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Windows of their own: a message or an appointment opened out of the main window, as a double
 //! click on it does.
 //!
@@ -671,6 +673,19 @@ fn frame(app: &mut MailApp, ui: &mut Ui, window: &mut Open, wish: Keys, closing:
     false
 }
 
+/// A window of the system with the main window's icon, and its application id, by which a
+/// Wayland desktop finds the icon of a window's title bar.
+pub(crate) fn like_main(ctx: &egui::Context, mut builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
+    let (icon, app_id) = ctx.viewport_for(egui::ViewportId::ROOT, |main| (main.builder.icon.clone(), main.builder.app_id.clone()));
+    if let Some(icon) = icon {
+        builder = builder.with_icon(icon);
+    }
+    if let Some(app_id) = app_id {
+        builder = builder.with_app_id(app_id);
+    }
+    builder
+}
+
 /// A window of the system. `true` when it is to close.
 fn show_native(app: &mut MailApp, ctx: &egui::Context, window: &mut Open) -> bool {
     let viewport = egui::ViewportId::from_hash_of(("mailcraft-window", window.id));
@@ -678,11 +693,8 @@ fn show_native(app: &mut MailApp, ctx: &egui::Context, window: &mut Open) -> boo
         None => MESSAGE_SIZE,
         Some(form) => [form.window_width(), FORM_HEIGHT],
     };
-    let mut builder = egui::ViewportBuilder::default().with_title(window.title.clone()).with_inner_size(size).with_min_inner_size(MIN_SIZE);
-    // The same icon as the main window has.
-    if let Some(icon) = ctx.viewport_for(egui::ViewportId::ROOT, |main| main.builder.icon.clone()) {
-        builder = builder.with_icon(icon);
-    }
+    let builder =
+        like_main(ctx, egui::ViewportBuilder::default().with_title(window.title.clone()).with_inner_size(size).with_min_inner_size(MIN_SIZE));
     if std::mem::take(&mut window.raise) {
         ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Focus);
     }

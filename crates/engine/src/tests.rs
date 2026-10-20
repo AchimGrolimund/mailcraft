@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use mailcraft_model::{FlagStatus, FolderKind, Id, Importance};
 use mailcraft_time::{Date, DateTime};
 use serde_json::{Value, json};
@@ -2042,7 +2044,7 @@ fn parity_has_a_floor_that_only_rises() {
     let s = session();
     let p = catalog::parity(&s.registry);
     let percent = p["percent"].as_f64().unwrap();
-    assert!(percent >= 58.0, "catalog parity fell to {percent}%");
+    assert!(percent >= 60.0, "catalog parity fell to {percent}%");
     // Every catalog id is spelled like a command id.
     for f in catalog::features() {
         assert!(f.id.contains('.') && !f.id.contains(' '), "{}", f.id);
@@ -2099,7 +2101,6 @@ fn hostile_params_never_panic() {
     let mut s = session();
     // Shared mailboxes switched on, under a Microsoft account, so that their commands get past
     // the door (#70).
-    s.shared_mailboxes = true;
     let _ = s.run("account.add", &json!({"email": "owner@example.org", "kind": "microsoft"}));
     // And one open, so that the folder pane's commands (Favorites, counts) meet its folders.
     let _ = s.run("account.addSharedMailbox", &json!({"address": "support@example.org"}));
