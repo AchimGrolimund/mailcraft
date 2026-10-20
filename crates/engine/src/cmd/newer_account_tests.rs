@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! An account a newer MailCraft added (`AccountKind::Unknown`): its file's account goes back into
 //! the file as it came, and nothing here sends, receives or changes its settings. Its mail can be
 //! read, and what is changed in it is kept in the mailbox; no server is told.
