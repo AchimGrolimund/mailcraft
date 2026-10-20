@@ -629,6 +629,14 @@ fn send(s: &mut Session, _: &Value) -> CmdResult {
     }
     let as_draft = m.server_draft.is_some();
     let account = s.mailbox.account(m.account).cloned().ok_or_else(|| fail("the account is gone"))?;
+    // Nothing here sends its mail, and it isn't a local account either: the message stays as it
+    // is being written, neither queued nor filed as sent.
+    if account.kind == AccountKind::Unknown {
+        return Err(super::account::added_by_newer(
+            &account,
+            "which sends its mail: send this message from another account, or save it as a draft to send it from that version",
+        ));
+    }
     // An account with a server queues the message for the next Send/Receive; a local one has
     // nowhere to send it, so it is filed as sent (and delivered to local accounts it names).
     let queued = account.kind.has_server();

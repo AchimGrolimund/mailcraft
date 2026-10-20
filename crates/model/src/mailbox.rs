@@ -193,10 +193,19 @@ pub enum AccountKind {
     /// settings and signs in with Microsoft ([`Account::oauth`]). One that was kept in step by
     /// IMAP becomes one when its owner switches it ([`GraphSwitch`]).
     Microsoft,
+    /// A kind this version doesn't know: an account that a newer MailCraft added, in a file that
+    /// one wrote (or one whose kind can't be read at all). Only what says which account it is
+    /// is read of it; the whole of it is kept as the file had it and written back so
+    /// ([`Account::as_written`]), so that the newer MailCraft finds it as it left it. It is never
+    /// kept in step, sent from or changed here: whatever it is, this version doesn't know how.
+    #[serde(other)]
+    Unknown,
 }
 
 impl AccountKind {
-    /// Whether the account is kept in step with a server (by IMAP or by Microsoft Graph).
+    /// Whether the account is kept in step with a server (by IMAP or by Microsoft Graph). Not an
+    /// account of a kind this version doesn't know: whatever server it has, this version can't
+    /// use it.
     pub fn has_server(self) -> bool {
         matches!(self, AccountKind::Imap | AccountKind::Microsoft)
     }
@@ -260,6 +269,93 @@ pub struct Account {
     /// in). `None` for every other account, and in a file from before there were any.
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "crate::sync::lenient")]
     pub shared_of: Option<Id>,
+    /// For an account of a kind this version doesn't know ([`AccountKind::Unknown`]): the account
+    /// as its file had it, every field but its id, which is what a mailbox file gets in its place
+    /// ([`Mailbox::accounts`]). `None` for every other account.
+    #[serde(skip)]
+    pub as_written: Option<AsWritten>,
+}
+
+/// An account of a kind this version doesn't know, as a mailbox file had it: every field but its
+/// id (the mailbox's to give: a repair may give it another), those this version doesn't know among
+/// them, value for value ([`Account::as_written`]). What it holds is the account's settings, which
+/// its debug output leaves out: it says how many fields there are.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AsWritten(serde_json::Map<String, serde_json::Value>);
+
+impl std::fmt::Debug for AsWritten {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AsWritten").field("fields", &self.0.len()).finish()
+    }
+}
+
+/// What is read of an account of a kind this version doesn't know: what says which account it is,
+/// each field as it is when it can be read, and as nothing when it can't.
+#[derive(Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct Identity {
+    #[serde(deserialize_with = "crate::sync::lenient_or_default")]
+    id: Id,
+    #[serde(deserialize_with = "crate::sync::lenient_or_default")]
+    name: String,
+    #[serde(deserialize_with = "crate::sync::lenient_or_default")]
+    email: String,
+    #[serde(deserialize_with = "crate::sync::lenient_or_default")]
+    display_name: String,
+    #[serde(deserialize_with = "crate::sync::lenient")]
+    shared_of: Option<Id>,
+}
+
+/// The accounts of a mailbox file. One of a kind this version doesn't know (its `kind` is a word
+/// it doesn't know, or can't be read) is read for what says which account it is, and no more: not
+/// its servers or its sign-in, which nothing here could use for it, and every other field is kept
+/// as it was ([`AsWritten`]). Every other account is read as it always was.
+fn read_accounts<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Account>, D::Error> {
+    let written = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    let mut accounts = Vec::with_capacity(written.len());
+    for value in written {
+        // (Only an object has a `kind`; one without says nothing, which is a local account.)
+        let unknown = value.get("kind").is_some_and(|kind| AccountKind::deserialize(kind).unwrap_or(AccountKind::Unknown) == AccountKind::Unknown);
+        if !unknown {
+            accounts.push(Account::deserialize(&value).map_err(serde::de::Error::custom)?);
+            continue;
+        }
+        let who = Identity::deserialize(&value).unwrap_or_default();
+        let mut fields = match value {
+            serde_json::Value::Object(fields) => fields,
+            _ => serde_json::Map::new(),
+        };
+        fields.remove("id");
+        accounts.push(Account {
+            id: who.id,
+            name: who.name,
+            email: who.email,
+            display_name: who.display_name,
+            kind: AccountKind::Unknown,
+            shared_of: who.shared_of,
+            as_written: Some(AsWritten(fields)),
+            ..Default::default()
+        });
+    }
+    Ok(accounts)
+}
+
+/// The accounts as a mailbox file has them: each as the model writes it, but one of a kind this
+/// version doesn't know, which is written as its file had it, with the id it has here.
+fn write_accounts<S: serde::Serializer>(accounts: &[Account], serializer: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeSeq as _;
+    let mut list = serializer.serialize_seq(Some(accounts.len()))?;
+    for account in accounts {
+        match &account.as_written {
+            Some(AsWritten(fields)) => {
+                let mut fields = fields.clone();
+                fields.insert("id".into(), account.id.into());
+                list.serialize_element(&fields)?;
+            }
+            None => list.serialize_element(account)?,
+        }
+    }
+    list.end()
 }
 
 /// What the owner of a Microsoft account kept in step by IMAP said to switching it to Microsoft
@@ -580,6 +676,9 @@ fn default_categories() -> Vec<Category> {
 pub struct Mailbox {
     /// File format version.
     pub version: u32,
+    /// An account of a kind this version doesn't know goes back into the file as it came
+    /// ([`Account::as_written`]).
+    #[serde(serialize_with = "write_accounts", deserialize_with = "read_accounts")]
     pub accounts: Vec<Account>,
     pub folders: Vec<Folder>,
     pub messages: BTreeMap<Id, Arc<Message>>,

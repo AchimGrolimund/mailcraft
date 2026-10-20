@@ -11,9 +11,11 @@ workspace = true
 [dependencies]
 mailcraft-time = { workspace = true }
 serde = { workspace = true }
+# An account of a kind this version doesn't know is kept as its file has it, field for field, to
+# be written back so (`Account::as_written`).
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 base64 = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 proptest = { workspace = true }

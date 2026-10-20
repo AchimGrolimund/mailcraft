@@ -1,6 +1,6 @@
 # MailCraft architecture
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-19 · **Change:** minor (fuzz targets for every reader, run in CI; `charset`, L0: one decoder of character sets for mail and vCard files, #180; R6: the mailbox file is a log of records, format 3, `store_index.rs`; a damaged later save stops the reading there, a damaged item of the first save costs only itself, and `file.open` says so; files kept aside are never removed and keep their content from the sweep; no citations of private decision records; R3.7: the switch from IMAP to Graph, no switch for testing; quitting on macOS through craft-quit, the first crate from craft-libs, for the apps alone; cargo-deny, pinned actions, zizmor, Scorecard, the threat model; R3.1: a Microsoft account kept in step through Graph behind a switch for testing, server ids, `graph::pace`; the Secret Service on Linux and FreeBSD behind `Services::secrets`; `StoreTrouble`; Exchange Web Services removed: the Favorites of Outlook are read through Microsoft Graph alone, and there is no choice of a way) · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-20 · **Change:** minor (an account of a kind this program doesn't know, one a newer MailCraft added, is kept as its file has it and written back so, `AccountKind::Unknown`; fuzz targets for every reader, run in CI; `charset`, L0: one decoder of character sets for mail and vCard files, #180; R6: the mailbox file is a log of records, format 3, `store_index.rs`; a damaged later save stops the reading there, a damaged item of the first save costs only itself, and `file.open` says so; files kept aside are never removed and keep their content from the sweep; no citations of private decision records; R3.7: the switch from IMAP to Graph, no switch for testing; quitting on macOS through craft-quit, the first crate from craft-libs, for the apps alone; cargo-deny, pinned actions, zizmor, Scorecard, the threat model; R3.1: a Microsoft account kept in step through Graph behind a switch for testing, server ids, `graph::pace`; the Secret Service on Linux and FreeBSD behind `Services::secrets`; `StoreTrouble`; Exchange Web Services removed: the Favorites of Outlook are read through Microsoft Graph alone, and there is no choice of a way) · **Target:** Microsoft Outlook (Microsoft 365)
 
 How MailCraft is built today. Rules for working in the code are in [`AGENTS.md`](../AGENTS.md). The
 shape — layers, "everything is a command", the swappable egui front end, the control channel, MCP,
@@ -97,7 +97,11 @@ code, taken from git pinned to one commit) is for the apps alone.
   (they call a format-3 file not a mailbox); a file that begins as ours but in a form newer than
   this program reads is said to be from a newer MailCraft. A self-contained single file is still what the browser, exports
   and `file.saveAs` use. Everything is in memory while the app runs, which is the next limit
-  (R6.1, see `docs/gaps.md`).
+  (R6.1, see `docs/gaps.md`). An account of a kind this program doesn't know (one a newer
+  MailCraft added: `AccountKind::Unknown`) doesn't stop the file from opening: only what says
+  which account it is is read, the rest is kept as the file has it (`Account::as_written`) and
+  written back so in every form, and nothing here sends, receives or changes its settings: going
+  back to the version before, after an update that didn't start, loses nothing of it.
 - **A Send/Receive arrives in pieces.** `mailcraft_net::sync_with` emits what was sent, what the
   server was told, then mail folder by folder (the Inbox first, newest first, fifty at a time),
   each piece safe to apply by itself (`apply_sync_part`), so mail shows while the rest is on its
@@ -218,3 +222,4 @@ code, taken from git pinned to one commit) is for the apps alone.
 | 2026-10-16 | minor | R3.7: the switch from IMAP to Graph (`cmd/graph_switch.rs`, `Account::graph_switch`, `Folder::awaiting_listing`); the switch for testing is gone |
 | 2026-10-18 | minor | `charset` (L0): the decoder of character sets moved out of `mime` so that `vcard` reads `CHARSET=` by the same rules, #180 |
 | 2026-10-19 | minor | Fuzz targets (`fuzz/`, cargo-fuzz) for every reader, run by `fuzz.yml` |
+| 2026-10-20 | minor | An account of a kind this program doesn't know (`AccountKind::Unknown`, one a newer MailCraft added) is kept as its file has it (`Account::as_written`), written back so, and never sent from, received for or changed here |
