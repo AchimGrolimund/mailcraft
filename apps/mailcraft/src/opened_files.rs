@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Attachments the owner opened (#126): written into a folder of MailCraft's own, then opened
 //! with the system's program for their kind.
 //!

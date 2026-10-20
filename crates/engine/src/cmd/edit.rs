@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Undo and redo. For a Microsoft account, undoing a change that reached its server is another
 //! change, which the next run sends; what can't be undone there is said ([`crate::undo`]).
 

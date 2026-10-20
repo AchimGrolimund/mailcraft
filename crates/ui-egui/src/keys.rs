@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Keyboard shortcuts: the registry's `shortcut` fields, run when no text field has the keyboard.
 
 use egui::{Key, Modifiers};

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Opening a page in the system's browser, with the browser brought in front of the window.
 //!
 //! Every page MailCraft opens comes through here: Microsoft's sign-in, consent and approval

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Downloads merged into the sample mailbox. The server's side is written out by hand, as
 //! `mailcraft-net` brings it from Microsoft Graph.
 

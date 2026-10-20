@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The main window's size, position and maximized state, saved with the UI preferences so the
 //! next launch opens the window where the user left it (#23).
 //!

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Recurrence rules (RFC 5545 §3.3.10), as far as the model holds them.
 
 use mailcraft_model::{Freq, Recurrence};

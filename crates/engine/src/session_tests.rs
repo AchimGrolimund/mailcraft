@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! What a command keeps of the messages it brings content into and lets go of again (#173).
 
 use std::sync::Mutex;

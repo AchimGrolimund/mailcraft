@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Property values: dates and times, durations and escaped text.
 
 use mailcraft_time::{DAY, Date, DateTime, Timestamp};

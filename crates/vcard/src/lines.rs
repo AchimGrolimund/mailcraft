@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Content lines: unfolding (and quoted-printable soft line breaks) on the way in, folding on the
 //! way out, and the `group.NAME;PARAM=value;PARAM:value` shape in between.
 

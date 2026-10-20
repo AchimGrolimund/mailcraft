@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The names Windows (and with it Microsoft's services) has for time zones, each with the zone of
 //! the IANA database it stands for.
 //!

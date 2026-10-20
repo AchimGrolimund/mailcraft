@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Design tokens (light and dark), UI fonts and the egui style.
 
 use std::sync::Arc;

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Calendar, the commands the grid needs beyond `calendar.rs`: copying an event (a drag with Ctrl
 //! held, Copy and Paste), the number of days in view, and how the calendar is drawn (its time
 //! scale, week numbers).

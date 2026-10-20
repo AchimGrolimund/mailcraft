@@ -1,0 +1,48 @@
+# The build is reproducible: the Linux app and CLI are built twice, from two checkouts in different
+# folders, and must come out byte for byte the same (docs/releasing.md, "Reproducible builds").
+# Weekly, and when asked for.
+name: Reproducible build
+
+on:
+  schedule:
+    - cron: '41 5 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  twice:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: first
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: elsewhere/second
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.98.1
+      - name: Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgtk-3-dev
+      # The folder a build runs in, and Cargo's own, are written into the binaries (panic
+      # locations); both are mapped to fixed names so where it was built doesn't show.
+      - name: Build twice
+        run: |
+          set -eu
+          for dir in first elsewhere/second; do
+            (cd "$dir" && RUSTFLAGS="--remap-path-prefix=$PWD=/mailcraft --remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$HOME/.rustup=/rustup" \
+              cargo build --release --locked -p mailcraft -p mailcraft-cli)
+          done
+      - name: Compare
+        run: |
+          set -eu
+          for bin in mailcraft mailcraft-cli; do
+            a=$(sha256sum "first/target/release/$bin" | cut -d' ' -f1)
+            b=$(sha256sum "elsewhere/second/target/release/$bin" | cut -d' ' -f1)
+            echo "$bin: $a $b"
+            [ "$a" = "$b" ] || { echo "::error::$bin differs between the two builds"; exit 1; }
+          done

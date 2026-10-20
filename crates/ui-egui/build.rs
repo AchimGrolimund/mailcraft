@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Bakes the contributor credits into the binary as static Rust tables (`docs/contributors.md`,
 //! craftrules standards/contributors.md), so nothing is read from disk or the network at run time
 //! and the web build has them too.

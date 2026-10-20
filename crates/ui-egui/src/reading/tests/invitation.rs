@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Meetings that arrive as mail, in the reading pane and in a message's own window: what the bar
 //! says of each kind, what its buttons run and ask, what it says once answered, and that nothing
 //! a message can say makes it offer a button that fails, or brings anything down.

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Changes of messages up through Microsoft Graph (R3.3.2), from end to end: the engine's
 //! `graph_mail_request` and `apply_graph_mail` with `mailcraft_net::graph::sync_mail` in between,
 //! against the strict Graph stand-in. One test per kind of change, refusals put back and said,

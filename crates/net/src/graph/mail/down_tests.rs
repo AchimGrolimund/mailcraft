@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A Microsoft account's mail down through the strict Graph stand-in (R3.2). Nothing here leaves
 //! this machine; every message is invented.
 

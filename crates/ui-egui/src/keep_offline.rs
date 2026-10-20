@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mail to keep offline (#143), in the window: mail older than an account's window goes back to
 //! its headers and preview when a mailbox is opened, once a day while it stays open, and when
 //! the owner shortens the window (after the question, [`crate::dialogs::confirmation`]). It is

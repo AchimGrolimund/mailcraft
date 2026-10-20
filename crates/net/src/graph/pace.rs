@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The ground rules every Graph request about a Microsoft account's mail goes by (R3 spec S14,
 //! S21): one retry policy by kind of request, and one gate per mailbox.
 //!

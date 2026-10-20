@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A shared mailbox's folders and mail through the strict Graph stand-in (#70): asked at
 //! `/users/{address}/…` with the owner's token, and nothing of it at `/me`. Nothing here leaves
 //! this machine; every address and message is invented.

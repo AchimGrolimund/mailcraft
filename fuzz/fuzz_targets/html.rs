@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! HTML mail to display blocks, HTML pasted into the composer, and the original under a reply or
 //! forward, which must never carry what runs or embeds.
 #![no_main]

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Header fields: reading them (unfolding, parameters) and writing them (folding).
 
 use crate::charset;

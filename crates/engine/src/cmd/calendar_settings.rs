@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Calendar, what the list of calendars and the mailbox's own settings add to `calendar.rs`: the
 //! calendars by group as the side pane lists them; which of them lie over one another (overlay)
 //! and which stand side by side; showing one alone; a colour chosen here; and the working hours,

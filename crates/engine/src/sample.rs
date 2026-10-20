@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The sample mailbox (`--sample`, `?sample`, File › New › Sample): our own invented people,
 //! mail, calendar and tasks, dated around "now" so every date group has something in it.
 

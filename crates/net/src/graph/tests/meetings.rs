@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! What a meeting has beyond its time and its people, against the stand-in: how much it matters,
 //! what the people invited are asked for, Teams meetings and the link to join by, proposals of
 //! another time, and forwarding. Nothing here leaves this machine.

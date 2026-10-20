@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Command implementations, one module per area. Each module exposes `specs()`.
 
 pub mod account;

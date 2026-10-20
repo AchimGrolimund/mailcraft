@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Whether a new version of MailCraft is out: one question to GitHub's API about the newest
 //! release of the repository the build names (`CARGO_PKG_REPOSITORY`), and nothing else.
 //!

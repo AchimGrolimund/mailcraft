@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The operating system's credential store: Windows Credential Manager, the macOS keychain, and
 //! on Linux and FreeBSD the desktop's Secret Service (GNOME Keyring, KWallet…) over D-Bus.
 //!

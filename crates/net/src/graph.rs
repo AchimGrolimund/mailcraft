@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Microsoft Graph, for what a Microsoft 365 or Outlook.com account has that IMAP and SMTP don't
 //! reach: [`send`] sends a message where SMTP is switched off for the account, [`events`] reads
 //! the calendar and [`contacts`] the contacts.

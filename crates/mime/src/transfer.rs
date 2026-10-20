@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Content transfer encodings (RFC 2045): base64 and quoted-printable.
 
 use base64::Engine as _;

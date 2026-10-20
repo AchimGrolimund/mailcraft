@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The mailbox on disk, kept so that saving it costs what changed rather than what it holds.
 //!
 //! One self-contained file ([`crate::io::write_mailbox`]) carries every attachment as base64 and is

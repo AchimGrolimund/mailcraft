@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The mailbox: everything MailCraft keeps, with the primitives that edit it.
 
 use std::collections::{BTreeMap, HashSet};

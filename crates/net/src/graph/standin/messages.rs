@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The stand-in's messages: a folder's message delta and a message's MIME, as Graph v1.0
 //! documents them (`message: delta`, "Get incremental changes to messages in a folder", "Use
 //! delta query to track changes"):

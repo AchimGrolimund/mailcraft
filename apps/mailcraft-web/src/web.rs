@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The browser shell: web `Services` (file picker, downloads, storage), drag-and-drop and the
 //! eframe web runner.
 

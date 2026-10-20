@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! How far a Send/Receive has got, as numbers: what a host's line for the status bar is made of,
 //! and what the engine keeps per account while a run goes on (#120).
 

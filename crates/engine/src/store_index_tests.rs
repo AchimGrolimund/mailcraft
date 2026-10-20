@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The mailbox file in format 3: what a save appends, how it reads back after a crash or
 //! damage, and how the earlier forms become it.
 

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Signatures (R4.5): rich text the owner ends their messages with, and the pictures (a logo) it
 //! may hold.
 //!

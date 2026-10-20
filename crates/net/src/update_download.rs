@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Downloading a new version of MailCraft, for a copy that updates itself, and making sure it is
 //! the project's own before anything is done with it. Nothing is installed here.
 //!

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Replies and forwards of HTML mail: the original goes out below the owner's text with its look
 //! and without anything in it that runs, embeds or tracks, a draft keeps it, and a plain-text
 //! original is still quoted in the body.

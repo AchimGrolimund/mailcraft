@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MailCraft iCalendar: events and to-dos as RFC 5545 text (`.ics` files, meeting invitations).
 //!
 //! [`parse`] reads `VEVENT`s and `VTODO`s, [`write()`] writes them, and [`parse_rrule`] and

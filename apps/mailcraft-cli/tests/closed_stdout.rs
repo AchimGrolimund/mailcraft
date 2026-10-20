@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A reader that closes stdout early (`mailcraft-cli commands --json | head`) must end the CLI
 //! quietly with exit 0, never with a panic (#508).
 #![cfg(unix)]

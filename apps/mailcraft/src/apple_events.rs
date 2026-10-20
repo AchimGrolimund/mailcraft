@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! macOS open-documents and quit Apple events.
 //!
 //! Finder double-clicks, Open With, drops on the Dock icon and `open -a MailCraft note.eml` don't

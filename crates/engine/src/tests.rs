@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use mailcraft_model::{FlagStatus, FolderKind, Id, Importance};
 use mailcraft_time::{Date, DateTime};
 use serde_json::{Value, json};

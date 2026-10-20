@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The replied and forwarded marks (#154): an original is marked once its reply or forward has
 //! gone (the server took it), not when Send is pressed; a reply that never went leaves no mark.
 

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Reading IMAP responses: the pieces a response arrives in, the values in it, and status lines.
 
 use crate::ProtoError;

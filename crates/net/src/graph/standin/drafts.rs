@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The stand-in's drafts and attachments, as Graph v1.0 documents them ("Create message",
 //! "message: createReply", "createReplyAll", "createForward", "Update message", "Add attachment",
 //! "attachment: createUploadSession", "Upload large attachments", "Delete attachment"):

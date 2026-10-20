@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A shared mailbox in the window (#70): read with its owner's sign-in, its permission asked for
 //! by itself when the owner asked for the run, and a mailbox the server won't open left alone by
 //! runs that start by themselves. Hosts are fakes; every address is invented.

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! An MCP client doing realistic tasks through the protocol only, checking results via MCP.
 
 use serde_json::{Value, json};

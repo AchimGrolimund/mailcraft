@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The search box draws each keyword the query language reads as a pill around the keyword and
 //! its colon (`[From:] stuart smith [Subject:] iqa`), so the owner sees which part of a message is
 //! searched (#196); what is typed after it stays plain text, so a full name reads as words. The

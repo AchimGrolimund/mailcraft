@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Time zones: the zone the calendar is shown in (and a second one beside it), the zones an
 //! event has of its own, and the list of zones to choose from.
 //!

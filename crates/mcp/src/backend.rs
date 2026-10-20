@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Where MCP tool calls end up: a control-channel method call.
 
 use std::io::{BufRead, BufReader, Write};

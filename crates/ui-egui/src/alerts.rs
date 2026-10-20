@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Desktop Alerts (R7.1): a notification MailCraft asks the operating system to show while it
 //! runs, for a reminder falling due and for new mail in an Inbox of the owner's own accounts.
 //!

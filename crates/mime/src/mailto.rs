@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `mailto:` links (RFC 6068): who a new message is for and how it starts.
 //!
 //! A link is hostile input like any other: it comes from a web page, a document or a message.

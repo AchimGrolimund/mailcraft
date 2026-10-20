@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Headless UI screenshots: renders the whole MailCraft window offscreen (wgpu), so it works
 //! with a locked screen or a hidden window.
 //!

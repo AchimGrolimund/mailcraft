@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Keeping the Favorites of the folder pane the ones Outlook shows, for an account that signs
 //! in with Microsoft: read from its server through Microsoft Graph, never written there.
 //!

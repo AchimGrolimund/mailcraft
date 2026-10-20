@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Time zones through the engine: a mailbox from before zones were kept, a computer that is
 //! carried to another zone, invitations from elsewhere, and what a server is and is not told.
 

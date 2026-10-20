@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native file dialogs (Open, Import, Attach, Save As, Export) that don't freeze the window.
 //!
 //! The blocking `rfd::FileDialog` ran on the UI thread: on Linux the xdg-desktop-portal call

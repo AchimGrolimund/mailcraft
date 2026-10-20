@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Drafts up through Microsoft Graph (R3.4.1), from end to end: the engine's `graph_mail_request`
 //! and `apply_graph_mail` with `mailcraft_net::graph::sync_mail` in between, against the strict
 //! Graph stand-in. A draft written here is in the server's Drafts and back, once, after a lost
