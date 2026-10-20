@@ -184,10 +184,13 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
                     // An online meeting that has a link to join by gets a Join button beside Dismiss.
                     let join = app.session.mailbox.event(r.event).and_then(|e| e.join_link()).and_then(mailcraft_model::OnlineMeeting::clean_link);
                     let aside = if join.is_some() { 56.0 } else { 0.0 };
+                    // Dismiss is as wide as its word needs in the interface language (64 at least).
+                    let font = egui::TextStyle::Button.resolve(ui.style());
+                    let wide = ui.fonts_mut(|f| f.layout_no_wrap(tl!("Dismiss").to_string(), font, t.text).size().x + 16.0).max(64.0);
                     crate::theme::paint_clipped(
                         ui.painter(),
                         egui::pos2(rect.min.x + 34.0, rect.min.y + 15.0),
-                        rect.width() - 130.0 - aside,
+                        rect.width() - wide - 66.0 - aside,
                         name,
                         semibold(12.5),
                         t.text,
@@ -197,15 +200,15 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
                     crate::theme::paint_clipped(
                         ui.painter(),
                         egui::pos2(rect.min.x + 34.0, rect.min.y + 32.0),
-                        rect.width() - 130.0 - aside,
+                        rect.width() - wide - 66.0 - aside,
                         &detail,
                         regular(11.5),
                         t.text_dim,
                     );
                     let color = if r.minutes <= 0 { t.red } else { t.text_dim };
-                    let said = egui::pos2(rect.max.x - 78.0 - aside, rect.min.y + 15.0);
+                    let said = egui::pos2(rect.max.x - wide - 14.0 - aside, rect.min.y + 15.0);
                     ui.painter().text(said, Align2::RIGHT_CENTER, when(r.minutes), regular(11.5), color);
-                    let button = egui::Rect::from_min_size(egui::pos2(rect.max.x - 70.0, rect.center().y - 12.0), vec2(64.0, 24.0));
+                    let button = egui::Rect::from_min_size(egui::pos2(rect.max.x - wide - 6.0, rect.center().y - 12.0), vec2(wide, 24.0));
                     // The link is shown where it leads, and followed only on the click.
                     let mut pressed = false;
                     if let Some(link) = &join {

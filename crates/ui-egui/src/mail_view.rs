@@ -155,28 +155,34 @@ fn row_height(preview_lines: u8) -> f32 {
     }
 }
 
-/// What the arrangement is called in the list's header.
+/// A group heading of the list in the interface language: the engine's dates (`Today`) are
+/// names the catalogue has, and so is the heading of what is pinned.
+fn group_name(group: &str) -> &str {
+    if group == "Pinned" { tl!("Pinned") } else { tl!(group) }
+}
+
+/// What the arrangement is called in the list's header, in the interface language.
 fn sort_label(sort: SortBy) -> &'static str {
     match sort {
-        SortBy::Date => "By Date",
-        SortBy::From => "By From",
-        SortBy::Subject => "By Subject",
-        SortBy::Size => "By Size",
-        SortBy::Importance => "By Importance",
+        SortBy::Date => tl!("By Date"),
+        SortBy::From => tl!("By From"),
+        SortBy::Subject => tl!("By Subject"),
+        SortBy::Size => tl!("By Size"),
+        SortBy::Importance => tl!("By Importance"),
     }
 }
 
-/// What is on top of the list, for the arrow that turns it over.
+/// What is on top of the list, for the arrow that turns it over, in the interface language.
 fn direction_label(sort: SortBy, descending: bool) -> &'static str {
     match (sort, descending) {
-        (SortBy::Date, true) => "Newest on top",
-        (SortBy::Date, false) => "Oldest on top",
-        (SortBy::From | SortBy::Subject, false) => "A on top",
-        (SortBy::From | SortBy::Subject, true) => "Z on top",
-        (SortBy::Size, true) => "Largest on top",
-        (SortBy::Size, false) => "Smallest on top",
-        (SortBy::Importance, true) => "High on top",
-        (SortBy::Importance, false) => "Low on top",
+        (SortBy::Date, true) => tl!("Newest on top"),
+        (SortBy::Date, false) => tl!("Oldest on top"),
+        (SortBy::From | SortBy::Subject, false) => tl!("A on top"),
+        (SortBy::From | SortBy::Subject, true) => tl!("Z on top"),
+        (SortBy::Size, true) => tl!("Largest on top"),
+        (SortBy::Size, false) => tl!("Smallest on top"),
+        (SortBy::Importance, true) => tl!("High on top"),
+        (SortBy::Importance, false) => tl!("Low on top"),
     }
 }
 
@@ -192,7 +198,7 @@ fn list_header(app: &mut MailApp, ui: &mut Ui) {
     // A, the largest), down once it is turned over.
     let (sort, descending) = (app.session.view.sort, app.session.view.sort_descending);
     let arrow = Rect::from_center_size(pos2(rows_end - 11.0, r.min.y + 33.0), vec2(20.0, 22.0));
-    let arrow_resp = ui.interact(arrow, ui.id().with("list_direction"), Sense::click()).on_hover_text(tl!(direction_label(sort, descending)));
+    let arrow_resp = ui.interact(arrow, ui.id().with("list_direction"), Sense::click()).on_hover_text(direction_label(sort, descending));
     app.hit.add("listSort", 1, arrow);
     if arrow_resp.hovered() {
         ui.painter().rect_filled(arrow, 4.0, t.hover);
@@ -203,7 +209,7 @@ fn list_header(app: &mut MailApp, ui: &mut Ui) {
     }
 
     // The arrangement and its menu.
-    let label = tl!(sort_label(sort));
+    let label = sort_label(sort);
     let label_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(label.to_string(), regular(SORT_TEXT), t.text).size().x);
     let label_end = rows_end - 46.0;
     let sr = Rect::from_min_max(pos2(label_end - label_w - 6.0, r.min.y + 22.0), pos2(rows_end - 25.0, r.min.y + 44.0));
@@ -538,7 +544,14 @@ fn list(app: &mut MailApp, ui: &mut Ui) {
                     if i == 0 {
                         ui.painter().line_segment([pos2(gr.min.x, top), pos2(gr.max.x, top)], line);
                     }
-                    paint_clipped(ui.painter(), pos2(gr.min.x + 10.0, gr.center().y), gr.width() - 16.0, tl!(group), semibold(GROUP_TEXT), t.text);
+                    paint_clipped(
+                        ui.painter(),
+                        pos2(gr.min.x + 10.0, gr.center().y),
+                        gr.width() - 16.0,
+                        group_name(group),
+                        semibold(GROUP_TEXT),
+                        t.text,
+                    );
                 }
                 let rect = Rect::from_min_size(pos2(origin.x, origin.y + top), vec2(width, row_h));
                 if reveal && Some(row.id) == focus {

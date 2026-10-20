@@ -294,3 +294,28 @@ fn a_reply_quotes_in_the_interface_language_and_its_draft_reopens_in_any() {
         assert_eq!(compose(&s).quote.clone().unwrap().text, was.text);
     });
 }
+
+#[test]
+fn a_draft_quoted_in_any_shipped_language_reopens_with_its_quote() {
+    use mailcraft_i18n::Lang;
+    let markers = [
+        (Lang::French, "-----Message d'origine-----", "De\u{202f}: "),
+        (Lang::German, "-----Ursprüngliche Nachricht-----", "Von: "),
+        (Lang::Spanish, "-----Mensaje original-----", "De: "),
+        (Lang::Italian, "-----Messaggio originale-----", "Da: "),
+    ];
+    for (lang, marker, from) in markers {
+        let mut s = session();
+        s.interface_language = lang;
+        let id = newsletter(&mut s);
+        run(&mut s, "mail.reply", json!({"id": id}));
+        let was = compose(&s).quote.clone().unwrap();
+        assert!(was.text.starts_with(&format!("\n\n{marker}\n{from}")), "{lang:?}: {}", was.text);
+        let d = run(&mut s, "compose.saveDraft", json!({}))["draft"].as_u64().unwrap();
+        run(&mut s, "compose.close", json!({}));
+        // Reopened in English, the quote is still found by its language's marker.
+        s.interface_language = Lang::English;
+        run(&mut s, "mail.editDraft", json!({"id": d}));
+        assert_eq!(compose(&s).quote.clone().unwrap().text, was.text, "{lang:?}");
+    }
+}

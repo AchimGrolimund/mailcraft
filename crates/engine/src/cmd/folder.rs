@@ -127,7 +127,7 @@ fn select(s: &mut Session, v: &Value) -> CmdResult {
         let account = account.or_else(|| s.mailbox.folder(s.view.folder).map(|f| f.account)).or_else(|| s.mailbox.default_account().map(|a| a.id));
         account
             .and_then(|a| s.mailbox.folder_of_kind(a, kind))
-            .ok_or_else(|| failed!("no {folder} folder", folder = mailcraft_i18n::Arg::words(kind.default_name())))?
+            .ok_or_else(|| failed!("no {folder} folder", folder = mailcraft_i18n::Arg::folder(kind.default_name())))?
     } else if let Some(path) = p::str(v, "path") {
         by_path(s, account, path).ok_or_else(|| failed!("no folder \"{path}\"", path))?
     } else {

@@ -27,6 +27,11 @@ pub fn t(s: &str) -> &str {
     current().t(s)
 }
 
+/// `s` in `context` (`msgctxt`), in the interface language.
+pub fn tc<'a>(context: &str, s: &'a str) -> &'a str {
+    current().tc(context, s)
+}
+
 /// The form for a count of `n` of `one` / `other` (English singular and plural), in the interface
 /// language, with `{n}` filled in (other placeholders are left to [`fmt`]).
 pub fn tn(n: u64, one: &str, other: &str) -> String {

@@ -74,7 +74,7 @@ impl Lang {
     pub fn conventions(self) -> Conventions {
         match self {
             Lang::English | Lang::Pseudo => Conventions { twelve_hour: true, week_start: 6, pad_numeric: false },
-            Lang::French => Conventions { twelve_hour: false, week_start: 0, pad_numeric: true },
+            Lang::French | Lang::German | Lang::Spanish | Lang::Italian => Conventions { twelve_hour: false, week_start: 0, pad_numeric: true },
         }
     }
 }
@@ -366,7 +366,22 @@ mod tests {
     fn each_language_has_its_own_clock_and_week() {
         assert_eq!(Lang::English.conventions(), Conventions { twelve_hour: true, week_start: 6, pad_numeric: false });
         assert_eq!(Lang::Pseudo.conventions(), Lang::English.conventions());
-        let fr = Lang::French.conventions();
-        assert_eq!((fr.twelve_hour, fr.week_start, fr.pad_numeric), (false, 0, true));
+        for lang in [Lang::French, Lang::German, Lang::Spanish, Lang::Italian] {
+            let c = lang.conventions();
+            assert_eq!((c.twelve_hour, c.week_start, c.pad_numeric), (false, 0, true), "{lang:?}");
+        }
+    }
+
+    /// The shipped catalogues: each language's own order, names and numeric form.
+    #[test]
+    fn the_shipped_catalogues_write_dates_their_own_way() {
+        let said = |lang: Lang| (long(&lang, SUN), numeric(&lang, OLD), time(&lang, 21, 5, false));
+        assert_eq!(said(Lang::German), ("Sonntag, 11. Oktober 2026".into(), "03.10.2025".into(), "21:05".into()));
+        assert_eq!(said(Lang::French).1, "03/10/2025");
+        assert_eq!(said(Lang::Spanish).1, "03/10/2025");
+        assert_eq!(said(Lang::Italian).1, "03/10/2025");
+        assert!(long(&Lang::Spanish, SUN).contains("domingo") && long(&Lang::Spanish, SUN).contains("octubre"));
+        assert!(long(&Lang::Italian, SUN).contains("domenica") && long(&Lang::Italian, SUN).contains("ottobre"));
+        assert!(long(&Lang::French, SUN).contains("dimanche") && long(&Lang::French, SUN).contains("octobre"));
     }
 }

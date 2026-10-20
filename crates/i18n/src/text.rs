@@ -23,12 +23,20 @@ pub enum Arg {
     Plain(String),
     /// Interface text of its own (a folder's default name, a fixed reason), said in the language too.
     Words(&'static str),
+    /// A standard folder's default name ("Archive"), said as the language names that folder
+    /// ([`Lang::folder`]), which may differ from the same English word elsewhere.
+    Folder(&'static str),
 }
 
 impl Arg {
     /// Interface text, said in the language like the template.
     pub fn words(s: &'static str) -> Arg {
         Arg::Words(s)
+    }
+
+    /// A standard folder's default name, said as the language names the folder.
+    pub fn folder(s: &'static str) -> Arg {
+        Arg::Folder(s)
     }
 }
 
@@ -63,6 +71,7 @@ impl Text {
             .map(|(k, a)| match a {
                 Arg::Plain(s) => (*k, s.as_str()),
                 Arg::Words(w) => (*k, lang.t(w)),
+                Arg::Folder(w) => (*k, lang.folder(w)),
             })
             .collect();
         crate::fmt(lang.t(self.template), &values)

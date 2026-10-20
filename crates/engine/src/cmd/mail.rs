@@ -233,7 +233,7 @@ fn move_to_kind(s: &mut Session, ids: &[Id], kind: FolderKind) -> CmdResult {
         let folder = s
             .mailbox
             .folder_of_kind(account, kind)
-            .ok_or_else(|| failed!("this account has no {folder} folder", folder = mailcraft_i18n::Arg::words(kind.default_name())))?;
+            .ok_or_else(|| failed!("this account has no {folder} folder", folder = mailcraft_i18n::Arg::folder(kind.default_name())))?;
         if s.mailbox.message(*id).is_some_and(|m| m.folder != folder) {
             s.mailbox.move_message(*id, folder)?;
             moved.push(*id);

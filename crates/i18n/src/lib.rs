@@ -30,6 +30,9 @@ mod files {
     include!(concat!(env!("OUT_DIR"), "/catalogues.rs"));
 }
 
+/// The context of a standard folder's name in the catalogues (`msgctxt "folder"`).
+pub const FOLDER: &str = "folder";
+
 /// The interface language setting that follows the system's.
 pub const AUTO: &str = "auto";
 
@@ -39,6 +42,9 @@ pub enum Lang {
     #[default]
     English,
     French,
+    German,
+    Spanish,
+    Italian,
     /// Accented look-alikes of the English text, for finding text that skips translation. Set by
     /// command only; never offered.
     Pseudo,
@@ -46,13 +52,16 @@ pub enum Lang {
 
 impl Lang {
     /// Every language there is a name for (whether or not it has a catalogue yet).
-    pub const ALL: [Lang; 3] = [Lang::English, Lang::French, Lang::Pseudo];
+    pub const ALL: [Lang; 6] = [Lang::English, Lang::French, Lang::German, Lang::Spanish, Lang::Italian, Lang::Pseudo];
 
     /// Its code: `en`, `fr`, `pseudo` (the settings' and the commands' value; the `.po` file's name).
     pub fn code(self) -> &'static str {
         match self {
             Lang::English => "en",
             Lang::French => "fr",
+            Lang::German => "de",
+            Lang::Spanish => "es",
+            Lang::Italian => "it",
             Lang::Pseudo => "pseudo",
         }
     }
@@ -68,6 +77,9 @@ impl Lang {
         match primary.to_ascii_lowercase().as_str() {
             "en" => Some(Lang::English),
             "fr" => Some(Lang::French),
+            "de" => Some(Lang::German),
+            "es" => Some(Lang::Spanish),
+            "it" => Some(Lang::Italian),
             _ => None,
         }
     }
@@ -77,13 +89,22 @@ impl Lang {
         match self {
             Lang::English => "English",
             Lang::French => "Français",
+            Lang::German => "Deutsch",
+            Lang::Spanish => "Español",
+            Lang::Italian => "Italiano",
             Lang::Pseudo => "Pseudo",
         }
     }
 
     /// No native speaker has reviewed its main screens yet: named "(preview)" where it is chosen.
     pub fn preview(self) -> bool {
-        matches!(self, Lang::French)
+        matches!(self, Lang::French | Lang::German | Lang::Spanish | Lang::Italian)
+    }
+
+    /// Its name as the language picker shows it: in its own language, and, while it is a preview,
+    /// "(preview)" in its own words (`Deutsch (Vorschau)`), whatever language the window speaks.
+    pub fn picker_name(self) -> String {
+        if self.preview() { fmt(self.t("{language} (preview)"), &[("language", self.native_name())]) } else { self.native_name().to_string() }
     }
 
     /// English needs none; the others have one compiled in, or can't be chosen.
@@ -128,6 +149,22 @@ impl Lang {
             Lang::Pseudo => pseudo(s),
             lang => catalogue(lang).and_then(|c| c.get(s)).unwrap_or(s),
         }
+    }
+
+    /// `s` (English) in `context`, for a word that needs another translation there (the folder
+    /// "Archive" against the command): the catalogue's entry with that `msgctxt`, English when it
+    /// has none.
+    pub fn tc<'a>(self, context: &str, s: &'a str) -> &'a str {
+        match self {
+            Lang::English => s,
+            Lang::Pseudo => pseudo(s),
+            lang => catalogue(lang).and_then(|c| c.get(&po::key(Some(context), s))).unwrap_or(s),
+        }
+    }
+
+    /// A standard folder's default name ("Archive", "Sent Items") as this language names the folder.
+    pub fn folder(self, name: &str) -> &str {
+        self.tc(FOLDER, name)
     }
 
     /// The form of `one` / `other` (English singular and plural) a count of `n` takes in this
@@ -200,7 +237,7 @@ pub fn catalogue(lang: Lang) -> Option<&'static Catalogue> {
     if let Some(c) = test_support::catalogue(lang) {
         return Some(c);
     }
-    static READ: [OnceLock<Option<Catalogue>>; 3] = [OnceLock::new(), OnceLock::new(), OnceLock::new()];
+    static READ: [OnceLock<Option<Catalogue>>; Lang::ALL.len()] = [const { OnceLock::new() }; Lang::ALL.len()];
     let slot = READ.get(Lang::ALL.iter().position(|l| *l == lang)?)?;
     slot.get_or_init(|| files::FILES.iter().find(|(code, _)| *code == lang.code()).map(|(_, text)| Catalogue::parse(text))).as_ref()
 }
@@ -302,12 +339,42 @@ mod tests {
         // Automatic never picks the test language, nor one without a catalogue.
         assert_eq!(Lang::from_pref("auto", Some("pseudo")), Lang::English);
         assert_eq!(Lang::from_code("fr_CA.UTF-8"), Some(Lang::French));
-        assert_eq!(Lang::from_code("de-DE"), None);
+        assert_eq!(Lang::from_code("de-AT"), Some(Lang::German));
+        assert_eq!(Lang::from_code("es_MX.UTF-8"), Some(Lang::Spanish));
+        assert_eq!(Lang::from_code("it-CH"), Some(Lang::Italian));
+        assert_eq!(Lang::from_code("nl-NL"), None);
         let fr = if Lang::French.has_catalogue() { Lang::French } else { Lang::English };
         assert_eq!(Lang::from_pref("auto", Some("fr-BE")), fr);
         assert_eq!(Lang::from_pref("fr", None), fr);
         assert_eq!(Lang::available().contains(&Lang::French), Lang::French.has_catalogue());
         assert!(Lang::available().contains(&Lang::English) && !Lang::available().contains(&Lang::Pseudo));
+    }
+
+    /// A word with two meanings is looked up in its context: "Archive" the folder isn't
+    /// "Archive" the command, and a text said with a folder's name names the folder.
+    #[test]
+    fn a_context_tells_the_folder_from_the_command() {
+        let said: Vec<(&str, &str)> =
+            [Lang::French, Lang::German, Lang::Spanish, Lang::Italian].iter().map(|l| (l.t("Archive"), l.folder("Archive"))).collect();
+        assert_eq!(said, [("Archiver", "Archives"), ("Archivieren", "Archiv"), ("Archivar", "Archivo"), ("Archivia", "Archivio")]);
+        assert_eq!((Lang::English.folder("Archive"), Lang::Pseudo.tc("folder", "Archive")), ("Archive", "Árchívé"));
+        // A context the catalogue doesn't have is English, never the word of another meaning.
+        assert_eq!(Lang::French.tc("nowhere", "Archive"), "Archive");
+        let text = Text::new("no {folder} folder", vec![("folder", Arg::folder("Archive"))]);
+        assert_eq!((text.to_string(), text.in_lang(Lang::German).contains("„Archiv“")), ("no Archive folder".to_string(), true));
+        let c = Catalogue::parse("msgctxt \"folder\"\nmsgid \"Archive\"\nmsgstr \"Archives\"\n\nmsgid \"Archive\"\nmsgstr \"Archiver\"\n");
+        assert_eq!((c.get("Archive"), c.get(&po::key(Some("folder"), "Archive"))), (Some("Archiver"), Some("Archives")));
+    }
+
+    /// Each language is offered by its own name, "(preview)" said in its own words.
+    #[test]
+    fn the_picker_names_each_language_in_its_own_words() {
+        let names: Vec<String> = Lang::available().into_iter().map(Lang::picker_name).collect();
+        assert_eq!(names, ["English", "Français (aperçu)", "Deutsch (Vorschau)", "Español (versión preliminar)", "Italiano (anteprima)"]);
+        assert_eq!(Lang::from_pref("auto", Some("de_AT.UTF-8")), Lang::German);
+        assert_eq!(Lang::from_pref("auto", Some("es-MX")), Lang::Spanish);
+        assert_eq!(Lang::from_pref("auto", Some("it-CH")), Lang::Italian);
+        assert_eq!(Lang::from_pref("auto", Some("fr-CA")), Lang::French);
     }
 
     #[test]

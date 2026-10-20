@@ -107,14 +107,21 @@ pub struct Found {
     kinds: BTreeSet<&'static str>,
 }
 
+/// By the key a catalogue looks a text up by: its English, after its context and `\u{4}` when it
+/// has one ([`po::key`]).
 type Texts = BTreeMap<String, Found>;
 
 fn add(texts: &mut Texts, id: &str, plural: Option<&str>, file: &str, kind: &'static str) {
+    add_in(texts, None, id, plural, file, kind);
+}
+
+/// A text in a context (`msgctxt`): `tlc!("folder", "Archive")`.
+fn add_in(texts: &mut Texts, context: Option<&str>, id: &str, plural: Option<&str>, file: &str, kind: &'static str) {
     // Nothing to translate in a text without a letter (`·`, `{n}%`, ``).
     if !id.chars().any(char::is_alphabetic) {
         return;
     }
-    let f = texts.entry(id.to_string()).or_default();
+    let f = texts.entry(po::key(context, id)).or_default();
     if let Some(p) = plural {
         f.plural = Some(p.to_string());
     }
@@ -134,6 +141,9 @@ fn gather(root: &Path) -> Result<Texts, String> {
         literals(toks, file, &through, &mut texts);
         if file.ends_with("ui-egui/src/lib.rs") {
             window_commands(toks, file, &mut texts);
+        }
+        if file.ends_with("ui-egui/src/ribbon.rs") {
+            ribbon(toks, file, &mut texts);
         }
         names(toks, file, &mut texts);
     }
@@ -160,6 +170,9 @@ fn gather(root: &Path) -> Result<Texts, String> {
     for (file, toks) in sources(root, "crates/i18n/src")? {
         if file.ends_with("/date.rs") {
             dates(&toks, &file, &mut texts);
+        } else if file.ends_with("/lib.rs") {
+            // The language picker's "(preview)", which each language says in its own words.
+            engine_says(&toks, &file, &BTreeMap::new(), &BTreeMap::new(), &mut texts);
         }
     }
     Ok(texts)
@@ -422,12 +435,74 @@ fn is(toks: &[Tok], i: usize, want: &[&str]) -> bool {
     })
 }
 
-/// `tl!("…")`, `tln!(n, "…", "…")`, and a literal where a function translates that parameter.
+/// The ribbon's controls, `Item::big(icon, "Label", …)` and the other constructors (the label, and
+/// the tooltip's name where it has one), also through a closure that hands its parameters on
+/// (`let due = |icon, label, tip, …| Item::small(icon, label, tip, …)`), a label chosen by an `if`
+/// included; and its groups' titles (`g("Respond", …)`). A large button's label keeps its line
+/// break (`"Follow\nUp"`): the translation says where it breaks.
+fn ribbon(toks: &[Tok], file: &str, texts: &mut Texts) {
+    // Which arguments of each constructor are a label or a tooltip's name.
+    const AT: [(&str, &[usize]); 6] =
+        [("big", &[1]), ("small", &[1, 2]), ("big_menu", &[2, 3]), ("small_menu", &[2, 3]), ("gather", &[2]), ("new", &[2])];
+    let ctor = |i: usize| AT.iter().find(|(f, _)| is(toks, i, &["Item", ":", ":", f, "("])).map(|(_, at)| (i + 4, *at));
+    // The closures that make a control: which of their parameters end up a label.
+    let mut closures: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for i in 0..toks.len() {
+        let (Some(Tok::Ident(name)), true) = (toks.get(i + 1), is(toks, i, &["let"]) && is(toks, i + 2, &["=", "|"])) else { continue };
+        let Some(bar) = (i + 4..toks.len()).find(|k| toks.get(*k) == Some(&Tok::Punct('|'))) else { continue };
+        let Some((open, at)) = ctor(bar + 1) else { continue };
+        // Each parameter's name: the first word of each part between commas.
+        let params: Vec<&str> = toks
+            .get(i + 4..bar)
+            .unwrap_or_default()
+            .split(|t| *t == Tok::Punct(','))
+            .map(|p| if let Some(Tok::Ident(n)) = p.first() { n.as_str() } else { "" })
+            .collect();
+        let labels = args(toks, open)
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| at.contains(k))
+            .filter_map(|(_, a)| if let [Tok::Ident(n)] = a { params.iter().position(|p| p == n) } else { None })
+            .collect();
+        closures.insert(name.clone(), labels);
+    }
+    for i in 0..toks.len() {
+        let after_fn = matches!(i.checked_sub(1).and_then(|k| toks.get(k)), Some(Tok::Ident(w)) if w == "fn");
+        let (open, at): (usize, &[usize]) = if let Some(found) = ctor(i) {
+            found
+        } else if is(toks, i, &["g", "("]) && !after_fn {
+            (i + 1, &[0])
+        } else if let (Some(Tok::Ident(n)), Some(Tok::Punct('('))) = (toks.get(i), toks.get(i + 1))
+            && let Some(at) = closures.get(n)
+        {
+            (i + 1, at)
+        } else {
+            continue;
+        };
+        for (_, a) in args(toks, open).iter().enumerate().filter(|(k, _)| at.contains(k)) {
+            let chosen = matches!(a.first(), Some(Tok::Ident(w)) if w == "if");
+            for t in if chosen { a } else { a.get(..1).filter(|_| a.len() == 1).unwrap_or_default() } {
+                if let Tok::Str(s) = t {
+                    add(texts, s, None, file, "ribbon");
+                }
+            }
+        }
+    }
+}
+
+/// `tl!("…")`, `tlc!("context", "…")`, `tln!(n, "…", "…")`, and a literal where a function
+/// translates that parameter.
 fn literals(toks: &[Tok], file: &str, through: &BTreeMap<String, BTreeSet<usize>>, texts: &mut Texts) {
     for i in 0..toks.len() {
         if is(toks, i, &["tl", "!", "("]) {
             if let Some(s) = args(toks, i + 2).first().and_then(|a| lit(a)) {
                 add(texts, s, None, file, "interface");
+            }
+        } else if is(toks, i, &["tlc", "!", "("]) {
+            if let [context, s] = args(toks, i + 2).as_slice()
+                && let (Some(context), Some(s)) = (lit(context), lit(s))
+            {
+                add_in(texts, Some(context), s, None, file, "interface");
             }
         } else if is(toks, i, &["tln", "!", "("]) {
             let a = args(toks, i + 2);
@@ -597,6 +672,11 @@ fn names(toks: &[Tok], file: &str, texts: &mut Texts) {
             for t in toks.get(body..close(toks, body)).unwrap_or_default() {
                 if let Tok::Str(s) = t {
                     add(texts, s, None, file, "name");
+                    // A standard folder's default name is also looked up as the folder's
+                    // (`Lang::folder`): "Archive" the folder isn't "Archive" the command.
+                    if name == "default_name" {
+                        add_in(texts, Some(mailcraft_i18n::FOLDER), s, None, file, "folder name");
+                    }
                 }
             }
         }
@@ -735,10 +815,16 @@ fn dates(toks: &[Tok], file: &str, texts: &mut Texts) {
 
 const HEADER: &str = "Project-Id-Version: MailCraft\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\nPlural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n";
 
-fn entry_of(id: &str, f: &Found, forms: usize) -> Entry {
+/// The entry of a text found under `key` ([`Texts`]).
+fn entry_of(key: &str, f: &Found, forms: usize) -> Entry {
+    let (context, id) = match key.split_once('\u{4}') {
+        Some((c, id)) => (Some(c.to_string()), id),
+        None => (None, key),
+    };
     Entry {
         extracted: vec![f.kinds.iter().copied().collect::<Vec<_>>().join(", ")],
         references: vec![f.refs.iter().cloned().collect::<Vec<_>>().join(" ")],
+        context,
         id: id.to_string(),
         id_plural: f.plural.clone(),
         strs: vec![String::new(); if f.plural.is_some() { forms } else { 1 }],
@@ -764,9 +850,9 @@ fn merge(old: &[Entry], found: &Texts) -> Vec<Entry> {
     let forms = header.as_ref().and_then(|h| h.header_field("Plural-Forms")).map_or(Rule::default(), Rule::from_header).forms();
     let by_key: BTreeMap<String, &Entry> = old.iter().filter(|e| !e.is_header()).map(|e| (e.key(), e)).collect();
     let mut out: Vec<Entry> = header.into_iter().collect();
-    for (id, f) in found {
-        let mut e = entry_of(id, f, forms);
-        if let Some(was) = by_key.get(&po::key(None, id)) {
+    for (key, f) in found {
+        let mut e = entry_of(key, f, forms);
+        if let Some(was) = by_key.get(key) {
             e.comments = was.comments.clone();
             e.previous = was.previous.clone();
             e.flags = was.flags.clone();
@@ -777,7 +863,7 @@ fn merge(old: &[Entry], found: &Texts) -> Vec<Entry> {
         }
         out.push(e);
     }
-    for was in old.iter().filter(|e| !e.is_header() && e.context.is_none() && !found.contains_key(&e.id)) {
+    for was in old.iter().filter(|e| !e.is_header() && !found.contains_key(&e.key())) {
         if was.strs.iter().any(|s| !s.is_empty()) {
             out.push(Entry { obsolete: true, references: Vec::new(), extracted: Vec::new(), ..(*was).clone() });
         }
@@ -821,6 +907,7 @@ mod tests {
             fn draw() {
                 let a = tl!("Reply"); // tl!("not this")
                 let b = tln!(n, "{n} message", "{n} messages");
+                let f = tlc!("folder", "Archive");
                 mi(ui, "New Message", "mail.new");
                 let c = tl!(r#"Say "hi""#);
                 let d = '"'; let e = tl!("Line \
@@ -837,8 +924,49 @@ mod tests {
         literals(&toks, "a.rs", &through, &mut texts);
         names(&toks, "a.rs", &mut texts);
         let ids: Vec<&str> = texts.keys().map(String::as_str).collect();
-        assert_eq!(ids, ["Line two", "New Message", "Reply", "Say \"hi\"", "Today", "Upcoming", "{n} message"]);
+        assert_eq!(ids, ["Line two", "New Message", "Reply", "Say \"hi\"", "Today", "Upcoming", "folder\u{4}Archive", "{n} message"]);
         assert_eq!(texts.get("{n} message").and_then(|f| f.plural.as_deref()), Some("{n} messages"));
+    }
+
+    #[test]
+    fn the_ribbons_labels() {
+        let src = r#"
+            fn g(title: &'static str, items: Vec<Item>) -> Group { Group { title, items } }
+            fn home() -> Tab {
+                Tab::of(vec![g("Respond", vec![
+                    Item::big("newMail", "New\nEmail", "mail.new", json!({})),
+                    Item::small("reply", "Reply", "", "mail.reply", json!({})),
+                    Item::big_menu("move", "move", "Move", "Move to a folder", menu()),
+                    Item::small_menu("rules", "rules", "Rules", "", menu()),
+                    Item::gather("followUp", "flag", "Follow Up").at(3, 3),
+                    Item::new("x", "icon", "Side-by-\nSide", Size::Big),
+                    Item::big("icon", LABEL, "mail.new", json!({})),
+                    Item::big(if on { "starOn" } else { "star" }, if on { "Remove from\nFavorites" } else { "Add to\nFavorites" }, "f", no()),
+                ])]);
+                let due = |icon, label, tip, key, date: Value| Item::small(icon, label, tip, "tasks.edit", json!({"due": date})).key(key);
+                due("flag", "Today", "Due today", "tasks.due.today", json!(1));
+            }
+        "#;
+        let mut texts = Texts::new();
+        ribbon(&lex(src), "ribbon.rs", &mut texts);
+        let ids: Vec<&str> = texts.keys().map(String::as_str).collect();
+        assert_eq!(
+            ids,
+            [
+                "Add to\nFavorites",
+                "Due today",
+                "Follow Up",
+                "Move",
+                "Move to a folder",
+                "New\nEmail",
+                "Remove from\nFavorites",
+                "Reply",
+                "Respond",
+                "Rules",
+                "Side-by-\nSide",
+                "Today"
+            ]
+        );
     }
 
     #[test]
@@ -908,8 +1036,10 @@ mod tests {
         let mut found = Texts::new();
         add(&mut found, "Reply", None, "a.rs", "interface");
         add(&mut found, "{n} message", Some("{n} messages"), "a.rs", "interface");
+        add_in(&mut found, Some("folder"), "Archive", None, "a.rs", "folder name");
+        add(&mut found, "Archive", None, "a.rs", "interface");
         let old = po::parse(
-            "msgid \"\"\nmsgstr \"Plural-Forms: nplurals=2; plural=(n > 1);\\n\"\n\n#, fuzzy\nmsgid \"Reply\"\nmsgstr \"Répondre\"\n\nmsgid \"Gone\"\nmsgstr \"Parti\"\n\nmsgid \"Gone untranslated\"\nmsgstr \"\"\n",
+            "msgid \"\"\nmsgstr \"Plural-Forms: nplurals=2; plural=(n > 1);\\n\"\n\n#, fuzzy\nmsgid \"Reply\"\nmsgstr \"Répondre\"\n\nmsgid \"Gone\"\nmsgstr \"Parti\"\n\nmsgid \"Gone untranslated\"\nmsgstr \"\"\n\nmsgctxt \"folder\"\nmsgid \"Archive\"\nmsgstr \"Archives\"\n\nmsgid \"Archive\"\nmsgstr \"Archiver\"\n\nmsgctxt \"gone\"\nmsgid \"Archive\"\nmsgstr \"Vieux\"\n",
         );
         let merged = merge(&old.entries, &found);
         let reply = merged.iter().find(|e| e.id == "Reply").unwrap();
@@ -917,9 +1047,15 @@ mod tests {
         assert!(merged.iter().any(|e| e.id == "Gone" && e.obsolete));
         assert!(!merged.iter().any(|e| e.id == "Gone untranslated"));
         assert_eq!(merged.iter().find(|e| e.id == "{n} message").unwrap().strs.len(), 2);
-        assert_eq!(coverage(&merged), (1, 1));
+        let archive = |c: Option<&str>| merged.iter().find(|e| e.id == "Archive" && e.context.as_deref() == c && !e.obsolete).map(|e| e.strs.clone());
+        assert_eq!((archive(Some("folder")), archive(None)), (Some(vec!["Archives".to_string()]), Some(vec!["Archiver".to_string()])));
+        assert!(merged.iter().any(|e| e.context.as_deref() == Some("gone") && e.obsolete));
+        assert!(po::write(&merged).contains("msgctxt \"folder\"\nmsgid \"Archive\"\nmsgstr \"Archives\""));
+        assert_eq!(coverage(&merged), (3, 1));
         let bad = Entry { id: "{n} of {total}".into(), strs: vec!["{n} sur {totale}".into()], ..Entry::default() };
         assert!(mismatch(&bad).is_some());
+        let bad_in_context = Entry { context: Some("folder".into()), ..bad };
+        assert!(mismatch(&bad_in_context).is_some());
         let one = Entry {
             id: "{n} message".into(),
             id_plural: Some("{n} messages".into()),

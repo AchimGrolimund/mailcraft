@@ -19,6 +19,9 @@ fn lang() -> &'static Lang {
     match current() {
         Lang::English => &Lang::English,
         Lang::French => &Lang::French,
+        Lang::German => &Lang::German,
+        Lang::Spanish => &Lang::Spanish,
+        Lang::Italian => &Lang::Italian,
         Lang::Pseudo => &Lang::Pseudo,
     }
 }
