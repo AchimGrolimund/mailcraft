@@ -1033,7 +1033,8 @@ mod two_way {
                 RemoteOp::Move { message: two, from: "INBOX".into(), uid: 2, to: "Archive".into(), to_folder: archive, create: vec![] },
             ]
         );
-        assert_eq!((known(&req, inbox), known(&req, archive)), (vec![1, 3], vec![1]));
+        // Until it has, the server has it in INBOX: known there, so that it doesn't come down again.
+        assert_eq!((known(&req, inbox), known(&req, archive)), (vec![1, 2, 3], vec![1]));
 
         // The server did both, and said where the message is now.
         let done = SyncResult {
@@ -1234,7 +1235,8 @@ mod two_way {
             RemoteOp::Delete { from: "INBOX".into(), uid: 3 },
         ];
         assert_eq!((request(&s, a).ops, unpushed(&s, a)), (gone.to_vec(), 3));
-        assert_eq!(known(&request(&s, a), inbox), Vec::<u32>::new());
+        // Known where the server still has them, so that they don't come down again.
+        assert_eq!(known(&request(&s, a), inbox), vec![2, 3]);
 
         // Two go through; the third is refused. It waits, and nothing comes back.
         let partly = SyncResult {
@@ -1602,7 +1604,7 @@ mod two_way {
                 RemoteOp::Move { message: report, from: "INBOX".into(), uid: 4, to: "Archive".into(), to_folder: archive, create: vec![] },
             ]
         );
-        assert_eq!(known(&request(&s, a), inbox), vec![1, 2, 3, 5]);
+        assert_eq!(known(&request(&s, a), inbox), vec![1, 2, 3, 4, 5]);
 
         // The same on the very first run, when the Inbox only starts to follow its mailbox.
         let mut s = session();

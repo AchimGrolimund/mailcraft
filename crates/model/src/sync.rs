@@ -96,7 +96,8 @@ pub struct SyncRequest {
     pub folders: Vec<FolderState>,
     /// Messages waiting in the Outbox, to send first.
     pub outbox: Vec<Message>,
-    /// Most messages to download per folder in one run (the newest win); 0 means no limit.
+    /// How many of each folder's newest messages to have here (older ones come down when this
+    /// grows); 0 means no limit.
     pub max_per_folder: u32,
     /// Only send what waits and tell the server what changed here; bring nothing down. For a
     /// change that should reach the server at once, without reading every folder for it.

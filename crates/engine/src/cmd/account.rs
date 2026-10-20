@@ -349,6 +349,14 @@ pub fn sync_request(s: &Session, account: Id) -> Result<SyncRequest, CmdError> {
             known.entry(m.folder).or_default().push(m.uid);
         }
     }
+    // What waits to be moved or deleted on the server is there still: known, so that it doesn't
+    // come down again.
+    for p in s.mailbox.pending.iter().filter(|p| p.account() == account) {
+        let (from, uid) = p.source();
+        if let Some(f) = s.mailbox.folders.iter().find(|f| uid != 0 && f.account == account && f.remote == from) {
+            known.entry(f.id).or_default().push(uid);
+        }
+    }
     let folders = s
         .mailbox
         .folders

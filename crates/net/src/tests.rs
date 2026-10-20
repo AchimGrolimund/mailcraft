@@ -651,9 +651,13 @@ fn only_the_newest_are_downloaded_when_there_is_a_limit() {
     assert_eq!(result.errors, Vec::<String>::new());
     let inbox = &result.folders[0];
     assert_eq!((uids(&inbox.new), inbox.uid_seen), (vec![2, 5], 6));
-    // The older one is passed over for good.
+    // The older one is passed over for as long as the limit stays.
     request.folders = applied(&local_folders(), &result);
     assert_eq!(sync(&request).new_count(), 0);
+    // Raised, it lets the older one in, and nothing twice.
+    request.max_per_folder = 0;
+    let more = sync(&request);
+    assert_eq!((more.new_count(), uids(&delta(&more, "INBOX").new), delta(&more, "INBOX").uid_seen), (1, vec![1], 6));
 }
 
 #[test]

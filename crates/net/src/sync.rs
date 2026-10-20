@@ -647,7 +647,7 @@ struct FolderSync<'a> {
     kind: FolderKind,
     /// What the local mailbox has of it, if anything.
     state: Option<&'a FolderState>,
-    /// Most new messages to download; 0 for all of them.
+    /// How many of the mailbox's newest messages to have here; 0 for all of them.
     max_new: usize,
     /// Messages a move of this run put here: the `UIDVALIDITY` they were put under, and their UIDs.
     arrived: &'a [(u32, u32)],
@@ -666,7 +666,8 @@ impl FolderSync<'_> {
     /// every message that came is known here by its UID and is not asked for again, and every
     /// message that didn't is above the count and unknown, which is what makes the next run ask
     /// for it. Messages left out because only so many are taken (`max_new`) are below the count
-    /// from the first piece on, as they are when the run goes through.
+    /// from the first piece on, as they are when the run goes through, and are asked for when
+    /// the limit grows to take them in.
     fn run(&self, imap: &mut Imap<Stream<'_>>, run: &mut Run) -> bool {
         let name = shown(&self.remote);
         let label = label(&self.remote);
@@ -702,11 +703,10 @@ impl FolderSync<'_> {
         // Messages marked as deleted are on their way out; like other mail programs, we don't show them.
         let present: BTreeMap<u32, &Fetched> = listed.iter().filter(|m| !has(&m.flags, "\\Deleted")).map(|m| (m.uid, m)).collect();
 
-        // What to download, in UID order; with a limit, the newest win.
-        let mut wanted: Vec<u32> = present.keys().copied().filter(|uid| *uid > uid_seen && !known.contains(uid)).collect();
-        if self.max_new > 0 && wanted.len() > self.max_new {
-            wanted.drain(..wanted.len() - self.max_new);
-        }
+        // What to download, in UID order: what isn't here of the newest the limit allows (of
+        // all, without one). So what a smaller limit left out comes down once it is raised.
+        let older = if self.max_new > 0 { present.len().saturating_sub(self.max_new) } else { 0 };
+        let wanted: Vec<u32> = present.keys().skip(older).copied().filter(|uid| !known.contains(uid)).collect();
         // How far the mailbox is read while messages are still to come.
         let below = wanted.first().map_or(uid_seen, |lowest| lowest.saturating_sub(1).max(uid_seen));
         // What is said once, with the first piece: the flags of the messages already here, and
