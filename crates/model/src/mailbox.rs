@@ -795,6 +795,11 @@ pub const STAYS_LOCAL: &str = "Microsoft doesn't let a mail program put received
 /// The local folder that mail imported for a Microsoft account goes to (R3 spec S30).
 pub const IMPORTED: &str = "Imported";
 
+/// Why nothing is sent from a JMAP account ([`AccountKind::sends_mail`]): its sending comes after
+/// its reading. Until then nothing goes into its Outbox, where it would wait for ever, and nothing
+/// is filed as sent that wasn't.
+pub const NOT_SENDING_YET: &str = "MailCraft doesn't send mail from a JMAP account yet";
+
 fn not_found(what: &'static str, id: Id) -> ModelError {
     ModelError::NotFound(what, id)
 }
