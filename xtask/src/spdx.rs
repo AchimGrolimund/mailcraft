@@ -9,9 +9,16 @@ use std::process::Command;
 
 pub const HEADER: &str = "// SPDX-FileCopyrightText: MailCraft contributors\n// SPDX-License-Identifier: MIT OR Apache-2.0\n";
 
+/// Whether `text` starts with the lines of [`HEADER`], whatever its line endings (a Windows
+/// checkout has CRLF).
+fn has_header(text: &str) -> bool {
+    let mut lines = text.lines();
+    HEADER.lines().all(|want| lines.next() == Some(want))
+}
+
 /// The Rust files among `files` whose text doesn't start with [`HEADER`].
 pub fn missing(files: &[String], read: impl Fn(&str) -> Option<String>) -> Vec<&str> {
-    files.iter().filter(|f| f.ends_with(".rs")).filter(|f| read(f).is_some_and(|text| !text.starts_with(HEADER))).map(String::as_str).collect()
+    files.iter().filter(|f| f.ends_with(".rs")).filter(|f| read(f).is_some_and(|text| !has_header(&text))).map(String::as_str).collect()
 }
 
 pub fn run(root: &Path, fix: bool) -> Result<(), String> {
@@ -45,10 +52,11 @@ mod tests {
 
     #[test]
     fn finds_rust_files_without_the_lines() {
-        let files = vec!["a.rs".to_string(), "b.rs".into(), "c.md".into(), "gone.rs".into()];
+        let files = vec!["a.rs".to_string(), "b.rs".into(), "c.md".into(), "gone.rs".into(), "crlf.rs".into()];
         let read = |f: &str| match f {
             "a.rs" => Some(format!("{HEADER}fn a() {{}}\n")),
             "b.rs" => Some("//! b\n".into()),
+            "crlf.rs" => Some(HEADER.replace('\n', "\r\n")),
             "c.md" => Some("# c\n".into()),
             _ => None,
         };
