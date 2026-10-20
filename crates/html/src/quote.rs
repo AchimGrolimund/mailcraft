@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A message's HTML made fit to quote under a reply or forward.
 //!
 //! The original goes out to other people, who read it in programs that run what we never would,

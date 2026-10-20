@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The mailbox file as it was before a newer MailCraft first wrote it in a newer format, kept
 //! beside it so that going back to the version before finds a file it can open.
 //!

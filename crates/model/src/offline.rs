@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! **Mail to keep offline** (#143): how far back each account's mail is kept in full on this
 //! computer. Older mail keeps its headers and preview here, stays in the message list, its
 //! conversations and search, and is fetched from the server again when it is opened.

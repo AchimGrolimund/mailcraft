@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! M4.4: a sign-in on Microsoft's page that an organisation has to approve first. What the
 //! wizard says while the browser has the sign-in, the page of its own about an approval, how a
 //! sign-in that ended says so, the same page for an account that exists, and the commands for

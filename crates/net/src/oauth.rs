@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Signing in on the provider's own page (OAuth 2.0): the authorization-code flow with PKCE for
 //! an application that keeps no secret (RFC 6749, RFC 7636), coming back through a loopback
 //! address (RFC 8252), and trading a refresh token for new tokens.

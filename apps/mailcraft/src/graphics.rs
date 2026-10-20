@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Windows graphics instance configuration, applied before wgpu can initialize any driver.
 
 use eframe::{

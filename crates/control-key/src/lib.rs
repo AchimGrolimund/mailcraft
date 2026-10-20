@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The control channel's key file, one rule for the app (which writes it) and the MCP bridge
 //! (which reads it): `<settings>/control-key.<instance>`. See `docs/control-protocol.md`, Keys.
 

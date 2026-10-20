@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Tasks: to-do items.
 
 use mailcraft_model::{Id, Importance, Task, clean_name};

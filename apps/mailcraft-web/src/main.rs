@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MailCraft in the browser.
 //!
 //! Runs the same [`mailcraft_ui_egui::MailApp`] as the desktop app through eframe's web runner

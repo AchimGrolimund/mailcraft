@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The word index: which messages hold which words, kept beside the mailbox file so that a search
 //! answers without reading every message (R6.2).
 //!

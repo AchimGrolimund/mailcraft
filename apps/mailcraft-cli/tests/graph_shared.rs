@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A shared mailbox beside its owner's (#70), from end to end: the engine's `graph_mail_request`
 //! and `apply_graph_mail` with `mailcraft_net::graph::sync_mail` in between, against the strict
 //! Graph stand-in. Search, unread counts and Favorites take it in here, on this computer; what is

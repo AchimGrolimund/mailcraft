@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Add Account: the wizard that sets an account up from its address, and the page that changes
 //! the settings of one that exists.
 //!

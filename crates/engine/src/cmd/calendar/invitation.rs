@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Meetings that arrive as mail: a message that carries an iCalendar part with `METHOD`
 //! `REQUEST` (an invitation, or an update of one), `CANCEL` (the meeting is called off), `REPLY`
 //! (somebody's answer to a meeting the owner organizes) or `COUNTER` (another time is proposed).

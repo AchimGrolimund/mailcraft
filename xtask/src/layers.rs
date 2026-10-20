@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Dependency layering rules (docs/architecture.md).
 //!
 //! The rule engine works on a small, metadata-independent model so it can be

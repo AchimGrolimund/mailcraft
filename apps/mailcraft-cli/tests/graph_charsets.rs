@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mail of a Microsoft account kept with characters that couldn't be read (#185), from end to
 //! end: a mailbox from before Windows-1250 and the rest were read has U+FFFD where đ, ’ and –
 //! were. Opened, those messages are fetched again from the strict Graph stand-in, once, and read

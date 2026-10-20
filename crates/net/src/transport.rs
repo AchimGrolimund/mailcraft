@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Connections: TCP with timeouts, and TLS (rustls, the `ring` provider, Mozilla's roots).
 //!
 //! Nothing here waits for ever. Connecting has a time limit, and so has the handshake; every

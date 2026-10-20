@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Reminders that fire: a small window listing the events whose reminder time has come, with
 //! Dismiss and Snooze, as the incumbent has. What is due is the engine's answer
 //! (`view::due_reminders`); what was dismissed is kept with the window's settings, what was put

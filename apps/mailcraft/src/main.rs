@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MailCraft desktop app.
 //!
 //! Usage: `mailcraft [--control <port>] [--sample] [--mailbox <file>] [files or mailto: links…]`

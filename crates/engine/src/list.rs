@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The message list: which messages show for the folder, filter and search in view, in what
 //! order, under which group headings.
 

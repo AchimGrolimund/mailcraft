@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Switching a Microsoft account kept in step by IMAP over to Microsoft Graph (R3.7), from end to
 //! end: a mailbox written by 0.2.1, with a flag and a move made offline, a local folder, a draft
 //! never sent and a favourite folder, against the fake IMAP server (the last push, which waits

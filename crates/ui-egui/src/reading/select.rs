@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Selecting the text of a message that is being read, and copying it.
 //!
 //! egui selects the text of its own labels, and that is not used here. Its selection lives in the

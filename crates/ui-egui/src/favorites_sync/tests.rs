@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The Favorites of Outlook in the window: when they are asked for, what is done with the
 //! answer, and what the folder pane and File › Options show for it. The host is a stand-in that
 //! answers what a test tells it to; nobody is signed in and nothing leaves this machine.

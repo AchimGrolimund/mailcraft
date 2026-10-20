@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A Microsoft account kept in step through Microsoft Graph (R3.1), the whole way: the window's
 //! Send/Receive, this host's Graph job and `mailcraft-net`, against the strict stand-in. Nothing
 //! here leaves this machine, and nobody is signed in.

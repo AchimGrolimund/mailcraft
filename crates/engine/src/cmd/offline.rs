@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mail to keep offline (#143): mail of a Microsoft account older than its window goes back to
 //! its headers and preview, and the content files it kept on disk go with it.
 //!

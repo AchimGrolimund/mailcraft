@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! More results on the server (R6.2, slice 2): a search of a Microsoft account's mailbox, or a
 //! shared mailbox's, on its server, when the owner asks for it.
 //!

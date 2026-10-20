@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MailCraft's MCP server (Model Context Protocol, JSON-RPC 2.0 over stdio).
 //!
 //! Two backends: [`Headless`] runs an in-process session on a mailbox (no window);

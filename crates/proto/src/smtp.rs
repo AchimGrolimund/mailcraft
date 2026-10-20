@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! An SMTP client (RFC 5321) with STARTTLS (RFC 3207) and AUTH PLAIN / LOGIN / XOAUTH2 (RFC 4954).
 
 use std::io::{Read, Write};

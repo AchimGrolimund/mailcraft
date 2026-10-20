@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The bounded reader both protocols share: lines and counted blocks from a stream that may be hostile.
 
 use std::io::{ErrorKind, Read, Write};

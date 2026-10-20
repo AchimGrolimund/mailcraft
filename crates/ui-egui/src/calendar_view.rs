@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Calendar: the side pane (date navigator, calendars by group), the header strip, and the day,
 //! work-week, week and month grids, with what the pointer and the keyboard do in them: picking a
 //! time and typing into it, moving, resizing and copying events by dragging, and the keys of the

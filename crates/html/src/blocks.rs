@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Hostile HTML → display blocks.
 //!
 //! This is not a tree builder. Open elements live on one small stack, each with the style in

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Send/Receive Progress (#120): a panel in the main window, over its foot on the right, that
 //! says what the Send/Receive under way is doing, or what the last one did, account by account:
 //! the phase and counts of the one running, the ones waiting their turn, what each one that is

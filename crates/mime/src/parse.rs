@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Internet messages (RFC 5322 + MIME) to [`Message`].
 
 use std::sync::Arc;

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Backstage (File): accounts and the mailbox, opening and exporting, options, About.
 
 use egui::{Align2, Rect, Sense, Stroke, Ui, pos2, vec2};

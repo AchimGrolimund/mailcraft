@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Undo and redo for the Microsoft accounts kept in step through Microsoft Graph (R3.5).
 //!
 //! Undo puts the mailbox back as it was before a change, as it always has. For a Microsoft

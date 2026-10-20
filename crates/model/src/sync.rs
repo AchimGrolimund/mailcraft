@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! What a mail-server synchronisation is asked to do and what it brings back.
 //!
 //! Plain data, so the pieces stay apart: the engine builds a [`SyncRequest`] and applies a

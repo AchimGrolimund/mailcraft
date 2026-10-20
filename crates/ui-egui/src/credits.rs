@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! About ▸ Contributors: everyone who contributed to MailCraft, by GitHub username always, and by
 //! a display or real name only when they chose one for themselves (`docs/contributors.md`,
 //! craftrules standards/contributors.md). The tables are baked into the binary by `build.rs`

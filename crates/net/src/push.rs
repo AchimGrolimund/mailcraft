@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Pushing the changes made here to the IMAP server: flags, moves and deletions
 //! ([`SyncRequest::ops`]), one source mailbox at a time, before anything is downloaded.
 //!

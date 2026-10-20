@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Where everything of a message goes: display blocks to positioned things to paint.
 //!
 //! This is done once for a message at a width and in a theme, and kept ([`super::view`]): painting

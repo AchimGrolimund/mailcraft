@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! What an agent may do through the window (`mailcraft-cli mcp --connect`): the bridge marks
 //! every request it sends as an agent's (`ControlRequest::agent`, with what the owner allowed it
 //! in advance), and those go through [`mailcraft_engine::agent`]'s gate here. A command that is

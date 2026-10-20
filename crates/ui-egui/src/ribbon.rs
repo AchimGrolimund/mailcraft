@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The ribbon: the tab strip and every tab's commands. Each control runs a command by id.
 //!
 //! A tab is described once ([`describe`]): its groups, and in each the controls with their

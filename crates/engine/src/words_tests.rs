@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The word index on its own: what it finds, and its file read back, cut short, damaged, of
 //! another version, or junk (R6.2).
 

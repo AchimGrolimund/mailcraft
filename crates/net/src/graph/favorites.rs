@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The Favorites of the folder pane as Outlook has them: the folders the owner put under
 //! Favorites there, in that order, read from the server and never written.
 //!

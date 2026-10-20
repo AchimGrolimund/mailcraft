@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Writing events and to-dos as iCalendar text.
 
 use std::collections::BTreeMap;

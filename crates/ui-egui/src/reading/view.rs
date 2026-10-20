@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The body of a message being read: parsed and laid out once, painted every frame.
 //!
 //! A frame costs what is in view: the layout of the last few messages read is kept (with the

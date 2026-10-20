@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The Scheduling Assistant: the second page of a meeting's window, as Outlook has it.
 //!
 //! A row for everybody (the organizer first, then the people who are required and the ones who

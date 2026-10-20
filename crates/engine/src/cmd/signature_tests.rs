@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Signatures through commands (R4.5.1): rich text, pictures, the two defaults, and mailboxes
 //! from before there were any of these.
 

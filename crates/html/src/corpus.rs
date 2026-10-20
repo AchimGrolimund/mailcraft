@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Synthetic messages that imitate real mail, for tests here and in the crates that draw mail.
 //!
 //! Nothing here is copied from a real message: every person, company, product and address is

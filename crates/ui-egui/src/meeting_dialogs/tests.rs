@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Propose New Time, Forward and View All Proposals through real frames, and the buttons of an
 //! appointment's window that go with them, against the stand-in for the account's server (which
 //! notes every piece of mail a real one would send). Invented people at `example.org`.

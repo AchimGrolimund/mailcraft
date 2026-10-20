@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Writing contacts as vCard 3.0.
 
 use mailcraft_model::Contact;

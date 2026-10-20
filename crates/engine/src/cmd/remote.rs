@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! What an account's server keeps besides its mail: the calendar and the contacts.
 //!
 //! As with mail, the engine never talks to a server. A host with sockets (`mailcraft-net`, which

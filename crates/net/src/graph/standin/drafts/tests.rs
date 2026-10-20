@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The stand-in's drafts and attachments, on the stand-in alone. Nothing here leaves this
 //! machine; every message is invented.
 

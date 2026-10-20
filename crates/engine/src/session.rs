@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The session: the mailbox, what is selected, how it is viewed, the message being written, and
 //! undo/redo.
 

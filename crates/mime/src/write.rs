@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! [`Message`] to RFC 5322 + MIME bytes.
 
 use mailcraft_model::{Address, Attachment, FlagStatus, Importance, Message};

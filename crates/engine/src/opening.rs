@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Opening an attachment with the program the computer opens that kind of file with (#126).
 //!
 //! The engine never opens anything: a message is hostile, and so is the name its sender gave a

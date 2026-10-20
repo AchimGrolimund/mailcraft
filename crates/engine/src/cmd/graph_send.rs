@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Sending through Microsoft Graph (R3.4.2; R3 spec S27, S28).
 //!
 //! What waits in a Microsoft account's Outbox goes with its run: a message saved as a draft is

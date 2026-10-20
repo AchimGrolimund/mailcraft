@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A copy that updates itself, the whole way: the window's daily check finds a newer release,
 //! this host downloads the copy's file through `mailcraft-net` from a stand-in release server on
 //! this machine, and it is kept only when the release's signature and checksum say it is the

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Reading the contributor credits (craftrules standards/contributors.md; `docs/contributors.md`):
 //! `contributors/contributors.json` (commit stats per GitHub username, generated),
 //! `contributors/people.toml` (the names people chose for themselves) and

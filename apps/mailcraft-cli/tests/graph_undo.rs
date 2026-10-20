@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Undo for a Microsoft account kept in step through Microsoft Graph (R3.5), from end to end
 //! against the strict Graph stand-in: an undo after a change reached the server goes up as the
 //! reverse change (a move back, a flag cleared, categories as they were, out of Deleted Items);

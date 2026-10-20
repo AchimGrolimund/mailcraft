@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Loopback JSON-lines control server: one request per line, one reply per line.
 //! This is the transport the MCP server (`mailcraft-cli mcp --connect`) wraps.
 //!

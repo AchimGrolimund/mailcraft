@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Writing in rich text: the selection in the message being written, typing, formatting and
 //! undo inside the message (`mailcraft_model::rich`).
 //!

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Sending through the account's outgoing (SMTP) server.
 
 use std::borrow::Cow;

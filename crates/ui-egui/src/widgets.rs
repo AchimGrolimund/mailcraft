@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The classic ribbon's pieces (large and small buttons, groups), menu items, and the small
 //! pieces the panes share (icon buttons, avatars, category chips).
 

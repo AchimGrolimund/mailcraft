@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A Microsoft account kept in step through Microsoft Graph (R3; ADR 0002, ADR 0003).
 //!
 //! As for IMAP, the engine never talks to a server: [`graph_mail_request`] (`sync.graphRequest`)

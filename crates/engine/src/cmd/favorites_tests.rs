@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The Favorites of the folder pane when an account's server has a list of its own (the folders
 //! Outlook shows under Favorites): what `sync.applyFavorites` makes of a download, what the pane
 //! then lists, what `folder.favorite` says, and what a mailbox file holds of it.

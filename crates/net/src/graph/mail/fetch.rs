@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Messages of a Microsoft account fetched whole (R3.2; R3 spec S12, S14): `GET
 //! /me/messages/{id}/$value`, each message's MIME as the server has it, attachments and all.
 //!

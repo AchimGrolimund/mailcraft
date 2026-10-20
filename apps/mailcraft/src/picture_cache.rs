@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Pictures from the web, kept on disk between runs.
 //!
 //! A picture on the web tells whoever serves it that it was asked for. One the owner asked for
