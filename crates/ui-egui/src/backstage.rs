@@ -493,7 +493,7 @@ fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
         let label = |n: u32| match n {
             0 => tl!("Only when I ask").to_string(),
             1 => tl!("Every minute").to_string(),
-            n => format!("{} {n} {}", tl!("Every"), tl!("minutes")),
+            n => crate::i18n::fmt(tl!("Every {n} minutes"), &[("n", &n.to_string())]),
         };
         egui::ComboBox::from_id_salt("opt_sync_minutes").selected_text(label(prefs.sync_minutes)).show_ui(ui, |ui| {
             for n in [1u32, 5, 15, 30, 60, 0] {
