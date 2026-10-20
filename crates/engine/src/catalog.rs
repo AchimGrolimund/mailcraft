@@ -381,7 +381,7 @@ pub fn parity_markdown(reg: &Registry) -> String {
         p.get("percent").and_then(Value::as_f64).unwrap_or(0.0),
         n("commands")
     ));
-    out.push_str("A command existing means the behaviour is reachable by id (ribbon, shortcut, CLI, control channel, MCP); how complete it is against the incumbent is tracked in `docs/target-app-parity.md`.\n\n");
+    out.push_str("A command existing means the behaviour is reachable by id (ribbon, shortcut, CLI, control channel, MCP); how complete it is against the incumbent is tracked in `docs/gaps.md` and the per-area parity checklists.\n\n");
     out.push_str("| Tab | Implemented | Total |\n|---|---|---|\n");
     for t in p.get("tabs").and_then(Value::as_array).into_iter().flatten() {
         out.push_str(&format!(

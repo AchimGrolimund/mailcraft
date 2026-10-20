@@ -4,7 +4,7 @@
 
 **187 of 311 catalog features have a command (60.1%).** The registry holds 232 commands.
 
-A command existing means the behaviour is reachable by id (ribbon, shortcut, CLI, control channel, MCP); how complete it is against the incumbent is tracked in `docs/target-app-parity.md`.
+A command existing means the behaviour is reachable by id (ribbon, shortcut, CLI, control channel, MCP); how complete it is against the incumbent is tracked in `docs/gaps.md` and the per-area parity checklists.
 
 | Tab | Implemented | Total |
 |---|---|---|
