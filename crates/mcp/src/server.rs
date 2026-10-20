@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! JSON-RPC 2.0 framing and the MCP lifecycle / tools / resources methods.
 
 use std::io::{BufRead, Write};

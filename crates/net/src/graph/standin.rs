@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A stand-in for Microsoft Graph's calendar that behaves like the documented service, for the
 //! tests. Nothing here leaves this machine, and nothing here is in a build that isn't a test's.
 //!

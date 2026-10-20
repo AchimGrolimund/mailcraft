@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! mbox files (RFC 4155, in the `mboxrd` flavour): messages one after another, each after a
 //! `From ` line.
 

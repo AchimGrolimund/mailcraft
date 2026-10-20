@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Text values: cleaning, escaping, splitting, and the 2.1 encodings (quoted-printable, base64;
 //! a `CHARSET` is read by `mailcraft-charset`, as mail is).
 

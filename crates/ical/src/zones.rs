@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Time zones in iCalendar text: what a `TZID` stands for, the `VTIMEZONE` definitions a file
 //! brings with it (RFC 5545 §3.6.5), and the definitions that are written.
 //!

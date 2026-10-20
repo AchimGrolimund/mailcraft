@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Shared mailboxes through Microsoft Graph (#70, a draft; built within ADR 0002 and R3).
 //!
 //! A shared mailbox (`support@`, a team's) is a mailbox of the owner's organisation that an

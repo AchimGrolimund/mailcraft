@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The window's side of keeping the mailbox on disk: a change is handed to the host's background
 //! saver instead of being written on the window's own thread, quitting writes what is left and
 //! waits for it, a failure is told and tried again, and replacing the mailbox loses nothing.

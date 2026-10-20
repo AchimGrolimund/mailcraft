@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `cargo xtask release-key new <dir>` and `cargo xtask release-key sign <file>`: the release
 //! signature that tells a copy of MailCraft that an update is the project's own.
 //!

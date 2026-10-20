@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Changes of messages up through Microsoft Graph (R3.3; R3 spec S16–S22, ADR 0003).
 //!
 //! What goes up is the difference between each message of a Microsoft account and its last

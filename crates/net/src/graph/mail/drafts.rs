@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A Microsoft account's drafts up through Graph (R3.4.1; R3 spec S23, S24).
 //!
 //! After the changes of messages, each draft the engine names ([`DraftUp`]) is brought up to

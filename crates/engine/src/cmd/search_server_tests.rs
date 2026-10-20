@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! More results on the server (R6.2): what the engine asks a host to search, and what it makes
 //! of what comes back. (Against the Graph stand-in: `crates/net/src/graph/mail/search_tests.rs`,
 //! and the window's part in `crates/ui-egui/src/server_search.rs`.)

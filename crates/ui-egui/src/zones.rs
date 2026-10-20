@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Time zones in the window: the list a zone is picked from, and how a zone is called in a line.
 //!
 //! What a zone is, and how times are kept, is the engine's (`mailcraft_engine::cmd::zones`,

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The desktop app's logger: `log::` records go to standard error and to a log file.
 //!
 //! Without a logger every `log::warn!`/`log::error!` in the workspace (an unreadable part of a

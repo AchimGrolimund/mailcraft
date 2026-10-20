@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Reading and writing files: the mailbox as one self-contained file, and the formats mail,
 //! calendars and contacts travel in (`.eml`, `.mbox`, `.ics`, `.vcf`). How a mailbox is kept on
 //! disk while it is worked on is `crate::store`.

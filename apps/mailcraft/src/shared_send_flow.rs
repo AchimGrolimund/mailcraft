@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Sending from a shared mailbox (#70), the whole way: the window's Send/Receive, this host's
 //! Graph job and `mailcraft-net`, against the strict stand-in. The first send finds that sending
 //! from shared mailboxes isn't allowed yet: nothing is sent, the window asks the owner, and once

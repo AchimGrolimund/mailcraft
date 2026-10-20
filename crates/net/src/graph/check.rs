@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A check of the calendar connection, for the owner to run on the real account.
 //!
 //! [`check_calendar`] makes one appointment called "MailCraft connection check" a year from

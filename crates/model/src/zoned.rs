@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Time zones in the mailbox: the zone an event has of its own, and the zone the mailbox's
 //! wall-clock times are written in.
 //!

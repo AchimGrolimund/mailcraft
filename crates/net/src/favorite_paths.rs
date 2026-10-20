@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Where a folder that a server lists among the Favorites lies, said the way the mailbox finds
 //! its own folder for it: the names from the top of the mailbox down to it, and which of the
 //! special folders it is. The server that read the list (Microsoft Graph) knows folders by what

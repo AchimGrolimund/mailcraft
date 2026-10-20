@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use std::time::{Duration, Instant, SystemTime};
 
 use mailcraft_model::{Address, Attachment, Mailbox, Message};

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The system's clipboard with HTML on it, for the body of a message being written
 //! ([`mailcraft_ui_egui::Services::clipboard`]): a copy puts the selection there as HTML of the
 //! set and as text, and a paste takes HTML when the clipboard has some (the engine reduces it to

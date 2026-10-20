@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A Microsoft account's folders through Microsoft Graph (R3.1; R3 spec S4, S6–S8, S14, S21).
 //!
 //! [`sync_folders`] takes a [`GraphMailRequest`] (what the engine worked out from the mailbox)

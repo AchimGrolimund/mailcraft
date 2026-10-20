@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Plain text: a text body as display blocks or HTML, and HTML as readable text.
 
 use std::borrow::Cow;

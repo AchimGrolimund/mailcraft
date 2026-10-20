@@ -90,7 +90,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -159,7 +159,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -245,7 +245,7 @@ jobs:
           sudo dpkg -i "$RUNNER_TEMP/nfpm.deb"
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: package-linux-${{ matrix.arch }}
@@ -333,7 +333,7 @@ jobs:
             curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/rustup-init https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-unknown-freebsd/rustup-init
             [ "$(sha256 -q /tmp/rustup-init)" = af29791be32fd2f926865a983edc97f452078e6d1b4a6037d12ca2f8e67ffa3d ] || { echo "rustup-init does not match its pinned sha256"; exit 1; }
             chmod +x /tmp/rustup-init
-            /tmp/rustup-init -y --profile minimal --default-toolchain stable
+            /tmp/rustup-init -y --profile minimal --default-toolchain 1.98.1
           run: |
             set -e
             . "$HOME/.cargo/env"
@@ -357,7 +357,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:

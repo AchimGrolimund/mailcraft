@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A Microsoft account's folders, as the engine works out what goes to Graph and takes in what
 //! comes back. (Against the Graph stand-in itself: `apps/mailcraft-cli/tests/graph_folders.rs`.)
 

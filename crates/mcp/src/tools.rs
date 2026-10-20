@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MCP tools: names, schemas and implementations on top of a [`Backend`].
 
 use mailcraft_engine::agent::{self, Access, Class, FileUse};

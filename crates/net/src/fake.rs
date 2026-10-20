@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fake IMAP, SMTP and HTTP servers for the tests: plain TCP on a loopback port, speaking just
 //! enough of each protocol, with state the tests set up and look at.
 

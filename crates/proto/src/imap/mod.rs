@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! An IMAP4rev1 client (RFC 3501) with the commands a two-way synchronisation needs: reading
 //! mailboxes, and changing flags, moving, copying, removing and filing messages (UID MOVE of
 //! RFC 6851; UID EXPUNGE and the `COPYUID` answer of RFC 4315). Special-use mailbox flags

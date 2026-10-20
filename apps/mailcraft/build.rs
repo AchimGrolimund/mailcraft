@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Windows only: embed the app icon and version info (VERSIONINFO) into `mailcraft.exe`, so it
 //! shows in Explorer, the taskbar, the Start menu and Alt-Tab.
 //!

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A meeting that arrived as mail, above the message that carries it: an invitation with the
 //! ways to answer it, an update, a cancellation with a way to take the meeting out of the
 //! calendar, or somebody's answer to a meeting.

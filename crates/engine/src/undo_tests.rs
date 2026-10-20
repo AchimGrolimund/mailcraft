@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Undo for a Microsoft account, as the engine merges it. (Against the Graph stand-in, end to
 //! end: `apps/mailcraft-cli/tests/graph_undo.rs`.)
 

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The reading pane on the corpus of `mailcraft-html`: every message laid out in both themes and
 //! at every width, what is shown of pictures and what is not, tables, contrast, and time.
 //!

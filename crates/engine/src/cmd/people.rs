@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! People: contacts.
 
 use mailcraft_model::{Contact, Id, Labeled, PostalAddress, clean_name};

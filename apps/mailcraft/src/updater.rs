@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The host's part in a copy that updates itself: whether the organisation has turned that off,
 //! where downloads are kept, and the download itself on a background thread
 //! (`mailcraft_net::update_download`, which checks it by the release's own signature). Nothing

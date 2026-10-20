@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Which kind of copy of MailCraft this is, and so whether it can update itself, and which file
 //! of a release it would be updated from.
 //!

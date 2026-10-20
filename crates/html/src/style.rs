@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The little of CSS that is read.
 //!
 //! There is no CSS engine: no selectors, no cascade, no `<style>` blocks, no classes, nothing

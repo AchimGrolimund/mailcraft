@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Where well-known mail providers keep their servers and how their owners sign in, worked out
 //! from an address's domain or from the domain's mail exchangers.
 //!

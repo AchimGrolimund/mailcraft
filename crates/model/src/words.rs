@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Words, as search reads them: the one tokeniser shared by the search box's query and the word
 //! index kept beside the mailbox (R6.2), so that both find the same thing.
 //!

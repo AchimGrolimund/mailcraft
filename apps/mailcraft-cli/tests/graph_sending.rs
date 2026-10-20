@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Sending through Microsoft Graph (R3.4.2), from end to end against the strict Graph stand-in:
 //! a message never saved goes with `sendMail`, a saved draft with send-draft after it is brought
 //! up to date; the server's copy in Sent Items comes down and nothing is uploaded; a send whose

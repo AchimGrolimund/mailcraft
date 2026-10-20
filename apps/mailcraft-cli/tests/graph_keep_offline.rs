@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mail to keep offline (#143), from end to end against the strict Graph stand-in: a Microsoft
 //! account's mail within its window is fetched whole in the background, older mail keeps its
 //! headers and preview and is fetched when it is opened. Nothing here leaves this machine; every

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Opening an attachment from the window: what is opened, what is asked first, what is refused,
 //! and the browser's download in its place (#126).
 

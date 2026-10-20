@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Shared mailboxes through Microsoft Graph (#70): opened under a Microsoft account, read with
 //! its sign-in at their own address, and kept apart from it. (Against the Graph stand-in:
 //! `crates/net/src/graph/mail/shared_tests.rs`.)

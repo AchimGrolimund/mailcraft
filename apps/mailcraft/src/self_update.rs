@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Installing a new version of MailCraft, and going back to the one before, for a copy that
 //! updates itself (`install.rs`: the Windows `.msi`, the macOS app, a Linux AppImage).
 //!

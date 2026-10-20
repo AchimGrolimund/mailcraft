@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `cargo xtask ico <out.ico> <in.png>…`: pack PNG images into a Windows `.ico`.
 //!
 //! Vista and later read PNG-compressed icon entries, so each PNG is stored as is. The size comes

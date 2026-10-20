@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `test_account`, `send`, `sync` and `sync_with` end to end, against the fake servers on loopback.
 
 use std::collections::BTreeMap;

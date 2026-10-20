@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MailCraft's data model: everything a mailbox holds, and the primitives that edit it.
 //!
 //! A [`Mailbox`] owns accounts, folders, messages, contacts, calendars, events, tasks, categories,

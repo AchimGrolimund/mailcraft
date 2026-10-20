@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Below the local results of a search: More results on the server, and the section On the
 //! server with what came back (R6.2, [`crate::server_search`]). Laid out as the list's rows are,
 //! so that a server result reads as any other message: the sender, the subject and the time,

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Content lines (RFC 5545 §3.1–3.2): unfolding on the way in, folding on the way out, and the
 //! `NAME;PARAM=value;PARAM="quoted":value` shape in between.
 

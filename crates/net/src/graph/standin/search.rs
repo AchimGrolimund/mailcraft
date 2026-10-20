@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The stand-in's search of messages (R6.2), as Graph v1.0 documents `$search` on messages
 //! ("Use the $search query parameter in Microsoft Graph APIs", "List messages"):
 //!

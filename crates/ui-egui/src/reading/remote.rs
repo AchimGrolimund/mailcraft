@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Pictures from the web: whether a message may show them, asking the host for them, and what
 //! the owner is told and can do about it.
 //!

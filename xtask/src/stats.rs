@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `cargo xtask stats`: tests and lines of Rust per crate.
 
 use std::path::Path;

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Signatures (R4.5): making them, their pictures, and which one each account starts its
 //! messages with. The model and its caps are `mailcraft_model::signature`; what goes into a
 //! message is `compose.signature`.

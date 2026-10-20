@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! More results on the server (R6.2) against the strict Graph stand-in, and against answers
 //! that are anything at all. Nothing here leaves this machine; every message is invented.
 

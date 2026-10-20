@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! What Add Account says about a sign-in on Microsoft's page: while the browser has it, when it
 //! ended without signing anybody in, and when the organisation has to approve MailCraft first
 //! ([`crate::approval`]).

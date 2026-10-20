@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! What a meeting has beyond its time and its people: how much it matters, what the people
 //! invited are asked for, whether it is held online (a Teams meeting), proposing another time
 //! for somebody else's, sending one on to more people, and the other times that people proposed.

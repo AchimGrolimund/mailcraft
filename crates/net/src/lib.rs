@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MailCraft's network side, for the desktop app and the CLI.
 //!
 //! Sockets and TLS under the protocol clients of `mailcraft-proto`: [`test_account`] checks a

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! One MailCraft per mailbox.
 //!
 //! Two windows on one mailbox file would each save over the other's work. So the first to start

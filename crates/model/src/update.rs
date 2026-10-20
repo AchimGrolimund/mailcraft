@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Telling the owner when a new version of MailCraft is out: what a version is, and what is
 //! kept of a release that was found. Plain data: the window decides when to ask, a host with
 //! sockets (`mailcraft-net`) does the asking, and neither installs anything.

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A Microsoft account's folders against the strict Graph stand-in, and the reader of a folder
 //! against whatever can be thrown at it. Nothing here leaves this machine; every name and every
 //! id is invented.

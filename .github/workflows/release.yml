@@ -158,7 +158,7 @@ jobs:
       # locked crates; no tool is downloaded. Without the key the release is unsigned and says so.
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
       - name: Sign the checksums
         env:
           MAILCRAFT_RELEASE_KEY: ${{ secrets.MAILCRAFT_RELEASE_KEY }}

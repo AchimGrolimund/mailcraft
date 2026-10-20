@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The stand-in's sending, as Graph v1.0 documents it ("user: sendMail", "message: send"):
 //!
 //! - `POST /v1.0/me/sendMail` sends a message never saved as a draft: from JSON (`{"message":

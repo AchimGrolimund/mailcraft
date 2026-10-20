@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Accounts, signatures and synchronising with a mail server.
 //!
 //! The engine never talks to a server: `sync.request` says what a synchronisation should do and

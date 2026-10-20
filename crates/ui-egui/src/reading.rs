@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Reading a message: its header, attachments and body, in the reading pane or in a window of
 //! its own ([`show_message`] is both).
 //!

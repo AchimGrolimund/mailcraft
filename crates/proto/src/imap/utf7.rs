@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Modified UTF-7, the encoding of mailbox names (RFC 3501 §5.1.3).
 //!
 //! Printable ASCII stands for itself, except `&`, which is written `&-`. Everything else is

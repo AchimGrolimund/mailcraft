@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! New mail in an Inbox of the owner's own accounts (R7.1, Desktop Alerts): what a Send/Receive
 //! brought that is worth telling the owner of while they are elsewhere.
 //!

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mail to keep offline (#143): the setting, which mail is within it, the background fetch
 //! within it, and mail outside it going back to its headers and preview.
 

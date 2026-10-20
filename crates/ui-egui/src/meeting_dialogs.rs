@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The dialogs of a meeting that write to other people, and the one that lists what they
 //! proposed: Propose New Time, Forward, and View All Proposals.
 //!

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! File › Signatures (R4.5.3): the signatures on the left (New, Rename, Delete), the one chosen
 //! edited on the right with the composer's own editor and formatting, its pictures (Insert
 //! Picture, a dropped file, a pasted picture; a picture's width and description; the layout) and
