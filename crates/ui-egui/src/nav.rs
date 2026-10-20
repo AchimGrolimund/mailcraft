@@ -560,7 +560,7 @@ pub(crate) fn folder_name(f: &Folder) -> &str {
     }
     match named_by(f) {
         Some(Named::Imported) => tl!("Imported"),
-        Some(Named::Kind(kind)) => tl!(kind.default_name()),
+        Some(Named::Kind(kind)) => crate::i18n::current().folder(kind.default_name()),
         None => &f.name,
     }
 }

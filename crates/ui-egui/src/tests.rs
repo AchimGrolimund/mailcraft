@@ -89,9 +89,9 @@ fn window_commands_validate() {
     assert_eq!(a.ui.language, "en");
     assert!(a.execute("ui.language", json!({"language": "xx"})).is_err());
     assert!(a.execute("ui.language", json!({})).is_err());
-    // French has no catalogue yet: it can't be chosen, and Automatic in France is English.
-    assert!(a.execute("ui.language", json!({"language": "fr"})).is_err());
-    a.services.system_locale = Some("fr-FR".into());
+    // Dutch has no catalogue: it can't be chosen, and Automatic in the Netherlands is English.
+    assert!(a.execute("ui.language", json!({"language": "nl"})).is_err());
+    a.services.system_locale = Some("nl-NL".into());
     assert_eq!(a.execute("ui.language", json!({"language": "auto"})).unwrap()["inForce"], "en");
     assert_eq!(a.session.interface_language, crate::i18n::Lang::English);
     assert_eq!(a.execute("ui.interfaceSize", json!({"value": 9000})).unwrap()["value"], 200);

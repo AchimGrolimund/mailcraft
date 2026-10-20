@@ -1332,6 +1332,17 @@ fn local_line(app: &mut MailApp, ui: &mut Ui, t: &Tokens, calendar: Id) {
     ui.interact(r, ui.id().with(("calendar_local_line", calendar)), Sense::hover()).on_hover_text(tip);
 }
 
+/// The engine's names of the groups of calendars in the interface language; any other is the
+/// server's and stays as it is.
+fn group_title(title: &str) -> &str {
+    match title {
+        "My Calendars" => tl!("My Calendars"),
+        "Other Calendars" => tl!("Other Calendars"),
+        "On this computer" => tl!("On this computer"),
+        other => other,
+    }
+}
+
 /// The heading of a group of calendars: a click folds the group away, or brings it back.
 fn group_heading(app: &mut MailApp, ui: &mut Ui, t: &Tokens, n: usize, group: &ListGroup) {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
@@ -1342,7 +1353,7 @@ fn group_heading(app: &mut MailApp, ui: &mut Ui, t: &Tokens, n: usize, group: &L
     }
     let icon = if group.folded { "collapsed" } else { "expanded" };
     icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 13.0, r.center().y), vec2(12.0, 12.0)), icon, t.icon, t.accent);
-    paint_clipped(ui.painter(), pos2(r.min.x + 24.0, r.center().y), r.width() - 30.0, tl!(&group.title), regular(14.667), t.text);
+    paint_clipped(ui.painter(), pos2(r.min.x + 24.0, r.center().y), r.width() - 30.0, group_title(&group.title), regular(14.667), t.text);
     let tip = if group.folded { tl!("Show the calendars of this group") } else { tl!("Fold the calendars of this group away") };
     if resp.on_hover_text(tip).clicked() {
         let _ = app.run("ui.toggleCalendarGroup", json!({"group": group.title}));
@@ -3320,12 +3331,17 @@ fn day_headers(ui: &mut Ui, g: &Grid) -> Rect {
 fn all_day_row(app: &mut MailApp, ui: &mut Ui, g: &Grid, frame: &mut Frame, bars: &[Vec<Bar>], hidden: &[Vec<usize>]) {
     let t = g.t;
     let lanes = bars.iter().flatten().map(|b| b.lane + 1).max().unwrap_or(0).max(1);
-    let bars_h = lanes as f32 * (BAR_H + BAR_GAP) + 3.0;
+    // In the gutter, on two lines when the interface language's words are longer than it is wide.
+    let mut job = egui::text::LayoutJob::simple(tl!("All day").to_string(), regular(10.5), t.text_dim, GUTTER_W - 12.0);
+    job.halign = egui::Align::RIGHT;
+    let label = ui.painter().layout_job(job);
+    let bars_h = (lanes as f32 * (BAR_H + BAR_GAP) + 3.0).max(label.size().y + 4.0);
     let more_h = if hidden.iter().flatten().any(|n| *n > 0) { 17.0 } else { 0.0 };
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), bars_h + more_h), Sense::hover());
     frame.zones.all_day = Some((g.blocks, r));
     let p = ui.painter().clone();
-    p.text(pos2(g.blocks.left() - 8.0, r.min.y + 3.0 + BAR_H / 2.0), Align2::RIGHT_CENTER, tl!("All day"), regular(10.5), t.text_dim);
+    let y = if label.rows.len() > 1 { r.min.y + 1.0 } else { r.min.y + 3.0 + BAR_H / 2.0 - label.size().y / 2.0 };
+    p.galley(pos2(g.blocks.left() - 8.0, y), label, t.text_dim);
     // The pick of whole days, when there is one on the days in view: a click on a day here makes
     // it, and a drag along the row picks the days it passes, in the block it began in.
     let was = load_slot(ui.ctx());

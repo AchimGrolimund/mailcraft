@@ -379,14 +379,14 @@ impl Message {
     }
 }
 
-/// Strip reply and forward prefixes (`Re:`, `RE:`, `Fw:`, `Fwd:`, `AW:`, `WG:`, `Re[2]:`), however
-/// many there are.
+/// Strip reply and forward prefixes (`Re:`, `RE:`, `Fw:`, `Fwd:`, `Re[2]:`; German `AW:`, `WG:`;
+/// Spanish `RV:`; Italian `R:`, `I:`; French `TR :`), however many there are.
 pub fn normalize_subject(subject: &str) -> String {
     let mut s = subject.trim();
     while let Some((prefix, rest)) = s.split_once(':') {
         let p = prefix.trim().to_ascii_lowercase();
         let p = p.split('[').next().unwrap_or("").trim();
-        if matches!(p, "re" | "fw" | "fwd" | "aw" | "wg" | "sv" | "vs" | "tr" | "rv") {
+        if matches!(p, "re" | "fw" | "fwd" | "aw" | "wg" | "sv" | "vs" | "tr" | "rv" | "r" | "i") {
             s = rest.trim();
         } else {
             break;
@@ -408,6 +408,10 @@ mod tests {
         assert_eq!(normalize_subject("Agenda 10:30"), "Agenda 10:30");
         // French puts a space before the colon, often a narrow or plain no-break one.
         assert_eq!(normalize_subject("TR : RE\u{202f}: Fwd\u{a0}: tr: Déjeuner"), "Déjeuner");
+        assert_eq!(normalize_subject("AW: WG: Mittagessen"), "Mittagessen");
+        assert_eq!(normalize_subject("RE: RV: Almuerzo"), "Almuerzo");
+        assert_eq!(normalize_subject("R: I: Pranzo"), "Pranzo");
+        assert_eq!(normalize_subject("Ristorante: Pranzo"), "Ristorante: Pranzo");
     }
 
     #[test]

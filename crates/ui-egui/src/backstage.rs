@@ -370,8 +370,10 @@ fn open(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
 /// A labelled row: the label on the left, the control after it.
 fn row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
-        let (r, _) = ui.allocate_exact_size(vec2(210.0, 24.0), Sense::hover());
         let t = Tokens::get(ui.ctx());
+        // A label longer than the column, as a translation can be, pushes its control along.
+        let wide = ui.fonts_mut(|f| f.layout_no_wrap(label.to_string(), regular(12.5), t.text).size().x + 12.0).max(210.0);
+        let (r, _) = ui.allocate_exact_size(vec2(wide, 24.0), Sense::hover());
         ui.painter().text(pos2(r.min.x, r.center().y), Align2::LEFT_CENTER, label, regular(12.5), t.text);
         add(ui);
     });
@@ -392,9 +394,7 @@ fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     });
     row(ui, tl!("Language"), |ui| {
         // Each language by its own name, so the owner finds theirs whatever the window speaks.
-        let name = |l: crate::i18n::Lang| {
-            if l.preview() { crate::i18n::fmt(tl!("{language} (preview)"), &[("language", l.native_name())]) } else { l.native_name().to_string() }
-        };
+        let name = |l: crate::i18n::Lang| l.picker_name();
         let auto = app.ui.language == crate::i18n::AUTO;
         let cur = app.language();
         let shown = if auto { tl!("Automatic").to_string() } else { name(cur) };

@@ -16,6 +16,16 @@ macro_rules! tl {
     };
 }
 
+/// An English UI string in a context, in the current interface language: `tlc!("folder",
+/// "Archive")` is the folder where `tl!("Archive")` is the command ([`i18n::tc`]). Both are
+/// literals, so `cargo xtask i18n` finds them.
+#[macro_export]
+macro_rules! tlc {
+    ($context:expr, $s:expr) => {
+        $crate::i18n::tc($context, $s)
+    };
+}
+
 /// A count in the current interface language: `tln!(n, "{n} message", "{n} messages")` picks the
 /// form the language's plural rule gives `n` and fills in `{n}` ([`i18n::tn`]). Both English forms
 /// are literals, so `cargo xtask i18n` finds them.

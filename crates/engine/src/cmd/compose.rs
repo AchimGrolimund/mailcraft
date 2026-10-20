@@ -684,7 +684,7 @@ fn send(s: &mut Session, _: &Value) -> CmdResult {
     m.folder = s
         .mailbox
         .folder_of_kind(account.id, kind)
-        .ok_or_else(|| failed!("this account has no {folder} folder", folder = mailcraft_i18n::Arg::words(kind.default_name())))?;
+        .ok_or_else(|| failed!("this account has no {folder} folder", folder = mailcraft_i18n::Arg::folder(kind.default_name())))?;
     // The original is marked replied or forwarded once this has gone (#154): from the Outbox when
     // the server has taken it, at once for a local account, which files it as sent.
     m.answers = answers_of(s, &c).or_else(|| c.draft.and_then(|d| s.mailbox.message(d)).and_then(|d| d.answers.clone()));

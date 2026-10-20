@@ -234,7 +234,7 @@ impl Item {
 
     /// The label on one line, in the interface language.
     fn name(&self) -> String {
-        tl!(self.label).replace('\n', " ")
+        tl!(self.label).replace("-\n", "-").replace("/\n", "/").replace('\n', " ")
     }
 
     /// What the tooltip calls it.
@@ -1660,6 +1660,28 @@ mod tests {
         }
         out.push(("Message".to_string(), vec![("view.mail", json!({})), ("mail.new", json!({}))]));
         out
+    }
+
+    /// Every label, tooltip name and group title of every tab is in the template the catalogues
+    /// are made from (`cargo xtask i18n`), as written, a large button's line break and all: a
+    /// control the extraction missed would stay English in every language.
+    #[test]
+    fn every_ribbon_text_is_in_the_template() {
+        let template = mailcraft_i18n::po::parse(include_str!("../../i18n/po/messages.pot"));
+        let known: std::collections::BTreeSet<String> = template.entries.iter().filter(|e| e.context.is_none()).map(|e| e.id.clone()).collect();
+        let mut a = app();
+        let mut missing = std::collections::BTreeSet::new();
+        for (_, commands) in every_tab() {
+            for (command, params) in commands {
+                a.run(command, params).unwrap();
+            }
+            let tab = describe(&a);
+            for group in &tab.groups {
+                let texts = std::iter::once(group.title).chain(group.items.iter().flat_map(|i| [i.label, i.tip]));
+                missing.extend(texts.filter(|s| !s.is_empty() && !known.contains(*s)));
+            }
+        }
+        assert!(missing.is_empty(), "not in messages.pot (run `cargo xtask i18n`): {missing:?}");
     }
 
     /// One description feeds both layouts: every control has a key of its own, an icon that is
