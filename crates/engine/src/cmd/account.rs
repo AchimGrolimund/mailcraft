@@ -330,6 +330,11 @@ pub fn sync_request(s: &Session, account: Id) -> Result<SyncRequest, CmdError> {
     if a.kind == AccountKind::Unknown {
         return Err(added_by_newer(a, "which sends and receives its mail: this version leaves it as it is"));
     }
+    // A JMAP account is kept in step over JMAP alone, and no run of it is made here yet: nothing
+    // is asked of IMAP or SMTP servers it doesn't have.
+    if a.kind == AccountKind::Jmap {
+        return Err(fail(format!("{} is a JMAP account, and this version doesn't send and receive with one yet", a.name)));
+    }
     if a.kind != AccountKind::Imap {
         return Err(fail(format!("{} isn't connected to a mail server", a.name)));
     }
@@ -457,7 +462,10 @@ fn remote_ops(mb: &Mailbox, account: Id, limit: usize) -> (Vec<RemoteOp>, usize)
 }
 
 fn request(s: &mut Session, v: &Value) -> CmdResult {
+    // With none named, an account a run is made for comes before a JMAP account, for which none is
+    // made here yet (and `sync_request` says so).
     let account = p::id(v, "account")
+        .or_else(|| s.mailbox.accounts.iter().find(|a| a.kind.has_server() && a.kind != AccountKind::Jmap).map(|a| a.id))
         .or_else(|| s.mailbox.accounts.iter().find(|a| a.kind.has_server()).map(|a| a.id))
         .ok_or_else(|| fail("no account is connected to a mail server"))?;
     // One kept in step through Microsoft Graph has a request of its own (`sync.graphRequest`).

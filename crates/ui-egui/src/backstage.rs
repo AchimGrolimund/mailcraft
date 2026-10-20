@@ -118,6 +118,8 @@ pub(crate) fn account_detail(app: &MailApp, a: &mailcraft_model::Account) -> Str
         },
         AccountKind::Local => tl!("On this device only: no mail server").to_string(),
         AccountKind::Microsoft => tl!("Signs in with Microsoft · folders kept in step through Microsoft Graph (testing)").to_string(),
+        // A JMAP account names its server.
+        AccountKind::Jmap => jmap_line(a),
         // Kept as its file has it: this version neither sends nor receives with it.
         AccountKind::Unknown => tl!("Added by a newer version of MailCraft: send and receive with it there").to_string(),
         AccountKind::Imap => {
@@ -132,6 +134,15 @@ pub(crate) fn account_detail(app: &MailApp, a: &mailcraft_model::Account) -> Str
                 None => servers,
             }
         }
+    }
+}
+
+/// A JMAP account's line about its server (also on its settings page): the name of the host alone,
+/// as the whole address may carry the account's own.
+pub(crate) fn jmap_line(a: &mailcraft_model::Account) -> String {
+    match a.jmap.as_ref().and_then(mailcraft_model::JmapServer::host) {
+        Some(host) => crate::i18n::fmt(tl!("JMAP {host}"), &[("host", host)]),
+        None => tl!("JMAP · no usable server address").to_string(),
     }
 }
 

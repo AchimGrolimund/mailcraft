@@ -24,6 +24,8 @@ pub mod graph_mail;
 pub mod graph_send;
 pub mod graph_switch;
 pub mod graph_up;
+#[cfg(test)]
+mod jmap_sending_tests;
 pub mod mail;
 #[cfg(test)]
 mod newer_account_tests;

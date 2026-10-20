@@ -2035,3 +2035,34 @@ fn an_account_a_newer_version_added_is_said_to_be_one_and_left_out_of_send_recei
     h.run_steps(3);
     assert!(h.state().ui.backstage && h.state().session.mailbox.account(newer).is_some());
 }
+
+/// A JMAP account (M6): no Send/Receive of the window takes it in until the engine has its
+/// commands. Asked for by name, it is refused with its reason, nothing is handed to the host and
+/// nothing is asked of the owner; the accounts beside it go on as before.
+#[test]
+fn a_jmap_account_is_left_out_of_send_receive_until_one_can_be_run() {
+    let mut a = app();
+    let handed: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let log = handed.clone();
+    a.services.sync = Some(Box::new(move |req: mailcraft_model::sync::SyncRequest| {
+        log.lock().unwrap().push(req.account.email.clone());
+        std::sync::mpsc::channel::<mailcraft_model::sync::SyncResult>().1
+    }));
+    let servers = json!({"email": "ada@imap.example", "incoming": {"host": "imap.example.org"}});
+    let imap = a.execute("account.add", servers).unwrap()["id"].as_u64().unwrap();
+    let server = mailcraft_model::JmapServer { session: "https://jmap.example/.well-known/jmap".into(), bearer: true };
+    let jmap = mailcraft_model::Account {
+        email: "ada@jmap.example".into(),
+        kind: mailcraft_model::AccountKind::Jmap,
+        jmap: Some(server),
+        ..Default::default()
+    };
+    let jmap = a.session.mailbox.add_account(jmap);
+    assert_eq!(a.server_accounts(), vec![imap]);
+    let why = a.execute("ui.sync", json!({"account": jmap})).unwrap_err();
+    assert_eq!(why, "ada@jmap.example is a JMAP account, and this version doesn't send and receive with one yet");
+    assert!(handed.lock().unwrap().is_empty() && a.dialog.is_none());
+    // A Send/Receive of every account is the IMAP account's alone.
+    a.execute("ui.sync", json!({"password": "not-a-real-password"})).unwrap();
+    assert_eq!(*handed.lock().unwrap(), ["ada@imap.example"]);
+}
