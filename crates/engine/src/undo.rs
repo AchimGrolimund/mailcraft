@@ -99,6 +99,9 @@ struct Said {
     folders: Vec<String>,
     sent: Vec<String>,
     moved_out: Vec<String>,
+    /// What the server is to be told besides (#70): a copy made in another mailbox of the
+    /// owner's that goes again, a move back into the mailbox a message came from.
+    queued: Vec<Queued>,
 }
 
 /// A subject or a name as a line about it shows it.
@@ -156,6 +159,13 @@ pub(crate) fn keep_in_step(mut out: Mailbox, touched: &Touched, now: &Mailbox) -
     }
     tidy(&mut out, now, &g);
     queue(&mut out, now, &g);
+    for q in std::mem::take(&mut said.queued) {
+        if let Queued::PlaceMessage { message, .. } = &q {
+            let message = *message;
+            out.queued.retain(|o| !matches!(o, Queued::PlaceMessage { message: other, .. } if *other == message));
+        }
+        out.queued.push(q);
+    }
     // What the server last gave of these is the server's, not the owner's to undo.
     out.outlook_categories = now.outlook_categories.clone();
     out.favorites_from_server = now.favorites_from_server.clone();
@@ -293,7 +303,11 @@ fn merge(
         (Some(_), None, Some(c)) => Some(c.clone()),
         // Made by the change.
         (None, Some(_), Some(c)) => {
-            if now.queued.iter().any(|q| matches!(q, Queued::CopyMessage { copy, .. } if *copy == c.id)) {
+            if now.queued.iter().any(|q| match q {
+                Queued::CopyMessage { copy, .. } => *copy == c.id,
+                Queued::PlaceMessage { message, .. } => *message == c.id,
+                _ => false,
+            }) {
                 // A copy the server hasn't made: never made there.
                 return None;
             }
@@ -310,21 +324,42 @@ fn merge(
             Some(Arc::new(m))
         }
         (None, None, Some(c)) => Some(c.clone()),
-        (Some(t), Some(a), Some(c)) => fields(t, a, c, g, said),
+        (Some(t), Some(a), Some(c)) => fields(t, a, c, now, g, said),
     }
 }
 
 /// A message here before the change, after it and now: as it is now, but for what the change
 /// changed, which is as it was before.
-fn fields(t: &Message, a: &Message, c: &Arc<Message>, g: &BTreeSet<Id>, said: &mut Said) -> Option<Arc<Message>> {
+fn fields(t: &Message, a: &Message, c: &Arc<Message>, now: &Mailbox, g: &BTreeSet<Id>, said: &mut Said) -> Option<Arc<Message>> {
     let mut m = c.as_ref().clone();
     if t.account != c.account {
-        if g.contains(&t.account) {
+        let placed = c.server.as_ref().filter(|s| !s.gone && !s.id.is_empty() && g.contains(&c.account));
+        if g.contains(&t.account) && c.moving_out.as_ref().is_none_or(|out| out.account != t.account) {
+            // Moved into another mailbox of the owner's, and the original removed (#70): moved
+            // back as it went, a copy made there from the whole message, and this one gone once it is.
+            let Some(placed) = placed.filter(|_| now.between_mailboxes(c.account, t.account)) else {
+                said.moved_out.push(t.subject.clone());
+                return Some(c.clone());
+            };
+            let source = mailcraft_model::sync::fingerprint(placed.id.as_bytes());
+            said.queued.push(Queued::PlaceMessage {
+                account: t.account,
+                message: c.id,
+                marker: format!("mailcraft-place-{:x}-u-{source:016x}", c.id),
+                copy: false,
+            });
+            m.moving_out = Some(MovingOut { account: c.account, id: placed.id.clone(), folder: placed.folder.clone() });
+            (m.server, m.uid, m.synced) = (None, 0, None);
+        } else if g.contains(&t.account) {
             // Moved out of a Microsoft account: back while the server's copy is still there.
             let Some(out) = c.moving_out.clone().filter(|out| out.account == t.account) else {
                 said.moved_out.push(t.subject.clone());
                 return Some(c.clone());
             };
+            // A copy made already in the mailbox it went to goes again there (#70).
+            if let Some(placed) = placed {
+                said.queued.push(Queued::DeleteMessage { account: c.account, id: placed.id.clone(), kept: None });
+            }
             m.server = t.server.clone().filter(|s| s.id == out.id).or_else(|| {
                 Some(ServerMessage {
                     id: out.id.clone(),
@@ -339,8 +374,12 @@ fn fields(t: &Message, a: &Message, c: &Arc<Message>, g: &BTreeSet<Id>, said: &m
             (m.moving_out, m.uid, m.synced) = (None, 0, None);
         } else {
             // Moved back into the account it was being moved out of: out of it again.
-            m.moving_out =
-                c.server.as_ref().filter(|s| !s.gone).map(|s| MovingOut { account: c.account, id: s.id.clone() }).or_else(|| t.moving_out.clone());
+            m.moving_out = c
+                .server
+                .as_ref()
+                .filter(|s| !s.gone)
+                .map(|s| MovingOut { account: c.account, id: s.id.clone(), folder: s.folder.clone() })
+                .or_else(|| t.moving_out.clone());
             (m.server, m.uid, m.synced) = (None, t.uid, t.synced);
         }
         m.account = t.account;
@@ -428,6 +467,8 @@ fn queue(out: &mut Mailbox, now: &Mailbox, g: &BTreeSet<Id>) {
     queued.extend(now.queued.iter().filter(|q| g.contains(&q.account())).cloned());
     queued.retain(|q| match q {
         Queued::CopyMessage { copy, .. } => out.messages.contains_key(copy),
+        // Made from the message where it lies: only while it lies there, not on a server yet (#70).
+        Queued::PlaceMessage { account, message, .. } => out.messages.get(message).is_some_and(|m| m.account == *account && m.server.is_none()),
         _ => true,
     });
     for q in then.iter().filter(|q| g.contains(&q.account())) {

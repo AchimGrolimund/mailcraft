@@ -581,11 +581,6 @@ pub struct Session {
     /// More results on the server for the search in view (R6.2): what was asked of the servers
     /// and what they found, never in the mailbox. Never saved.
     pub server_search: crate::cmd::search_server::ServerSearch,
-    /// Shared mailboxes may be added and read (#70): the switch for testing, off until changes
-    /// in them go up, so that no owner is asked for a shared mailbox's permission by a build that
-    /// only reads one. Set by the host (`MAILCRAFT_SHARED_MAILBOXES=1`), never by a command's
-    /// params. Never saved.
-    pub shared_mailboxes: bool,
     history: Vec<Undo>,
     redo: Vec<Undo>,
     /// What the last undo or redo couldn't do there (a delete for good, a message sent).
@@ -700,7 +695,6 @@ impl Session {
             agent: None,
             graph_switch_backup: None,
             server_search: Default::default(),
-            shared_mailboxes: false,
             history: Vec::new(),
             redo: Vec::new(),
             undo_said: Vec::new(),

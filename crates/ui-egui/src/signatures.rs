@@ -378,16 +378,21 @@ fn picture(app: &mut MailApp, ui: &mut Ui) {
     });
 }
 
-/// Each account's signature for new messages, and for replies and forwards (not of an account a
-/// newer MailCraft added, which keeps its own as that version wrote them).
+/// Each account's signature for new messages, and for replies and forwards: a shared mailbox's
+/// under its owner's account, as the folder pane lists them (#70), each with its own (none until
+/// one is chosen for it); not of an account a newer MailCraft added, which keeps its own as that
+/// version wrote them.
 fn defaults(app: &mut MailApp, ui: &mut Ui, names: &[String]) {
     let accounts: Vec<(u64, String, String, String)> = app
         .session
         .mailbox
-        .accounts
-        .iter()
+        .accounts_in_order()
+        .into_iter()
         .filter(|a| a.kind != mailcraft_model::AccountKind::Unknown)
-        .map(|a| (a.id, a.email.clone(), a.signature.clone(), a.reply_signature().to_string()))
+        .map(|a| {
+            let shown = if a.is_shared() { format!("    {} ({})", a.email, tl!("shared mailbox")) } else { a.email.clone() };
+            (a.id, shown, a.signature.clone(), a.reply_signature().to_string())
+        })
         .collect();
     if accounts.is_empty() {
         ui.label(tl!("Add an account first"));

@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 
 use mailcraft_model::sync::{
     ChangeOutcome, FolderChange, FolderListing, GraphFetchRequest, GraphFetchResult, GraphFolder, GraphLink, GraphMailRequest, GraphMailResult,
-    MAX_DRAFTS, MAX_FOLDER_CHANGES, MAX_MESSAGE_CHANGES, MessageOutcome, SendOutcome, SyncPhase,
+    MAX_DRAFTS, MAX_FOLDER_CHANGES, MAX_MESSAGE_CHANGES, MAX_PLACES, MessageOutcome, SendOutcome, SyncPhase,
 };
 use mailcraft_model::{AccountKind, Folder, FolderKind, Id, Mailbox, Queued, ServerFolder, clean_name};
 use serde_json::{Value, json};
@@ -82,6 +82,8 @@ pub fn graph_mail_request(s: &Session, account: Id) -> Result<GraphMailRequest, 
         messages: graph_up::message_changes(s, account, MAX_MESSAGE_CHANGES).0,
         drafts,
         sends,
+        // Mail moved or copied here from another mailbox of the same owner's (#70).
+        places: super::graph_place::place_changes(s, account, MAX_PLACES).0,
     })
 }
 
@@ -91,9 +93,6 @@ pub fn graph_mail_request(s: &Session, account: Id) -> Result<GraphMailRequest, 
 fn shared_mailbox(s: &Session, account: Id) -> Result<bool, CmdError> {
     let mb = &s.mailbox;
     let Some(a) = mb.account(account).filter(|a| a.is_shared()) else { return Ok(false) };
-    if !s.shared_mailboxes {
-        return Err(fail(super::shared::SWITCHED_OFF));
-    }
     if mb.owner_of(account).is_none() {
         return Err(fail(format!("{} is a shared mailbox whose account is gone: remove it and add it again", a.name)));
     }
@@ -117,7 +116,10 @@ fn links(mb: &Mailbox, account: Id) -> Vec<GraphLink> {
 /// How many changes made in `account` its server hasn't heard of yet ([`super::account::unpushed`]
 /// for an account kept in step through Graph).
 pub fn unpushed(s: &Session, account: Id) -> usize {
-    folder_changes(&s.mailbox, account, 0).1 + graph_up::message_changes(s, account, 0).1 + super::graph_drafts::pending(&s.mailbox, account)
+    folder_changes(&s.mailbox, account, 0).1
+        + graph_up::message_changes(s, account, 0).1
+        + super::graph_drafts::pending(&s.mailbox, account)
+        + super::graph_place::place_changes(s, account, 0).1
 }
 
 /// The server id of the folder a folder of `account` lies in, as the server would have it:
@@ -173,7 +175,7 @@ fn folder_changes(mb: &Mailbox, account: Id, limit: usize) -> (Vec<FolderChange>
         match queued {
             Queued::DeleteFolder { id, .. } => note(&|| FolderChange::Delete { id: id.clone() }),
             // Changes of messages: sent with the message changes (R3.3.2).
-            Queued::CopyMessage { .. } | Queued::DeleteMessage { .. } => {}
+            Queued::CopyMessage { .. } | Queued::DeleteMessage { .. } | Queued::PlaceMessage { .. } => {}
         }
     }
     (changes, count)
@@ -303,6 +305,17 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
                 MessageOutcome::Done { .. } => taken.pushed += 1,
                 _ => taken.updated += 1,
             }
+        }
+    }
+    // What was made here from another mailbox of the same owner's (#70).
+    for done in &result.placed {
+        if super::graph_place::place_done(&mut s.mailbox, account, done, &mut refusals) {
+            match done.outcome {
+                MessageOutcome::Done { .. } => taken.pushed += 1,
+                _ => taken.updated += 1,
+            }
+            // A message's server id is new or gone: where each message is, is looked at afresh.
+            s.graph_index = Default::default();
         }
     }
     let mut refused = refusals.lines();

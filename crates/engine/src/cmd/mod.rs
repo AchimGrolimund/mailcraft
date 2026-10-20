@@ -21,6 +21,7 @@ mod format_tests;
 pub mod graph_down;
 pub mod graph_drafts;
 pub mod graph_mail;
+pub mod graph_place;
 pub mod graph_send;
 pub mod graph_switch;
 pub mod graph_up;
