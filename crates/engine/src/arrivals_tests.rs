@@ -178,3 +178,16 @@ fn a_flood_is_capped() {
     assert!(arrivals(&s.mailbox, &InboxMark { last_id: Id::MAX, inboxes: vec![(inbox, 7)] }).is_empty());
     assert!(arrivals(&Mailbox::default(), &before).is_empty());
 }
+
+#[test]
+fn nothing_arrives_in_an_account_a_newer_version_added() {
+    // Its Inbox was read to the end by that version; a message put into it here is no new mail.
+    let mut s = Session::empty();
+    let newer = mailcraft_model::Account { email: "ada@jmap.example".into(), kind: mailcraft_model::AccountKind::Unknown, ..Default::default() };
+    let newer = s.mailbox.add_account(newer);
+    let inbox = s.mailbox.folder_of_kind(newer, FolderKind::Inbox).unwrap();
+    s.mailbox.folder_mut(inbox).unwrap().server = Some(ServerFolder { id: "inbox".into(), caught_up: true, ..Default::default() });
+    let before = mark(&s.mailbox);
+    s.mailbox.add_message(Message { folder: inbox, subject: "Copied in".into(), ..Default::default() }).unwrap();
+    assert!(arrivals(&s.mailbox, &before).is_empty());
+}

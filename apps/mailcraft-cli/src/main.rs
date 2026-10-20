@@ -406,13 +406,17 @@ fn run(args: &[String]) -> Result<(), Failure> {
                     .find(|a| a.email.eq_ignore_ascii_case(&email))
                     .map(|a| a.id)
                     .ok_or_else(|| format!("sync: no account {email} in {path}"))?,
-                None => s
-                    .mailbox
-                    .accounts
-                    .iter()
-                    .find(|a| a.kind.has_server())
-                    .map(|a| a.id)
-                    .ok_or("sync: no account in this mailbox is connected to a mail server")?,
+                // An account a run is made for before a JMAP account, for which none is made here
+                // yet (and the engine says so when it is the only one).
+                None => {
+                    let accounts = &s.mailbox.accounts;
+                    accounts
+                        .iter()
+                        .find(|a| a.kind.has_server() && a.kind != mailcraft_model::AccountKind::Jmap)
+                        .or_else(|| accounts.iter().find(|a| a.kind.has_server()))
+                        .map(|a| a.id)
+                        .ok_or("sync: no account in this mailbox is connected to a mail server")?
+                }
             };
             // An account kept in step through Microsoft Graph (R3):
             // its folders, through Graph alone.
@@ -651,6 +655,34 @@ mod tests {
         // And it is read wherever a mailbox is.
         run(&strings(&["info", &kept])).unwrap();
         run(&strings(&["list", &one])).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A JMAP account (M6): `sync` makes no run of one yet. As the only account with a server, or
+    /// named, it is refused with its reason before anything is asked of a server, and the mailbox
+    /// file is left as it was.
+    #[test]
+    fn sync_makes_no_run_of_a_jmap_account_yet() {
+        let dir = std::env::temp_dir().join(format!("mailcraft-cli-jmap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("jmap.mailcraft").to_string_lossy().to_string();
+        let mut mb = Mailbox::with_local_account("Ada Lovelace", "ada@example.org");
+        let server = mailcraft_model::JmapServer { session: "https://jmap.example/.well-known/jmap".into(), bearer: true };
+        let jmap = mailcraft_model::Account {
+            email: "ada@jmap.example".into(),
+            kind: mailcraft_model::AccountKind::Jmap,
+            jmap: Some(server),
+            ..Default::default()
+        };
+        mb.add_account(jmap);
+        let bytes = mailcraft_engine::io::write_mailbox(&mb).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let refusal = |args: &[&str]| run(&strings(args)).unwrap_err().to_string();
+        let (alone, named) = (refusal(&["sync", &path]), refusal(&["sync", &path, "--account", "ada@jmap.example"]));
+        let reason = "ada@jmap.example is a JMAP account, and this version doesn't send and receive with one yet";
+        assert!(alone.contains(reason) && named.contains(reason), "{alone} / {named}");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

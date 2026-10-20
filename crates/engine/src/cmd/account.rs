@@ -257,9 +257,20 @@ fn add(s: &mut Session, v: &Value) -> CmdResult {
     Ok(json!({"id": id}))
 }
 
+/// The answer to something only the newer MailCraft that added `a` does with it: an account of a
+/// kind this version doesn't know ([`AccountKind::Unknown`]), kept as its file has it. `then` says
+/// what happens instead, or what to do.
+pub(crate) fn added_by_newer(a: &Account, then: &str) -> CmdError {
+    fail(format!("{} was added by a newer version of MailCraft, {then}", super::remote::who(a)))
+}
+
 fn edit(s: &mut Session, v: &Value) -> CmdResult {
     let id = p::req_id(v, "id")?;
     let mut a = s.mailbox.account(id).cloned().ok_or_else(|| fail(format!("no account with id {id}")))?;
+    // Its settings are written back as its file had them: a change here would be lost.
+    if a.kind == AccountKind::Unknown {
+        return Err(added_by_newer(&a, "which keeps its settings: change them there"));
+    }
     let before = a.clone();
     apply_fields(&mut a, v)?;
     // A shared mailbox is its address, read with its owner's sign-in (#70): another address
@@ -316,6 +327,14 @@ const MAX_LEVELS: usize = 64;
 /// the password.
 pub fn sync_request(s: &Session, account: Id) -> Result<SyncRequest, CmdError> {
     let a = s.mailbox.account(account).ok_or_else(|| fail(format!("no account with id {account}")))?;
+    if a.kind == AccountKind::Unknown {
+        return Err(added_by_newer(a, "which sends and receives its mail: this version leaves it as it is"));
+    }
+    // A JMAP account is kept in step over JMAP alone, and no run of it is made here yet: nothing
+    // is asked of IMAP or SMTP servers it doesn't have.
+    if a.kind == AccountKind::Jmap {
+        return Err(fail(format!("{} is a JMAP account, and this version doesn't send and receive with one yet", a.name)));
+    }
     if a.kind != AccountKind::Imap {
         return Err(fail(format!("{} isn't connected to a mail server", a.name)));
     }
@@ -443,7 +462,10 @@ fn remote_ops(mb: &Mailbox, account: Id, limit: usize) -> (Vec<RemoteOp>, usize)
 }
 
 fn request(s: &mut Session, v: &Value) -> CmdResult {
+    // With none named, an account a run is made for comes before a JMAP account, for which none is
+    // made here yet (and `sync_request` says so).
     let account = p::id(v, "account")
+        .or_else(|| s.mailbox.accounts.iter().find(|a| a.kind.has_server() && a.kind != AccountKind::Jmap).map(|a| a.id))
         .or_else(|| s.mailbox.accounts.iter().find(|a| a.kind.has_server()).map(|a| a.id))
         .ok_or_else(|| fail("no account is connected to a mail server"))?;
     // One kept in step through Microsoft Graph has a request of its own (`sync.graphRequest`).
@@ -548,6 +570,10 @@ impl SyncTotals {
 pub fn apply_sync_part(s: &mut Session, run: &mut SyncTotals, mut result: SyncResult) -> CmdResult {
     let account = result.account;
     let Some(a) = s.mailbox.account(account) else { return Err(fail(format!("no account with id {account}"))) };
+    // No run here asks a server anything of it, so nothing that comes back is for it.
+    if a.kind == AccountKind::Unknown {
+        return Err(added_by_newer(a, "which sends and receives its mail: this version leaves it as it is"));
+    }
     // An answer for another account (the mailbox was replaced while the run was under way) would
     // tie this one's messages to a stranger's server.
     if !result.email.is_empty() && !a.email.trim().eq_ignore_ascii_case(result.email.trim()) {

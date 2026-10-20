@@ -1981,7 +1981,10 @@ impl MailApp {
     }
 
     fn server_accounts(&self) -> Vec<Id> {
-        self.session.mailbox.accounts.iter().filter(|a| a.kind.has_server()).map(|a| a.id).collect()
+        // (Not a JMAP account yet: no run of one is made until the engine has its commands, and
+        // every run would end in a refusal.)
+        let runs = |a: &&mailcraft_model::Account| a.kind.has_server() && a.kind != mailcraft_model::AccountKind::Jmap;
+        self.session.mailbox.accounts.iter().filter(runs).map(|a| a.id).collect()
     }
 
     /// How much of `account` waits to go to its server: mail in the Outbox, and changes made here
