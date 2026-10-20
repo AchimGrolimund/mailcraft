@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Where a domain's mail goes: its mail exchangers (MX records, RFC 1035), from which a host
 //! can tell who provides an address's mail before any account is set up.
 //!

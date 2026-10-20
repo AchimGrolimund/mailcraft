@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Time zones through the whole crate: a time in any zone lands at its instant wherever it is
 //! read, what is written in zones reads back the same, and no zone, however odd, panics or
 //! silently moves an event.

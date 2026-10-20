@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MailCraft Internet messages: reading and writing RFC 5322 + MIME (`.eml`) and mbox files.
 //!
 //! [`parse()`] turns the bytes of a message into a [`mailcraft_model::Message`]; [`write()`] does the

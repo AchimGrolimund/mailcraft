@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Pictures inside a message: the ones attached to it (`cid:`) and, when the owner asked for
 //! them, the ones it refers to on the web; decoded and kept as textures.
 //!

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Timestamps as text: RFC 5322 (`Date:` headers) and ISO 8601.
 
 use crate::{Date, DateTime, MINUTE, Timestamp, Weekday, month_short, parse_month};

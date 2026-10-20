@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A Microsoft account's changes of messages up through Graph (R3.3.2; R3 spec S16–S22).
 //!
 //! After the folder changes and before the listing, the changes of messages the engine worked

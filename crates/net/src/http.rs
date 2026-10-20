@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The little of HTTP this crate needs: one request (a GET, a form POSTed, or any other with a
 //! body of text: [`request`]) over the crate's TLS connections, the answer read back within
 //! limits, and the way text is written into URLs and forms. An OAuth sign-in trades its codes

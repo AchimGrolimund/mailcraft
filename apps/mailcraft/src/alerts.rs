@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Desktop Alerts (R7.1): the system's notifications, for the window's [`AlertHost`]. Our own
 //! code over what the program is already built with, one way per system:
 //!

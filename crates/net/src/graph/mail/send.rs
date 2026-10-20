@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A Microsoft account's Outbox through Graph (R3.4.2; R3 spec S27, S28, "never twice").
 //!
 //! After the drafts, each message waiting in the Outbox is sent:

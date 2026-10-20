@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The window without a window: what `run` does around commands, and frames laid out headlessly in
 //! every module, page and dialog (nothing may panic, whatever is on screen).
 

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The Favorites of Outlook against the strict stand-in, and the readers of the document and of
 //! its ids against whatever can be thrown at them. Nothing here leaves this machine; every name
 //! and every id is invented.

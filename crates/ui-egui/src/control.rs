@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Programmatic control of the running app (agents, tests, MCP bridge).
 //!
 //! Methods (JSON lines over the host's transport, see `docs/control-protocol.md`):

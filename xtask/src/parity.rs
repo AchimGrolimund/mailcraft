@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `cargo xtask parity`: write docs/parity-checklist.md from the live command registry compared with the
 //! word-processor feature catalog (via `mailcraft-cli parity --markdown`).
 

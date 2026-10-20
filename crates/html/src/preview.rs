@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The first words of a message on one line, for a message list.
 //!
 //! A list shows what a message says, not how it was written: no markup, no character references,

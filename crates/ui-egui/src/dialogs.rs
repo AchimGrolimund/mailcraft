@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Dialogs: command search, folder names, Go to Date, the password prompt, confirmations, About,
 //! and the window that hosts the forms (`forms`: appointment, contact, task, account, categories,
 //! rules).

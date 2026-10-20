@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The forms the dialog window hosts: appointment and meeting, contact, task, account, categories,
 //! rules.
 //!

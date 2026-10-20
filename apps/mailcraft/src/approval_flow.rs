@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! An organisation that has to approve MailCraft first, the host's part of it: how a sign-in
 //! on Microsoft's page that brought no tokens is told to the window, how an administrator's
 //! approval is asked for and read, and the whole way for an account that exists (the window's

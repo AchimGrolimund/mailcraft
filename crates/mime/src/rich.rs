@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Rich text (`mailcraft_model::rich`) to HTML and back.
 //!
 //! [`to_html`] writes the owner's text as the HTML part of a message: `<div>` paragraphs, `<ul>`

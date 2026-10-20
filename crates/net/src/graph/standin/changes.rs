@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The stand-in's changes of messages, as Graph v1.0 documents them ("Update message",
 //! "message: move", "message: copy", "Delete message", "Get singleValueLegacyExtendedProperty",
 //! "Create single-value extended property", "Combine multiple requests in one HTTP call using

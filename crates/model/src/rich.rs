@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The text of a message being written, in rich text: paragraphs of runs.
 //!
 //! The set is deliberately small (the roadmap's minimal rich-text reply): bold, italic,

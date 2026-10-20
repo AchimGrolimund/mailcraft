@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Tasks: the filters, the to-do list and the selected task's details.
 //!
 //! The lists are sorted once per change of the tasks, the day or the filter (not once per frame),

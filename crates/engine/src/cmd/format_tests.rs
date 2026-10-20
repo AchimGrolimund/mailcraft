@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Writing in rich text through commands: the selection, typing, formatting, links, lists and
 //! undo inside the message, and messages written before rich text.
 

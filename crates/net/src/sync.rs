@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Synchronising with the account's servers, both ways. The Outbox goes out through SMTP. Then,
 //! over IMAP: a copy of what was sent is filed, the changes made here since the last run are
 //! pushed (flags, moves, deletions: [`crate::push`]), and new mail, flag changes and removals

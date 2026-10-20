@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Getting around: the module bar (Mail, Calendar, People, Tasks) down the left edge, and the
 //! folder pane beside it in Mail.
 

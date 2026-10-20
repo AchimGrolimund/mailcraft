@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! RFC 2047 encoded-words: non-ASCII text in header fields (`=?UTF-8?B?…?=`).
 
 use crate::charset;

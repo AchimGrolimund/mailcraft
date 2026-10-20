@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Windows of their own: a message or an appointment opened out of the main window, as a double
 //! click on it does.
 //!

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The whole way of the Favorites of the folder pane, from Outlook's list on the server to the
 //! rows under the Favorites heading: the window's timer, this host's Microsoft Graph job,
 //! `mailcraft-net` and the engine, against a stand-in that takes only what the documented

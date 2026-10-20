@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Drafts of a Microsoft account up through Microsoft Graph (R3.4.1; R3 spec S23–S26).
 //!
 //! A draft saved here ([`ServerDraft::pending`]) goes up with the next run: what differs from what

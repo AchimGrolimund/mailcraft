@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A Microsoft account's folders kept in step through Microsoft Graph (R3.1), from end to end: the
 //! engine's `graph_mail_request` and `apply_graph_mail` with `mailcraft_net::graph::sync_folders`
 //! in between, against the strict Graph stand-in, as the command line and the desktop app run

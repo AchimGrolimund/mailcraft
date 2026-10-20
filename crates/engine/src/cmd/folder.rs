@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Folders: choosing the one in view, making, renaming, moving, emptying.
 
 use mailcraft_model::{FolderKind, Id};

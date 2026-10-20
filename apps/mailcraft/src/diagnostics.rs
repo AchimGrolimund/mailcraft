@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Help › Copy Diagnostics (`ui.copyDiagnostics`, R7.2): what an owner pastes into a problem
 //! report. The version, the platform and the end of this run's log and the run before (a crash
 //! survives in that one), with every message part of a log line passed through [`redact`]: no

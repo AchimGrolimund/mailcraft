@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Bytes to text, for the character sets mail and contact files still arrive in: one decoder for
 //! `mailcraft-mime` (bodies, encoded words, RFC 2231 parameters) and `mailcraft-vcard` (vCard
 //! 2.1's `CHARSET=`), so that both read a set the same way.

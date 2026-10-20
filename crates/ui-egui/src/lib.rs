@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MailCraft's egui front end: an Outlook-style window (title bar with Quick Access Toolbar and
 //! search, ribbon, module bar, folder pane, message list, reading pane, calendar, people, tasks,
 //! status bar, Backstage, dialogs) over `mailcraft-engine`.

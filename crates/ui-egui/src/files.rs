@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Files coming in and going out: picking a mailbox to open, something to import or attach, and
 //! where an export goes.
 //!

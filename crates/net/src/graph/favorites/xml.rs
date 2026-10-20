@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The list of Favorites inside the cached configuration of Outlook on the web: an XML document
 //! that nobody documents, read for one entry of one dictionary and nothing else.
 //!

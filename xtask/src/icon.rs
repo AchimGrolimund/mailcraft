@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `cargo xtask icon`: write MailCraft's app icon in every size the platforms want.
 //!
 //! Two sources, and nothing traced or copied from any other product's icon either way:

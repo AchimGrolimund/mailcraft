@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! File: the mailbox file, importing and exporting, options.
 
 use mailcraft_model::{Id, Mailbox};

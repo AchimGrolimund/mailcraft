@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Importance, response options, Teams meetings, proposing another time, forwarding, and moving
 //! an appointment between the calendars of one account, against a server written out by hand (as
 //! `mailcraft-net` brings it from Microsoft Graph). Invented people at `example.org`.

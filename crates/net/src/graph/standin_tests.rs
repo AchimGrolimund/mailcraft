@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! What this crate writes to Microsoft Graph's calendar, held against a stand-in that takes only
 //! what the documented service takes ([`standin`]). Nothing here leaves this machine.
 

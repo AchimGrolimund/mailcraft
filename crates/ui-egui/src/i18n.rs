@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Interface text. Every string the interface shows goes through [`t`] (the `tl!` macro), keyed by
 //! its English text, so language catalogs can be added without touching the widgets. English is
 //! the only language so far; `pseudo` (a test language) proves that no string bypasses the lookup.

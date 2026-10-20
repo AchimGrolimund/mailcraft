@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Send/Receive Progress (#120): what the run under way is doing, or what the last one did,
 //! account by account. Kept in the session, in memory only (never saved); `sync.apply` and
 //! `sync.applyGraph` keep it up to date as the pieces of a run come in, and `sync.progress`

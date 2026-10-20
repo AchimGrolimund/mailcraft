@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The mail-client feature catalog: the incumbent's ribbon and menu commands (feature names
 //! only) mapped to our command ids. `parity()` compares it with the registry; the gap is the
 //! work list (`cargo xtask parity` → docs/parity-checklist.md).

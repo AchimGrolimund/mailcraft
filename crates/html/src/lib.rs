@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MailCraft HTML for mail.
 //!
 //! Mail HTML is hostile: it comes from strangers, it is often broken, and it may try to run

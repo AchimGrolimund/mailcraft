@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A Microsoft account's mail down through Microsoft Graph (R3.2), the whole way from the stand-in
 //! through `mailcraft-net` into the mailbox: 200,000 messages, a run stopped, a run cut short, a
 //! crash between a page and its save, a link the server forgot. Nothing twice, nothing missed.

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Drafts of a Microsoft account up through Graph (R3.4.1; R3 spec S23–S26).
 //!
 //! A draft written here is made in the server's Drafts carrying MailCraft's marker (an invisible

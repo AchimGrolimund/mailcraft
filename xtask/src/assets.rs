@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `cargo xtask assets`: every non-code asset must be attributed in `ATTRIBUTION.md`.
 //!
 //! Scans all git-tracked (and untracked, not ignored) files with an asset extension, plus

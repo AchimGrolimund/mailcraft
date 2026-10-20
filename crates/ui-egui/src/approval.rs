@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! When an organisation has to approve MailCraft before one of its people can sign in: what the
 //! window knows of it, and its commands.
 //!

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mail: selecting, reading, filing, flagging and deleting messages.
 
 use mailcraft_model::{FlagStatus, FolderKind, Id, Rgb};

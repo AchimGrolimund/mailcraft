@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A message, an mbox file, a `mailto:` link and encoded words, from any bytes.
 #![no_main]
 

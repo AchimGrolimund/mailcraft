@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! People: the contact list and the selected contact's card.
 //!
 //! The list is laid out once per change of the contacts or the search (not once per frame), and

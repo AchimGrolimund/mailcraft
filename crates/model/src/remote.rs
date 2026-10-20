@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Calendar events and contacts that an account's server keeps besides its mail.
 //!
 //! Plain data, like [`crate::sync`]: a host with sockets (`mailcraft-net`, which asks Microsoft

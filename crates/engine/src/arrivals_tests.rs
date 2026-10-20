@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use mailcraft_model::sync::{FolderDelta, SyncResult};
 use mailcraft_model::{Address, FolderKind, Id, Message, ServerFolder};
 use serde_json::json;
