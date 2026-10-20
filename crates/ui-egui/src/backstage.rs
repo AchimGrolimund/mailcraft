@@ -518,7 +518,7 @@ fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
         });
     });
     row(ui, tl!("Working hours"), |ui| {
-        let hour = |h: u8| mailcraft_time::time_short(h % 24, 0, prefs.twelve_hour);
+        let hour = |h: u8| crate::dates::time(h % 24, 0, prefs.twelve_hour);
         egui::ComboBox::from_id_salt("opt_work_start").selected_text(hour(prefs.work_start)).show_ui(ui, |ui| {
             for h in 0u8..prefs.work_end.min(23) {
                 if ui.selectable_label(h == prefs.work_start, hour(h)).clicked() {
@@ -541,7 +541,7 @@ fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
         let label = |m: Option<u32>| match m {
             None => tl!("None").to_string(),
             Some(0) => tl!("At start time").to_string(),
-            Some(m) => mailcraft_time::duration_label(i64::from(m)),
+            Some(m) => crate::dates::duration(i64::from(m)),
         };
         egui::ComboBox::from_id_salt("opt_reminder").selected_text(label(prefs.default_reminder)).show_ui(ui, |ui| {
             for m in [None, Some(0u32), Some(5), Some(10), Some(15), Some(30), Some(60)] {

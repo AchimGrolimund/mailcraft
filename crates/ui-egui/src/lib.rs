@@ -38,6 +38,7 @@ pub mod chrome;
 pub mod compose;
 pub mod control;
 pub mod credits;
+pub mod dates;
 pub mod dialogs;
 pub mod favorites_sync;
 pub mod files;
@@ -2546,7 +2547,7 @@ impl MailApp {
             return;
         }
         let name = self.session.mailbox.account(account).map(|a| a.name.clone()).unwrap_or_default();
-        let at = self.session.local_now().time_short(self.session.prefs.twelve_hour);
+        let at = crate::dates::clock(self.session.local_now(), self.session.prefs.twelve_hour);
         let clip = |e: &String| e.chars().take(600).collect::<String>();
         match self.sync_problems.iter_mut().find(|(a, ..)| *a == account) {
             Some((_, _, when, lines)) => {
@@ -2731,6 +2732,7 @@ impl MailApp {
         let lang = self.language();
         i18n::set_current(lang);
         self.session.interface_language = lang;
+        self.session.prefs.follow_language(lang);
         if self.applied_language != Some(lang) {
             self.applied_language = Some(lang);
             if let Some(tell) = &self.services.on_language {

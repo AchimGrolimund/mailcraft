@@ -318,10 +318,10 @@ fn weekday(text: &str) -> Result<Weekday, crate::CmdError> {
 fn options(s: &mut Session, v: &Value) -> CmdResult {
     let mut prefs = s.prefs.clone();
     if let Some(b) = p::bool(v, "twelveHour") {
-        prefs.twelve_hour = b;
+        (prefs.twelve_hour, prefs.clock_chosen) = (b, Some(true));
     }
     if let Some(d) = p::str(v, "weekStart") {
-        prefs.week_start = weekday(d)?;
+        (prefs.week_start, prefs.week_start_chosen) = (weekday(d)?, Some(true));
     }
     if let Some(days) = p::strings(v, "workDays") {
         let mut list = days.iter().map(|d| weekday(d)).collect::<Result<Vec<_>, _>>()?;

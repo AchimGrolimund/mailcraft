@@ -198,14 +198,15 @@ struct When {
 impl When {
     /// `Thursday, October 15, 2026 10:00 AM – 11:00 AM`.
     fn text(&self, twelve_hour: bool) -> String {
+        use crate::dates::{clock, long};
         let (first, last) = (self.start.date, self.end.date);
         if self.all_day {
             let last = self.end.add_minutes(-1).date.max(first);
-            let days = if last == first { first.long() } else { format!("{} – {}", first.long(), last.long()) };
+            let days = if last == first { long(first) } else { format!("{} – {}", long(first), long(last)) };
             return format!("{days} ({})", tl!("all day"));
         }
-        let (from, to) = (self.start.time_short(twelve_hour), self.end.time_short(twelve_hour));
-        if first == last { format!("{} {from} – {to}", first.long()) } else { format!("{} {from} – {} {to}", first.long(), last.long()) }
+        let (from, to) = (clock(self.start, twelve_hour), clock(self.end, twelve_hour));
+        if first == last { format!("{} {from} – {to}", long(first)) } else { format!("{} {from} – {} {to}", long(first), long(last)) }
     }
 }
 
@@ -584,7 +585,9 @@ fn listed(slots: &[&Slot], twelve_hour: bool) -> String {
         let title: String = slot.title.chars().filter(|c| !c.is_control()).take(60).collect();
         let title = if title.trim().is_empty() { tl!("(no title)").to_string() } else { title };
         match (slot.all_day, time_of(&slot.start), time_of(&slot.end)) {
-            (false, Some(start), Some(end)) => format!("{title} ({} – {})", start.time_short(twelve_hour), end.time_short(twelve_hour)),
+            (false, Some(start), Some(end)) => {
+                format!("{title} ({} – {})", crate::dates::clock(start, twelve_hour), crate::dates::clock(end, twelve_hour))
+            }
             _ => format!("{title} ({})", tl!("all day")),
         }
     };
@@ -606,7 +609,7 @@ fn headlines(app: &MailApp, info: &Info) -> Vec<(&'static str, String, bool)> {
     match info.kind.as_str() {
         "request" => {
             if let Some(answer) = &info.answered {
-                let at = answer.at.map(|at| mailcraft_time::header_label(at, app.session.offset_at(at), app.session.prefs.twelve_hour));
+                let at = answer.at.map(|at| crate::dates::header_label(at, app.session.offset_at(at), app.session.prefs.twelve_hour));
                 let (icon, on, plain) = match answer.response {
                     Said::Accepted => ("accept", tl!("Accepted on {when}"), tl!("You accepted this meeting.")),
                     Said::Tentative => ("tentative", tl!("Tentatively accepted on {when}"), tl!("You tentatively accepted this meeting.")),
@@ -764,7 +767,7 @@ fn day_strip(ui: &Ui, rect: Rect, info: &Info, when: &When, t: &Tokens, twelve_h
     p.rect(rect, 4.0, t.surface, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
     // The day, and under it the hours from the one before the meeting.
     let head = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.min.y + 20.0));
-    let day = format!("{}, {} {}", when.start.date.weekday().name(), mailcraft_time::month_name(when.start.date.month), when.start.date.day);
+    let day = crate::dates::weekday_month_day_long(when.start.date);
     paint_clipped(&p, pos2(head.min.x + 8.0, head.center().y), head.width() - 16.0, &day, semibold(11.0), t.text_dim);
     p.line_segment([pos2(rect.min.x, head.max.y), pos2(rect.max.x, head.max.y)], Stroke::new(1.0, t.border));
     let grid = Rect::from_min_max(pos2(rect.min.x, head.max.y), rect.max);

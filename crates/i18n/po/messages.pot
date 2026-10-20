@@ -223,8 +223,8 @@ msgstr ""
 msgid "A web address, an email address or a phone number (tel:). With nothing selected, the address is put in as it is."
 msgstr ""
 
-#. interface
-#: crates/ui-egui/src/calendar_view.rs
+#. date and time, interface
+#: crates/i18n/src/date.rs crates/ui-egui/src/calendar_view.rs
 msgid "AM"
 msgstr ""
 
@@ -643,13 +643,13 @@ msgstr ""
 msgid "Approval Needed"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "Apr"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "April"
 msgstr ""
 
@@ -763,13 +763,13 @@ msgstr ""
 msgid "Attendees"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "Aug"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "August"
 msgstr ""
 
@@ -1418,13 +1418,13 @@ msgstr ""
 msgid "Day"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "Dec"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "December"
 msgstr ""
 
@@ -1983,13 +1983,13 @@ msgstr ""
 msgid "Fax"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "Feb"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "February"
 msgstr ""
 
@@ -2175,13 +2175,13 @@ msgstr ""
 msgid "Free and Busy Times"
 msgstr ""
 
-#. name
-#: crates/time/src/lib.rs
+#. date and time, name
+#: crates/i18n/src/date.rs crates/time/src/lib.rs
 msgid "Fri"
 msgstr ""
 
-#. name
-#: crates/time/src/lib.rs
+#. date and time, name
+#: crates/i18n/src/date.rs crates/time/src/lib.rs
 msgid "Friday"
 msgstr ""
 
@@ -2605,13 +2605,13 @@ msgstr ""
 msgid "JMAP · no usable server address"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "Jan"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "January"
 msgstr ""
 
@@ -2635,23 +2635,23 @@ msgstr ""
 msgid "Join {service} Meeting"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "Jul"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "July"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "Jun"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "June"
 msgstr ""
 
@@ -3020,13 +3020,13 @@ msgstr ""
 msgid "Manage Task"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "Mar"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "March"
 msgstr ""
 
@@ -3070,8 +3070,8 @@ msgstr ""
 msgid "Mark as unread"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "May"
 msgstr ""
 
@@ -3190,13 +3190,13 @@ msgstr ""
 msgid "Mobile"
 msgstr ""
 
-#. name
-#: crates/time/src/lib.rs
+#. date and time, name
+#: crates/i18n/src/date.rs crates/time/src/lib.rs
 msgid "Mon"
 msgstr ""
 
-#. name
-#: crates/time/src/lib.rs
+#. date and time, name
+#: crates/i18n/src/date.rs crates/time/src/lib.rs
 msgid "Monday"
 msgstr ""
 
@@ -3745,13 +3745,13 @@ msgstr ""
 msgid "Nothing to do here."
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "Nov"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "November"
 msgstr ""
 
@@ -3770,13 +3770,13 @@ msgstr ""
 msgid "OK"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "Oct"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "October"
 msgstr ""
 
@@ -4070,8 +4070,8 @@ msgstr ""
 msgid "Overlay"
 msgstr ""
 
-#. interface
-#: crates/ui-egui/src/calendar_view.rs
+#. date and time, interface
+#: crates/i18n/src/date.rs crates/ui-egui/src/calendar_view.rs
 msgid "PM"
 msgstr ""
 
@@ -4620,13 +4620,13 @@ msgstr ""
 msgid "Sample Mailbox"
 msgstr ""
 
-#. name
-#: crates/time/src/lib.rs
+#. date and time, name
+#: crates/i18n/src/date.rs crates/time/src/lib.rs
 msgid "Sat"
 msgstr ""
 
-#. name
-#: crates/time/src/lib.rs
+#. date and time, name
+#: crates/i18n/src/date.rs crates/time/src/lib.rs
 msgid "Saturday"
 msgstr ""
 
@@ -5060,13 +5060,13 @@ msgstr ""
 msgid "Sent to"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "Sep"
 msgstr ""
 
-#. date
-#: crates/time/src/lib.rs
+#. date and time
+#: crates/i18n/src/date.rs
 msgid "September"
 msgstr ""
 
@@ -5550,13 +5550,13 @@ msgstr ""
 msgid "Suggest Recipients"
 msgstr ""
 
-#. name
-#: crates/time/src/lib.rs
+#. date and time, name
+#: crates/i18n/src/date.rs crates/time/src/lib.rs
 msgid "Sun"
 msgstr ""
 
-#. name
-#: crates/time/src/lib.rs
+#. date and time, name
+#: crates/i18n/src/date.rs crates/time/src/lib.rs
 msgid "Sunday"
 msgstr ""
 
@@ -6315,13 +6315,13 @@ msgstr ""
 msgid "Three Weeks Ago"
 msgstr ""
 
-#. name
-#: crates/time/src/lib.rs
+#. date and time, name
+#: crates/i18n/src/date.rs crates/time/src/lib.rs
 msgid "Thu"
 msgstr ""
 
-#. name
-#: crates/time/src/lib.rs
+#. date and time, name
+#: crates/i18n/src/date.rs crates/time/src/lib.rs
 msgid "Thursday"
 msgstr ""
 
@@ -6428,13 +6428,13 @@ msgstr ""
 msgid "Try again"
 msgstr ""
 
-#. name
-#: crates/time/src/lib.rs
+#. date and time, name
+#: crates/i18n/src/date.rs crates/time/src/lib.rs
 msgid "Tue"
 msgstr ""
 
-#. name
-#: crates/time/src/lib.rs
+#. date and time, name
+#: crates/i18n/src/date.rs crates/time/src/lib.rs
 msgid "Tuesday"
 msgstr ""
 
@@ -6658,13 +6658,13 @@ msgstr ""
 msgid "Websites"
 msgstr ""
 
-#. name
-#: crates/time/src/lib.rs
+#. date and time, name
+#: crates/i18n/src/date.rs crates/time/src/lib.rs
 msgid "Wed"
 msgstr ""
 
-#. name
-#: crates/time/src/lib.rs
+#. date and time, name
+#: crates/i18n/src/date.rs crates/time/src/lib.rs
 msgid "Wednesday"
 msgstr ""
 
@@ -7453,6 +7453,26 @@ msgid "{folder} - {mailbox}"
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src/calendar_view.rs
+msgid "{from} – {to}, {year}"
+msgstr ""
+
+#. date and time
+#: crates/i18n/src/date.rs
+msgid "{hour}:{minute}"
+msgstr ""
+
+#. date and time
+#: crates/i18n/src/date.rs
+msgid "{hour}:{minute} {ampm}"
+msgstr ""
+
+#. date and time
+#: crates/i18n/src/date.rs
+msgid "{h} h {m} min"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/backstage.rs
 msgid "{language} (preview)"
 msgstr ""
@@ -7460,6 +7480,31 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/graph_fetch.rs
 msgid "{large} large messages download when opened"
+msgstr ""
+
+#. date and time
+#: crates/i18n/src/date.rs
+msgid "{month} {day}"
+msgstr ""
+
+#. date and time
+#: crates/i18n/src/date.rs
+msgid "{month} {day}, {year}"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/calendar_view.rs
+msgid "{month} {first} – {last}, {year}"
+msgstr ""
+
+#. date and time
+#: crates/i18n/src/date.rs
+msgid "{month} {year}"
+msgstr ""
+
+#. date and time
+#: crates/i18n/src/date.rs
+msgid "{month}/{day}/{year}"
 msgstr ""
 
 #. interface
@@ -7542,8 +7587,8 @@ msgid_plural "{n} contacts"
 msgstr[0] ""
 msgstr[1] ""
 
-#. interface
-#: crates/ui-egui/src/reminders.rs
+#. date and time, interface
+#: crates/i18n/src/date.rs crates/ui-egui/src/reminders.rs
 msgid "{n} day"
 msgid_plural "{n} days"
 msgstr[0] ""
@@ -7570,8 +7615,8 @@ msgid_plural "{n} events in view"
 msgstr[0] ""
 msgstr[1] ""
 
-#. interface
-#: crates/ui-egui/src/reminders.rs
+#. date and time, interface
+#: crates/i18n/src/date.rs crates/ui-egui/src/reminders.rs
 msgid "{n} hour"
 msgid_plural "{n} hours"
 msgstr[0] ""
@@ -7654,8 +7699,8 @@ msgid_plural "{n} messages will be deleted for good."
 msgstr[0] ""
 msgstr[1] ""
 
-#. interface
-#: crates/ui-egui/src/backstage.rs crates/ui-egui/src/reminders.rs
+#. date and time, interface
+#: crates/i18n/src/date.rs crates/ui-egui/src/backstage.rs crates/ui-egui/src/reminders.rs
 msgid "{n} minute"
 msgid_plural "{n} minutes"
 msgstr[0] ""
@@ -7788,6 +7833,11 @@ msgid_plural "{n} were there already"
 msgstr[0] ""
 msgstr[1] ""
 
+#. date and time
+#: crates/i18n/src/date.rs
+msgid "{n}.5 hours"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/account_setup/help.rs
 msgid "{provider}'s sign-in page is open in your browser"
@@ -7816,6 +7866,31 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/reminders.rs
 msgid "{time} ago"
+msgstr ""
+
+#. date and time
+#: crates/i18n/src/date.rs
+msgid "{weekday} {date} {time}"
+msgstr ""
+
+#. date and time
+#: crates/i18n/src/date.rs
+msgid "{weekday} {time}"
+msgstr ""
+
+#. date and time
+#: crates/i18n/src/date.rs
+msgid "{weekday}, {date}"
+msgstr ""
+
+#. date and time
+#: crates/i18n/src/date.rs
+msgid "{weekday}, {month} {day}"
+msgstr ""
+
+#. date and time
+#: crates/i18n/src/date.rs
+msgid "{weekday}, {month} {day}, {year}"
 msgstr ""
 
 #. interface

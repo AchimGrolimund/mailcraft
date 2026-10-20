@@ -406,6 +406,13 @@ pub struct Prefs {
     /// `3:05 PM` rather than `15:05`.
     pub twelve_hour: bool,
     pub week_start: Weekday,
+    /// The owner chose the clock (`file.options`); else it is the interface language's own
+    /// ([`Prefs::follow_language`]). `None`: settings saved before this was kept.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock_chosen: Option<bool>,
+    /// The same for the first day of the week.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub week_start_chosen: Option<bool>,
     pub work_days: Vec<Weekday>,
     /// Working hours, for the calendar's shading (0–24).
     pub work_start: u8,
@@ -468,6 +475,8 @@ impl Default for Prefs {
         Prefs {
             twelve_hour: true,
             week_start: Weekday::Sun,
+            clock_chosen: None,
+            week_start_chosen: None,
             work_days: vec![Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri],
             work_start: 8,
             work_end: 17,
@@ -488,6 +497,25 @@ impl Default for Prefs {
             zone_label: String::new(),
             second_zone_label: String::new(),
             recent_zones: Vec::new(),
+        }
+    }
+}
+
+impl Prefs {
+    /// The clock and the first day of the week that the owner never chose follow the interface
+    /// language (French: 24-hour, Monday); the ones they chose are kept. Settings saved before
+    /// this was kept count what differs from the old defaults (12-hour, Sunday) as chosen, so
+    /// they behave as they always did.
+    pub fn follow_language(&mut self, lang: mailcraft_i18n::Lang) {
+        let old = Prefs::default();
+        let clock = *self.clock_chosen.get_or_insert(self.twelve_hour != old.twelve_hour);
+        let week = *self.week_start_chosen.get_or_insert(self.week_start != old.week_start);
+        let own = lang.conventions();
+        if !clock {
+            self.twelve_hour = own.twelve_hour;
+        }
+        if !week {
+            self.week_start = Weekday::from_index(i64::from(own.week_start));
         }
     }
 }

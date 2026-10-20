@@ -827,7 +827,7 @@ fn message_row(app: &mut MailApp, ui: &mut Ui, row: &Row, rect: Rect) {
 
     // The subject's line, with the time at its end.
     let date =
-        mailcraft_time::list_label(mailcraft_engine::list::when(&m), app.session.now(), app.session.offset_at(m.date), app.session.prefs.twelve_hour);
+        crate::dates::list_label(mailcraft_engine::list::when(&m), app.session.now(), app.session.offset_at(m.date), app.session.prefs.twelve_hour);
     let (date_font, date_color) = match (unread, overdue) {
         (true, false) => (semibold(LIST_TEXT), t.accent_text),
         (true, true) => (semibold(LIST_TEXT), t.overdue),

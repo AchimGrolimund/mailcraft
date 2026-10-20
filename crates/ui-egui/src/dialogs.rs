@@ -550,7 +550,7 @@ fn calendar_question(app: &MailApp, id: &str, params: &Value) -> Option<Question
         let name: String = e.title.chars().filter(|c| !c.is_control()).take(80).collect();
         let text = crate::i18n::fmt(
             tl!("\"{name}\" is one of a series. Do you mean just the one on {day}, or the entire series?"),
-            &[("name", &name), ("day", &day.long())],
+            &[("name", &name), ("day", &crate::dates::long(day))],
         );
         let one = json!({"scope": "occurrence", "occurrence": day.iso()});
         return Some(Question::new(title, text, tl!("Just This One"), one).or(tl!("The Entire Series"), json!({"scope": "series"})));

@@ -922,7 +922,7 @@ fn menu_contents(ui: &mut Ui, app: &mut MailApp, menu: Menu) {
             let cur = app.session.sel.event.and_then(|id| app.session.mailbox.event(id)).and_then(|e| e.reminder_minutes);
             mi_check(ui, app, "None", cur.is_none(), "calendar.reminder", json!({"minutes": null}));
             for m in [0u32, 5, 10, 15, 30, 60, 120, 1440] {
-                let label = if m == 0 { tl!("At start time").to_string() } else { mailcraft_time::duration_label(i64::from(m)) };
+                let label = if m == 0 { tl!("At start time").to_string() } else { crate::dates::duration(i64::from(m)) };
                 mi_check(ui, app, &label, cur == Some(m), "calendar.reminder", json!({"minutes": m}));
             }
         }

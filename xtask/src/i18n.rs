@@ -8,7 +8,7 @@
 //! `tl!` (`mi(ui, app, "New Message", …)`); the window's own commands (`UI_COMMANDS`); the engine's
 //! command labels, the parts of their ribbon locations and the reasons a command can't run; the
 //! names the window shows through `tl!(x.label())` (`fn label`/`name`/`title`… returning a
-//! `&'static str`); and the names of the months and the days.
+//! `&'static str`); and the words and patterns of dates and times (`crates/i18n/src/date.rs`).
 //!
 //! `--check` (a `cargo xtask ci` step) changes nothing and fails when the template or a catalogue
 //! is out of date. Either way, it fails on a catalogue it can't read, or on a translation whose
@@ -141,9 +141,11 @@ fn gather(root: &Path) -> Result<Texts, String> {
                 reasons(&toks, &file, &mut texts);
             }
             names(&toks, &file, &mut texts);
-            if dir == "crates/time/src" {
-                dates(&toks, &file, &mut texts);
-            }
+        }
+    }
+    for (file, toks) in sources(root, "crates/i18n/src")? {
+        if file.ends_with("/date.rs") {
+            dates(&toks, &file, &mut texts);
         }
     }
     Ok(texts)
@@ -585,16 +587,25 @@ fn names(toks: &[Tok], file: &str, texts: &mut Texts) {
     }
 }
 
-/// `const MONTHS`: each month's name and its first three letters (`month_short`).
+/// The literals of every `const` of the dates' file: names, patterns, and the plurals as
+/// `("{n} day", "{n} days")`.
 fn dates(toks: &[Tok], file: &str, texts: &mut Texts) {
     for i in 0..toks.len() {
-        if is(toks, i, &["const", "MONTHS"])
-            && let Some(open) = (i..toks.len()).find(|k| toks.get(*k) == Some(&Tok::Punct('=')))
-        {
-            for t in toks.get(open..close(toks, open + 1)).unwrap_or_default() {
-                if let Tok::Str(m) = t {
-                    add(texts, m, None, file, "date");
-                    add(texts, &m.chars().take(3).collect::<String>(), None, file, "date");
+        if !is(toks, i, &["const"]) {
+            continue;
+        }
+        let Some(eq) = (i..toks.len()).find(|k| toks.get(*k) == Some(&Tok::Punct('='))) else { continue };
+        let end = (eq..toks.len()).find(|k| toks.get(*k) == Some(&Tok::Punct(';'))).unwrap_or(toks.len());
+        let value = toks.get(eq + 1..end).unwrap_or_default();
+        match value {
+            [Tok::Punct('('), Tok::Str(one), Tok::Punct(','), Tok::Str(many), Tok::Punct(')')] => {
+                add(texts, one, Some(many), file, "date and time");
+            }
+            _ => {
+                for t in value {
+                    if let Tok::Str(s) = t {
+                        add(texts, s, None, file, "date and time");
+                    }
                 }
             }
         }
@@ -717,14 +728,17 @@ mod tests {
             fn needs_message(s: &Session) -> Option<&'static str> { if x { None } else { Some("select a message") } }
             fn all() { vec![CommandSpec::new("mail.reply", "Reply", "Home › Respond", reply).when(|s| Some("nothing to undo"))] }
             const MONTHS: [&str; 2] = ["January", "May"];
+            const MEDIUM: &str = "{month} {day}, {year}";
+            const DAYS: (&str, &str) = ("{n} day", "{n} days");
         "#;
         let toks = lex(src);
         let mut texts = Texts::new();
         commands(&toks, "e.rs", &mut texts);
         reasons(&toks, "e.rs", &mut texts);
-        dates(&toks, "crates/time/src/lib.rs", &mut texts);
+        dates(&toks, "crates/i18n/src/date.rs", &mut texts);
         let ids: Vec<&str> = texts.keys().map(String::as_str).collect();
-        assert_eq!(ids, ["Home", "Jan", "January", "May", "Reply", "Respond", "nothing to undo", "select a message"]);
+        assert_eq!(ids, ["Home", "January", "May", "Reply", "Respond", "nothing to undo", "select a message", "{month} {day}, {year}", "{n} day"]);
+        assert_eq!(texts.get("{n} day").and_then(|f| f.plural.as_deref()), Some("{n} days"));
     }
 
     #[test]
