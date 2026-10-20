@@ -152,18 +152,42 @@ fn prefixed(prefix: &str, subject: &str) -> String {
     if lower.starts_with(&format!("{}:", prefix.to_ascii_lowercase())) { subject.trim().to_string() } else { format!("{prefix}: {}", subject.trim()) }
 }
 
+/// The line that opens the quoted original in plain text, in English; a language has its own
+/// (`-----Message d'origine-----`), which a draft reopening knows too ([`original_at`]).
+const ORIGINAL: &str = "-----Original Message-----";
+
+/// Where the quoted original starts in a plain-text body: the opening line in any language.
+fn original_at(text: &str) -> Option<usize> {
+    mailcraft_i18n::Lang::ALL.iter().filter_map(|l| text.find(&format!("\n\n{}", l.t(ORIGINAL)))).min()
+}
+
+/// The names of the header lines above a quoted original, with their colons, in the interface
+/// language: the recipient reads them as the owner's program wrote them (French puts a narrow
+/// no-break space before the colon: `De\u{202f}:`).
+fn header_names(s: &Session) -> [&'static str; 5] {
+    let lang = s.interface_language;
+    [lang.t("From:"), lang.t("Sent:"), lang.t("To:"), lang.t("Cc:"), lang.t("Subject:")]
+}
+
+/// When the original was sent, as its header line says it.
+fn sent_on(s: &Session, m: &Message) -> String {
+    let at = s.local(m.date);
+    s.date_time_said(at)
+}
+
 /// The original message under a reply or forward, as plain text.
 fn quoted(s: &Session, m: &Message) -> String {
-    let mut out = String::from("\n\n-----Original Message-----\n");
-    out.push_str(&format!("From: {}\n", m.from.full()));
-    out.push_str(&format!("Sent: {} {}\n", s.local(m.date).date.long(), s.local(m.date).time_short(s.prefs.twelve_hour)));
+    let [from, sent, to, cc, subject] = header_names(s);
+    let mut out = format!("\n\n{}\n", s.interface_language.t(ORIGINAL));
+    out.push_str(&format!("{from} {}\n", m.from.full()));
+    out.push_str(&format!("{sent} {}\n", sent_on(s, m)));
     if !m.to.is_empty() {
-        out.push_str(&format!("To: {}\n", format_list(&m.to)));
+        out.push_str(&format!("{to} {}\n", format_list(&m.to)));
     }
     if !m.cc.is_empty() {
-        out.push_str(&format!("Cc: {}\n", format_list(&m.cc)));
+        out.push_str(&format!("{cc} {}\n", format_list(&m.cc)));
     }
-    out.push_str(&format!("Subject: {}\n\n", m.subject));
+    out.push_str(&format!("{subject} {}\n\n", m.subject));
     out.push_str(m.body.text.trim_end());
     out.push('\n');
     out
@@ -179,17 +203,18 @@ pub(crate) const QUOTE_MARK: &str = "<div id=\"mailcraft-quote\">";
 /// would.
 fn quoted_html(s: &Session, m: &Message, html: &str) -> String {
     let e = mailcraft_html::escape;
+    let [from, sent, to, cc, subject] = header_names(s).map(e);
     let mut out = String::from(QUOTE_MARK);
     out.push_str("<hr style=\"border:none;border-top:solid #E1E1E1 1.0pt\"><div>");
-    out.push_str(&format!("<b>From:</b> {}<br>", e(&m.from.full())));
-    out.push_str(&format!("<b>Sent:</b> {} {}<br>", e(&s.local(m.date).date.long()), e(&s.local(m.date).time_short(s.prefs.twelve_hour))));
+    out.push_str(&format!("<b>{from}</b> {}<br>", e(&m.from.full())));
+    out.push_str(&format!("<b>{sent}</b> {}<br>", e(&sent_on(s, m))));
     if !m.to.is_empty() {
-        out.push_str(&format!("<b>To:</b> {}<br>", e(&format_list(&m.to))));
+        out.push_str(&format!("<b>{to}</b> {}<br>", e(&format_list(&m.to))));
     }
     if !m.cc.is_empty() {
-        out.push_str(&format!("<b>Cc:</b> {}<br>", e(&format_list(&m.cc))));
+        out.push_str(&format!("<b>{cc}</b> {}<br>", e(&format_list(&m.cc))));
     }
-    out.push_str(&format!("<b>Subject:</b> {}</div><br>\r\n", e(&m.subject)));
+    out.push_str(&format!("<b>{subject}</b> {}</div><br>\r\n", e(&m.subject)));
     out.push_str(&mailcraft_html::quotable(html));
     out.push_str("\r\n</div>");
     out
@@ -312,7 +337,7 @@ fn edit_draft(s: &mut Session, v: &Value) -> CmdResult {
         Some((html, at)) => {
             let end = html.rfind("</body>").filter(|end| *end >= at).unwrap_or(html.len());
             let quoted = mailcraft_html::quotable(html.get(at..end).unwrap_or("")).trim_end().to_string();
-            let text = m.body.text.find("\n\n-----Original Message-----").and_then(|at| m.body.text.get(at..)).unwrap_or("").to_string();
+            let text = original_at(&m.body.text).and_then(|at| m.body.text.get(at..)).unwrap_or("").to_string();
             let pictures = shown_pictures(&m, &quoted);
             (Some(html.get(..at).unwrap_or("").to_string()), Some(Quote { text, html: quoted, pictures }))
         }

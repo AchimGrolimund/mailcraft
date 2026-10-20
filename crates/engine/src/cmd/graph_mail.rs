@@ -325,7 +325,7 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
     let mut refused = refusals.lines();
     // The drafts (R3.4.1).
     for done in &result.drafts {
-        if super::graph_drafts::draft_done(&mut s.mailbox, account, done, &mut refused) {
+        if super::graph_drafts::draft_done(&mut s.mailbox, account, done, s.interface_language, &mut refused) {
             taken.updated += 1;
             // A draft's server id is new or gone: where each message is, is looked at afresh.
             s.graph_index = Default::default();
@@ -334,7 +334,7 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
     // What was sent (R3.4.2): gone from the Outbox, or held there with what happened.
     let mut sent = 0;
     for done in &result.sent {
-        if super::graph_send::send_done(&mut s.mailbox, account, done, &mut refused) {
+        if super::graph_send::send_done(&mut s.mailbox, account, done, s.interface_language, &mut refused) {
             sent += usize::from(matches!(done.outcome, SendOutcome::Sent));
             taken.updated += 1;
             s.graph_index = Default::default();
@@ -388,20 +388,23 @@ pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
     };
     match (&result.progress, result.partial) {
         // Under way: how far it has got.
-        (Some(progress), true) => s.sync_status = graph_down::progress_words(&s.mailbox, account, progress),
+        (Some(progress), true) => s.sync_status = graph_down::progress_words(&s.mailbox, account, progress, s.interface_language),
         (_, true) => {}
         (_, false) => {
             let t = s.local_now();
             // What the server refused in this run, said once, ahead of anything else.
             let refused = std::mem::take(&mut s.graph_said);
+            let lang = s.interface_language;
             let said = if !refused.is_empty() {
                 refused.join(" ")
             } else if result.stopped && errors.is_empty() {
-                "Stopped; carries on from here next time".to_string()
+                lang.t("Stopped; carries on from here next time").to_string()
+            } else if errors.is_empty() {
+                (if summary == "Up to date" { lang.t("Up to date") } else { lang.t("Folders up to date") }).to_string()
             } else {
                 summary.clone()
             };
-            s.sync_status = format!("{said} — {}", t.time_short(s.prefs.twelve_hour));
+            s.sync_status = format!("{said} — {}", s.time_said(t));
         }
     }
     Ok(json!({

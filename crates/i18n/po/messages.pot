@@ -43,6 +43,11 @@ msgstr ""
 msgid "\"{shown}\" isn't an e-mail address"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/graph_send.rs
+msgid "'{subject}' may have been sent: look in Sent Items. It is held in the Outbox."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/calendar_view.rs
 msgid "(No title)"
@@ -58,8 +63,8 @@ msgstr ""
 msgid "(no recipients)"
 msgstr ""
 
-#. interface
-#: crates/ui-egui/src/alerts.rs crates/ui-egui/src/mail_view.rs crates/ui-egui/src/mail_view/server_rows.rs crates/ui-egui/src/people_view.rs crates/ui-egui/src/reading.rs crates/ui-egui/src/tasks_view.rs crates/ui-egui/src/windows.rs
+#. interface, what a command says
+#: crates/engine/src/cmd/graph_drafts.rs crates/engine/src/cmd/graph_send.rs crates/ui-egui/src/alerts.rs crates/ui-egui/src/mail_view.rs crates/ui-egui/src/mail_view/server_rows.rs crates/ui-egui/src/people_view.rs crates/ui-egui/src/reading.rs crates/ui-egui/src/tasks_view.rs crates/ui-egui/src/windows.rs
 msgid "(no subject)"
 msgstr ""
 
@@ -91,6 +96,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/sync_panel.rs
 msgid ", {n} sent"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "-----Original Message-----"
 msgstr ""
 
 #. interface
@@ -291,6 +301,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/reading/invitation.rs
 msgid "Accepted on {when}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "Accepted: {title}"
 msgstr ""
 
 #. interface
@@ -566,6 +581,11 @@ msgstr ""
 #. what a command says
 #: crates/engine/src/cmd/calendar/meeting.rs
 msgid "Another time is proposed with a tentative answer or with a decline."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "Another time proposed: {title}"
 msgstr ""
 
 #. interface
@@ -968,6 +988,11 @@ msgstr ""
 msgid "Categorize"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "Cc:"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/dialogs.rs
 msgid "Change Recurring Item"
@@ -1076,6 +1101,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/calendar_sync.rs
 msgid "Checking the calendar connection…"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/sync/progress.rs
+msgid "Checking {folder} ({done} of {total})"
 msgstr ""
 
 #. interface
@@ -1293,6 +1323,11 @@ msgstr ""
 msgid "Connect to show your category colours and working hours"
 msgstr ""
 
+#. what a command says
+#: crates/model/src/sync/progress.rs
+msgid "Connecting to the mail server"
+msgstr ""
+
 #. interface, ribbon location
 #: crates/engine/src/cmd/people.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/people_view.rs crates/ui-egui/src/ribbon.rs
 msgid "Contact"
@@ -1393,9 +1428,19 @@ msgstr ""
 msgid "Couldn't find out whether a new version is out: {why}."
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/graph_drafts.rs
+msgid "Couldn't save the draft '{subject}' on the server: the server says {why}."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/lib.rs
 msgid "Couldn't save the mailbox: {error}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_send.rs
+msgid "Couldn't send '{subject}': {why}. It is held in the Outbox."
 msgstr ""
 
 #. interface
@@ -1486,6 +1531,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/reading/invitation.rs
 msgid "Declined on {when}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "Declined: {title}"
 msgstr ""
 
 #. command label
@@ -2123,6 +2173,11 @@ msgstr ""
 msgid "Folders"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/graph_mail.rs
+msgid "Folders up to date"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/ribbon.rs
 msgid "Folder…"
@@ -2200,6 +2255,13 @@ msgstr[1] ""
 msgid "Forward…"
 msgstr ""
 
+#. what a command says
+#: crates/model/src/sync/progress.rs
+msgid "Found {n} folder"
+msgid_plural "Found {n} folders"
+msgstr[0] ""
+msgstr[1] ""
+
 #. name
 #: crates/model/src/calendar.rs
 msgid "Free"
@@ -2233,6 +2295,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/tasks_view.rs
 msgid "From {name}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "From:"
 msgstr ""
 
 #. interface
@@ -2723,6 +2790,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/graph_switch.rs
 msgid "Keep waiting, and the switch goes ahead by itself once MailCraft can reach the server. Or switch without them, if the server can't be reached any more (for example, your organisation has turned IMAP off):"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/sync/progress.rs
+msgid "Keeping a copy of what was sent"
 msgstr ""
 
 #. interface
@@ -4405,6 +4477,16 @@ msgstr ""
 msgid "Real name"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/graph_down.rs
+msgid "Receiving {name} · folder {number} of {folders}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_down.rs
+msgid "Receiving {name}: {read} of {total} · folder {number} of {folders}"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/backstage.rs
 msgid "Recent"
@@ -5125,6 +5207,13 @@ msgstr ""
 msgid "Sending your changes…"
 msgstr ""
 
+#. what a command says
+#: crates/model/src/sync/progress.rs
+msgid "Sending {n} message"
+msgid_plural "Sending {n} messages"
+msgstr[0] ""
+msgstr[1] ""
+
 #. interface
 #: crates/ui-egui/src/lib.rs
 msgid "Sending…"
@@ -5143,6 +5232,16 @@ msgstr ""
 #. name
 #: crates/ui-egui/src/forms.rs
 msgid "Sent to"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/sync/progress.rs
+msgid "Sent {done} of {total}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "Sent:"
 msgstr ""
 
 #. date and time
@@ -5605,9 +5704,19 @@ msgstr ""
 msgid "Stop this Send/Receive; what has arrived stays"
 msgstr ""
 
-#. interface
-#: crates/ui-egui/src/sync_panel.rs
+#. interface, what a command says
+#: crates/engine/src/cmd/account.rs crates/ui-egui/src/sync_panel.rs
 msgid "Stopped"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/account.rs
+msgid "Stopped ({line})"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_mail.rs
+msgid "Stopped; carries on from here next time"
 msgstr ""
 
 #. interface
@@ -5628,6 +5737,11 @@ msgstr ""
 #. name
 #: crates/ui-egui/src/forms.rs
 msgid "Subject contains"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "Subject:"
 msgstr ""
 
 #. command label
@@ -5723,6 +5837,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/meeting_dialogs.rs
 msgid "Tentative and Propose"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "Tentative: {title}"
 msgstr ""
 
 #. interface
@@ -6603,6 +6722,11 @@ msgid ""
 "Whether your mail goes as {address} or on its behalf is your organisation's choice. Until you allow it, the mail waits in its Outbox, and nothing is sent from your own address."
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "To:"
+msgstr ""
+
 #. command label, interface, name
 #: crates/engine/src/cmd/view.rs crates/engine/src/session.rs crates/time/src/lib.rs crates/ui-egui/src/calendar_view.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/tasks_view.rs
 msgid "Today"
@@ -6753,9 +6877,19 @@ msgstr ""
 msgid "Up to 50 MB"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/graph_mail.rs crates/model/src/sync.rs
+msgid "Up to date"
+msgstr ""
+
 #. name
 #: crates/time/src/lib.rs
 msgid "Upcoming"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/sync/progress.rs
+msgid "Updated {folder} on the server"
 msgstr ""
 
 #. interface
@@ -7403,6 +7537,11 @@ msgstr ""
 msgid "incomplete"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/graph_drafts.rs
+msgid "it can't take it"
+msgstr ""
+
 #. name
 #: crates/engine/src/agent.rs
 msgid "it changes an account or a sign-in"
@@ -8039,6 +8178,11 @@ msgid "this account has no {folder} folder"
 msgstr ""
 
 #. what a command says
+#: crates/engine/src/cmd/graph_drafts.rs
+msgid "this account may not save it"
+msgstr ""
+
+#. what a command says
 #: crates/engine/src/cmd/people.rs
 msgid "this contact has no e-mail address"
 msgstr ""
@@ -8217,6 +8361,11 @@ msgstr ""
 msgid "{folder} - {mailbox}"
 msgstr ""
 
+#. what a command says
+#: crates/model/src/sync/progress.rs
+msgid "{folder}: {done} of {total}"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/calendar_view.rs
 msgid "{from} – {to}, {year}"
@@ -8288,6 +8437,16 @@ msgid "{name} declined this meeting."
 msgstr ""
 
 #. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "{name} has accepted this meeting."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "{name} has declined this meeting."
+msgstr ""
+
+#. what a command says
 #: crates/engine/src/io.rs
 msgid "{name} has no contacts"
 msgstr ""
@@ -8300,6 +8459,11 @@ msgstr ""
 #. what a command says
 #: crates/engine/src/io.rs
 msgid "{name} has no messages"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "{name} has tentatively accepted this meeting."
 msgstr ""
 
 #. what a command says
@@ -8382,6 +8546,11 @@ msgstr ""
 msgid "{name} proposes another time for this meeting."
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "{name} proposes another time: {start} – {end}."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/reading/invitation.rs
 msgid "{name} tentatively accepted this meeting."
@@ -8407,6 +8576,11 @@ msgstr ""
 msgid "{not_sending_yet}: send this message from another account, or save it as a draft"
 msgstr ""
 
+#. what a command says
+#: crates/model/src/message.rs
+msgid "{n} KB"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/reminders.rs
 msgid "{n} Reminder"
@@ -8418,6 +8592,13 @@ msgstr[1] ""
 #: crates/ui-egui/src/calendar_view.rs
 msgid "{n} attendee"
 msgid_plural "{n} attendees"
+msgstr[0] ""
+msgstr[1] ""
+
+#. what a command says
+#: crates/model/src/message.rs
+msgid "{n} byte"
+msgid_plural "{n} bytes"
 msgstr[0] ""
 msgstr[1] ""
 
@@ -8568,10 +8749,17 @@ msgid_plural "{n} more questions are waiting."
 msgstr[0] ""
 msgstr[1] ""
 
-#. interface
-#: crates/ui-egui/src/alerts.rs
+#. interface, what a command says
+#: crates/model/src/sync.rs crates/ui-egui/src/alerts.rs
 msgid "{n} new message"
 msgid_plural "{n} new messages"
+msgstr[0] ""
+msgstr[1] ""
+
+#. what a command says
+#: crates/model/src/sync.rs
+msgid "{n} new message, {sent} sent"
+msgid_plural "{n} new messages, {sent} sent"
 msgstr[0] ""
 msgstr[1] ""
 
@@ -8694,6 +8882,16 @@ msgid "{n}.5 hours"
 msgstr ""
 
 #. what a command says
+#: crates/model/src/message.rs
+msgid "{n}.{tenth} GB"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/message.rs
+msgid "{n}.{tenth} MB"
+msgstr ""
+
+#. what a command says
 #: crates/engine/src/cmd/mod.rs
 msgid "{path} is larger than {mb} MB"
 msgstr ""
@@ -8722,6 +8920,13 @@ msgstr ""
 #: crates/ui-egui/src/lib.rs
 msgid "{saving} · the other mailbox opens when it is done"
 msgstr ""
+
+#. what a command says
+#: crates/model/src/sync.rs
+msgid "{sent} message sent"
+msgid_plural "{sent} messages sent"
+msgstr[0] ""
+msgstr[1] ""
 
 #. interface
 #: crates/ui-egui/src/account_setup.rs

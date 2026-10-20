@@ -28,4 +28,5 @@ base64 = { workspace = true }
 ring = { workspace = true }
 
 [dev-dependencies]
+mailcraft-i18n = { workspace = true, features = ["test-support"] }
 proptest = { workspace = true }

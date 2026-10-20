@@ -846,6 +846,18 @@ impl Session {
         DateTime::from_timestamp(ts, self.offset_at(ts))
     }
 
+    /// `at`'s time as the interface language says it, on the owner's clock.
+    pub fn time_said(&self, at: DateTime) -> String {
+        mailcraft_i18n::date::time(&self.interface_language, at.hour, at.minute, self.prefs.twelve_hour)
+    }
+
+    /// `at`'s date (`Sunday, October 11, 2026`) and time as the interface language says them.
+    pub fn date_time_said(&self, at: DateTime) -> String {
+        let d = at.date;
+        let day = mailcraft_i18n::date::Day { year: d.year, month: d.month, day: d.day, weekday: d.weekday().index() };
+        format!("{} {}", mailcraft_i18n::date::long(&self.interface_language, day), self.time_said(at))
+    }
+
     pub fn local_now(&self) -> DateTime {
         self.local(self.now())
     }

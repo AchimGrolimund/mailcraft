@@ -624,16 +624,22 @@ impl SyncResult {
 
 /// `3 new messages, 1 sent`, `Up to date`, or the error.
 pub fn summary_line(error: Option<&str>, new: usize, sent: usize) -> String {
+    summary_line_in(mailcraft_i18n::Lang::English, error, new, sent)
+}
+
+/// [`summary_line`] in `lang` (an error is said as it came).
+pub fn summary_line_in(lang: mailcraft_i18n::Lang, error: Option<&str>, new: usize, sent: usize) -> String {
     if let Some(e) = error {
         return e.to_string();
     }
-    let plural = |n: usize| if n == 1 { "" } else { "s" };
-    match (new, sent) {
-        (0, 0) => "Up to date".into(),
-        (n, 0) => format!("{n} new message{}", plural(n)),
-        (0, s) => format!("{s} message{} sent", plural(s)),
-        (n, s) => format!("{n} new message{}, {s} sent", plural(n)),
-    }
+    let count = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+    let template = match (new, sent) {
+        (0, 0) => lang.t("Up to date"),
+        (_, 0) => lang.tn(count(new), "{n} new message", "{n} new messages"),
+        (0, _) => lang.tn(count(sent), "{sent} message sent", "{sent} messages sent"),
+        (_, _) => lang.tn(count(new), "{n} new message, {sent} sent", "{n} new messages, {sent} sent"),
+    };
+    mailcraft_i18n::fmt(template, &[("n", &new.to_string()), ("sent", &sent.to_string())])
 }
 
 // ---- Microsoft Graph (R3) ----

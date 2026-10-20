@@ -477,9 +477,8 @@ pub fn line(app: &mut MailApp, ui: &mut Ui, m: &Message, doc: &Doc, access: Acce
 
 /// A number of bytes for the owner to read: `340 KB`, `12.4 MB`.
 fn size_label(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    let bytes = bytes as f64;
-    if bytes < KB * KB { format!("{:.0} KB", (bytes / KB).ceil()) } else { format!("{:.1} MB", bytes / (KB * KB)) }
+    // (In KB at least.)
+    mailcraft_model::size_label_in(crate::i18n::current(), bytes.max(1024))
 }
 
 /// The rows of File › Options: the switch for all mail, the senders and the domains that are

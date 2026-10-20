@@ -820,10 +820,12 @@ fn reply_message(
     }
     let outbox = s.mailbox.folder_of_kind(owner.id, FolderKind::Outbox).ok_or_else(|| fail("this account has no Outbox folder"))?;
     let original = s.mailbox.message(invitation.message);
+    // In the interface language: the organizer reads what the owner's program wrote.
+    let lang = s.interface_language;
     let (verb, word) = match response {
-        Response::Accepted => ("Accepted", "accepted"),
-        Response::Tentative => ("Tentative", "tentatively accepted"),
-        _ => ("Declined", "declined"),
+        Response::Accepted => (lang.t("Accepted: {title}"), lang.t("{name} has accepted this meeting.")),
+        Response::Tentative => (lang.t("Tentative: {title}"), lang.t("{name} has tentatively accepted this meeting.")),
+        _ => (lang.t("Declined: {title}"), lang.t("{name} has declined this meeting.")),
     };
     // Only who answers, and what: the organizer knows the rest.
     let event = &invitation.event;
@@ -861,13 +863,18 @@ fn reply_message(
     }
     let title: String = event.title.chars().filter(|c| !c.is_control()).take(200).collect();
     let name = if owner.name.trim().is_empty() { owner.email.trim() } else { owner.name.trim() };
-    let mut said = format!("{name} has {word} this meeting.");
-    let mut subject = format!("{verb}: {title}");
+    let fill = |template: &str, more: &[(&str, &str)]| {
+        let mut values = vec![("name", name), ("title", title.as_str())];
+        values.extend_from_slice(more);
+        mailcraft_i18n::fmt(template, &values)
+    };
+    let mut said = fill(word, &[]);
+    let mut subject = fill(verb, &[]);
     if let Some((start, end)) = proposed {
-        let twelve = s.prefs.twelve_hour;
-        let until = if end.date == start.date { end.time_short(twelve) } else { format!("{} {}", end.date.long(), end.time_short(twelve)) };
-        said = format!("{said} {name} proposes another time: {} {} – {until}.", start.date.long(), start.time_short(twelve));
-        subject = format!("Another time proposed: {title}");
+        let until = if end.date == start.date { s.time_said(end) } else { s.date_time_said(end) };
+        let from = s.date_time_said(start);
+        said = format!("{said} {}", fill(lang.t("{name} proposes another time: {start} – {end}."), &[("start", &from), ("end", &until)]));
+        subject = fill(lang.t("Another time proposed: {title}"), &[]);
     }
     let text = if note.is_empty() { format!("{said}\n") } else { format!("{note}\n\n{said}\n") };
     let domain = owner.email.rsplit_once('@').map_or("", |(_, domain)| domain);
@@ -1304,6 +1311,25 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_is_written_in_the_interface_language() {
+        use mailcraft_i18n::{Lang, test_support};
+        let fr = test_support::po(&[
+            ("Declined: {title}", "Refusé\u{a0}: {title}"),
+            ("{name} has declined this meeting.", "{name} a refusé cette réunion."),
+        ]);
+        test_support::with_catalogue(Lang::French, &fr, || {
+            let (mut s, account) = session();
+            s.interface_language = Lang::French;
+            let request = mail(&mut s, account, "REQUEST", "uid-1", "");
+            run(&mut s, "calendar.respond", json!({"message": request, "response": "decline", "send": true}));
+            let folder = s.mailbox.folder_of_kind(account, FolderKind::Outbox).unwrap();
+            let reply = s.mailbox.messages_in(folder).next().unwrap().clone();
+            assert_eq!(reply.subject, "Refusé\u{a0}: Design review");
+            assert!(reply.body.text.contains("Ada a refusé cette réunion."), "{}", reply.body.text);
+        });
+    }
+
+    #[test]
     fn an_answer_that_is_sent_is_mail_in_the_form_the_organizers_program_reads() {
         let (mut s, account) = session();
         let request = mail(&mut s, account, "REQUEST", "uid-1", "");
@@ -1313,6 +1339,7 @@ mod tests {
         assert_eq!(waiting.len(), 1);
         let reply = &waiting[0];
         assert_eq!((reply.subject.as_str(), reply.to.len(), reply.to[0].email.as_str()), ("Accepted: Design review", 1, "bo@example.org"));
+        assert!(reply.body.text.contains("has accepted this meeting."), "{}", reply.body.text);
         assert!(reply.cc.is_empty() && reply.bcc.is_empty() && reply.from.email == "ada@example.org");
         // Written out: text and `text/calendar; method=REPLY` side by side, to the organizer alone.
         let wire =

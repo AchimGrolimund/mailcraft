@@ -357,7 +357,7 @@ pub fn confirmation(app: &MailApp, id: &str, params: &Value) -> Option<Question>
             }
             let text = crate::i18n::fmt(
                 tl!("About {size} of mail older than {window} will be removed from this computer. It stays on the server."),
-                &[("size", &mailcraft_model::size_label(bytes)), ("window", crate::keep_offline::label(keep))],
+                &[("size", &mailcraft_model::size_label_in(crate::i18n::current(), bytes)), ("window", crate::keep_offline::label(keep))],
             );
             question(tl!("Mail to Keep Offline"), text, tl!("OK"))
         }

@@ -2673,7 +2673,7 @@ impl MailApp {
                 // And nothing is left of the last run's problems.
                 self.note_sync_problems(account, &[], true);
             }
-            self.status(totals.summary());
+            self.status(totals.summary_in(i18n::current()));
             self.note_pushed(account);
             self.graph_switch_after_sync(account, totals.errors.is_empty() && !totals.stopped);
             return;

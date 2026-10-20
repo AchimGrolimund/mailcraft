@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 
 use mailcraft_model::sync::{
-    Deleted, FlagsPushed, FolderDelta, FolderState, Moved, RemoteFlags, RemoteOp, SyncRequest, SyncResult, SyncStage, summary_line,
+    Deleted, FlagsPushed, FolderDelta, FolderState, Moved, RemoteFlags, RemoteOp, SyncRequest, SyncResult, SyncStage, summary_line_in,
 };
 use mailcraft_model::{
     Account, AccountKind, Directory, FlagStatus, Folder, FolderKind, Id, Mailbox, Message, OAuth, OAuthProvider, Pending, Security, Server,
@@ -545,11 +545,16 @@ impl SyncTotals {
     /// How the run went, in one line: its first problem, else what it brought (`3 new messages,
     /// 1 sent`, `Up to date`), or that it was stopped and what it had brought by then.
     pub fn summary(&self) -> String {
-        let line = summary_line(self.errors.first().map(String::as_str), self.new, self.sent);
+        self.summary_in(mailcraft_i18n::Lang::English)
+    }
+
+    /// [`summary`](Self::summary) in `lang`.
+    pub fn summary_in(&self, lang: mailcraft_i18n::Lang) -> String {
+        let line = summary_line_in(lang, self.errors.first().map(String::as_str), self.new, self.sent);
         match (self.stopped && self.errors.is_empty(), self.new + self.sent) {
             (false, _) => line,
-            (true, 0) => "Stopped".into(),
-            (true, _) => format!("Stopped ({line})"),
+            (true, 0) => lang.t("Stopped").to_string(),
+            (true, _) => mailcraft_i18n::fmt(lang.t("Stopped ({line})"), &[("line", &line)]),
         }
     }
 }
@@ -581,7 +586,7 @@ pub fn apply_sync_part(s: &mut Session, run: &mut SyncTotals, mut result: SyncRe
     }
     // A host that says only the numbers has its line made of them.
     let progress = match (&result.step, result.progress.is_empty()) {
-        (Some(step), true) => step.line(),
+        (Some(step), true) => step.line_in(s.interface_language),
         _ => result.progress.clone(),
     };
     let (partial, stopped) = (result.partial, result.stopped);
@@ -611,7 +616,7 @@ pub fn apply_sync_part(s: &mut Session, run: &mut SyncTotals, mut result: SyncRe
     let summary = run.summary();
     if !partial {
         let t = s.local_now();
-        s.sync_status = format!("{summary} — {}", t.time_short(s.prefs.twelve_hour));
+        s.sync_status = format!("{} — {}", run.summary_in(s.interface_language), s.time_said(t));
     } else if !progress.is_empty() {
         s.sync_status = progress.clone();
     }

@@ -436,7 +436,13 @@ fn attachments(app: &mut MailApp, ui: &mut Ui, m: &Message, t: &Tokens) {
             ui.painter().rect(r, 5.0, if resp.hovered() { t.hover } else { t.panel }, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
             icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 17.0, r.center().y), vec2(20.0, 20.0)), "attach", t.icon, t.accent);
             paint_clipped(ui.painter(), pos2(r.min.x + 34.0, r.min.y + 13.0), name_w + 4.0, &shown, regular(12.0), t.text);
-            ui.painter().text(pos2(r.min.x + 34.0, r.min.y + 27.0), Align2::LEFT_CENTER, a.size_label(), regular(10.5), t.text_dim);
+            ui.painter().text(
+                pos2(r.min.x + 34.0, r.min.y + 27.0),
+                Align2::LEFT_CENTER,
+                mailcraft_model::size_label_in(crate::i18n::current(), a.size() as u64),
+                regular(10.5),
+                t.text_dim,
+            );
             // Double-click opens it, as in Outlook; its menu opens or saves it.
             let resp = resp.on_hover_text(crate::i18n::fmt(tl!("Double-click to open {name}; right-click to save it"), &[("name", &shown)]));
             if resp.double_clicked() {

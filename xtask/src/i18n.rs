@@ -659,8 +659,8 @@ fn engine_says(toks: &[Tok], file: &str, through: &BTreeMap<String, BTreeSet<usi
                 say(&s, None);
             }
         } else if is(toks, i, &[".", "t", "("]) {
-            if let Some(s) = args(toks, i + 2).first().and_then(|a| lit(a)) {
-                say(s, None);
+            if let Some(s) = args(toks, i + 2).first().and_then(|a| text(a)) {
+                say(&s, None);
             }
         } else if is(toks, i, &[".", "tn", "("]) {
             if let [_, one, other] = args(toks, i + 2).as_slice()
@@ -864,6 +864,7 @@ mod tests {
     fn what_the_engine_says() {
         let src = r#"
             const BUSY: &str = "the mailbox is busy";
+            const ORIGINAL: &str = "-----Original Message-----";
             pub(crate) fn added_by_newer(a: &Account, then: &'static str) -> CmdError { failed!("{who} was added later, {then}", who, then = Arg::words(then)) }
             fn fail(msg: impl Into<String>) -> CmdError { CmdError::Failed(msg.into()) }
             fn refusal_into(&self) -> &'static str { if x { BUSY } else { "not yet" } }
@@ -876,6 +877,7 @@ mod tests {
                 added_by_newer(a, "which keeps its settings");
                 let s = lang.tn(n, "{n} message", "{n} messages");
                 let u = lang.t("Up to date");
+                let o = lang.t(ORIGINAL);
             }
         "#;
         let toks = lex(src);
@@ -888,6 +890,7 @@ mod tests {
         assert_eq!(
             ids,
             [
+                "-----Original Message-----",
                 "Up to date",
                 "no message selected",
                 "no such paragraph",
