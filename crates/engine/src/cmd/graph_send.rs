@@ -124,9 +124,9 @@ fn hold_reason(code: &str) -> Option<&'static str> {
 
 fn hold_sends(s: &mut Session, v: &Value) -> CmdResult {
     let account = p::id(v, "account").ok_or_else(|| bad("`account` is required"))?;
-    let a = s.mailbox.account(account).ok_or_else(|| fail(format!("no account with id {account}")))?;
+    let a = s.mailbox.account(account).ok_or_else(|| failed!("no account with id {id}", id = account))?;
     if !a.is_shared() {
-        return Err(fail(format!("{} isn't a shared mailbox", a.name)));
+        return Err(failed!("{name} isn't a shared mailbox", name = a.name));
     }
     let why = p::str(v, "why").and_then(hold_reason).ok_or_else(|| bad("`why` is declined, approval or organisation"))?;
     let Some(outbox) = s.mailbox.folder_of_kind(account, FolderKind::Outbox) else { return Ok(json!({"held": []})) };
@@ -145,7 +145,7 @@ fn hold_sends(s: &mut Session, v: &Value) -> CmdResult {
 
 fn send_again(s: &mut Session, v: &Value) -> CmdResult {
     let id = p::id(v, "id").or(s.sel.focus()).ok_or_else(|| bad("select a message first"))?;
-    let m = s.mailbox.message(id).ok_or_else(|| fail(format!("no message with id {id}")))?;
+    let m = s.mailbox.message(id).ok_or_else(|| failed!("no message with id {id}", id))?;
     if m.held.is_empty() {
         return Err(fail("that message isn't held"));
     }

@@ -1101,7 +1101,7 @@ impl Session {
     /// the bytes of an attachment, wherever they are. An error names what is wrong: no such
     /// message or part, or a part whose file is missing or damaged.
     pub fn content(&self, message: Id, part: Part) -> Result<Arc<Vec<u8>>, CmdError> {
-        let m = self.mailbox.message(message).ok_or_else(|| CmdError::Failed(format!("no message with id {message}")))?;
+        let m = self.mailbox.message(message).ok_or_else(|| failed!("no message with id {id}", id = message))?;
         let kept = m.kept.as_deref().filter(|k| !k.failed);
         match part {
             Part::Text => match kept.and_then(|k| k.text).filter(|_| m.body.text.is_empty()) {
@@ -1113,7 +1113,7 @@ impl Session {
                 None => Ok(Arc::new(m.body.html.as_deref().unwrap_or("").as_bytes().to_vec())),
             },
             Part::Attachment(i) => {
-                let a = m.attachments.get(i).ok_or_else(|| CmdError::Failed(format!("the message has no attachment {i}")))?;
+                let a = m.attachments.get(i).ok_or_else(|| failed!("the message has no attachment {index}", index = i))?;
                 match a.kept.filter(|_| a.data.is_empty()) {
                     Some(r) => self.fetch(&r),
                     None => Ok(a.data.clone()),
@@ -1126,7 +1126,7 @@ impl Session {
     /// message itself when nothing had to be fetched), without changing the mailbox: for what
     /// writes a message out (MIME to send or export, a forward).
     pub fn loaded_message_where(&self, id: Id, pick: impl Fn(&Attachment) -> bool) -> Result<Arc<Message>, CmdError> {
-        let m = self.mailbox.messages.get(&id).ok_or_else(|| CmdError::Failed(format!("no message with id {id}")))?;
+        let m = self.mailbox.messages.get(&id).ok_or_else(|| failed!("no message with id {id}", id))?;
         if !m.body_is_kept() && m.attachments.iter().all(|a| a.is_loaded() || !pick(a)) {
             return Ok(m.clone());
         }
@@ -1162,7 +1162,7 @@ impl Session {
     /// wasn't there) is never written back as the body, and the file stays named, to be read
     /// the next time.
     pub fn load_where(&mut self, id: Id, pick: impl Fn(&Attachment) -> bool) -> Result<bool, CmdError> {
-        let Some(m) = self.mailbox.messages.get(&id) else { return Err(CmdError::Failed(format!("no message with id {id}"))) };
+        let Some(m) = self.mailbox.messages.get(&id) else { return Err(failed!("no message with id {id}", id)) };
         if !m.body_is_kept() && m.attachments.iter().all(|a| a.is_loaded() || !pick(a)) {
             return Ok(false);
         }
@@ -1621,7 +1621,7 @@ impl Session {
             Ok(r) => r,
             Err(_) => {
                 log::error!("command `{id}` panicked; the mailbox was restored");
-                Err(CmdError::Failed(format!("{} failed unexpectedly; nothing was changed", spec.label)))
+                Err(failed!("{command} failed unexpectedly; nothing was changed", command = mailcraft_i18n::Arg::words(spec.label)))
             }
         };
         // An agent's command that did more than it was allowed (mail into an Outbox, messages

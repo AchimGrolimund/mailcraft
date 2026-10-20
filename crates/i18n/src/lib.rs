@@ -15,6 +15,11 @@
 pub mod date;
 pub mod plural;
 pub mod po;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+mod text;
+
+pub use text::{Arg, Text, ToArg};
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -191,6 +196,10 @@ impl Catalogue {
 
 /// The compiled-in catalogue of `lang`, read the first time it is asked for.
 pub fn catalogue(lang: Lang) -> Option<&'static Catalogue> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(c) = test_support::catalogue(lang) {
+        return Some(c);
+    }
     static READ: [OnceLock<Option<Catalogue>>; 3] = [OnceLock::new(), OnceLock::new(), OnceLock::new()];
     let slot = READ.get(Lang::ALL.iter().position(|l| *l == lang)?)?;
     slot.get_or_init(|| files::FILES.iter().find(|(code, _)| *code == lang.code()).map(|(_, text)| Catalogue::parse(text))).as_ref()

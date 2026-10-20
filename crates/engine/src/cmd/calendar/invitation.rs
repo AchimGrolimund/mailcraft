@@ -185,7 +185,7 @@ fn tidy(mut event: Event, offset_at: &dyn Fn(Timestamp) -> i32) -> (Event, Optio
 fn read(s: &Session, v: &Value) -> Result<Invitation, CmdError> {
     let id = p::id(v, "message").or(s.sel.focus()).ok_or_else(|| fail("select a message first"))?;
     if s.mailbox.message(id).is_none() {
-        return Err(fail(format!("no message with id {id}")));
+        return Err(failed!("no message with id {id}", id));
     }
     let is_calendar = |part: &Attachment| {
         let kind = part.mime.trim().to_ascii_lowercase();
@@ -811,7 +811,10 @@ fn reply_message(
     if !owner.kind.sends_mail() {
         // (Its Outbox would keep the answer for ever: none is taken, and the meeting stays as it is.)
         if owner.kind.has_server() {
-            return Err(fail(format!("{NOT_SENDING_YET}: answer the invitation without sending an answer.")));
+            return Err(failed!(
+                "{not_sending_yet}: answer the invitation without sending an answer.",
+                not_sending_yet = mailcraft_i18n::Arg::words(NOT_SENDING_YET)
+            ));
         }
         return Err(fail("This account has no mail server to send the answer through."));
     }
@@ -901,7 +904,10 @@ pub(super) fn forward_message(s: &Session, event: &Event, to: &[Address], note: 
     let owner = owner.cloned().ok_or_else(|| {
         // (One with a server that doesn't send yet: a JMAP account.)
         if s.mailbox.accounts.iter().any(|a| a.kind.has_server()) {
-            fail(format!("{NOT_SENDING_YET}, and no other account here has a mail server to send this through."))
+            failed!(
+                "{not_sending_yet}, and no other account here has a mail server to send this through.",
+                not_sending_yet = mailcraft_i18n::Arg::words(NOT_SENDING_YET)
+            )
         } else {
             fail("No account here has a mail server to send this through.")
         }
@@ -1054,7 +1060,7 @@ mod tests {
 
     fn refused(s: &mut Session, id: &str, params: Value) -> String {
         match s.run(id, &params) {
-            Err(CmdError::Failed(why)) => why,
+            Err(e @ (CmdError::Failed(_) | CmdError::Said(_))) => e.to_string(),
             other => panic!("{id} {params}: expected a refusal, got {other:?}"),
         }
     }

@@ -1074,6 +1074,9 @@ pub struct MailApp {
     /// release or a key started, or a file let go over it (#152). Never so for the control
     /// channel, an agent or the background.
     pub(crate) by_hand: bool,
+    /// The engine's last refusal as it was ([`execute`](Self::execute)), so that the window says
+    /// it in the interface language; scripts and agents get its English.
+    last_error: Option<mailcraft_engine::CmdError>,
     /// A refusal of what the owner has just done by hand, shown in a message box once the frame
     /// is laid out ([`MailApp::refusal`]).
     pub(crate) refused: Option<String>,
@@ -1188,6 +1191,7 @@ impl MailApp {
             sync_problems: Vec::new(),
             sync_panel: None,
             by_hand: false,
+            last_error: None,
             refused: None,
             windows: Default::default(),
             remote_pictures: Default::default(),
@@ -1314,8 +1318,12 @@ impl MailApp {
         }
         match &r {
             Err(e) => {
-                // (The engine's refusal of received mail for a Microsoft account, in the interface's language.)
-                let said = if e == mailcraft_model::STAYS_LOCAL { tl!(mailcraft_model::STAYS_LOCAL).to_string() } else { e.clone() };
+                // The engine's refusal in the interface language: its template, filled; any other
+                // text is looked up whole.
+                let said = match self.last_error.take() {
+                    Some(err) if err.to_string() == *e => err.in_lang(i18n::current()),
+                    _ => tl!(e).to_string(),
+                };
                 // What the owner has just done by hand and was refused at once is said in a
                 // message box too, as Outlook does (#152).
                 if self.by_hand && refusal_worth_a_box(id, e) {
@@ -1358,7 +1366,9 @@ impl MailApp {
         if let Some(r) = self.through_saver(id, &params) {
             return r;
         }
-        let r = self.session.run(id, &params).map_err(|e| e.to_string());
+        let r = self.session.run(id, &params);
+        self.last_error = r.as_ref().err().cloned();
+        let r = r.map_err(|e| e.to_string());
         // Asked for the reminders: their window comes up, due or not.
         if r.is_ok() && id == "view.reminders" {
             self.reminders.asked_for = true;

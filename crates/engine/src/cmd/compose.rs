@@ -131,7 +131,7 @@ fn new(s: &mut Session, v: &Value) -> CmdResult {
 fn source_message(s: &Session, v: &Value) -> Result<Message, CmdError> {
     let id = p::id(v, "id").or(s.sel.focus()).ok_or_else(|| fail("select a message first"))?;
     if s.mailbox.message(id).is_none() {
-        return Err(fail(format!("no message with id {id}")));
+        return Err(failed!("no message with id {id}", id));
     }
     s.loaded_message(id).map(|m| Message::clone(&m))
 }
@@ -141,7 +141,7 @@ fn source_message(s: &Session, v: &Value) -> Result<Message, CmdError> {
 fn reply_source(s: &Session, v: &Value) -> Result<Message, CmdError> {
     let id = p::id(v, "id").or(s.sel.focus()).ok_or_else(|| fail("select a message first"))?;
     if s.mailbox.message(id).is_none() {
-        return Err(fail(format!("no message with id {id}")));
+        return Err(failed!("no message with id {id}", id));
     }
     s.loaded_for_reply(id).map(|m| Message::clone(&m))
 }
@@ -351,7 +351,7 @@ fn set(s: &mut Session, v: &Value) -> CmdResult {
     if let Some(a) = account
         && s.mailbox.account(a).is_none()
     {
-        return Err(fail(format!("no account with id {a}")));
+        return Err(failed!("no account with id {id}", id = a));
     }
     let importance = match p::str(v, "importance") {
         Some(i) => Some(Importance::parse(i).ok_or_else(|| bad("`importance` is low, normal or high"))?),
@@ -396,7 +396,7 @@ fn attach(s: &mut Session, v: &Value) -> CmdResult {
         None => source(v)?,
     };
     if bytes.len() > MAX_ATTACHMENT {
-        return Err(fail(format!("{name} is larger than {} MB", MAX_ATTACHMENT >> 20)));
+        return Err(failed!("{name} is larger than {mb} MB", name, mb = MAX_ATTACHMENT >> 20));
     }
     // Only the file's own name travels, never the folders it was in.
     let name = name.rsplit(['/', '\\']).next().unwrap_or("").trim().to_string();
@@ -416,7 +416,7 @@ fn remove_attachment(s: &mut Session, v: &Value) -> CmdResult {
     let index = p::u64(v, "index").ok_or_else(|| bad("`index` (number) is required"))? as usize;
     let c = compose_mut(s)?;
     if index >= c.attachments.len() {
-        return Err(fail(format!("the message has no attachment {index}")));
+        return Err(failed!("the message has no attachment {index}", index));
     }
     let removed = c.attachments.remove(index);
     c.dirty = true;
@@ -428,7 +428,7 @@ fn signature(s: &mut Session, v: &Value) -> CmdResult {
     if let Some(name) = p::str(v, "name")
         && s.mailbox.signature(name).is_none()
     {
-        return Err(fail(format!("no signature named \"{name}\"")));
+        return Err(failed!("no signature named \"{name}\"", name));
     }
     let reply = s.compose.as_ref().is_some_and(|c| is_response(c.mode));
     let sig =
@@ -497,10 +497,14 @@ fn build_as(s: &Session, c: &Compose, strict: bool, message_id: Option<&str>) ->
     // Mail written in a shared mailbox is from its address, kept in its Drafts and sent through
     // it (#70): never from its owner's own account instead.
     let account = s.mailbox.account(c.account).or(s.mailbox.default_account()).ok_or_else(|| fail("add an account first (File › Add Account)"))?;
-    let parse = |line: &str, what: &str| -> Result<Vec<Address>, CmdError> {
+    let parse = |line: &str, what: &'static str| -> Result<Vec<Address>, CmdError> {
         let list = Address::parse_list(line);
         if strict && let Some(bad_one) = list.iter().find(|a| !a.is_valid()) {
-            return Err(fail(format!("\"{}\" on the {what} line isn't an e-mail address", bad_one.email)));
+            return Err(failed!(
+                "\"{address}\" on the {what} line isn't an e-mail address",
+                address = bad_one.email,
+                what = mailcraft_i18n::Arg::words(what)
+            ));
         }
         Ok(list)
     };
@@ -643,13 +647,19 @@ fn send(s: &mut Session, _: &Value) -> CmdResult {
     // for the message: not its Outbox, where it would wait for ever, nor Sent Items, as if it had
     // gone. It stays as it is being written.
     if account.kind.has_server() && !account.kind.sends_mail() {
-        return Err(fail(format!("{NOT_SENDING_YET}: send this message from another account, or save it as a draft")));
+        return Err(failed!(
+            "{not_sending_yet}: send this message from another account, or save it as a draft",
+            not_sending_yet = mailcraft_i18n::Arg::words(NOT_SENDING_YET)
+        ));
     }
     // An account that sends its mail queues the message for the next Send/Receive; a local one
     // has nowhere to send it, so it is filed as sent (and delivered to local accounts it names).
     let queued = account.kind.sends_mail();
     let kind = if queued { FolderKind::Outbox } else { FolderKind::Sent };
-    m.folder = s.mailbox.folder_of_kind(account.id, kind).ok_or_else(|| fail(format!("this account has no {} folder", kind.default_name())))?;
+    m.folder = s
+        .mailbox
+        .folder_of_kind(account.id, kind)
+        .ok_or_else(|| failed!("this account has no {folder} folder", folder = mailcraft_i18n::Arg::words(kind.default_name())))?;
     // The original is marked replied or forwarded once this has gone (#154): from the Outbox when
     // the server has taken it, at once for a local account, which files it as sent.
     m.answers = answers_of(s, &c).or_else(|| c.draft.and_then(|d| s.mailbox.message(d)).and_then(|d| d.answers.clone()));

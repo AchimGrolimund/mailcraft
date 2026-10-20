@@ -63,9 +63,9 @@ fn has_graph_account(s: &Session) -> Option<&'static str> {
 /// What a Graph run of `account` should do: the folder changes made here go up, and every folder
 /// is listed. The host adds the token.
 pub fn graph_mail_request(s: &Session, account: Id) -> Result<GraphMailRequest, CmdError> {
-    let a = s.mailbox.account(account).ok_or_else(|| fail(format!("no account with id {account}")))?;
+    let a = s.mailbox.account(account).ok_or_else(|| failed!("no account with id {id}", id = account))?;
     if a.kind != AccountKind::Microsoft {
-        return Err(fail(format!("{} isn't kept in step through Microsoft Graph", a.name)));
+        return Err(failed!("{name} isn't kept in step through Microsoft Graph", name = a.name));
     }
     let shared = shared_mailbox(s, account)?;
     // A shared mailbox's changes, drafts and sends go up as its owner's do, at its own address
@@ -94,10 +94,10 @@ fn shared_mailbox(s: &Session, account: Id) -> Result<bool, CmdError> {
     let mb = &s.mailbox;
     let Some(a) = mb.account(account).filter(|a| a.is_shared()) else { return Ok(false) };
     if mb.owner_of(account).is_none() {
-        return Err(fail(format!("{} is a shared mailbox whose account is gone: remove it and add it again", a.name)));
+        return Err(failed!("{name} is a shared mailbox whose account is gone: remove it and add it again", name = a.name));
     }
     if mailcraft_model::mailbox_address(&a.email).is_none() {
-        return Err(fail(format!("{} isn't an address a shared mailbox can be opened at", a.name)));
+        return Err(failed!("{name} isn't an address a shared mailbox can be opened at", name = a.name));
     }
     Ok(true)
 }
@@ -191,13 +191,17 @@ fn request(s: &mut Session, v: &Value) -> CmdResult {
 /// Which messages of `account` a host should fetch whole: `message` at once (the owner opened it,
 /// or is replying to it), else the next `most` in the background (R3 spec S12).
 pub fn graph_fetch_request(s: &Session, account: Id, message: Option<Id>, most: usize) -> Result<GraphFetchRequest, CmdError> {
-    let a = s.mailbox.account(account).ok_or_else(|| fail(format!("no account with id {account}")))?;
+    let a = s.mailbox.account(account).ok_or_else(|| failed!("no account with id {id}", id = account))?;
     if a.kind != AccountKind::Microsoft {
-        return Err(fail(format!("{} isn't kept in step through Microsoft Graph", a.name)));
+        return Err(failed!("{name} isn't kept in step through Microsoft Graph", name = a.name));
     }
     let ids = match message {
         Some(id) => {
-            let m = s.mailbox.message(id).filter(|m| m.account == account).ok_or_else(|| fail(format!("no message with id {id} in {}", a.name)))?;
+            let m = s
+                .mailbox
+                .message(id)
+                .filter(|m| m.account == account)
+                .ok_or_else(|| failed!("no message with id {id} in {name}", id, name = a.name))?;
             m.server.as_ref().filter(|_| m.unfetched).map(|server| vec![server.id.clone()]).unwrap_or_default()
         }
         None => graph_down::fetch_queue_passing_over(&s.mailbox, account, most.clamp(1, 100), s.now(), &s.graph_unfetchable),
@@ -209,9 +213,9 @@ pub fn graph_fetch_request(s: &Session, account: Id, message: Option<Id>, most: 
 /// Take in messages fetched whole. Not an undo step.
 pub fn apply_graph_fetch(s: &mut Session, result: GraphFetchResult) -> CmdResult {
     let account = result.account;
-    let a = s.mailbox.account(account).ok_or_else(|| fail(format!("no account with id {account}")))?;
+    let a = s.mailbox.account(account).ok_or_else(|| failed!("no account with id {id}", id = account))?;
     if !result.email.is_empty() && !a.email.trim().eq_ignore_ascii_case(result.email.trim()) {
-        return Err(fail(format!("these messages were for another account, not for {}", a.name)));
+        return Err(failed!("these messages were for another account, not for {name}", name = a.name));
     }
     if s.file_is_current() {
         s.note_saved();
@@ -277,14 +281,14 @@ struct Taken {
 /// change, which the next run sends (R3.5, [`crate::undo`]).
 pub fn apply_graph_mail(s: &mut Session, result: GraphMailResult) -> CmdResult {
     let account = result.account;
-    let a = s.mailbox.account(account).ok_or_else(|| fail(format!("no account with id {account}")))?;
+    let a = s.mailbox.account(account).ok_or_else(|| failed!("no account with id {id}", id = account))?;
     if a.kind != AccountKind::Microsoft {
-        return Err(fail(format!("{} isn't kept in step through Microsoft Graph", a.name)));
+        return Err(failed!("{name} isn't kept in step through Microsoft Graph", name = a.name));
     }
     // An answer for another account (the mailbox was replaced while the run was under way)
     // would tie this one's folders to a stranger's server.
     if !result.email.is_empty() && !a.email.trim().eq_ignore_ascii_case(result.email.trim()) {
-        return Err(fail(format!("this Send/Receive was for another account, not for {}", a.name)));
+        return Err(failed!("this Send/Receive was for another account, not for {name}", name = a.name));
     }
     if s.file_is_current() {
         s.note_saved();

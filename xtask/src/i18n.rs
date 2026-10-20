@@ -8,7 +8,10 @@
 //! `tl!` (`mi(ui, app, "New Message", …)`); the window's own commands (`UI_COMMANDS`); the engine's
 //! command labels, the parts of their ribbon locations and the reasons a command can't run; the
 //! names the window shows through `tl!(x.label())` (`fn label`/`name`/`title`… returning a
-//! `&'static str`); and the words and patterns of dates and times (`crates/i18n/src/date.rs`).
+//! `&'static str`); the words and patterns of dates and times (`crates/i18n/src/date.rs`); and
+//! what the engine and the model say to the owner ([`engine_says`]): why a command failed
+//! (`fail("…")`, `failed!("… {name} …")`), the words of a synchronisation (`lang.t("…")`), and
+//! the reasons put into those.
 //!
 //! `--check` (a `cargo xtask ci` step) changes nothing and fails when the template or a catalogue
 //! is out of date. Either way, it fails on a catalogue it can't read, or on a translation whose
@@ -134,14 +137,25 @@ fn gather(root: &Path) -> Result<Texts, String> {
         }
         names(toks, file, &mut texts);
     }
-    for dir in ["crates/engine/src", "crates/model/src", "crates/time/src"] {
-        for (file, toks) in sources(root, dir)? {
-            if dir == "crates/engine/src" {
-                commands(&toks, &file, &mut texts);
-                reasons(&toks, &file, &mut texts);
-            }
-            names(&toks, &file, &mut texts);
+    // The engine and the model: which of their functions say a parameter, and their constants.
+    let mut core = sources(root, "crates/engine/src")?;
+    core.extend(sources(root, "crates/model/src")?);
+    let mut says: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    let mut consts = BTreeMap::new();
+    for (_, toks) in &core {
+        translating_params(toks, &mut says);
+        constants(toks, &mut consts);
+    }
+    for (file, toks) in &core {
+        if file.starts_with("crates/engine/") {
+            commands(toks, file, &mut texts);
+            reasons(toks, file, &mut texts);
         }
+        names(toks, file, &mut texts);
+        engine_says(toks, file, &says, &consts, &mut texts);
+    }
+    for (file, toks) in sources(root, "crates/time/src")? {
+        names(&toks, &file, &mut texts);
     }
     for (file, toks) in sources(root, "crates/i18n/src")? {
         if file.ends_with("/date.rs") {
@@ -491,8 +505,10 @@ fn translating_params(toks: &[Tok], out: &mut BTreeMap<String, BTreeSet<usize>>)
         let body = toks.get(body..end).unwrap_or_default();
         for (k, p) in params.iter().enumerate() {
             let Some(p) = p else { continue };
+            // `tl!(p)` in the window; `Arg::words(p)` or `lang.t(p)` in the engine.
             let used = (0..body.len()).any(|j| {
-                is(body, j, &["tl", "!", "("]) && body.get(j + 3) == Some(&Tok::Ident(p.clone())) && body.get(j + 4) == Some(&Tok::Punct(')'))
+                let at = |k: usize| body.get(j + k) == Some(&Tok::Ident(p.clone())) && body.get(j + k + 1) == Some(&Tok::Punct(')'));
+                (is(body, j, &["tl", "!", "("]) && at(3)) || (is(body, j, &["words", "("]) && at(2)) || (is(body, j, &[".", "t", "("]) && at(3))
             });
             if used {
                 out.entry(name.clone()).or_default().insert(k);
@@ -581,6 +597,109 @@ fn names(toks: &[Tok], file: &str, texts: &mut Texts) {
             for t in toks.get(body..close(toks, body)).unwrap_or_default() {
                 if let Tok::Str(s) = t {
                     add(texts, s, None, file, "name");
+                }
+            }
+        }
+    }
+}
+
+/// Every `const NAME: &str = "…";`, by name.
+fn constants(toks: &[Tok], out: &mut BTreeMap<String, String>) {
+    for i in 0..toks.len() {
+        if !is(toks, i, &["const"]) {
+            continue;
+        }
+        let Some(Tok::Ident(name)) = toks.get(i + 1) else { continue };
+        let ty = if is(toks, i + 2, &[":", "&", "str", "="]) {
+            4
+        } else if is(toks, i + 2, &[":", "&", "'static", "str", "="]) {
+            5
+        } else {
+            continue;
+        };
+        if let (Some(Tok::Str(s)), Some(Tok::Punct(';'))) = (toks.get(i + 2 + ty), toks.get(i + 3 + ty)) {
+            out.insert(name.clone(), s.clone());
+        }
+    }
+}
+
+/// What the engine and the model say to the owner: the first argument of `failed!(…)`,
+/// `said!(…)`, `fail(…)`, `CmdError::Failed(…)`, `ModelError::Invalid(…)`, `invalid(…)` and
+/// `Arg::words(…)`, a literal or a constant (`fail(BUSY)`); `lang.t("…")` and
+/// `lang.tn(n, "…", "…")`; a literal passed where a function says that parameter
+/// (`added_by_newer(a, "…")`); and the constants a `fn refusal…() -> &'static str` gives. A text
+/// with a backtick in it names a parameter: it is for an agent, and stays English.
+fn engine_says(toks: &[Tok], file: &str, through: &BTreeMap<String, BTreeSet<usize>>, consts: &BTreeMap<String, String>, texts: &mut Texts) {
+    const KIND: &str = "what a command says";
+    let mut say = |s: &str, plural: Option<&str>| {
+        if !s.contains('`') {
+            add(texts, s, plural, file, KIND);
+        }
+    };
+    // A literal or a constant, as it is or `.into()`, `.to_string()`.
+    let text = |a: &[Tok]| -> Option<String> {
+        let rest_ok = matches!(a.get(1), None | Some(Tok::Punct('.')));
+        match a.first() {
+            Some(Tok::Str(s)) if rest_ok => Some(s.clone()),
+            Some(Tok::Ident(n)) if rest_ok => consts.get(n).cloned(),
+            _ => None,
+        }
+    };
+    for i in 0..toks.len() {
+        let after_fn = matches!(i.checked_sub(1).and_then(|k| toks.get(k)), Some(Tok::Ident(w)) if w == "fn");
+        let open = if is(toks, i, &["failed", "!", "("]) || is(toks, i, &["said", "!", "("]) {
+            Some(i + 2)
+        } else if !after_fn && ["fail", "Failed", "Invalid", "invalid", "words"].iter().any(|f| is(toks, i, &[f, "("])) {
+            Some(i + 1)
+        } else {
+            None
+        };
+        if let Some(open) = open {
+            if let Some(s) = args(toks, open).first().and_then(|a| text(a)) {
+                say(&s, None);
+            }
+        } else if is(toks, i, &[".", "t", "("]) {
+            if let Some(s) = args(toks, i + 2).first().and_then(|a| lit(a)) {
+                say(s, None);
+            }
+        } else if is(toks, i, &[".", "tn", "("]) {
+            if let [_, one, other] = args(toks, i + 2).as_slice()
+                && let (Some(one), Some(other)) = (lit(one), lit(other))
+            {
+                say(one, Some(other));
+            }
+        } else if let Some(Tok::Ident(name)) = toks.get(i)
+            && toks.get(i + 1) == Some(&Tok::Punct('('))
+            && !after_fn
+            && let Some(at) = through.get(name)
+        {
+            let method = matches!(i.checked_sub(1).and_then(|k| toks.get(k)), Some(Tok::Punct('.')));
+            for (k, a) in args(toks, i + 1).iter().enumerate() {
+                if at.contains(&if method { k + 1 } else { k })
+                    && let Some(s) = lit(a)
+                {
+                    say(s, None);
+                }
+            }
+        }
+        if is(toks, i, &["fn"])
+            && let Some(Tok::Ident(name)) = toks.get(i + 1)
+            && name.starts_with("refusal")
+            && toks.get(i + 2) == Some(&Tok::Punct('('))
+        {
+            let end = close(toks, i + 2);
+            if is(toks, end + 1, &["-", ">", "&", "'static", "str", "{"]) {
+                let body = end + 6;
+                for t in toks.get(body..close(toks, body)).unwrap_or_default() {
+                    match t {
+                        Tok::Str(s) => say(s, None),
+                        Tok::Ident(n) => {
+                            if let Some(s) = consts.get(n) {
+                                say(s, None);
+                            }
+                        }
+                        Tok::Punct(_) => {}
+                    }
                 }
             }
         }
@@ -739,6 +858,46 @@ mod tests {
         let ids: Vec<&str> = texts.keys().map(String::as_str).collect();
         assert_eq!(ids, ["Home", "January", "May", "Reply", "Respond", "nothing to undo", "select a message", "{month} {day}, {year}", "{n} day"]);
         assert_eq!(texts.get("{n} day").and_then(|f| f.plural.as_deref()), Some("{n} days"));
+    }
+
+    #[test]
+    fn what_the_engine_says() {
+        let src = r#"
+            const BUSY: &str = "the mailbox is busy";
+            pub(crate) fn added_by_newer(a: &Account, then: &'static str) -> CmdError { failed!("{who} was added later, {then}", who, then = Arg::words(then)) }
+            fn fail(msg: impl Into<String>) -> CmdError { CmdError::Failed(msg.into()) }
+            fn refusal_into(&self) -> &'static str { if x { BUSY } else { "not yet" } }
+            fn run() {
+                fail("no message selected");
+                fail(BUSY);
+                fail("`id` is required");
+                fail(format!("{x} isn't here"));
+                Err(ModelError::Invalid("no such paragraph".into()));
+                added_by_newer(a, "which keeps its settings");
+                let s = lang.tn(n, "{n} message", "{n} messages");
+                let u = lang.t("Up to date");
+            }
+        "#;
+        let toks = lex(src);
+        let (mut says, mut consts) = (BTreeMap::new(), BTreeMap::new());
+        translating_params(&toks, &mut says);
+        constants(&toks, &mut consts);
+        let mut texts = Texts::new();
+        engine_says(&toks, "e.rs", &says, &consts, &mut texts);
+        let ids: Vec<&str> = texts.keys().map(String::as_str).collect();
+        assert_eq!(
+            ids,
+            [
+                "Up to date",
+                "no message selected",
+                "no such paragraph",
+                "not yet",
+                "the mailbox is busy",
+                "which keeps its settings",
+                "{n} message",
+                "{who} was added later, {then}"
+            ]
+        );
     }
 
     #[test]
