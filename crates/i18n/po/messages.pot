@@ -8,11 +8,6 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
 
-#. interface
-#: crates/ui-egui/src/backstage.rs
-msgid " (not encrypted)"
-msgstr ""
-
 #. interface, what a command says
 #: crates/engine/src/cmd/calendar.rs crates/ui-egui/src/account_setup.rs
 msgid "\"{address}\" isn't an e-mail address"
@@ -175,7 +170,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/calendar_sync.rs
-msgid "A calendar change couldn't be sent yet and will be tried again"
+msgid "A calendar change couldn't be sent yet and will be tried again: {error}"
 msgstr ""
 
 #. interface
@@ -790,7 +785,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/reading/invitation.rs
-msgid "At the same time:"
+msgid "At the same time: {items}"
 msgstr ""
 
 #. interface
@@ -846,6 +841,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/compose.rs
 msgid "Bcc"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/reading.rs
+msgid "Bcc: {names}"
 msgstr ""
 
 #. interface
@@ -991,6 +991,11 @@ msgstr ""
 #. what a command says
 #: crates/engine/src/cmd/compose.rs
 msgid "Cc:"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/reading.rs
+msgid "Cc: {names}"
 msgstr ""
 
 #. interface
@@ -1859,7 +1864,7 @@ msgid "Drafts you haven't sent go to your Drafts on the server. Folders and mess
 msgstr ""
 
 #. interface
-#: crates/ui-egui/src/reading.rs crates/ui-egui/src/tasks_view.rs
+#: crates/ui-egui/src/tasks_view.rs
 msgid "Due"
 msgstr ""
 
@@ -2010,7 +2015,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/dialogs.rs
-msgid "Everything in"
+msgid "Everything in \"{folder}\" will be deleted for good."
 msgstr ""
 
 #. interface
@@ -2191,6 +2196,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/reading.rs
 msgid "Follow up."
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/reading.rs
+msgid "Follow up. Due {date}"
 msgstr ""
 
 #. command label, interface
@@ -2515,6 +2525,11 @@ msgstr ""
 #. name
 #: crates/ui-egui/src/forms.rs
 msgid "Importance is"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/nav.rs
+msgid "Imported"
 msgstr ""
 
 #. interface
@@ -2984,7 +2999,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/shared_mailboxes.rs
-msgid "Mail from the shared mailbox waits"
+msgid "Mail from the shared mailbox waits: {error}"
 msgstr ""
 
 #. interface
@@ -2995,11 +3010,6 @@ msgstr ""
 #. what a command says
 #: crates/model/src/mailbox.rs
 msgid "Mail moves and copies between a shared mailbox and its own account's mailboxes only: move it there, or into a folder on this computer"
-msgstr ""
-
-#. interface
-#: crates/ui-egui/src/dialogs.rs
-msgid "Mail on the server is not touched."
 msgstr ""
 
 #. interface
@@ -3600,11 +3610,6 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/lib.rs
 msgid "No Send/Receive is running"
-msgstr ""
-
-#. interface
-#: crates/ui-egui/src/nav.rs
-msgid "No access"
 msgstr ""
 
 #. what a command says
@@ -4262,11 +4267,6 @@ msgstr ""
 msgid "Pattern"
 msgstr ""
 
-#. interface
-#: crates/ui-egui/src/sync_panel.rs
-msgid "Paused until the next Send/Receive"
-msgstr ""
-
 #. command label, interface, name, ribbon location
 #: crates/engine/src/cmd/people.rs crates/engine/src/cmd/view.rs crates/engine/src/session.rs crates/ui-egui/src/people_view.rs
 msgid "People"
@@ -4754,7 +4754,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/reading/invitation.rs
-msgid "Right before or after:"
+msgid "Right before or after: {items}"
 msgstr ""
 
 #. interface
@@ -5286,7 +5286,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/shared_mailboxes.rs
-msgid "Shared mailboxes weren't allowed"
+msgid "Shared mailboxes weren't allowed: {error}"
 msgstr ""
 
 #. command label, interface
@@ -5546,17 +5546,17 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/backstage.rs
-msgid "Signs in with"
-msgstr ""
-
-#. interface
-#: crates/ui-egui/src/backstage.rs
 msgid "Signs in with Microsoft · folders kept in step through Microsoft Graph (testing)"
 msgstr ""
 
 #. interface
 #: crates/ui-egui/src/account_setup.rs
 msgid "Signs in with a password"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/backstage.rs
+msgid "Signs in with {provider}"
 msgstr ""
 
 #. name
@@ -5971,7 +5971,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/calendar_sync.rs
-msgid "The calendar changes couldn't be taken in"
+msgid "The calendar changes couldn't be taken in: {error}"
 msgstr ""
 
 #. interface
@@ -5981,7 +5981,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/calendar_sync.rs
-msgid "The calendar connection couldn't be checked:"
+msgid "The calendar connection couldn't be checked: {error}"
 msgstr ""
 
 #. interface
@@ -6001,7 +6001,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/calendar_sync.rs
-msgid "The calendar couldn't be taken in"
+msgid "The calendar couldn't be taken in: {error}"
 msgstr ""
 
 #. interface
@@ -6016,7 +6016,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/calendar_sync.rs
-msgid "The categories couldn't be taken in"
+msgid "The categories couldn't be taken in: {error}"
 msgstr ""
 
 #. what a command says
@@ -6026,7 +6026,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/lib.rs
-msgid "The contacts couldn't be taken in"
+msgid "The contacts couldn't be taken in: {error}"
 msgstr ""
 
 #. interface
@@ -6046,7 +6046,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/dialogs.rs
-msgid "The folder"
+msgid "The folder \"{folder}\" and everything in it will be deleted."
 msgstr ""
 
 #. interface
@@ -6066,7 +6066,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/calendar_sync.rs
-msgid "The list of calendars couldn't be taken in"
+msgid "The list of calendars couldn't be taken in: {error}"
 msgstr ""
 
 #. interface
@@ -6362,11 +6362,6 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/updates.rs
 msgid "This build doesn't check for new versions."
-msgstr ""
-
-#. interface
-#: crates/ui-egui/src/calendar_view.rs
-msgid "This calendar can only be read"
 msgstr ""
 
 #. interface
@@ -6727,6 +6722,11 @@ msgstr ""
 msgid "To:"
 msgstr ""
 
+#. interface
+#: crates/ui-egui/src/reading.rs
+msgid "To: {names}"
+msgstr ""
+
 #. command label, interface, name
 #: crates/engine/src/cmd/view.rs crates/engine/src/session.rs crates/time/src/lib.rs crates/ui-egui/src/calendar_view.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/tasks_view.rs
 msgid "Today"
@@ -6909,7 +6909,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/lib.rs crates/ui-egui/src/shared_mailboxes.rs
-msgid "Use Send/Receive to sign in to"
+msgid "Use Send/Receive to sign in to {address}"
 msgstr ""
 
 #. interface
@@ -7269,7 +7269,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/meeting_dialogs.rs
-msgid "Your calendar"
+msgid "Your calendar: {day}"
 msgstr ""
 
 #. interface
@@ -7284,7 +7284,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/calendar_view.rs
-msgid "Your mailbox has:"
+msgid "Your mailbox has: {days} · {from} – {to}"
 msgstr ""
 
 #. interface
@@ -7457,11 +7457,6 @@ msgstr ""
 msgid "add at least one recipient"
 msgstr ""
 
-#. interface
-#: crates/ui-egui/src/reading/invitation.rs
-msgid "all day"
-msgstr ""
-
 #. what a command says
 #: crates/engine/src/cmd/calendar.rs
 msgid "an event needs a title"
@@ -7470,21 +7465,6 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/forms.rs
 msgid "and"
-msgstr ""
-
-#. interface
-#: crates/ui-egui/src/dialogs.rs
-msgid "and everything in it will be deleted."
-msgstr ""
-
-#. interface
-#: crates/ui-egui/src/dialogs.rs
-msgid "and the mail kept for it on this device will be removed."
-msgstr ""
-
-#. interface
-#: crates/ui-egui/src/meeting_dialogs.rs crates/ui-egui/src/reading/invitation.rs
-msgid "and {n} more"
 msgstr ""
 
 #. what a command says, why a command can't run
@@ -7615,11 +7595,6 @@ msgstr ""
 #. name
 #: crates/model/src/calendar.rs
 msgid "month"
-msgstr ""
-
-#. interface
-#: crates/ui-egui/src/reading/invitation.rs
-msgid "more ways to answer"
 msgstr ""
 
 #. name
@@ -7872,11 +7847,6 @@ msgstr ""
 msgid "select an appointment first"
 msgstr ""
 
-#. interface
-#: crates/ui-egui/src/signatures.rs
-msgid "shared mailbox"
-msgstr ""
-
 #. what a command says, why a command can't run
 #: crates/engine/src/cmd/shared.rs
 msgid "shared mailboxes open under an account kept in step through Microsoft Graph"
@@ -8049,7 +8019,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/calendar_sync.rs
-msgid "the server answered"
+msgid "the server answered {status}"
 msgstr ""
 
 #. interface
@@ -8264,11 +8234,6 @@ msgstr ""
 msgid "which sends its mail: send this message from another account, or save it as a draft to send it from that version"
 msgstr ""
 
-#. interface
-#: crates/ui-egui/src/dialogs.rs
-msgid "will be deleted for good."
-msgstr ""
-
 #. name
 #: crates/model/src/calendar.rs
 msgid "year"
@@ -8307,6 +8272,21 @@ msgid "{account} stays on IMAP for now. To switch later, search the commands for
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src/nav.rs
+msgid "{account} · No access"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/signatures.rs
+msgid "{address} (shared mailbox)"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/dialogs.rs
+msgid "{address} and the mail kept for it on this device will be removed. Mail on the server is not touched."
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/dialogs.rs
 msgid "{address} and the mail kept for it on this device will be removed. The shared mailbox on the server is not touched."
 msgstr ""
@@ -8318,7 +8298,7 @@ msgstr ""
 
 #. interface
 #: crates/ui-egui/src/shared_mailboxes.rs
-msgid "{address} couldn't be opened:"
+msgid "{address} couldn't be opened: {error}"
 msgstr ""
 
 #. what a command says
@@ -8329,6 +8309,16 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/account_setup.rs
 msgid "{address} is set up"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/reading/invitation.rs
+msgid "{answer}: more ways to answer"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/calendar_view.rs
+msgid "{calendar} · This calendar can only be read"
 msgstr ""
 
 #. interface
@@ -8347,8 +8337,18 @@ msgid "{contributors} contributors · {commits} commits"
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src/sync_panel.rs
+msgid "{counted} · Paused until the next Send/Receive"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/mail_view.rs
 msgid "{count} messages weren't searched in full: only their beginning is here until they download."
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/reading/invitation.rs
+msgid "{days} (all day)"
 msgstr ""
 
 #. interface
@@ -8357,7 +8357,7 @@ msgid "{done} of {total}"
 msgstr ""
 
 #. interface
-#: crates/ui-egui/src/nav.rs
+#: crates/ui-egui/src/lib.rs crates/ui-egui/src/nav.rs
 msgid "{folder} - {mailbox}"
 msgstr ""
 
@@ -8369,6 +8369,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/calendar_view.rs
 msgid "{from} – {to}, {year}"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/backstage.rs
+msgid "{host} (not encrypted)"
 msgstr ""
 
 #. date and time
@@ -8419,6 +8424,11 @@ msgstr ""
 #. date and time
 #: crates/i18n/src/date.rs
 msgid "{month}/{day}/{year}"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/meeting_dialogs.rs crates/ui-egui/src/reading/invitation.rs
+msgid "{names} and {n} more"
 msgstr ""
 
 #. interface
@@ -8876,6 +8886,11 @@ msgid_plural "{n} were there already"
 msgstr[0] ""
 msgstr[1] ""
 
+#. interface
+#: crates/ui-egui/src/calendar_sync.rs
+msgid "{n}. {step}: {result} ({answered}). {said}"
+msgstr ""
+
 #. date and time
 #: crates/i18n/src/date.rs
 msgid "{n}.5 hours"
@@ -8899,6 +8914,11 @@ msgstr ""
 #. what a command says
 #: crates/engine/src/cmd/file.rs
 msgid "{path} isn't a mailbox; bring it in with File › Import"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/sync_panel.rs
+msgid "{phase}: {detail}"
 msgstr ""
 
 #. interface
@@ -8936,6 +8956,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/reminders.rs
 msgid "{time} ago"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/reading/invitation.rs
+msgid "{title} (all day)"
 msgstr ""
 
 #. date and time

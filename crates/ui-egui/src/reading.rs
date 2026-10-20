@@ -333,15 +333,17 @@ fn header(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, place: Place, pictur
                         });
                     });
                 });
-                let mut line = |ui: &mut Ui, field: select::Field, label: &str, list: &[mailcraft_model::Address]| {
+                // (`said` is the line in the interface language, with `{names}` still to fill.)
+                let mut line = |ui: &mut Ui, field: select::Field, said: &str, list: &[mailcraft_model::Address]| {
                     if !list.is_empty() {
-                        let text = egui::RichText::new(format!("{} {}", tl!(label), format_list(list))).font(regular(11.5)).color(t.text_dim);
+                        let said = crate::i18n::fmt(said, &[("names", &format_list(list))]);
+                        let text = egui::RichText::new(said).font(regular(11.5)).color(t.text_dim);
                         fields.add(ui, field, egui::Label::new(text).truncate());
                     }
                 };
-                line(ui, select::Field::To, "To:", &m.to);
-                line(ui, select::Field::Cc, "Cc:", &m.cc);
-                line(ui, select::Field::Bcc, "Bcc:", &m.bcc);
+                line(ui, select::Field::To, tl!("To: {names}"), &m.to);
+                line(ui, select::Field::Cc, tl!("Cc: {names}"), &m.cc);
+                line(ui, select::Field::Bcc, tl!("Bcc: {names}"), &m.bcc);
             });
         });
         notes(app, ui, m, &t, pictures);
@@ -358,8 +360,11 @@ fn notes(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, t: &Tokens, pictures:
     let mut lines: Vec<(&str, String)> = Vec::new();
     match m.flag {
         FlagStatus::Flagged => {
-            let due = m.flag_due.map(|d| format!(" {} {}", tl!("Due"), crate::dates::medium(app.session.local(d).date))).unwrap_or_default();
-            lines.push(("flag", format!("{}{due}", tl!("Follow up."))));
+            let said = match m.flag_due {
+                Some(d) => crate::i18n::fmt(tl!("Follow up. Due {date}"), &[("date", &crate::dates::medium(app.session.local(d).date))]),
+                None => tl!("Follow up.").to_string(),
+            };
+            lines.push(("flag", said));
         }
         FlagStatus::Complete => lines.push(("complete", tl!("Completed.").to_string())),
         FlagStatus::None => {}

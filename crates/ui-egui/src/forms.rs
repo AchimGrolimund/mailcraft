@@ -5663,7 +5663,7 @@ mod rules {
             if out.len() >= mb.folders.len() {
                 break;
             }
-            out.push((id, mb.folder_path(id)));
+            out.push((id, crate::nav::folder_path(mb, id)));
             waiting.extend(mb.children(account, Some(id)).iter().rev().map(|f| f.id));
         }
         out
@@ -5677,7 +5677,7 @@ mod rules {
             .actions
             .iter()
             .map(|a| match a {
-                Action::MoveTo(f) if mb.folder(*f).is_some() => format!("move it to {}", mb.folder_path(*f)),
+                Action::MoveTo(f) if mb.folder(*f).is_some() => format!("move it to {}", crate::nav::folder_path(mb, *f)),
                 Action::MoveTo(_) => "move it to a folder that is gone".to_string(),
                 other => other.describe(),
             })
@@ -5774,7 +5774,7 @@ mod rules {
             let t = pass.t;
             let rules = app.session.mailbox.rules.clone();
             let categories: Vec<String> = app.session.mailbox.categories.iter().map(|c| c.name.clone()).collect();
-            let folder_in_view = app.session.mailbox.folder_path(app.session.view.folder);
+            let folder_in_view = crate::nav::folder_path(&app.session.mailbox, app.session.view.folder);
             let mut run: Option<(&'static str, Value)> = None;
             let mut add = false;
             body(ui, |ui| {

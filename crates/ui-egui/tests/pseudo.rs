@@ -34,24 +34,11 @@ const ALLOWED: &[&str] = &[
     "SMTP",
     // A language is named in its own language; the pseudo one has no other name.
     "Pseudo",
-    // Folders' names (slice 5).
-    "Inbox",
-    "Drafts",
-    "Sent",
-    "Items",
-    "Deleted",
-    "Junk",
-    "Email",
-    "Outbox",
-    "Archive",
-    "Conversation",
-    "History",
-    "Calendar",
-    "Contacts",
-    "Tasks",
 ];
 
 /// Every word of the sample mailbox (names, addresses, subjects, bodies): data, not interface.
+/// Not the names of its standard folders (Inbox, Sent Items…), which the window shows in its own
+/// language.
 fn mailbox_words(app: &MailApp) -> BTreeSet<String> {
     fn walk(v: &Value, out: &mut BTreeSet<String>) {
         match v {
@@ -64,8 +51,10 @@ fn mailbox_words(app: &MailApp) -> BTreeSet<String> {
             _ => {}
         }
     }
+    let mut mailbox = app.session.mailbox.clone();
+    mailbox.folders.retain(|f| f.kind == mailcraft_model::FolderKind::Custom);
     let mut out = BTreeSet::new();
-    walk(&serde_json::to_value(&app.session.mailbox).unwrap(), &mut out);
+    walk(&serde_json::to_value(&mailbox).unwrap(), &mut out);
     out
 }
 

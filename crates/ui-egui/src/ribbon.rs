@@ -785,7 +785,7 @@ pub fn folder_menu(ui: &mut Ui, app: &mut MailApp, mut pick: impl FnMut(&mut Mai
             return;
         }
         for f in app.session.mailbox.children(account, parent) {
-            out.push((f.id, f.name.clone(), depth));
+            out.push((f.id, crate::nav::folder_name(f).to_string(), depth));
             walk(app, account, Some(f.id), depth + 1, out);
         }
     }

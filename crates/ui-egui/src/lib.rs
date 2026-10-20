@@ -1966,7 +1966,7 @@ impl MailApp {
         if refresh.is_empty() {
             // Nobody asked for this run: no page is put in front of the owner.
             if quiet {
-                return Err(format!("{} {address}", tl!("Use Send/Receive to sign in to")));
+                return Err(i18n::fmt(tl!("Use Send/Receive to sign in to {address}"), &[("address", &address)]));
             }
             self.begin_sign_in(account, oauth, &address, String::new(), false, true)?;
             return Ok(json!({"pending": "signIn", "account": account}));
@@ -2265,7 +2265,7 @@ impl MailApp {
         if let Some(contacts) = &result.contacts {
             match mailcraft_engine::cmd::remote::apply_contacts(&mut self.session, contacts) {
                 Ok(_) => contacts_ok = true,
-                Err(e) => errors.push(format!("{}: {e}", tl!("The contacts couldn't be taken in"))),
+                Err(e) => errors.push(i18n::fmt(tl!("The contacts couldn't be taken in: {error}"), &[("error", &e.to_string())])),
             }
         }
         if directory && calendar_ok && contacts_ok {
@@ -2720,9 +2720,9 @@ impl MailApp {
             self.session.mailbox.folder(self.session.view.folder).and_then(|f| self.session.mailbox.account(f.account)).map(|a| a.name.clone());
         match self.session.view.module {
             Module::Mail => {
-                let folder = self.session.mailbox.folder(self.session.view.folder).map_or(tl!("Mail"), |f| f.name.as_str());
+                let folder = self.session.mailbox.folder(self.session.view.folder).map_or(tl!("Mail"), crate::nav::folder_name);
                 match account.filter(|a| !a.is_empty()) {
-                    Some(a) => format!("{folder} - {a}"),
+                    Some(a) => i18n::fmt(tl!("{folder} - {mailbox}"), &[("folder", folder), ("mailbox", &a)]),
                     None => folder.to_string(),
                 }
             }

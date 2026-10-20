@@ -106,7 +106,9 @@ fn tile(ui: &mut Ui, icon: &str, title: &str, detail: &str, t: &Tokens) -> bool 
 /// for one on a mail server, its servers.
 pub(crate) fn account_detail(app: &MailApp, a: &mailcraft_model::Account) -> String {
     let server = |s: &Option<mailcraft_model::Server>| {
-        s.as_ref().map(|s| format!("{}{}", s.host, if s.security == Security::None { tl!(" (not encrypted)") } else { "" }))
+        s.as_ref().map(|s| {
+            if s.security == Security::None { crate::i18n::fmt(tl!("{host} (not encrypted)"), &[("host", &s.host)]) } else { s.host.clone() }
+        })
     };
     match a.kind {
         AccountKind::Microsoft if a.is_shared() && app.shared_refused.contains_key(&a.id) => {
@@ -130,7 +132,7 @@ pub(crate) fn account_detail(app: &MailApp, a: &mailcraft_model::Account) -> Str
             );
             // How the owner signs in, when it isn't with a password.
             match &a.oauth {
-                Some(o) => format!("{} {} · {servers}", tl!("Signs in with"), o.provider.label()),
+                Some(o) => format!("{} · {servers}", crate::i18n::fmt(tl!("Signs in with {provider}"), &[("provider", o.provider.label())])),
                 None => servers,
             }
         }

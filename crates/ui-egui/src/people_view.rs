@@ -707,7 +707,7 @@ fn card_recent(app: &mut MailApp, ui: &mut Ui, c: &Contact) {
         );
         let date = crate::dates::list_label(m.date, app.session.now(), app.session.offset_at(m.date), app.session.prefs.twelve_hour);
         let date_w = p.text(pos2(r.max.x - 8.0, r.center().y), Align2::RIGHT_CENTER, &date, regular(11.0), t.text_dim).width();
-        let folder = app.session.mailbox.folder(m.folder).map(|f| one_line(&f.name, 60)).unwrap_or_default();
+        let folder = app.session.mailbox.folder(m.folder).map(|f| one_line(crate::nav::folder_name(f), 60)).unwrap_or_default();
         let folder_w = text_width(ui, &folder, regular(11.0)).min(140.0);
         let folder_x = r.max.x - 8.0 - date_w.max(64.0) - 14.0 - folder_w;
         paint_clipped(p, pos2(folder_x, r.center().y), folder_w + 1.0, &folder, regular(11.0), t.text_dim);
