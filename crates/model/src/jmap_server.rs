@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Where a JMAP account's server is ([`JmapServer`], held by [`crate::Account::jmap`]), and what
 //! an address must be before anything of the owner's is sent to it.
 //!
