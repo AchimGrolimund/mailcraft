@@ -143,7 +143,10 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
     let (mut dismiss_all, mut closed) = (false, false);
     let title = if rows.len() == 1 { tl!("1 Reminder").to_string() } else { format!("{} {}", rows.len(), tl!("Reminders")) };
     let height = (rows.len().clamp(1, 6) as f32) * 46.0 + 96.0;
-    let builder = egui::ViewportBuilder::default().with_title(title).with_inner_size([420.0, height]).with_min_inner_size([340.0, 150.0]);
+    let builder = crate::windows::like_main(
+        ctx,
+        egui::ViewportBuilder::default().with_title(title).with_inner_size([420.0, height]).with_min_inner_size([340.0, 150.0]),
+    );
     ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("mailcraft_reminders"), builder, |ui, class| {
         let own_window = class != egui::ViewportClass::EmbeddedWindow;
         if own_window {
