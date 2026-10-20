@@ -349,6 +349,14 @@ pub fn sync_request(s: &Session, account: Id) -> Result<SyncRequest, CmdError> {
             known.entry(m.folder).or_default().push(m.uid);
         }
     }
+    // What waits to be moved or deleted on the server is there still: known, so that it doesn't
+    // come down again.
+    for p in s.mailbox.pending.iter().filter(|p| p.account() == account) {
+        let (from, uid) = p.source();
+        if let Some(f) = s.mailbox.folders.iter().find(|f| uid != 0 && f.account == account && f.remote == from) {
+            known.entry(f.id).or_default().push(uid);
+        }
+    }
     let folders = s
         .mailbox
         .folders
@@ -360,6 +368,7 @@ pub fn sync_request(s: &Session, account: Id) -> Result<SyncRequest, CmdError> {
             kind: f.kind,
             uid_validity: f.uid_validity,
             uid_seen: f.uid_seen,
+            uid_from: f.uid_from,
             known_uids: known.remove(&f.id).unwrap_or_default(),
         })
         .collect();
@@ -1192,6 +1201,9 @@ fn take_in(mb: &mut Mailbox, account: Id, on_server: &mut OnServer, delta: Folde
     }
     if let Ok(f) = mb.folder_mut(folder) {
         f.uid_seen = if reset { delta.uid_seen } else { delta.uid_seen.max(old_seen) };
+        if reset || delta.uid_from != 0 {
+            f.uid_from = delta.uid_from;
+        }
     }
 }
 
