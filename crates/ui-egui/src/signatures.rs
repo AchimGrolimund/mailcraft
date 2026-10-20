@@ -378,10 +378,20 @@ fn picture(app: &mut MailApp, ui: &mut Ui) {
     });
 }
 
-/// Each account's signature for new messages, and for replies and forwards.
+/// Each account's signature for new messages, and for replies and forwards: a shared mailbox's
+/// under its owner's account, as the folder pane lists them (#70), each with its own (none until
+/// one is chosen for it).
 fn defaults(app: &mut MailApp, ui: &mut Ui, names: &[String]) {
-    let accounts: Vec<(u64, String, String, String)> =
-        app.session.mailbox.accounts.iter().map(|a| (a.id, a.email.clone(), a.signature.clone(), a.reply_signature().to_string())).collect();
+    let accounts: Vec<(u64, String, String, String)> = app
+        .session
+        .mailbox
+        .accounts_in_order()
+        .into_iter()
+        .map(|a| {
+            let shown = if a.is_shared() { format!("    {} ({})", a.email, tl!("shared mailbox")) } else { a.email.clone() };
+            (a.id, shown, a.signature.clone(), a.reply_signature().to_string())
+        })
+        .collect();
     if accounts.is_empty() {
         ui.label(tl!("Add an account first"));
     }
