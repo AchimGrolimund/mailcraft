@@ -66,3 +66,12 @@ fn putting_one_message_in_place_many_times_keeps_one_swap_and_a_failure_still_go
     assert_eq!(s.mailbox.message(other).unwrap().read, read);
     assert_eq!(s.mailbox.message(id).unwrap().body.text, last);
 }
+
+#[test]
+fn the_interface_language_is_the_hosts_and_never_saved() {
+    let mut s = Session::empty();
+    assert_eq!(s.interface_language, mailcraft_i18n::Lang::English);
+    s.interface_language = mailcraft_i18n::Lang::Pseudo;
+    let saved = serde_json::to_string(&s.mailbox).unwrap();
+    assert!(!saved.contains("pseudo"), "the mailbox file says nothing of the window's language");
+}

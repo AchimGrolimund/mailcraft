@@ -2351,6 +2351,7 @@ dependencies = [
  "base64",
  "log",
  "mailcraft-html",
+ "mailcraft-i18n",
  "mailcraft-ical",
  "mailcraft-mime",
  "mailcraft-model",
@@ -2369,6 +2370,13 @@ version = "0.5.2"
 dependencies = [
  "proptest",
  "serde",
+]
+
+[[package]]
+name = "mailcraft-i18n"
+version = "0.5.2"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]
@@ -2466,6 +2474,7 @@ dependencies = [
  "log",
  "mailcraft-engine",
  "mailcraft-html",
+ "mailcraft-i18n",
  "mailcraft-model",
  "mailcraft-time",
  "serde",

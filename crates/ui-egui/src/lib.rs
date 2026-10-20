@@ -16,6 +16,16 @@ macro_rules! tl {
     };
 }
 
+/// A count in the current interface language: `tln!(n, "{n} message", "{n} messages")` picks the
+/// form the language's plural rule gives `n` and fills in `{n}` ([`i18n::tn`]). Both English forms
+/// are literals, so `cargo xtask i18n` finds them.
+#[macro_export]
+macro_rules! tln {
+    ($n:expr, $one:expr, $other:expr) => {
+        $crate::i18n::tn($crate::i18n::Count::count($n), $one, $other)
+    };
+}
+
 mod account_setup;
 pub mod agent_gate;
 pub mod alerts;
@@ -221,6 +231,12 @@ pub struct Services {
     /// when it can't, and hands back which were clicked. Only the window asks for one, never a
     /// command. Absent in the browser and the tests: nothing is shown.
     pub alert: Option<Box<dyn alerts::AlertHost>>,
+    /// The system's locale (`fr-FR`; the browser's in the browser build), which the interface
+    /// language follows while it is Automatic. `None` (the tests, scripts): English.
+    pub system_locale: Option<String>,
+    /// Web: told the interface language's code (`en`) whenever it changes, for the page's
+    /// `<html lang>`.
+    pub on_language: Option<Box<dyn Fn(&str)>>,
 }
 
 /// The system's clipboard with HTML on it ([`Services::clipboard`]).
@@ -617,6 +633,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
     ),
     ("ui.closeDialog", "Close Dialog", "Window", "{}"),
     ("ui.theme", "Interface Theme", "File › Options", r#"{"value": "light"|"dark"|"system"}"#),
+    ("ui.language", "Interface Language", "File › Options", r#"{"language": "auto"|"en"|"fr"|"pseudo"}"#),
     ("ui.interfaceSize", "Interface Size", "File › Options", r#"{"value": 80-200}"#),
     ("ui.focusSearch", "Search", "Search", "{}"),
     (
@@ -967,6 +984,8 @@ pub struct MailApp {
     styled: bool,
     /// The interface theme last installed in egui ([`theme::apply`]).
     applied_theme: Option<egui::ThemePreference>,
+    /// The interface language last told the host ([`Services::on_language`]).
+    applied_language: Option<i18n::Lang>,
     fonts_frames: u32,
     pub frame_ms: f64,
     /// The window title last sent; a viewport command schedules a repaint, so only send changes.
@@ -1131,6 +1150,7 @@ impl MailApp {
             asking: Default::default(),
             styled: false,
             applied_theme: None,
+            applied_language: None,
             fonts_frames: 0,
             frame_ms: 0.0,
             sent_title: String::new(),
@@ -1443,6 +1463,20 @@ impl MailApp {
                 }
                 None => Err("`value` is light, dark or system".into()),
             },
+            "ui.language" => {
+                let code = s("language").unwrap_or_default();
+                let lang = i18n::Lang::from_code(code);
+                if code.trim().eq_ignore_ascii_case(i18n::AUTO) {
+                    self.ui.language = i18n::AUTO.into();
+                } else if let Some(lang) = lang.filter(|l| *l == i18n::Lang::Pseudo || i18n::Lang::available().contains(l)) {
+                    self.ui.language = lang.code().into();
+                } else {
+                    let codes: Vec<&str> = i18n::Lang::available().iter().map(|l| l.code()).collect();
+                    return Some(Err(format!("`language` is auto or one of: {}", codes.join(", "))));
+                }
+                self.apply_language();
+                Ok(json!({"language": self.ui.language, "inForce": self.language().code()}))
+            }
             "ui.interfaceSize" => match p.get("value").and_then(Value::as_f64).and_then(theme::InterfaceSize::from_percent) {
                 Some(size) => {
                     self.ui.interface_size = size;
@@ -2685,10 +2719,30 @@ impl MailApp {
         }
     }
 
+    /// The interface language: the owner's choice (`ui.json`'s `language`), with the system's
+    /// locale for Automatic.
+    pub fn language(&self) -> i18n::Lang {
+        i18n::Lang::from_pref(&self.ui.language, self.services.system_locale.as_deref())
+    }
+
+    /// Put the interface language in force: the window's text, the engine's, and the host's
+    /// (`<html lang>` in the browser) when it changed.
+    fn apply_language(&mut self) {
+        let lang = self.language();
+        i18n::set_current(lang);
+        self.session.interface_language = lang;
+        if self.applied_language != Some(lang) {
+            self.applied_language = Some(lang);
+            if let Some(tell) = &self.services.on_language {
+                tell(lang.code());
+            }
+        }
+    }
+
     /// Per-frame logic before layout: control requests, screenshots, background results, file
     /// drops, saving.
     pub fn logic(&mut self, ctx: &egui::Context) {
-        i18n::set_current(i18n::Lang::from_pref(&self.ui.language));
+        self.apply_language();
         if !self.styled {
             theme::install_fonts(ctx);
             // Mod with -, = and 0 would also scale the whole window; interface size is in Options.
@@ -3100,7 +3154,7 @@ impl MailApp {
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let t0 = now_ms();
         let ctx = ui.ctx().clone();
-        i18n::set_current(i18n::Lang::from_pref(&self.ui.language));
+        self.apply_language();
         // Fonts installed by `logic` take effect on the next frame.
         if self.fonts_frames < 2 {
             self.fonts_frames += 1;
