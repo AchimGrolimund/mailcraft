@@ -275,6 +275,7 @@ pub fn switch(s: &mut Session, account: Id) -> Result<Switched, CmdError> {
         f.remote.clear();
         f.uid_validity = 0;
         f.uid_seen = 0;
+        f.uid_from = 0;
         f.server = None;
         f.awaiting_listing = f.kind == FolderKind::Custom && was_on_server;
     }

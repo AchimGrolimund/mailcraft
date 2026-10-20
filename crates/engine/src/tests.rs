@@ -688,6 +688,7 @@ fn a_sync_result_lands_in_the_right_folders() {
             kind: FolderKind::Inbox,
             uid_validity: 7,
             uid_seen: 13,
+            uid_from: 0,
             new: vec![mail(12, "Two again"), mail(13, "Three")],
             flags: vec![RemoteFlags { uid: 12, read: true, flagged: true, ..Default::default() }],
             removed: vec![11],
@@ -802,7 +803,7 @@ mod two_way {
     /// What a run read in one server mailbox: its new messages, and the flags of the ones known.
     fn news(id: Option<Id>, remote: &str, kind: FolderKind, uid_validity: u32, new: Vec<Message>, flags: Vec<RemoteFlags>) -> FolderDelta {
         let uid_seen = new.iter().map(|m| m.uid).chain(flags.iter().map(|f| f.uid)).max().unwrap_or(0);
-        FolderDelta { id, remote: remote.into(), kind, uid_validity, uid_seen, new, flags, removed: Vec::new() }
+        FolderDelta { id, remote: remote.into(), kind, uid_validity, uid_seen, new, flags, ..Default::default() }
     }
 
     fn has(uid: u32, read: bool, flagged: bool) -> RemoteFlags {

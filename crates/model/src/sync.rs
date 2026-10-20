@@ -33,6 +33,11 @@ pub struct FolderState {
     pub uid_validity: u32,
     /// The highest UID already downloaded.
     pub uid_seen: u32,
+    /// The oldest UID of the newest messages the folder was last read down to: older ones were
+    /// left out by the limit of how many to have here, and come down when it grows. Between this
+    /// and `uid_seen`, what isn't here left the folder here and is not asked for again. 0 until
+    /// the folder is read with it (a mailbox from before it was kept).
+    pub uid_from: u32,
     /// UIDs of the messages the mailbox has in this folder (to notice deletions and flag changes).
     pub known_uids: Vec<u32>,
 }
@@ -416,6 +421,9 @@ pub struct FolderDelta {
     pub kind: FolderKind,
     pub uid_validity: u32,
     pub uid_seen: u32,
+    /// How far down the folder is read now ([`FolderState::uid_from`]), said by the last piece
+    /// of it; 0 says nothing.
+    pub uid_from: u32,
     /// Newly downloaded messages (`uid` set; `folder` and `account` are filled in when applied).
     pub new: Vec<Message>,
     /// Current flags of messages the mailbox already had.
@@ -604,6 +612,9 @@ impl SyncResult {
                     folder.id = folder.id.or(delta.id);
                     // The mailbox is read as far as the piece that got furthest says.
                     folder.uid_seen = folder.uid_seen.max(delta.uid_seen);
+                    if delta.uid_from != 0 {
+                        folder.uid_from = delta.uid_from;
+                    }
                     folder.new.extend(delta.new);
                     folder.flags.extend(delta.flags);
                     folder.removed.extend(delta.removed);

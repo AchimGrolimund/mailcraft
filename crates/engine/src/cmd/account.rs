@@ -368,6 +368,7 @@ pub fn sync_request(s: &Session, account: Id) -> Result<SyncRequest, CmdError> {
             kind: f.kind,
             uid_validity: f.uid_validity,
             uid_seen: f.uid_seen,
+            uid_from: f.uid_from,
             known_uids: known.remove(&f.id).unwrap_or_default(),
         })
         .collect();
@@ -1195,6 +1196,9 @@ fn take_in(mb: &mut Mailbox, account: Id, on_server: &mut OnServer, delta: Folde
     }
     if let Ok(f) = mb.folder_mut(folder) {
         f.uid_seen = if reset { delta.uid_seen } else { delta.uid_seen.max(old_seen) };
+        if reset || delta.uid_from != 0 {
+            f.uid_from = delta.uid_from;
+        }
     }
 }
 

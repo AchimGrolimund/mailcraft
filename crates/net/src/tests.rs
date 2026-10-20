@@ -144,6 +144,9 @@ fn applied(before: &[FolderState], result: &SyncResult) -> Vec<FolderState> {
         folder.remote = delta.remote.clone();
         folder.uid_validity = delta.uid_validity;
         folder.uid_seen = if anew { delta.uid_seen } else { delta.uid_seen.max(folder.uid_seen) };
+        if anew || delta.uid_from != 0 {
+            folder.uid_from = delta.uid_from;
+        }
         folder.known_uids.retain(|uid| !anew && !delta.removed.contains(uid));
         // (A message that came down to be matched with one already here has its UID now too.)
         folder.known_uids.extend(delta.new.iter().map(|m| m.uid));
@@ -650,7 +653,8 @@ fn only_the_newest_are_downloaded_when_there_is_a_limit() {
     let result = sync(&request);
     assert_eq!(result.errors, Vec::<String>::new());
     let inbox = &result.folders[0];
-    assert_eq!((uids(&inbox.new), inbox.uid_seen), (vec![2, 5], 6));
+    // Read down to the oldest the limit allows.
+    assert_eq!((uids(&inbox.new), inbox.uid_seen, inbox.uid_from), (vec![2, 5], 6, 2));
     // The older one is passed over for as long as the limit stays.
     request.folders = applied(&local_folders(), &result);
     assert_eq!(sync(&request).new_count(), 0);
