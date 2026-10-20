@@ -392,6 +392,13 @@ fn click_at(harness: &mut egui_kittest::Harness<'static, MailApp>, pos: egui::Po
     harness.run_steps(2);
 }
 
+/// Ctrl+Q is Mark as Read: egui's own Mod+Q quit is off, so it doesn't also close the window.
+#[test]
+fn ctrl_q_does_not_quit() {
+    let harness = window(app());
+    assert!(harness.ctx.options(|o| o.quit_shortcuts.is_empty()));
+}
+
 /// The strip down the left edge of a row switches read and unread, and leaves the selection alone.
 #[test]
 fn the_left_edge_of_a_row_switches_read_and_unread() {
