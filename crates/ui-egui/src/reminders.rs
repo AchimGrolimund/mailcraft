@@ -192,7 +192,7 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
                         semibold(12.5),
                         t.text,
                     );
-                    let time = if r.all_day { r.start.date.medium() } else { format!("{} {}", r.start.date.medium(), r.start.time_short(twelve)) };
+                    let time = if r.all_day { crate::dates::medium(r.start.date) } else { crate::dates::medium_time(r.start, twelve) };
                     let detail = if r.location.trim().is_empty() { time } else { format!("{time} · {}", r.location) };
                     crate::theme::paint_clipped(
                         ui.painter(),

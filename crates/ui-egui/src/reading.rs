@@ -316,7 +316,7 @@ fn header(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, place: Place, pictur
             crate::widgets::avatar(ui, r.center(), 17.0, &m.from);
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 1.0);
-                let when = mailcraft_time::header_label(m.date, app.session.offset_at(m.date), app.session.prefs.twelve_hour);
+                let when = crate::dates::header_label(m.date, app.session.offset_at(m.date), app.session.prefs.twelve_hour);
                 // The date first, at the right; the name and address get what is left, cut short
                 // when the pane is narrow rather than run under the date.
                 ui.horizontal(|ui| {
@@ -358,7 +358,7 @@ fn notes(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, t: &Tokens, pictures:
     let mut lines: Vec<(&str, String)> = Vec::new();
     match m.flag {
         FlagStatus::Flagged => {
-            let due = m.flag_due.map(|d| format!(" {} {}", tl!("Due"), app.session.local(d).date.medium())).unwrap_or_default();
+            let due = m.flag_due.map(|d| format!(" {} {}", tl!("Due"), crate::dates::medium(app.session.local(d).date))).unwrap_or_default();
             lines.push(("flag", format!("{}{due}", tl!("Follow up."))));
         }
         FlagStatus::Complete => lines.push(("complete", tl!("Completed.").to_string())),
@@ -406,7 +406,7 @@ fn notes(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>, t: &Tokens, pictures:
                 let label = format!(
                     "{} · {}",
                     other.from.display(),
-                    mailcraft_time::list_label(other.date, app.session.now(), app.session.offset_at(other.date), app.session.prefs.twelve_hour)
+                    crate::dates::list_label(other.date, app.session.now(), app.session.offset_at(other.date), app.session.prefs.twelve_hour)
                 );
                 if ui.add_enabled(*id != m.id, egui::Button::new(egui::RichText::new(label).font(regular(11.0))).small()).clicked() {
                     let _ = app.run("mail.select", json!({"id": id}));

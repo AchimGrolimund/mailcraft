@@ -234,7 +234,7 @@ pub fn plan_reminders(due: &[Reminder], on: bool, twelve_hour: bool) -> Vec<Plan
     due.iter()
         .map(|r| {
             let title = clean(&r.title, SUBJECT_CHARS);
-            let time = if r.all_day { r.start.date.medium() } else { format!("{} {}", r.start.date.medium(), r.start.time_short(twelve_hour)) };
+            let time = if r.all_day { crate::dates::medium(r.start.date) } else { crate::dates::medium_time(r.start, twelve_hour) };
             let place = clean(&r.location, SUBJECT_CHARS);
             Planned {
                 kind: AlertKind::Reminder,
