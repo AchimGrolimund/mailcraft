@@ -83,7 +83,8 @@ pub fn run(root: &Path, check: bool) -> Result<(), String> {
 }
 
 fn rel(root: &Path, p: &Path) -> String {
-    p.strip_prefix(root).unwrap_or(p).display().to_string()
+    // The same template on every system: `/` between path parts, also on Windows.
+    p.strip_prefix(root).unwrap_or(p).display().to_string().replace('\\', "/")
 }
 
 fn catalogues(dir: &Path) -> Result<Vec<PathBuf>, String> {
@@ -161,7 +162,7 @@ fn sources(root: &Path, dir: &str) -> Result<Vec<(String, Vec<Tok>)>, String> {
             continue;
         }
         let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        out.push((rel(root, &path), without_tests(lex(&text))));
+        out.push((rel(root, &path), without_tests(lex(&text.replace("\r\n", "\n")))));
     }
     Ok(out)
 }
