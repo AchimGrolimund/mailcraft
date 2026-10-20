@@ -3,7 +3,7 @@
 MailCraft is a clean-room, open-source, Rust-native mail, calendar, contacts and tasks program targeting Microsoft Outlook parity — and going further on speed, openness, privacy and agent control. It runs natively on macOS, Windows, Linux and BSD, and on the web via WASM. It follows the conventions of its siblings: `../wordcraft` (Word), `../photocraft` (Photoshop), `../pdfcraft` (Acrobat), `../gridcraft` (Excel), `../designcraft` (InDesign) and the rest. Shared rules and learnings: [`storytold/craftrules`](https://github.com/storytold/craftrules) — read its `AGENTS.md`.
 
 ## Start every session here
-1. Read `plan/STATUS.md` (current milestone, next task) if it exists. `plan/` is gitignored (local only); if it's missing, start from `ROADMAP.md`, `docs/gaps.md` and `docs/roadmap.md` (Current focus).
+1. Read `plan/STATUS.md` (current milestone, next task) if it exists. `plan/` is gitignored (local only); if it's missing, start from `ROADMAP.md` (the beta checklist and the steps to it) and `docs/gaps.md`.
 2. Don't stop to ask unless a decision is genuinely the owner's (licensing, publishing, pushing to new remotes, secrets, anything that touches a real mail account).
 
 ## Never crash
@@ -78,4 +78,4 @@ Before every commit: `cargo xtask ci` (fmt, clippy -D warnings, tests, assets, s
 ## Roadmap
 **Specs, plans, ADRs and the glossary are private**: they live in `plan/` (gitignored: `plan/spec-*.md`, `plan/plan-*.md`, `plan/adr/`, `plan/CONTEXT.md`) and are never committed, nor quoted in commit messages, PR bodies, issues or release notes beyond a task id. `ROADMAP.md` shows the overall direction; each contributor keeps their own specs privately for clean-room work. Public docs say what MailCraft does, not how the next step will be built.
 
-Progress docs: `ROADMAP.md` (stage, headline numbers, progress log), `docs/target-app-parity.md` (the assessment), `docs/gaps.md` (ranked work list), `docs/roadmap.md` (milestones, Current focus), `docs/architecture.md`, and the parity checklists `docs/parity-checklist.md` (generated), `docs/file-format-parity.md`, `docs/ui-parity.md`. When work lands, update the gap, the parity doc and the progress log, and bump each touched doc's status line and revision history.
+Progress docs: two roadmap documents, `ROADMAP.md` (the direction: stage, headline numbers and how they are estimated, the assessment by area, the beta checklist and the steps to beta, after beta, the browser build, progress log) and `docs/gaps.md` (the ranked list of shortfalls and rough edges); `docs/architecture.md`; and the parity checklists `docs/parity-checklist.md` (generated), `docs/ui-parity.md`, `docs/file-format-parity.md`, `docs/calendar-parity.md`. When work lands, update the gap, the parity checklist, the beta checklist's status when an item moves, and the progress log, and bump each touched doc's status line and revision history.
