@@ -18,6 +18,7 @@ version = 2
 db-urls = ["https://github.com/rustsec/advisory-db"]
 unmaintained = "all"
 yanked = "warn"
+# The same advisories are listed in osv-scanner.toml, for the OSV scanner and Scorecard.
 ignore = [
     # 2026-10-17: zvariant, zvariant_derive and zbus_names are merged into zbus 6 and no longer
     # kept up as crates of their own; nothing is known wrong with them.
