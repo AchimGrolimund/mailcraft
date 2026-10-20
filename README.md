@@ -1,3 +1,5 @@
+<div align="center">
+
 # MailCraft
 
 <img src="assets/app-icon/hicolor/128x128/apps/io.github.billsecond.mailcraft.png" width="96" alt="The MailCraft icon: a carrier pigeon with a sealed letter in its beak">
@@ -19,6 +21,8 @@ MailCraft is a clean-room reimplementation of the mail client people already kno
 > **Status: early alpha (0.5).** The foundations are in place and tested; a lot of what a daily driver needs is not there yet. See [ROADMAP.md](ROADMAP.md) and [docs/gaps.md](docs/gaps.md) for an honest list.
 
 MailCraft follows the architecture and conventions of [WordCraft](https://github.com/storytold/wordcraft) and the other Craft apps: the same layered crates, the same "everything is a command" engine, the same egui front end and design tokens, the same control channel, MCP server, tooling and packaging.
+
+</div>
 
 ## What works today
 
