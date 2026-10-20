@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A JMAP account (M6) is kept in step with its server, and sends nothing yet: a message written
 //! from it is neither queued, where it would wait in its Outbox for ever, nor filed as sent, and
 //! no Send/Receive is made of it until the engine has its commands, while the accounts beside it
