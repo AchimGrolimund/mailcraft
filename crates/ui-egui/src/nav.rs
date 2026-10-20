@@ -228,8 +228,9 @@ fn picked_in_list(ui: &Ui) -> bool {
 /// A folder's row, `selected` when it is the one the folder in view is highlighted in. `key` tells
 /// the Favorites' rows (`fav`) from the accounts' (`tree`).
 fn folder_row(app: &mut MailApp, ui: &mut Ui, f: &Folder, depth: usize, has_children: bool, key: &str, count: Count, selected: bool) {
-    // Under Favorites a shared mailbox's folder says whose it is (#70); in its tree, its name.
-    let name = if key == "fav" { folder_label(&app.session.mailbox, f) } else { folder_name(f).to_string() };
+    // Under Favorites a shared mailbox's folder says whose it is (#70), and so does one whose name
+    // another account's folder has too (two Inboxes); in its tree, its name.
+    let name = if key == "fav" { result_folder_label(&app.session.mailbox, f) } else { folder_name(f).to_string() };
     let t = Tokens::get(ui.ctx());
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
     let resp = ui.interact(r, ui.id().with((key, f.id)), Sense::click());
@@ -822,6 +823,38 @@ mod tests {
             harness.step();
         }
         harness.run_steps(2);
+    }
+
+    /// Two accounts' Inboxes among the Favorites say which account each is, as in a search of every
+    /// mailbox; under each account's own heading they stay plain Inbox.
+    #[test]
+    fn two_accounts_inboxes_among_the_favorites_are_told_apart() {
+        let mut app = MailApp::new(Session::at(mailcraft_engine::sample::mailbox(NOW, 0), NOW, 0), Services::default());
+        app.autosave = false;
+        let mb = &mut app.session.mailbox;
+        let first = mb.inbox().unwrap();
+        let work = mb.add_account(mailcraft_model::Account { name: "Work".into(), email: "me@work.example".into(), ..Default::default() });
+        let second = mb.folder_of_kind(work, FolderKind::Inbox).unwrap();
+        for id in [first, second] {
+            app.execute("folder.favorite", serde_json::json!({"id": id, "value": true})).unwrap();
+        }
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| folder_pane(&mut app, ui));
+        out.textures_delta.clear();
+        let texts: Vec<String> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t == "Inbox - Work"), "{texts:?}");
+        let mine = app.session.mailbox.accounts.first().unwrap();
+        let mine = if mine.name.trim().is_empty() { mine.email.trim() } else { mine.name.trim() };
+        assert!(texts.iter().any(|t| *t == format!("Inbox - {mine}")), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "Inbox"), "each account's own tree keeps the plain name: {texts:?}");
     }
 
     /// The pane lists the folders in order down the screen, one row each, further in at each level.
