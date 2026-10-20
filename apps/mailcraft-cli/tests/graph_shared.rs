@@ -213,12 +213,6 @@ fn changes_in_a_shared_mailbox_go_up_to_it_alone_delete_goes_to_its_own_deleted_
     assert_eq!(server.state().other(SHARED).unwrap().mailbox.messages.get(&ids[2]).map(|x| x.folder.clone()), Some(their_inbox_id.clone()));
     assert_eq!(owners_messages(&server), before, "the owner's messages are still as they were");
 
-    // Between the owner's mailbox and the shared one: refused, and nothing changes anywhere.
-    let my_inbox = s.mailbox.folder_of_kind(owner, FolderKind::Inbox).unwrap();
-    let e = s.run("mail.move", &json!({"ids": [a], "folder": my_inbox})).unwrap_err().to_string();
-    assert!(e.contains("only within one mailbox"), "{e}");
-    assert_eq!(s.mailbox.message(a).map(|m| m.account), Some(shared));
-
     // Access taken away: a change waits, counted, and the run says so for Send/Receive Progress.
     s.run("mail.markUnread", &json!({"ids": [a]})).unwrap();
     server.state().other(SHARED).unwrap().mailbox.faults.insert(ids[0].clone(), mailcraft_net::graph::standin::Fault::Denied);

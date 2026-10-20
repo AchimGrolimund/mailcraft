@@ -319,6 +319,72 @@ impl State {
         }))
     }
 
+    /// `POST /me/mailFolders/{id}/messages`: a message made in that folder from JSON (#70). A
+    /// draft unless `PidTagMessageFlags` written with it say it isn't unsent; what a message that
+    /// was received has besides a draft's parts (its sender, read state, flag, when it was
+    /// received, its `Message-ID`) as written.
+    pub(super) fn create_in_folder(&mut self, asked: &Asked, named: &str) -> Result<Answer, Refusal> {
+        let folder = self.mail_folder(named)?.id.clone();
+        let look = State::look_of(asked, false)?;
+        let mut body = asked.json();
+        let map = body.as_object_mut().ok_or_else(|| bad("A message is a JSON object."))?;
+        let address = |value: Option<Value>, name: &str| -> Result<Option<String>, Refusal> {
+            match value {
+                None => Ok(None),
+                Some(value) => value
+                    .pointer("/emailAddress/address")
+                    .and_then(Value::as_str)
+                    .map(|a| Some(a.to_string()))
+                    .ok_or_else(|| bad(format!("'{name}' is a recipient."))),
+            }
+        };
+        let from = address(map.remove("from"), "from")?;
+        address(map.remove("sender"), "sender")?;
+        let reply_to = map.remove("replyTo");
+        if reply_to.is_some() {
+            recipients(reply_to.as_ref().unwrap_or(&Value::Null), "replyTo")?;
+        }
+        let read = match map.remove("isRead") {
+            None => None,
+            Some(value) => Some(value.as_bool().ok_or_else(|| bad("'isRead' is true or false."))?),
+        };
+        let flag = match map.remove("flag") {
+            None => None,
+            Some(value) => match value.get("flagStatus").and_then(Value::as_str) {
+                Some(status @ ("notFlagged" | "flagged" | "complete")) => Some(status.to_string()),
+                _ => return Err(bad("'flagStatus' is notFlagged, flagged or complete.")),
+            },
+        };
+        let mut m = self.message_of_json(&body)?;
+        m.folder = folder;
+        let property = |m: &Message, id: &str| m.extended.iter().find(|(have, _)| have.eq_ignore_ascii_case(id)).map(|(_, v)| v.clone());
+        if !self.drafts_only
+            && let Some(flags) = property(&m, "Integer 0x0E07")
+        {
+            let flags: i64 = flags.trim().parse().map_err(|_| bad("PidTagMessageFlags is a number."))?;
+            m.draft = flags & 0x8 != 0;
+            m.read = flags & 0x1 != 0;
+        }
+        if let Some(read) = read {
+            m.read = read;
+        }
+        if let Some(from) = from {
+            m.from = from;
+        }
+        if let Some(flag) = flag {
+            m.flag = flag;
+        }
+        if let Some(received) = property(&m, "SystemTime 0x0E06") {
+            let wall = super::wall_of(received.trim_end_matches('Z')).ok_or_else(|| bad("A SystemTime is a date and a time."))?;
+            m.received = super::instant_in(wall, "UTC").ok_or_else(|| bad("A SystemTime is a date and a time."))?;
+        }
+        if let Some(id) = property(&m, "String 0x1035") {
+            m.internet_id = id;
+        }
+        let id = self.mailbox.put(m);
+        Ok((201, Some(self.message_json(&id, &look))))
+    }
+
     /// A new draft made of its MIME, not yet the stand-in's.
     pub(super) fn message_of_mime(&mut self, text: &str) -> Result<Message, Refusal> {
         let wrong = || refuse(400, "ErrorMimeContentInvalidBase64String", "The MIME content is not valid base64.");

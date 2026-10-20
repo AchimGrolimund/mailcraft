@@ -328,13 +328,13 @@ fn fields(d: &DraftUp) -> Map<String, Value> {
 }
 
 /// An attachment the server has on a draft.
-struct There {
+pub(super) struct There {
     id: String,
     name: String,
 }
 
 /// The attachments the server has on the draft `id`.
-fn listed(graph: &Graph<'_>, id: &str) -> Result<Vec<There>, NetError> {
+pub(super) fn listed(graph: &Graph<'_>, id: &str) -> Result<Vec<There>, NetError> {
     let query = http::form(&[("$select", "id,name"), ("$top", "100")]);
     let mut out = Vec::new();
     graph.list(Doing::Mail, graph.url(&format!("{}/{id}/attachments?{query}", messages(graph))), &[], MAX_LISTED, &mut |value| {
@@ -347,7 +347,12 @@ fn listed(graph: &Graph<'_>, id: &str) -> Result<Vec<There>, NetError> {
 
 /// Bring the draft's attachments in step with `here`. The list the server has when every one of
 /// `here` is there; `None` when some couldn't be put there (they wait for the next run).
-fn attachments(graph: &Graph<'_>, id: &str, here: &[AttachmentUp], synced: &[SyncedAttachment]) -> Result<Option<Vec<SyncedAttachment>>, NetError> {
+pub(super) fn attachments(
+    graph: &Graph<'_>,
+    id: &str,
+    here: &[AttachmentUp],
+    synced: &[SyncedAttachment],
+) -> Result<Option<Vec<SyncedAttachment>>, NetError> {
     let there = listed(graph, id)?;
     let mut have: Vec<Option<SyncedAttachment>> = vec![None; here.len()];
     let mut extra = Vec::new();

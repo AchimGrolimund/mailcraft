@@ -1151,8 +1151,8 @@ fn a_refused_drag_says_why_in_a_message_box_and_the_control_channel_never_does()
     let Some(crate::dialogs::Dialog::Refused { text }) = &harness.state().dialog else {
         panic!("a message box: {:?}", harness.state().dialog.as_ref().map(|d| d.name()))
     };
-    assert!(text.contains("only within one mailbox"), "{text}");
-    assert!(harness.state().status_msg.as_ref().is_some_and(|(said, _)| said.contains("only within one mailbox")));
+    assert!(text.contains("isn't downloaded yet"), "{text}");
+    assert!(harness.state().status_msg.as_ref().is_some_and(|(said, _)| said.contains("isn't downloaded yet")));
     // OK closes it.
     let ok = harness.state().hit.rect("refusedOk", 0).expect("OK");
     harness.event(egui::Event::PointerMoved(ok.center()));
@@ -1171,7 +1171,7 @@ fn a_refused_drag_says_why_in_a_message_box_and_the_control_channel_never_does()
     harness.run_steps(3);
     let reply = reply.try_recv().unwrap();
     assert_eq!(reply["ok"], false);
-    assert!(reply["error"].as_str().is_some_and(|e| e.contains("only within one mailbox")), "{reply}");
+    assert!(reply["error"].as_str().is_some_and(|e| e.contains("isn't downloaded yet")), "{reply}");
     assert!(harness.state().dialog.is_none() && harness.state().refused.is_none());
     // Nor does a command the window runs by itself, outside of anything the owner did.
     let _ = harness.state_mut().run("mail.move", json!({"ids": [row.id], "folder": mine}));
