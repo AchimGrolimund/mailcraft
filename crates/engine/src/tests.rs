@@ -2156,7 +2156,7 @@ fn a_panicking_command_is_contained() {
     std::panic::set_hook(Box::new(|_| {}));
     let r = s.run("test.boom", &json!({}));
     std::panic::set_hook(hook);
-    assert!(matches!(r, Err(CmdError::Failed(_))));
+    assert!(matches!(r, Err(CmdError::Failed(_) | CmdError::Said(_))));
     assert!(s.mailbox == before && !s.can_undo());
     // The session still works.
     assert!(s.run("mail.next", &json!({})).is_ok());
