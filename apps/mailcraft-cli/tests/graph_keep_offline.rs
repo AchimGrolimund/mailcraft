@@ -191,7 +191,6 @@ fn mail_outside_a_shortened_window_goes_back_to_its_headers_and_its_files_leave_
 #[test]
 fn a_shared_mailbox_fetches_as_far_back_as_its_owner_keeps() {
     let (mut rig, _) = Rig::new("1w", &[]);
-    rig.s.shared_mailboxes = true;
     let shared =
         rig.s.run("account.addSharedMailbox", &json!({"account": rig.account, "address": "support@example.org"})).unwrap()["id"].as_u64().unwrap();
     let inbox = rig.s.mailbox.folder_of_kind(shared, mailcraft_model::FolderKind::Inbox).unwrap();

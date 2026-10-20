@@ -85,7 +85,6 @@ fn a_shared_mailbox_is_searched_counted_and_a_favourite_here_and_nothing_of_it_r
     assert_ne!(mine, theirs);
 
     let mut s = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
-    s.shared_mailboxes = true;
     let owner = s.run("account.add", &json!({"email": OWNER, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     let shared = s.run("account.addSharedMailbox", &json!({"account": owner, "address": SHARED})).unwrap()["id"].as_u64().unwrap();
     run(&server, &mut s, owner);
@@ -160,7 +159,6 @@ fn changes_in_a_shared_mailbox_go_up_to_it_alone_delete_goes_to_its_own_deleted_
     let their_deleted_id = server.state().other(SHARED).unwrap().folders.iter().find(|f| f.well_known == "deleteditems").unwrap().id.clone();
 
     let mut s = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
-    s.shared_mailboxes = true;
     let owner = s.run("account.add", &json!({"email": OWNER, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     let shared = s.run("account.addSharedMailbox", &json!({"account": owner, "address": SHARED})).unwrap()["id"].as_u64().unwrap();
     run(&server, &mut s, owner);
@@ -248,7 +246,6 @@ fn theirs_in(server: &StandIn, well_known: &str) -> Vec<String> {
 /// A session with the owner and the shared mailbox, both read once, against `server`.
 fn owner_and_shared(server: &StandIn) -> (Session, Id, Id) {
     let mut s = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
-    s.shared_mailboxes = true;
     let owner = s.run("account.add", &json!({"email": OWNER, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     let shared = s.run("account.addSharedMailbox", &json!({"account": owner, "address": SHARED})).unwrap()["id"].as_u64().unwrap();
     run(server, &mut s, owner);
@@ -391,7 +388,6 @@ fn what_changed_in_a_shared_mailbox_on_the_server_after_a_whole_run_comes_down_w
         (inbox, ids)
     };
     let mut s = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
-    s.shared_mailboxes = true;
     let owner = s.run("account.add", &json!({"email": OWNER, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     let shared = s.run("account.addSharedMailbox", &json!({"account": owner, "address": SHARED})).unwrap()["id"].as_u64().unwrap();
     run(&server, &mut s, owner);

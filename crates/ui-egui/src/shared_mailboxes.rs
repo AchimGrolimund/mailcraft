@@ -21,8 +21,7 @@
 //!
 //! Add Shared Mailbox checks the address at once (S1): the mailbox is added, its Inbox read by
 //! its first run, and it is kept only when that worked; otherwise it is removed again and the
-//! dialog says why. Only while shared mailboxes are being tested
-//! ([`mailcraft_engine::Session::shared_mailboxes`]).
+//! dialog says why.
 
 use mailcraft_model::sync::SharedRefusal;
 use mailcraft_model::{Account, AccountKind, Directory, FolderKind, Id};
@@ -59,9 +58,6 @@ impl MailApp {
             .owner_of(account)
             .cloned()
             .ok_or_else(|| tl!("This shared mailbox's account is gone: remove the shared mailbox and add it again").to_string())?;
-        if !self.session.shared_mailboxes {
-            return Err(tl!(mailcraft_engine::cmd::shared::SWITCHED_OFF).to_string());
-        }
         if quiet && self.shared_refused.contains_key(&account) {
             return Err(tl!("Microsoft won't open this shared mailbox for you: Send/Receive tries again").to_string());
         }
@@ -318,9 +314,6 @@ impl MailApp {
     /// `ui.allowSharedSend`: Microsoft's page, for sending from shared mailboxes too, because the
     /// owner is sending from `shared` and said go ahead.
     pub(crate) fn begin_shared_send_sign_in(&mut self, shared: Id) -> Result<Value, String> {
-        if !self.session.shared_mailboxes {
-            return Err(tl!(mailcraft_engine::cmd::shared::SWITCHED_OFF).to_string());
-        }
         if !self.session.mailbox.account(shared).is_some_and(Account::is_shared) {
             return Err(tl!("That isn't a shared mailbox").to_string());
         }

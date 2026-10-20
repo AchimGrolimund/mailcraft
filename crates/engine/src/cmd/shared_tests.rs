@@ -20,7 +20,6 @@ const SHARED: &str = "support@example.org";
 /// A session with a Microsoft account kept in step through Graph, and a local one; their ids.
 fn session() -> (Session, Id, Id) {
     let mut s = Session::empty();
-    s.shared_mailboxes = true;
     let local = s.run("account.add", &json!({"email": "ada@example.org"})).unwrap()["id"].as_u64().unwrap();
     let owner = s.run("account.add", &json!({"email": OWNER, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     (s, local, owner)
@@ -84,7 +83,6 @@ fn a_shared_mailbox_is_added_under_a_microsoft_account_and_removed_again() {
 #[test]
 fn the_last_account_is_not_removed_with_its_shared_mailboxes() {
     let mut s = Session::empty();
-    s.shared_mailboxes = true;
     let owner = s.run("account.add", &json!({"email": OWNER, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     let shared = add(&mut s, json!({"address": SHARED})).unwrap();
     assert!(s.run("account.remove", &json!({"id": owner})).unwrap_err().to_string().contains("last account"));
@@ -459,13 +457,13 @@ fn moved_out_of_a_shared_mailbox_its_copy_there_goes_once_it_is_safe_here() {
 }
 
 #[test]
-fn shared_mailboxes_are_off_until_they_are_switched_on_for_testing() {
+fn shared_mailboxes_need_no_switch_and_are_read_at_their_own_address() {
     let (mut s, _, _) = session();
     let shared = add(&mut s, json!({"address": SHARED})).unwrap();
-    s.shared_mailboxes = false;
-    assert!(add(&mut s, json!({"address": "sales@example.org"})).unwrap_err().contains("MAILCRAFT_SHARED_MAILBOXES"));
-    assert!(graph_mail_request(&s, shared).is_err() && graph_fetch_request(&s, shared, None, 10).is_err());
-    // What was opened while they were on can still be closed.
+    assert!(add(&mut s, json!({"address": "sales@example.org"})).is_ok());
+    let asked = graph_mail_request(&s, shared).unwrap();
+    assert!(asked.shared && asked.email == SHARED);
+    assert!(graph_fetch_request(&s, shared, None, 10).is_ok());
     s.run("account.removeSharedMailbox", &json!({"id": shared})).unwrap();
 }
 
@@ -658,7 +656,6 @@ fn a_shared_mailboxs_favourite_and_its_link_to_its_owner_survive_a_save_and_a_re
     let path = dir.join("shared.mailcraft");
     crate::store::save(&path, &s.mailbox).unwrap();
     let mut opened = Session::at(crate::store::open(&path).unwrap().mailbox, 0, 0);
-    opened.shared_mailboxes = true;
     assert_eq!(opened.mailbox.owner_of(shared).map(|o| o.id), Some(owner));
     assert!(crate::cmd::folder::favorites(&opened).contains(&theirs));
     assert_eq!(found(&mut opened, "quarterly", "everywhere").len(), 4);
@@ -693,4 +690,25 @@ fn a_shared_mailbox_is_named_as_its_own_sent_items_name_it_or_as_the_owner_gave_
     let (mut s, _, owner) = session();
     let other = add(&mut s, json!({"account": owner, "address": SHARED, "displayName": "Support\nTeam"})).unwrap();
     assert_eq!(s.mailbox.account(other).map(|a| a.display_name.clone()), Some("Support Team".to_string()));
+}
+
+#[test]
+fn a_reply_in_a_shared_mailbox_starts_with_its_own_reply_signature_and_the_owners_with_his() {
+    let (mut s, owner, shared) = both();
+    s.run("signature.set", &json!({"name": "Mine", "text": "Lena"})).unwrap();
+    s.run("signature.set", &json!({"name": "Desk", "text": "The front desk"})).unwrap();
+    s.run("signature.defaults", &json!({"account": owner, "new": "Mine", "reply": "Mine"})).unwrap();
+    s.run("signature.defaults", &json!({"account": shared, "reply": "Desk"})).unwrap();
+    let one = theirs(&s, shared)[0];
+    s.run("mail.select", &json!({"id": one})).unwrap();
+    s.run("mail.reply", &json!({})).unwrap();
+    let body = s.compose.as_ref().unwrap().body.plain();
+    assert!(body.contains("The front desk") && !body.contains("Lena"), "{body:?}");
+    assert_eq!(s.compose.as_ref().map(|c| c.account), Some(shared));
+    s.run("compose.discard", &json!({})).unwrap();
+    let mine = s.mailbox.messages.values().find(|m| m.account == owner).map(|m| m.id).unwrap();
+    s.run("mail.select", &json!({"id": mine})).unwrap();
+    s.run("mail.reply", &json!({})).unwrap();
+    let body = s.compose.as_ref().unwrap().body.plain();
+    assert!(body.contains("Lena") && !body.contains("The front desk"), "{body:?}");
 }

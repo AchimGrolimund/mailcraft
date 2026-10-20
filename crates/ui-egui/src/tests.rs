@@ -1097,7 +1097,6 @@ fn shared_and_own() -> (MailApp, mailcraft_model::Id, mailcraft_model::Id) {
     use mailcraft_model::sync::{FolderListing, GraphFolder, GraphMailResult, GraphMessage, MessagePage, ServerMessage};
 
     let mut s = Session::empty();
-    s.shared_mailboxes = true;
     let owner = s.run("account.add", &json!({"email": "owner@example.org", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     let shared = s.run("account.addSharedMailbox", &json!({"address": "support@example.org"})).unwrap()["id"].as_u64().unwrap();
     for (account, email) in [(owner, "owner@example.org"), (shared, "support@example.org")] {

@@ -93,9 +93,6 @@ pub fn graph_mail_request(s: &Session, account: Id) -> Result<GraphMailRequest, 
 fn shared_mailbox(s: &Session, account: Id) -> Result<bool, CmdError> {
     let mb = &s.mailbox;
     let Some(a) = mb.account(account).filter(|a| a.is_shared()) else { return Ok(false) };
-    if !s.shared_mailboxes {
-        return Err(fail(super::shared::SWITCHED_OFF));
-    }
     if mb.owner_of(account).is_none() {
         return Err(fail(format!("{} is a shared mailbox whose account is gone: remove it and add it again", a.name)));
     }

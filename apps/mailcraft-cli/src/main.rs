@@ -63,7 +63,6 @@ fn open(path: &str) -> Result<Session, String> {
     }
     let mut s = Session::new(opened.mailbox);
     s.path = Some(path.into());
-    s.shared_mailboxes = shared_mailboxes_switch();
     Ok(s)
 }
 
@@ -74,20 +73,12 @@ fn open_or_new(path: &str) -> Result<Session, String> {
     }
     let mut s = Session::new(Mailbox::with_local_account("", ""));
     s.path = Some(path.into());
-    s.shared_mailboxes = shared_mailboxes_switch();
     Ok(s)
 }
 
 fn sample() -> Session {
     let now = mailcraft_time::now();
-    let mut s = Session::new(mailcraft_engine::sample::mailbox(now, mailcraft_time::local_offset_minutes(now)));
-    s.shared_mailboxes = shared_mailboxes_switch();
-    s
-}
-
-/// Shared mailboxes may be added and read (#70): `MAILCRAFT_SHARED_MAILBOXES=1`, for testing.
-fn shared_mailboxes_switch() -> bool {
-    std::env::var("MAILCRAFT_SHARED_MAILBOXES").is_ok_and(|value| value.trim() == "1")
+    Session::new(mailcraft_engine::sample::mailbox(now, mailcraft_time::local_offset_minutes(now)))
 }
 
 /// Every `--allow` value, split at commas: what the owner lets an agent do without asking.

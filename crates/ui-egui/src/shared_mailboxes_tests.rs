@@ -42,8 +42,7 @@ fn tokens(access: &str, refresh: &str) -> Tokens {
 /// A window with a Microsoft account signed in this session, and hosts that note what they are
 /// asked and answer what `answers` holds, in turn.
 fn window() -> (MailApp, Id, Answers, Jobs, SignIns) {
-    let mut session = Session::empty();
-    session.shared_mailboxes = true;
+    let session = Session::empty();
     let mut app = MailApp::new(session, Services::default());
     app.autosave = false;
     let owner = app.execute("account.add", json!({"email": OWNER, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
@@ -333,9 +332,6 @@ fn shared_mailboxes_are_offered_only_where_they_can_be_and_only_while_switched_o
     if let Ok(a) = app.session.mailbox.account_mut(owner) {
         a.oauth = Some(mailcraft_model::OAuth { directory: mailcraft_model::Directory::Organisation, ..Default::default() });
     }
-    app.session.shared_mailboxes = false;
-    assert!(app.execute("ui.dialog", json!({"name": "sharedMailbox", "account": owner})).is_err() || app.dialog.is_none());
-    app.session.shared_mailboxes = true;
     app.execute("ui.dialog", json!({"name": "sharedMailbox", "account": owner})).unwrap();
     assert!(app.dialog.is_some());
 }

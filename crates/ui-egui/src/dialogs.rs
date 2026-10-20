@@ -183,11 +183,7 @@ impl Dialog {
             }
             "goToDate" => Dialog::GoToDate { text: app.session.view.date.iso(), error: String::new() },
             "sharedMailbox" => {
-                // Under the account named, else the first that can open one; only while shared
-                // mailboxes are being tested.
-                if !app.session.shared_mailboxes {
-                    return None;
-                }
+                // Under the account named, else the first that can open one.
                 let can = |a: &&mailcraft_model::Account| crate::shared_mailboxes::can_open_shared(a);
                 let mailbox = &app.session.mailbox;
                 let account = match id("account") {

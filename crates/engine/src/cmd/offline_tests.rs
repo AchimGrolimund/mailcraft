@@ -11,7 +11,6 @@ use crate::Session;
 /// A session with a local account and a Microsoft account; their ids.
 fn session() -> (Session, Id, Id) {
     let mut s = Session::empty();
-    s.shared_mailboxes = true;
     let local = s.run("account.add", &json!({"email": "ada@example.org"})).unwrap()["id"].as_u64().unwrap();
     let owner = s.run("account.add", &json!({"email": "owner@example.org", "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     (s, local, owner)

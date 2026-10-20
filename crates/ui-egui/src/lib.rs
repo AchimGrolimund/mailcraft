@@ -1981,9 +1981,7 @@ impl MailApp {
     }
 
     fn server_accounts(&self) -> Vec<Id> {
-        // (A shared mailbox only while they are being tested, #70.)
-        let on = self.session.shared_mailboxes;
-        self.session.mailbox.accounts.iter().filter(|a| a.kind.has_server() && (on || !a.is_shared())).map(|a| a.id).collect()
+        self.session.mailbox.accounts.iter().filter(|a| a.kind.has_server()).map(|a| a.id).collect()
     }
 
     /// How much of `account` waits to go to its server: mail in the Outbox, and changes made here

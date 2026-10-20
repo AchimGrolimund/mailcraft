@@ -106,7 +106,6 @@ fn set_up() -> (StandIn, Session, Id, Id, Vec<String>) {
     };
     assert_eq!(own, theirs_ids, "the same ids in both mailboxes");
     let mut s = Session::at(Mailbox::with_local_account("", ""), NOW, 0);
-    s.shared_mailboxes = true;
     let owner = s.run("account.add", &json!({"email": owner_address, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     let shared = s.run("account.addSharedMailbox", &json!({"account": owner, "address": shared_address})).unwrap()["id"].as_u64().unwrap();
     run(&server, &mut s, owner);
@@ -284,7 +283,6 @@ fn a_run_cut_off_after_the_copy_finds_it_by_its_marker_and_never_makes_it_twice(
     // that is left.
     let saved = serde_json::to_value(&s.mailbox).unwrap();
     let mut s = Session::at(serde_json::from_value::<Mailbox>(saved).unwrap(), NOW, 0);
-    s.shared_mailboxes = true;
     run(&server, &mut s, shared);
     assert_eq!(in_folder(&server, true, &their_inbox).iter().filter(|m| m.3).count(), 1, "found by its marker, not made twice");
     run(&server, &mut s, owner);
