@@ -1,6 +1,7 @@
 //! A JMAP account (M6) is kept in step with its server, and sends nothing yet: a message written
-//! from it is neither queued, where it would wait in its Outbox for ever, nor filed as sent, while
-//! the accounts beside it go on as before. (Its invitations: `calendar/invitation.rs`.)
+//! from it is neither queued, where it would wait in its Outbox for ever, nor filed as sent, and
+//! no Send/Receive is made of it until the engine has its commands, while the accounts beside it
+//! go on as before. (Its invitations: `calendar/invitation.rs`.)
 
 use mailcraft_model::{Account, AccountKind, FolderKind, Id, JmapServer, Mailbox};
 use serde_json::json;
@@ -49,4 +50,18 @@ fn an_account_that_sends_its_mail_still_queues_it() {
     s.run("mail.new", &json!({"account": imap, "to": "bo@example.org", "subject": "Plans"})).unwrap();
     let sent = s.run("compose.send", &json!({})).unwrap();
     assert_eq!((sent["queued"].as_bool(), count(&s, imap, FolderKind::Outbox), count(&s, imap, FolderKind::Sent)), (Some(true), 1, 0));
+}
+
+#[test]
+fn no_send_receive_is_made_of_a_jmap_account_yet() {
+    let (mut s, _, jmap, imap) = mailbox();
+    // With none named, the IMAP account's, though the JMAP account comes before it.
+    assert_eq!(s.run("sync.request", &json!({})).unwrap()["account"]["id"].as_u64(), Some(imap));
+    // Named, it is refused with its reason: no IMAP request is made of settings it doesn't have.
+    let why = s.run("sync.request", &json!({"account": jmap})).unwrap_err().to_string();
+    assert_eq!(why, "ada@jmap.example is a JMAP account, and this version doesn't send and receive with one yet");
+    assert!(crate::cmd::account::sync_request(&s, jmap).is_err());
+    // As the only account with a server, it is refused for the same reason.
+    s.run("account.remove", &json!({"id": imap})).unwrap();
+    assert_eq!(s.run("sync.request", &json!({})).unwrap_err().to_string(), why);
 }
