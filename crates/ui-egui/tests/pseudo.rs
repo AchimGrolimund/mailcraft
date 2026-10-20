@@ -34,8 +34,7 @@ const ALLOWED: &[&str] = &[
     "SMTP",
     // A language is named in its own language; the pseudo one has no other name.
     "Pseudo",
-    // The engine's own text: the sample's folder names and what commands say (slice 4); whole
-    // sentences built from parts, and folders' names (slice 5).
+    // Folders' names (slice 5).
     "Inbox",
     "Drafts",
     "Sent",
@@ -50,10 +49,6 @@ const ALLOWED: &[&str] = &[
     "Calendar",
     "Contacts",
     "Tasks",
-    // Units.
-    "KB",
-    "MB",
-    "GB",
 ];
 
 /// Every word of the sample mailbox (names, addresses, subjects, bodies): data, not interface.

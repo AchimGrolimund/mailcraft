@@ -2417,6 +2417,7 @@ name = "mailcraft-model"
 version = "0.5.2"
 dependencies = [
  "base64",
+ "mailcraft-i18n",
  "mailcraft-time",
  "proptest",
  "serde",

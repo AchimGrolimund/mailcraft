@@ -13,9 +13,14 @@ msgstr ""
 msgid " (not encrypted)"
 msgstr ""
 
-#. interface
-#: crates/ui-egui/src/account_setup.rs
+#. interface, what a command says
+#: crates/engine/src/cmd/calendar.rs crates/ui-egui/src/account_setup.rs
 msgid "\"{address}\" isn't an e-mail address"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "\"{address}\" on the {what} line isn't an e-mail address"
 msgstr ""
 
 #. interface
@@ -33,6 +38,16 @@ msgstr ""
 msgid "\"{name}\" will be deleted for good."
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "\"{shown}\" isn't an e-mail address"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_send.rs
+msgid "'{subject}' may have been sent: look in Sent Items. It is held in the Outbox."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/calendar_view.rs
 msgid "(No title)"
@@ -48,8 +63,8 @@ msgstr ""
 msgid "(no recipients)"
 msgstr ""
 
-#. interface
-#: crates/ui-egui/src/alerts.rs crates/ui-egui/src/mail_view.rs crates/ui-egui/src/mail_view/server_rows.rs crates/ui-egui/src/people_view.rs crates/ui-egui/src/reading.rs crates/ui-egui/src/tasks_view.rs crates/ui-egui/src/windows.rs
+#. interface, what a command says
+#: crates/engine/src/cmd/graph_drafts.rs crates/engine/src/cmd/graph_send.rs crates/ui-egui/src/alerts.rs crates/ui-egui/src/mail_view.rs crates/ui-egui/src/mail_view/server_rows.rs crates/ui-egui/src/people_view.rs crates/ui-egui/src/reading.rs crates/ui-egui/src/tasks_view.rs crates/ui-egui/src/windows.rs
 msgid "(no subject)"
 msgstr ""
 
@@ -81,6 +96,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/sync_panel.rs
 msgid ", {n} sent"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "-----Original Message-----"
 msgstr ""
 
 #. interface
@@ -183,6 +203,21 @@ msgstr ""
 msgid "A mailbox kept here, with no mail server"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "A meeting can't be moved to another calendar: the account's server has no way of moving one, and making it again there would send everyone invited a cancellation and a new invitation."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "A meeting is forwarded to {n} people at most at once."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs
+msgid "A meeting that repeats and skips some days can't be put on the server's calendar from here: everyone invited would get a cancellation for each skipped day. Keep it in a calendar on this computer, or make it again without the skipped days."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/updates.rs
 msgid "A new version is downloaded in the background, kept only when MailCraft's own release signature says it is ours, and installed when you restart to update or quit."
@@ -216,6 +251,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/forms.rs
 msgid "A rule needs a name, and something to look for."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "A series that the account's server keeps can't be moved to another calendar from here: the server has no way of moving one, and days of it that were changed on their own could be lost in making it again."
 msgstr ""
 
 #. interface
@@ -261,6 +301,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/reading/invitation.rs
 msgid "Accepted on {when}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "Accepted: {title}"
 msgstr ""
 
 #. interface
@@ -528,9 +573,19 @@ msgstr ""
 msgid "An item that repeats can't be taken to another calendar this way. Hold Ctrl to copy this occurrence there, or use Move to Calendar in its menu for the whole series."
 msgstr ""
 
-#. interface
-#: crates/ui-egui/src/meeting_dialogs.rs
+#. interface, what a command says
+#: crates/engine/src/cmd/calendar.rs crates/ui-egui/src/meeting_dialogs.rs
 msgid "Another time can be proposed for a meeting that the account's server keeps, or from the invitation in the mail."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "Another time is proposed with a tentative answer or with a decline."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "Another time proposed: {title}"
 msgstr ""
 
 #. interface
@@ -933,6 +988,11 @@ msgstr ""
 msgid "Categorize"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "Cc:"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/dialogs.rs
 msgid "Change Recurring Item"
@@ -1041,6 +1101,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/calendar_sync.rs
 msgid "Checking the calendar connection…"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/sync/progress.rs
+msgid "Checking {folder} ({done} of {total})"
 msgstr ""
 
 #. interface
@@ -1258,6 +1323,11 @@ msgstr ""
 msgid "Connect to show your category colours and working hours"
 msgstr ""
 
+#. what a command says
+#: crates/model/src/sync/progress.rs
+msgid "Connecting to the mail server"
+msgstr ""
+
 #. interface, ribbon location
 #: crates/engine/src/cmd/people.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/people_view.rs crates/ui-egui/src/ribbon.rs
 msgid "Contact"
@@ -1358,9 +1428,19 @@ msgstr ""
 msgid "Couldn't find out whether a new version is out: {why}."
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/graph_drafts.rs
+msgid "Couldn't save the draft '{subject}' on the server: the server says {why}."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/lib.rs
 msgid "Couldn't save the mailbox: {error}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_send.rs
+msgid "Couldn't send '{subject}': {why}. It is held in the Outbox."
 msgstr ""
 
 #. interface
@@ -1451,6 +1531,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/reading/invitation.rs
 msgid "Declined on {when}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "Declined: {title}"
 msgstr ""
 
 #. command label
@@ -2088,6 +2173,11 @@ msgstr ""
 msgid "Folders"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/graph_mail.rs
+msgid "Folders up to date"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/ribbon.rs
 msgid "Folder…"
@@ -2165,6 +2255,13 @@ msgstr[1] ""
 msgid "Forward…"
 msgstr ""
 
+#. what a command says
+#: crates/model/src/sync/progress.rs
+msgid "Found {n} folder"
+msgid_plural "Found {n} folders"
+msgstr[0] ""
+msgstr[1] ""
+
 #. name
 #: crates/model/src/calendar.rs
 msgid "Free"
@@ -2198,6 +2295,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/tasks_view.rs
 msgid "From {name}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "From:"
 msgstr ""
 
 #. interface
@@ -2358,6 +2460,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/account_setup.rs crates/ui-egui/src/keep_offline.rs
 msgid "How far back mail is kept in full on this computer. Older mail keeps its headers and a preview, and downloads when you open it. It stays on the server."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs
+msgid "How it repeats is for its organizer to say."
 msgstr ""
 
 #. command label
@@ -2685,6 +2792,11 @@ msgstr ""
 msgid "Keep waiting, and the switch goes ahead by itself once MailCraft can reach the server. Or switch without them, if the server can't be reached any more (for example, your organisation has turned IMAP off):"
 msgstr ""
 
+#. what a command says
+#: crates/model/src/sync/progress.rs
+msgid "Keeping a copy of what was sent"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/backstage.rs
 msgid "Kept in the system's credential store, never in the mailbox or its settings. Without it you sign in again each time MailCraft starts."
@@ -2865,6 +2977,11 @@ msgstr ""
 msgid "Mail"
 msgstr ""
 
+#. what a command says
+#: crates/model/src/mailbox.rs
+msgid "Mail can't be moved or copied into a Microsoft account from another account or a local folder yet: this version can't put a message on Microsoft's server"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/shared_mailboxes.rs
 msgid "Mail from the shared mailbox waits"
@@ -2873,6 +2990,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/shared_mailboxes.rs
 msgid "Mail in this shared mailbox's Outbox waits: sending from shared mailboxes needs your permission. Use Send/Receive."
+msgstr ""
+
+#. what a command says
+#: crates/model/src/mailbox.rs
+msgid "Mail moves and copies between a shared mailbox and its own account's mailboxes only: move it there, or into a folder on this computer"
 msgstr ""
 
 #. interface
@@ -2928,6 +3050,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/updates.rs
 msgid "MailCraft doesn't look for new versions by itself; File › Options can have it look once a day."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs crates/engine/src/cmd/compose.rs
+msgid "MailCraft doesn't send mail from a JMAP account yet"
 msgstr ""
 
 #. interface
@@ -3135,6 +3262,11 @@ msgstr ""
 msgid "Microsoft application ID"
 msgstr ""
 
+#. what a command says
+#: crates/model/src/mailbox.rs
+msgid "Microsoft doesn't let a mail program put received mail into your mailbox; it stays in a local folder."
+msgstr ""
+
 #. name
 #: crates/model/src/sync.rs
 msgid "Microsoft has no mailbox at this address"
@@ -3223,6 +3355,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/mail_view/server_rows.rs
 msgid "More results on the server"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/search_server.rs
+msgid "More results on the server aren't offered: {why}"
 msgstr ""
 
 #. interface
@@ -3470,6 +3607,11 @@ msgstr ""
 msgid "No access"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "No account here has a mail server to send this through."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/lib.rs crates/ui-egui/src/sync_panel.rs
 msgid "No account is connected to a mail server (File › Add Account)"
@@ -3483,6 +3625,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/chrome.rs
 msgid "No account yet: File › Add Account"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs
+msgid "No account's server keeps a calendar here yet, so there is nowhere to move these to."
 msgstr ""
 
 #. interface
@@ -3828,6 +3975,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/account_setup.rs
 msgid "Once it has worked, your system's credential store keeps it for next time. It is never written to the mailbox."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "One occurrence of a series can't be in another calendar than the rest of the series."
 msgstr ""
 
 #. interface
@@ -4325,6 +4477,16 @@ msgstr ""
 msgid "Real name"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/graph_down.rs
+msgid "Receiving {name} · folder {number} of {folders}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_down.rs
+msgid "Receiving {name}: {read} of {total} · folder {number} of {folders}"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/backstage.rs
 msgid "Recent"
@@ -4553,6 +4715,11 @@ msgstr ""
 #. command label, interface
 #: crates/engine/src/cmd/calendar/meeting.rs crates/ui-egui/src/forms.rs
 msgid "Response Options"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "Response options are for a meeting: invite somebody first."
 msgstr ""
 
 #. command label
@@ -5040,6 +5207,13 @@ msgstr ""
 msgid "Sending your changes…"
 msgstr ""
 
+#. what a command says
+#: crates/model/src/sync/progress.rs
+msgid "Sending {n} message"
+msgid_plural "Sending {n} messages"
+msgstr[0] ""
+msgstr[1] ""
+
 #. interface
 #: crates/ui-egui/src/lib.rs
 msgid "Sending…"
@@ -5058,6 +5232,16 @@ msgstr ""
 #. name
 #: crates/ui-egui/src/forms.rs
 msgid "Sent to"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/sync/progress.rs
+msgid "Sent {done} of {total}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "Sent:"
 msgstr ""
 
 #. date and time
@@ -5435,6 +5619,11 @@ msgstr ""
 msgid "Somebody else"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "Somebody else organizes this meeting: it stays in the calendar its invitation came to."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/calendar_sync.rs
 msgid "Something did not go through, or did not arrive as it was sent. The steps below say what."
@@ -5515,9 +5704,19 @@ msgstr ""
 msgid "Stop this Send/Receive; what has arrived stays"
 msgstr ""
 
-#. interface
-#: crates/ui-egui/src/sync_panel.rs
+#. interface, what a command says
+#: crates/engine/src/cmd/account.rs crates/ui-egui/src/sync_panel.rs
 msgid "Stopped"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/account.rs
+msgid "Stopped ({line})"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_mail.rs
+msgid "Stopped; carries on from here next time"
 msgstr ""
 
 #. interface
@@ -5538,6 +5737,11 @@ msgstr ""
 #. name
 #: crates/ui-egui/src/forms.rs
 msgid "Subject contains"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "Subject:"
 msgstr ""
 
 #. command label
@@ -5635,6 +5839,11 @@ msgstr ""
 msgid "Tentative and Propose"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "Tentative: {title}"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/reading/invitation.rs
 msgid "Tentatively accepted on {when}"
@@ -5653,6 +5862,16 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/signatures.rs
 msgid "Thanks, Thursday at ten works for me. I'll bring the drawings."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs
+msgid "That calendar is kept by an account's server already."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar_settings.rs
+msgid "That calendar isn't shown: tick it in the list of calendars first."
 msgstr ""
 
 #. interface
@@ -5720,9 +5939,19 @@ msgstr ""
 msgid "The account's server has made this a Teams meeting, and it stays one"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "The account's server has made this a Teams meeting, and it stays one: that can't be taken back from here."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/forms.rs
 msgid "The account's server hasn't given it a link to join by yet."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "The account's server hasn't given this meeting a link to join by yet."
 msgstr ""
 
 #. interface
@@ -5733,6 +5962,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/approval.rs
 msgid "The approval didn't go through."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/remote.rs
+msgid "The calendar \"{name}\" can only be read: its owner hasn't let this account change it."
 msgstr ""
 
 #. interface
@@ -5785,6 +6019,11 @@ msgstr ""
 msgid "The categories couldn't be taken in"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/category.rs
+msgid "The colour is set in Outlook"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/lib.rs
 msgid "The contacts couldn't be taken in"
@@ -5813,6 +6052,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/backstage.rs
 msgid "The interface fonts are Inter, Source Sans 3 and JetBrains Mono (SIL Open Font License 1.1). Every icon is drawn in code and is original work. No artwork, fonts or text from other mail programs are included."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "The invitation doesn't say who to answer."
 msgstr ""
 
 #. interface
@@ -5900,8 +6144,8 @@ msgstr ""
 msgid "The organizer has changed this meeting."
 msgstr ""
 
-#. interface
-#: crates/ui-egui/src/meeting_dialogs.rs
+#. interface, what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs crates/ui-egui/src/meeting_dialogs.rs
 msgid "The organizer of this meeting doesn't take proposals of another time."
 msgstr ""
 
@@ -5980,6 +6224,11 @@ msgstr ""
 msgid "There is no earlier version to go back to."
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar_settings.rs
+msgid "There is no other calendar to lay it over."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/signatures.rs
 msgid "There is no picture on the clipboard."
@@ -6020,6 +6269,11 @@ msgstr ""
 msgid "This account doesn't sign in with Microsoft"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "This account has no mail server to send the answer through."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/lib.rs crates/ui-egui/src/shared_mailboxes.rs
 msgid "This account has no sign-in with Microsoft"
@@ -6028,6 +6282,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/account_setup.rs
 msgid "This account was added by a newer version of MailCraft. This version keeps it as it is and doesn't send or receive with it: use the newer version for that, and to change its settings."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/folder.rs
+msgid "This account's Favorites come from Outlook and are changed there (File › Options can show the ones kept in MailCraft instead)"
 msgstr ""
 
 #. interface
@@ -6145,6 +6404,11 @@ msgstr ""
 msgid "This device only"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "This event is kept by the server of {who}. It can be moved to another calendar of that account, not out of it: taking it out would delete it there."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/meeting_dialogs.rs
 msgid "This invitation can't be answered from here, so no other time can be proposed for it."
@@ -6155,8 +6419,8 @@ msgstr ""
 msgid "This invitation doesn't say when the meeting is."
 msgstr ""
 
-#. interface
-#: crates/ui-egui/src/reading/invitation.rs
+#. interface, what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs crates/ui-egui/src/reading/invitation.rs
 msgid "This invitation doesn't say which meeting it is about, so it can't be answered."
 msgstr ""
 
@@ -6175,6 +6439,16 @@ msgstr ""
 msgid "This is about the occurrence on {day} only."
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "This is not somebody else's meeting: a message can't call it off."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "This isn't an online meeting."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/account_setup.rs
 msgid "This isn't the account you typed"
@@ -6183,6 +6457,21 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/dialogs.rs
 msgid "This item has changes that aren't saved. Save them?"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "This item has files attached, which only the server keeps and which would be lost: it can't be moved to another calendar from here."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "This item hasn't reached the server of {who} yet. Forward it once it is there (in a moment)."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "This item is still on its way to the account's server. Move it once it is there (in a moment)."
 msgstr ""
 
 #. interface
@@ -6200,14 +6489,34 @@ msgstr ""
 msgid "This meeting"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs
+msgid "This meeting hasn't reached the server of {who} yet."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/reading/invitation.rs
 msgid "This meeting is in a calendar that can't be changed from here."
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "This meeting is kept by the server of {who}, and somebody else organizes it. Whether it is held online is for its organizer to say."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs
+msgid "This meeting is kept by the server of {who}, and somebody else organizes it. {why}"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/reading/invitation.rs
 msgid "This meeting is over."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "This meeting isn't on the account's calendar here yet: its server puts it there, and it hasn't come down. Answer it from the calendar once it shows."
 msgstr ""
 
 #. interface
@@ -6230,14 +6539,24 @@ msgstr ""
 msgid "This meeting's link isn't one that can be opened."
 msgstr ""
 
-#. interface
-#: crates/ui-egui/src/reading/invitation.rs
+#. interface, what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs crates/ui-egui/src/reading/invitation.rs
 msgid "This message carries no invitation."
 msgstr ""
 
 #. interface
 #: crates/ui-egui/src/reading/invitation.rs
 msgid "This message didn't come from the address of the meeting's organizer."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "This message doesn't call a meeting off."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "This message doesn't propose another time for a meeting."
 msgstr ""
 
 #. interface
@@ -6248,6 +6567,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/reading/remote.rs
 msgid "This message has pictures on the web. This build can't download them."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "This message isn't an invitation that can be answered."
 msgstr ""
 
 #. interface
@@ -6300,6 +6624,11 @@ msgstr ""
 msgid "This picture was downloaded, but can't be shown."
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs
+msgid "This series is still on its way to the account's server. Change one of its days once it is there (in a moment)."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/shared_mailboxes.rs
 msgid "This shared mailbox's account is gone"
@@ -6308,6 +6637,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/shared_mailboxes.rs
 msgid "This shared mailbox's account is gone: remove the shared mailbox and add it again"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/remote.rs
+msgid "This {what} is kept by the server of {who}. Changes made here are not sent back yet, so it can't be changed or deleted here."
 msgstr ""
 
 #. name
@@ -6388,6 +6722,11 @@ msgid ""
 "Whether your mail goes as {address} or on its behalf is your organisation's choice. Until you allow it, the mail waits in its Outbox, and nothing is sent from your own address."
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "To:"
+msgstr ""
+
 #. command label, interface, name
 #: crates/engine/src/cmd/view.rs crates/engine/src/session.rs crates/time/src/lib.rs crates/ui-egui/src/calendar_view.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/tasks_view.rs
 msgid "Today"
@@ -6396,6 +6735,11 @@ msgstr ""
 #. interface, name
 #: crates/ui-egui/src/forms.rs crates/ui-egui/src/tasks_view.rs
 msgid "Tomorrow"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/remote.rs
+msgid "Too many calendar changes are waiting to be sent to the server. Let Send/Receive get them through first."
 msgstr ""
 
 #. interface
@@ -6533,9 +6877,19 @@ msgstr ""
 msgid "Up to 50 MB"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/graph_mail.rs crates/model/src/sync.rs
+msgid "Up to date"
+msgstr ""
+
 #. name
 #: crates/time/src/lib.rs
 msgid "Upcoming"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/sync/progress.rs
+msgid "Updated {folder} on the server"
 msgstr ""
 
 #. interface
@@ -6698,6 +7052,11 @@ msgstr ""
 msgid "What the Send/Receive before came to: the last one brought nothing new"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs
+msgid "What the people invited are asked for is for its organizer to say."
+msgstr ""
+
 #. command label
 #: crates/ui-egui/src/lib.rs
 msgid "What to Do When Your Organisation Has to Approve MailCraft"
@@ -6731,6 +7090,16 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/reading/invitation.rs
 msgid "Where"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs
+msgid "Whether it is held online is for its organizer to say."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs
+msgid "Who is invited is for its organizer to say."
 msgstr ""
 
 #. interface
@@ -6868,6 +7237,11 @@ msgstr ""
 msgid "You organize this meeting, so there is nobody to propose another time to."
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs
+msgid "You organize this meeting, so there is nobody to send an answer to."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/reading/invitation.rs
 msgid "You organize this meeting: there is nothing to answer."
@@ -6988,9 +7362,109 @@ msgstr ""
 msgid "`value` is true or false"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs
+msgid "a calendar named \"{name}\" already exists"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/mailbox.rs
+msgid "a category needs a name"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/rich.rs
+msgid "a colour is written #rrggbb"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/people.rs
+msgid "a contact needs a name, a company or an e-mail address"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/mailbox.rs
+msgid "a folder can't move into itself"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/mailbox.rs
+msgid "a folder can't move to another account"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/mailbox.rs
+msgid "a folder name can't contain /"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/mailbox.rs
+msgid "a folder needs a name"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/rich.rs crates/model/src/rich/body.rs
+msgid "a link goes to an http, https, mailto or tel address"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/mailbox.rs
+msgid "a personal Microsoft account (Outlook.com) has no shared mailboxes: they are Microsoft 365's"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/mailbox.rs
+msgid "a shared mailbox can't open another one: name the account it is opened through"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/account.rs
+msgid "a shared mailbox keeps as much mail offline as the account it is opened through: change that account's"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/offline.rs
+msgid "a shared mailbox keeps as much mail offline as the account it is opened through: name that account"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/account.rs
+msgid "a shared mailbox's address can't be changed: remove it and add the other one"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/signature.rs
+msgid "a signature's pictures are PNG, JPEG or GIF (many mail programs can't show other kinds)"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/tasks.rs
+msgid "a task needs a title"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/folder.rs crates/engine/src/cmd/signature.rs
+msgid "add an account first"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "add an account first (File › Add Account)"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "add at least one recipient"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/reading/invitation.rs
 msgid "all day"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs
+msgid "an event needs a title"
 msgstr ""
 
 #. interface
@@ -7013,9 +7487,14 @@ msgstr ""
 msgid "and {n} more"
 msgstr ""
 
-#. why a command can't run
-#: crates/engine/src/cmd/calendar/invitation.rs
+#. what a command says, why a command can't run
+#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar/invitation.rs
 msgid "calendar"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/people.rs
+msgid "contact"
 msgstr ""
 
 #. name
@@ -7026,6 +7505,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/reading/remote.rs
 msgid "everybody at @{domain}"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/mailbox.rs
+msgid "folders are nested too deeply"
 msgstr ""
 
 #. interface
@@ -7051,6 +7535,11 @@ msgstr ""
 #. why a command can't run
 #: crates/engine/src/cmd/calendar/invitation.rs
 msgid "incomplete"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_drafts.rs
+msgid "it can't take it"
 msgstr ""
 
 #. name
@@ -7138,9 +7627,14 @@ msgstr ""
 msgid "never"
 msgstr ""
 
-#. why a command can't run
+#. what a command says, why a command can't run
 #: crates/engine/src/cmd/graph_switch.rs
 msgid "no Microsoft account is kept in step by IMAP"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/account.rs
+msgid "no account is connected to a mail server"
 msgstr ""
 
 #. why a command can't run
@@ -7148,9 +7642,14 @@ msgstr ""
 msgid "no account is connected to a mail server (File › Add Account)"
 msgstr ""
 
-#. why a command can't run
+#. what a command says, why a command can't run
 #: crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/offline.rs
 msgid "no account is kept in step through Microsoft Graph"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/calendar_settings.rs crates/engine/src/cmd/compose.rs crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/graph_send.rs crates/engine/src/cmd/graph_switch.rs crates/engine/src/cmd/offline.rs crates/engine/src/cmd/remote.rs crates/engine/src/cmd/search_server.rs crates/engine/src/cmd/shared.rs crates/engine/src/cmd/signature.rs
+msgid "no account with id {id}"
 msgstr ""
 
 #. interface
@@ -7158,14 +7657,49 @@ msgstr ""
 msgid "no answer"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar_extra.rs crates/engine/src/cmd/calendar_settings.rs crates/engine/src/cmd/file.rs
+msgid "no calendar with id {id}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/people.rs
+msgid "no contact with id {id}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar_extra.rs crates/engine/src/cmd/file.rs crates/engine/src/cmd/zones.rs
+msgid "no event with id {id}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/folder.rs
+msgid "no folder \"{path}\""
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/file.rs crates/engine/src/cmd/folder.rs crates/engine/src/cmd/mail.rs crates/engine/src/cmd/rules.rs crates/engine/src/io.rs
+msgid "no folder with id {id}"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/backstage.rs
 msgid "no incoming server"
 msgstr ""
 
-#. why a command can't run
-#: crates/engine/src/cmd/format.rs crates/engine/src/cmd/mod.rs
+#. what a command says, why a command can't run
+#: crates/engine/src/cmd/compose.rs crates/engine/src/cmd/format.rs crates/engine/src/cmd/mod.rs
 msgid "no message is being written"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar/invitation.rs crates/engine/src/cmd/compose.rs crates/engine/src/cmd/file.rs crates/engine/src/cmd/graph_send.rs crates/engine/src/cmd/mail.rs crates/engine/src/cmd/mod.rs crates/engine/src/cmd/people.rs crates/engine/src/cmd/rules.rs crates/engine/src/cmd/tasks.rs crates/engine/src/session.rs
+msgid "no message with id {id}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_mail.rs
+msgid "no message with id {id} in {name}"
 msgstr ""
 
 #. interface
@@ -7173,14 +7707,64 @@ msgstr ""
 msgid "no outgoing server"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/signature.rs
+msgid "no picture {id} in this signature"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/rules.rs
+msgid "no rule with id {id}"
+msgstr ""
+
 #. why a command can't run
 #: crates/engine/src/cmd/shared.rs
 msgid "no shared mailbox is open"
 msgstr ""
 
-#. why a command can't run
+#. what a command says
+#: crates/engine/src/cmd/shared.rs
+msgid "no shared mailbox {address} is open"
+msgstr ""
+
+#. what a command says, why a command can't run
 #: crates/engine/src/cmd/signature.rs
 msgid "no signature is open"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/signature.rs
+msgid "no signature named \"{from}\""
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs crates/engine/src/cmd/signature.rs
+msgid "no signature named \"{name}\""
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/mail.rs
+msgid "no such attachment"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/rich.rs
+msgid "no such paragraph"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/tasks.rs
+msgid "no task with id {id}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/folder.rs
+msgid "no {folder} folder"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/format.rs
+msgid "nothing is selected in the message"
 msgstr ""
 
 #. why a command can't run
@@ -7193,7 +7777,7 @@ msgstr ""
 msgid "nothing to redo"
 msgstr ""
 
-#. why a command can't run
+#. what a command says, why a command can't run
 #: crates/engine/src/cmd/format.rs
 msgid "nothing to redo in the message"
 msgstr ""
@@ -7203,7 +7787,7 @@ msgstr ""
 msgid "nothing to undo"
 msgstr ""
 
-#. why a command can't run
+#. what a command says, why a command can't run
 #: crates/engine/src/cmd/format.rs
 msgid "nothing to undo in the message"
 msgstr ""
@@ -7243,6 +7827,11 @@ msgstr ""
 msgid "past"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/signature.rs
+msgid "pictures from the web are not downloaded: save the picture and add it from the file"
+msgstr ""
+
 #. why a command can't run
 #: crates/engine/src/cmd/calendar/invitation.rs
 msgid "readOnly"
@@ -7253,22 +7842,32 @@ msgstr ""
 msgid "safe"
 msgstr ""
 
-#. why a command can't run
+#. what a command says
+#: crates/engine/src/cmd/signature.rs
+msgid "save or close the signature being edited first"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_switch.rs
+msgid "save the mailbox to a file first: the switch keeps a copy of it beside that file"
+msgstr ""
+
+#. what a command says, why a command can't run
 #: crates/engine/src/cmd/people.rs
 msgid "select a contact first"
 msgstr ""
 
-#. why a command can't run
-#: crates/engine/src/cmd/mod.rs
+#. what a command says, why a command can't run
+#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar/invitation.rs crates/engine/src/cmd/compose.rs crates/engine/src/cmd/file.rs crates/engine/src/cmd/mail.rs crates/engine/src/cmd/mod.rs crates/engine/src/cmd/people.rs crates/engine/src/cmd/rules.rs crates/engine/src/cmd/tasks.rs
 msgid "select a message first"
 msgstr ""
 
-#. why a command can't run
+#. what a command says, why a command can't run
 #: crates/engine/src/cmd/tasks.rs
 msgid "select a task first"
 msgstr ""
 
-#. why a command can't run
+#. what a command says, why a command can't run
 #: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar_extra.rs
 msgid "select an appointment first"
 msgstr ""
@@ -7278,14 +7877,69 @@ msgstr ""
 msgid "shared mailbox"
 msgstr ""
 
-#. why a command can't run
+#. what a command says, why a command can't run
 #: crates/engine/src/cmd/shared.rs
 msgid "shared mailboxes open under an account kept in step through Microsoft Graph"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/mailbox.rs
+msgid "shared mailboxes open under an account that is kept in step through Microsoft Graph"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs
+msgid "that event doesn't repeat"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/mailbox.rs
+msgid "that is the account's own address: name the shared mailbox's"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/format.rs
+msgid "that is too much to paste into one message"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/mailbox.rs
+msgid "that isn't an e-mail address"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "that message isn't a draft"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_send.rs
+msgid "that message isn't held"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs crates/engine/src/cmd/compose.rs
+msgid "the account is gone"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_switch.rs
+msgid "the browser can't keep a copy of the mailbox beside it: switch in the desktop app"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "the calendar is gone"
 msgstr ""
 
 #. interface
 #: crates/ui-egui/src/calendar_sync.rs
 msgid "the check stopped unexpectedly"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/people.rs
+msgid "the contact is gone"
 msgstr ""
 
 #. interface
@@ -7298,9 +7952,64 @@ msgstr ""
 msgid "the download stopped before it was done"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar_extra.rs crates/engine/src/cmd/zones.rs
+msgid "the end is before the start"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar/invitation.rs crates/engine/src/cmd/calendar/meeting.rs
+msgid "the event is gone"
+msgstr ""
+
 #. why a command can't run
 #: crates/engine/src/cmd/folder.rs
 msgid "the folder is already empty"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/search_server.rs
+msgid "the folder this message is in isn't on this computer any more"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/account.rs
+msgid "the last account can't be removed"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs
+msgid "the last calendar can't be deleted"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/file.rs
+msgid "the mailbox couldn't be saved first, so it stays open ({e})"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/mailbox.rs
+msgid "the mailbox has no calendar"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/io.rs
+msgid "the mailbox has no folders"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/session.rs
+msgid "the mailbox isn't kept in a file, so content outside memory can't be read"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/rich.rs
+msgid "the message can't hold that much text"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs crates/engine/src/cmd/mail.rs crates/engine/src/session.rs
+msgid "the message has no attachment {index}"
 msgstr ""
 
 #. why a command can't run
@@ -7308,9 +8017,34 @@ msgstr ""
 msgid "the message is plain text; switch it to HTML first"
 msgstr ""
 
+#. what a command says
+#: crates/model/src/mailbox.rs
+msgid "the parent folder belongs to another account"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/meeting.rs
+msgid "the proposed end is not after the proposed start"
+msgstr ""
+
 #. why a command can't run
 #: crates/engine/src/cmd/search_server.rs
 msgid "the search involves no mailbox of a Microsoft account"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/rules.rs
+msgid "the sender has no address to match"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/people.rs
+msgid "the sender has no usable e-mail address"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar/meeting.rs
+msgid "the series doesn't happen on {date}"
 msgstr ""
 
 #. interface
@@ -7333,9 +8067,69 @@ msgstr ""
 msgid "the server sent nothing"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/signature.rs
+msgid "the signature has changes: save it, or close it with discard"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/signature.rs
+msgid "the signature is no longer there"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/tasks.rs
+msgid "the task is gone"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/dialogs.rs
 msgid "the top level"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/file.rs
+msgid "there are no contacts to export"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/shared.rs
+msgid "there are too many accounts"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/remote.rs
+msgid "there are too many calendars"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/category.rs
+msgid "there are too many categories"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/rules.rs
+msgid "there are too many rules"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/signature.rs
+msgid "there are too many signatures"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/signature.rs
+msgid "there is already a signature named \"{to}\""
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_switch.rs
+msgid "there is no free name for a local folder"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_switch.rs
+msgid "there is no free name for the copy of the mailbox beside it"
 msgstr ""
 
 #. why a command can't run
@@ -7343,9 +8137,89 @@ msgstr ""
 msgid "there is no search"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/graph_mail.rs
+msgid "these messages were for another account, not for {name}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/search_server.rs
+msgid "these results were for another mailbox, not for {name}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar_settings.rs
+msgid "these settings are for another account, not for {who}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/graph_mail.rs
+msgid "this Send/Receive was for another account, not for {name}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "this account has no Drafts folder"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "this account has no Outbox folder"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "this account has no signature; add one in File › Options"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs crates/engine/src/cmd/mail.rs
+msgid "this account has no {folder} folder"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_drafts.rs
+msgid "this account may not save it"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/people.rs
+msgid "this contact has no e-mail address"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/remote.rs
+msgid "this download was for another account, not for {name}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "this draft isn't downloaded yet: open it once you're online, then edit it"
+msgstr ""
+
 #. name
 #: crates/model/src/sync.rs
 msgid "this mailbox can't be reached through Microsoft Graph (MailboxNotEnabledForRESTAPI)"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "this message already has as many attachments as it can carry"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/mail.rs
+msgid "this message has no subject to look for"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar/invitation.rs
+msgid "this series has too many cancelled days"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar.rs
+msgid "this series has too many changed days"
 msgstr ""
 
 #. interface
@@ -7363,6 +8237,31 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/reading/images.rs
 msgid "what the server sent is not a picture"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/account.rs
+msgid "which keeps its settings: change them there"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/signature.rs
+msgid "which keeps its signatures: choose them there"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/account.rs
+msgid "which sends and receives its mail: this version leaves it as it is"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "which sends its mail: answer the invitation there, or here without sending an answer"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "which sends its mail: send this message from another account, or save it as a draft to send it from that version"
 msgstr ""
 
 #. interface
@@ -7422,6 +8321,11 @@ msgstr ""
 msgid "{address} couldn't be opened:"
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/account.rs
+msgid "{address} is already set up"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/account_setup.rs
 msgid "{address} is set up"
@@ -7430,6 +8334,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/dialogs.rs
 msgid "{commands} commands; {percent}% of the feature catalog has one."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/session.rs
+msgid "{command} failed unexpectedly; nothing was changed"
 msgstr ""
 
 #. interface
@@ -7450,6 +8359,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/nav.rs
 msgid "{folder} - {mailbox}"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/sync/progress.rs
+msgid "{folder}: {done} of {total}"
 msgstr ""
 
 #. interface
@@ -7522,9 +8436,94 @@ msgstr ""
 msgid "{name} declined this meeting."
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "{name} has accepted this meeting."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "{name} has declined this meeting."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/io.rs
+msgid "{name} has no contacts"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/io.rs
+msgid "{name} has no events or tasks"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/io.rs
+msgid "{name} has no messages"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "{name} has tentatively accepted this meeting."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/account.rs
+msgid "{name} is a JMAP account, and this version doesn't send and receive with one yet"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_mail.rs
+msgid "{name} is a shared mailbox whose account is gone: remove it and add it again"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/lib.rs
 msgid "{name} is being sent and received now. Use Stop."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "{name} is larger than {mb} MB"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/file.rs
+msgid "{name} isn't a MailCraft mailbox"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_switch.rs
+msgid "{name} isn't a Microsoft account kept in step by IMAP"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/file.rs
+msgid "{name} isn't a mailbox; bring it in with File › Import"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_send.rs
+msgid "{name} isn't a shared mailbox"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/shared.rs
+msgid "{name} isn't a shared mailbox: remove it with account.remove"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_mail.rs
+msgid "{name} isn't an address a shared mailbox can be opened at"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/account.rs
+msgid "{name} isn't connected to a mail server"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/offline.rs
+msgid "{name} isn't kept in step through Microsoft Graph"
 msgstr ""
 
 #. interface
@@ -7547,9 +8546,39 @@ msgstr ""
 msgid "{name} proposes another time for this meeting."
 msgstr ""
 
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "{name} proposes another time: {start} – {end}."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/reading/invitation.rs
 msgid "{name} tentatively accepted this meeting."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/io.rs
+msgid "{name}: not a message, calendar or contact file MailCraft reads"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "{not_sending_yet}, and no other account here has a mail server to send this through."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/calendar/invitation.rs
+msgid "{not_sending_yet}: answer the invitation without sending an answer."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "{not_sending_yet}: send this message from another account, or save it as a draft"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/message.rs
+msgid "{n} KB"
 msgstr ""
 
 #. interface
@@ -7563,6 +8592,13 @@ msgstr[1] ""
 #: crates/ui-egui/src/calendar_view.rs
 msgid "{n} attendee"
 msgid_plural "{n} attendees"
+msgstr[0] ""
+msgstr[1] ""
+
+#. what a command says
+#: crates/model/src/message.rs
+msgid "{n} byte"
+msgid_plural "{n} bytes"
 msgstr[0] ""
 msgstr[1] ""
 
@@ -7713,10 +8749,17 @@ msgid_plural "{n} more questions are waiting."
 msgstr[0] ""
 msgstr[1] ""
 
-#. interface
-#: crates/ui-egui/src/alerts.rs
+#. interface, what a command says
+#: crates/model/src/sync.rs crates/ui-egui/src/alerts.rs
 msgid "{n} new message"
 msgid_plural "{n} new messages"
+msgstr[0] ""
+msgstr[1] ""
+
+#. what a command says
+#: crates/model/src/sync.rs
+msgid "{n} new message, {sent} sent"
+msgid_plural "{n} new messages, {sent} sent"
 msgstr[0] ""
 msgstr[1] ""
 
@@ -7838,6 +8881,26 @@ msgstr[1] ""
 msgid "{n}.5 hours"
 msgstr ""
 
+#. what a command says
+#: crates/model/src/message.rs
+msgid "{n}.{tenth} GB"
+msgstr ""
+
+#. what a command says
+#: crates/model/src/message.rs
+msgid "{n}.{tenth} MB"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/mod.rs
+msgid "{path} is larger than {mb} MB"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/file.rs
+msgid "{path} isn't a mailbox; bring it in with File › Import"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/account_setup/help.rs
 msgid "{provider}'s sign-in page is open in your browser"
@@ -7857,6 +8920,13 @@ msgstr ""
 #: crates/ui-egui/src/lib.rs
 msgid "{saving} · the other mailbox opens when it is done"
 msgstr ""
+
+#. what a command says
+#: crates/model/src/sync.rs
+msgid "{sent} message sent"
+msgid_plural "{sent} messages sent"
+msgstr[0] ""
+msgstr[1] ""
 
 #. interface
 #: crates/ui-egui/src/account_setup.rs
@@ -7891,6 +8961,11 @@ msgstr ""
 #. date and time
 #: crates/i18n/src/date.rs
 msgid "{weekday}, {month} {day}, {year}"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/account.rs
+msgid "{who} was added by a newer version of MailCraft, {then}"
 msgstr ""
 
 #. interface
