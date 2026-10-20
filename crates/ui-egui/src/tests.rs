@@ -2017,3 +2017,21 @@ fn search_pills_are_only_how_the_box_draws_the_query() {
     assert_eq!(harness.state().session.view.search, "from: priya subject: atlas");
     assert_eq!(harness.state_mut().session.rows().len(), 1, "the Atlas welcome from Priya");
 }
+
+/// An account a newer MailCraft added: its card in File › Info says what it is, no Send/Receive
+/// of the window takes it in, and the window lays it out as any other.
+#[test]
+fn an_account_a_newer_version_added_is_said_to_be_one_and_left_out_of_send_receive() {
+    let mut a = app();
+    let servers = json!({"email": "ada@imap.example", "incoming": {"host": "imap.example.org"}});
+    let imap = a.execute("account.add", servers).unwrap()["id"].as_u64().unwrap();
+    let newer = mailcraft_model::Account { email: "ada@jmap.example".into(), kind: mailcraft_model::AccountKind::Unknown, ..Default::default() };
+    let newer = a.session.mailbox.add_account(newer);
+    let card = crate::backstage::account_detail(&a, a.session.mailbox.account(newer).unwrap());
+    assert_eq!(card, "Added by a newer version of MailCraft: send and receive with it there");
+    assert_eq!(a.server_accounts(), vec![imap]);
+    a.execute("ui.backstage", json!({"value": true, "page": "info"})).unwrap();
+    let mut h = window(a);
+    h.run_steps(3);
+    assert!(h.state().ui.backstage && h.state().session.mailbox.account(newer).is_some());
+}

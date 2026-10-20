@@ -692,3 +692,103 @@ fn a_shared_mailbox_keeps_as_much_offline_as_its_owner() {
     assert_eq!(mb.keep_offline_of(shared), KeepOffline::Years5, "it follows its owner's as that changes");
     assert_eq!((mb.keep_offline_of(local), mb.keep_offline_of(999_999)), (KeepOffline::All, KeepOffline::All));
 }
+
+// ---- an account a newer MailCraft added ----
+
+/// What a newer MailCraft would write: a local account, then an account of a kind this version
+/// doesn't know (`fromANewerVersion`, which no version has) with settings of its own, one of them in a shape this version would refuse
+/// for an account it knows, and an IMAP account; the newer account's Inbox has a message. The file
+/// and the newer account's id.
+fn written_by_a_newer_version() -> (serde_json::Value, Id) {
+    let (mut mb, _) = mailbox();
+    let newer = mb.add_account(Account { email: "ada@jmap.example".into(), ..Default::default() });
+    let imap = Server { host: "imap.example.org".into(), port: 993, security: Security::Tls };
+    mb.add_account(Account { email: "ada@imap.example".into(), kind: AccountKind::Imap, incoming: Some(imap), ..Default::default() });
+    let inbox = mb.folder_of_kind(newer, FolderKind::Inbox).unwrap();
+    mb.add_message(mail(inbox, "Written in the newer version", 10)).unwrap();
+    let mut file = serde_json::to_value(&mb).unwrap();
+    let account = file["accounts"].as_array_mut().unwrap().iter_mut().find(|a| a["id"] == newer).unwrap();
+    *account = serde_json::json!({
+        "id": newer,
+        "name": "Ada at home",
+        "email": "ada@jmap.example",
+        "displayName": "Ada",
+        "kind": "fromANewerVersion",
+        "settings": {"session": "https://jmap.example/.well-known/jmap", "auth": "bearer"},
+        "incoming": "a newer version's own way of naming a server",
+        "oauth": {"provider": "microsoft", "tenant": "organizations"},
+        "username": "ada",
+        "signature": "Home",
+        "keepOffline": "6m",
+        "comesLater": [1, 2.5, {"deep": null, "flag": true}],
+    });
+    (file, newer)
+}
+
+#[test]
+fn an_account_of_a_kind_this_version_doesnt_know_is_kept_as_its_file_has_it() {
+    let (file, newer) = written_by_a_newer_version();
+    let mb: Mailbox = serde_json::from_value(file.clone()).unwrap();
+    assert_eq!(mb.accounts.len(), 3);
+    let a = mb.account(newer).unwrap();
+    // Read for what says which account it is: never its servers or its sign-in, which nothing
+    // here could use for it (an `incoming` this version can't read doesn't stop the file opening).
+    assert_eq!(
+        (a.kind, a.name.as_str(), a.email.as_str(), a.display_name.as_str()),
+        (AccountKind::Unknown, "Ada at home", "ada@jmap.example", "Ada")
+    );
+    assert!(!a.kind.has_server());
+    assert!(a.incoming.is_none() && a.outgoing.is_none() && a.oauth.is_none() && a.username.is_empty() && a.signature.is_empty());
+    assert_eq!(a.keep_offline, KeepOffline::All);
+    // Its folders and mail are read as always.
+    assert_eq!(mb.count(mb.folder_of_kind(newer, FolderKind::Inbox).unwrap()), 1);
+    // Written back, it is as it came, value for value; and so is everything else.
+    assert_eq!(serde_json::to_value(&mb).unwrap(), file);
+    let again: Mailbox = serde_json::from_str(&serde_json::to_string(&mb).unwrap()).unwrap();
+    assert_eq!(again, mb);
+    // Its debug output says how much is kept, never what.
+    let debug = format!("{a:?}");
+    assert!(debug.contains("as_written: Some(AsWritten { fields: 11 })"), "{debug}");
+    assert!(!debug.contains(".well-known") && !debug.contains("bearer") && !debug.contains("organizations"), "{debug}");
+}
+
+#[test]
+fn it_goes_back_with_the_id_the_mailbox_gives_it() {
+    // A file whose newer account has no id: the repair gives it one, and that is the id written
+    // back, so the next time it is the same account with the same folders.
+    let (mut file, newer) = written_by_a_newer_version();
+    let accounts = file["accounts"].as_array_mut().unwrap();
+    let written = accounts.iter_mut().find(|a| a["id"] == newer).unwrap();
+    written.as_object_mut().unwrap().remove("id");
+    let mut mb: Mailbox = serde_json::from_value(file).unwrap();
+    assert!(mb.repair().iter().any(|line| line == "an account id corrected"));
+    let id = mb.accounts.iter().find(|a| a.kind == AccountKind::Unknown).unwrap().id;
+    assert_ne!(id, 0);
+    let saved = serde_json::to_value(&mb).unwrap();
+    let back = saved["accounts"].as_array().unwrap().iter().find(|a| a["kind"] == "fromANewerVersion").unwrap();
+    assert_eq!((back["id"].as_u64(), &back["settings"]["auth"]), (Some(id), &serde_json::json!("bearer")));
+    let mut again: Mailbox = serde_json::from_value(saved).unwrap();
+    assert!(again.repair().is_empty());
+    assert_eq!(again, mb);
+}
+
+#[test]
+fn a_kind_that_is_any_other_word_or_cant_be_read_is_one_this_version_doesnt_know() {
+    let kind_of = |kind: serde_json::Value| {
+        let mb: Mailbox = serde_json::from_value(serde_json::json!({"accounts": [{"id": 4, "email": "ada@example.org", "kind": kind}]})).unwrap();
+        mb.accounts[0].kind
+    };
+    for kind in
+        [serde_json::json!("exchange"), serde_json::json!("IMAP"), serde_json::json!(7), serde_json::json!({"newer": {}}), serde_json::Value::Null]
+    {
+        assert_eq!(kind_of(kind.clone()), AccountKind::Unknown, "{kind}");
+    }
+    for (word, kind) in [("local", AccountKind::Local), ("imap", AccountKind::Imap), ("microsoft", AccountKind::Microsoft)] {
+        assert_eq!(kind_of(serde_json::json!(word)), kind);
+    }
+    // A file from before there were kinds says none: a local account, as always.
+    let old: Mailbox = serde_json::from_str(r#"{"accounts": [{"id": 4, "email": "ada@example.org"}]}"#).unwrap();
+    assert_eq!((old.accounts[0].kind, old.accounts[0].as_written.is_none()), (AccountKind::Local, true));
+    // An account of a kind this version knows is read as strictly as ever.
+    assert!(serde_json::from_str::<Mailbox>(r#"{"accounts": [{"id": 4, "kind": "imap", "incoming": "imap.example.org"}]}"#).is_err());
+}

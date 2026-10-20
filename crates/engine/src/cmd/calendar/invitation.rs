@@ -801,6 +801,12 @@ fn reply_message(
 ) -> Result<Message, CmdError> {
     let organizer =
         invitation.event.organizer.clone().filter(|who| who.is_valid()).ok_or_else(|| fail("The invitation doesn't say who to answer."))?;
+    if owner.kind == mailcraft_model::AccountKind::Unknown {
+        return Err(super::super::account::added_by_newer(
+            owner,
+            "which sends its mail: answer the invitation there, or here without sending an answer",
+        ));
+    }
     if !owner.kind.has_server() {
         return Err(fail("This account has no mail server to send the answer through."));
     }
@@ -1104,6 +1110,30 @@ mod tests {
         let mut waiting: Vec<_> = s.mailbox.messages_in(folder).map(|m| (m.id, m.subject.clone(), part(m))).collect();
         waiting.sort();
         waiting.into_iter().map(|(_, subject, part)| (subject, part)).collect()
+    }
+
+    /// An account a newer MailCraft added: no answer is mailed from it, as nothing here sends its
+    /// mail; answered without one, the meeting goes into a calendar here, as for a local account.
+    #[test]
+    fn an_invitation_to_an_account_a_newer_version_added_is_answered_without_mail() {
+        let mut s = Session::at(crate::sample::mailbox(now(), 0), now(), 0);
+        let newer = mailcraft_model::Account {
+            name: "Ada".into(),
+            email: "ada@example.org".into(),
+            kind: mailcraft_model::AccountKind::Unknown,
+            ..Default::default()
+        };
+        let account = s.mailbox.add_account(newer);
+        let request = mail(&mut s, account, "REQUEST", "uid-newer", "");
+        let said = run(&mut s, "calendar.invitation", json!({"message": request}));
+        assert_eq!((said["answerable"].as_bool(), said["canSend"].as_bool()), (Some(true), Some(false)));
+        let events = s.mailbox.events.len();
+        let why = refused(&mut s, "calendar.respond", json!({"message": request, "response": "accept", "send": true}));
+        assert!(why.contains("was added by a newer version of MailCraft, which sends its mail"), "{why}");
+        assert_eq!((s.mailbox.events.len(), outbox(&s, account).len()), (events, 0));
+        let answered = run(&mut s, "calendar.respond", json!({"message": request, "response": "accept"}));
+        assert!(answered["event"].is_u64(), "{answered}");
+        assert_eq!((s.mailbox.events.len(), outbox(&s, account).len()), (events + 1, 0));
     }
 
     #[test]
