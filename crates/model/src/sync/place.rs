@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mail put into a mailbox from another of the same owner's mailboxes (#70): a shared mailbox and
 //! its owner's, or two shared mailboxes of one owner's.
 //!

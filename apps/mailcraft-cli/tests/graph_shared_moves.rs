@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mail moved and copied between a shared mailbox and its owner's (#70), from end to end: the
 //! engine's `graph_mail_request` and `apply_graph_mail` with `mailcraft_net::graph::sync_mail` in
 //! between, against the strict Graph stand-in. Microsoft moves and copies only within a mailbox,

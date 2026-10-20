@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: MailCraft contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Messages made in a mailbox from another of the same owner's (#70): moved or copied between a
 //! shared mailbox and its owner's, or between two of his shared mailboxes.
 //!
