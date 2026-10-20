@@ -269,11 +269,11 @@ fn info(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
         let n = |k: &str| v.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
         let line = format!(
             "{} · {} · {} · {} · {}",
-            crate::i18n::fmt(tl!("{n} messages"), &[("n", &n("messages").to_string())]),
-            crate::i18n::fmt(tl!("{n} unread"), &[("n", &n("unread").to_string())]),
-            crate::i18n::fmt(tl!("{n} contacts"), &[("n", &n("contacts").to_string())]),
-            crate::i18n::fmt(tl!("{n} events"), &[("n", &n("events").to_string())]),
-            crate::i18n::fmt(tl!("{n} tasks"), &[("n", &n("tasks").to_string())]),
+            tln!(n("messages"), "{n} message", "{n} messages"),
+            tln!(n("unread"), "{n} unread", "{n} unread"),
+            tln!(n("contacts"), "{n} contact", "{n} contacts"),
+            tln!(n("events"), "{n} event", "{n} events"),
+            tln!(n("tasks"), "{n} task", "{n} tasks"),
         );
         ui.label(egui::RichText::new(line).color(t.text));
         let place = match (&app.session.path, app.services.persist.is_some()) {
@@ -554,7 +554,7 @@ fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     row(ui, tl!("Time scale"), |ui| {
         // What one row of the calendar's hours stands for.
         let current = mailcraft_engine::cmd::calendar_extra::time_scale(&app.session);
-        let label = |minutes: u8| crate::i18n::fmt(tl!("{n} minutes"), &[("n", &minutes.to_string())]);
+        let label = |minutes: u8| tln!(minutes, "{n} minute", "{n} minutes");
         egui::ComboBox::from_id_salt("opt_time_scale").selected_text(label(current)).show_ui(ui, |ui| {
             for minutes in mailcraft_engine::cmd::calendar_extra::TIME_SCALES {
                 if ui.selectable_label(minutes == current, label(minutes)).clicked() {

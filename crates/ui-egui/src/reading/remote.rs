@@ -525,8 +525,10 @@ pub fn options(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     ui.horizontal(|ui| {
         let kept = match count {
             0 => tl!("No downloaded pictures are kept on this computer.").to_string(),
-            1 => crate::i18n::fmt(tl!("One downloaded picture is kept on this computer ({size})."), &[("size", &size_label(bytes))]),
-            n => crate::i18n::fmt(tl!("{n} downloaded pictures are kept on this computer ({size})."), &[("n", &n.to_string()), ("size", &size_label(bytes))]),
+            n => crate::i18n::fmt(
+                &tln!(n, "{n} downloaded picture is kept on this computer ({size}).", "{n} downloaded pictures are kept on this computer ({size})."),
+                &[("size", &size_label(bytes))],
+            ),
         };
         let tip = tl!(
             "A picture you asked for is kept for a month, so that reading the message again doesn't ask its sender's server again. Nothing kept is ever run, and it is checked like a new download before it is shown."

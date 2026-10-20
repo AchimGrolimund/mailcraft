@@ -3385,7 +3385,6 @@ pub(crate) fn refusal_worth_a_box(id: &str, error: &str) -> bool {
 
 fn feedback(id: &str, v: &Value) -> Option<String> {
     let n = |k: &str| v.get(k).and_then(Value::as_u64);
-    let plural = |n: u64, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
     match id {
         "compose.send" if v.get("queued").and_then(Value::as_bool) == Some(true) => Some(tl!("In the Outbox: it is on its way").to_string()),
         // A mailbox whose content folder lost something still opens; say how much is missing. A
@@ -3396,10 +3395,10 @@ fn feedback(id: &str, v: &Value) -> Option<String> {
                 Some(damaged_mailbox_notice())
             } else {
                 n("unavailable").filter(|c| *c > 0).map(|c| {
-                    format!(
-                        "{} {}",
-                        plural(c, tl!("part of a message"), tl!("parts of messages")),
-                        tl!("couldn't be read from the mailbox's content folder")
+                    tln!(
+                        c,
+                        "{n} part of a message couldn't be read from the mailbox's content folder",
+                        "{n} parts of messages couldn't be read from the mailbox's content folder"
                     )
                 })
             };
@@ -3412,14 +3411,18 @@ fn feedback(id: &str, v: &Value) -> Option<String> {
         }
         "compose.send" => Some(tl!("Sent").to_string()),
         "compose.saveDraft" => Some(tl!("Draft saved").to_string()),
-        "mail.markAllRead" | "rules.run" => n("changed").or(n("matched")).map(|c| plural(c, tl!("message changed"), tl!("messages changed"))),
+        "mail.markAllRead" | "rules.run" => n("changed").or(n("matched")).map(|c| tln!(c, "{n} message changed", "{n} messages changed")),
         "file.import" => {
             let mut parts = Vec::new();
-            for (key, one, many) in
-                [("messages", "message", "messages"), ("events", "event", "events"), ("tasks", "task", "tasks"), ("contacts", "contact", "contacts")]
-            {
+            let counts: [(&str, fn(u64) -> String); 4] = [
+                ("messages", |c| tln!(c, "{n} message", "{n} messages")),
+                ("events", |c| tln!(c, "{n} event", "{n} events")),
+                ("tasks", |c| tln!(c, "{n} task", "{n} tasks")),
+                ("contacts", |c| tln!(c, "{n} contact", "{n} contacts")),
+            ];
+            for (key, said) in counts {
                 if let Some(c) = n(key).filter(|c| *c > 0) {
-                    parts.push(plural(c, tl!(one), tl!(many)));
+                    parts.push(said(c));
                 }
             }
             let what = parts.join(", ");
@@ -3433,7 +3436,7 @@ fn feedback(id: &str, v: &Value) -> Option<String> {
             (!parts.is_empty()).then(|| i18n::fmt(tl!("Imported {what}"), &[("what", &what)]))
         }
         "people.fromMessage" if v.get("existing").and_then(Value::as_bool) == Some(true) => Some(tl!("Already in your contacts").to_string()),
-        "folder.empty" => n("removed").map(|c| plural(c, tl!("message removed"), tl!("messages removed"))),
+        "folder.empty" => n("removed").map(|c| tln!(c, "{n} message removed", "{n} messages removed")),
         // An appointment that goes into another calendar of its account is made there first, and
         // taken out of the one it was in once that is done: said, as it takes a moment.
         "calendar.edit" if v.get("moved").and_then(Value::as_bool) == Some(true) => {
@@ -3442,13 +3445,13 @@ fn feedback(id: &str, v: &Value) -> Option<String> {
         // What went into the account's calendar, what was there already, and what stayed.
         "calendar.moveToAccount" => {
             let mut parts =
-                vec![format!("{} {}", plural(n("moved").unwrap_or(0), tl!("item"), tl!("items")), tl!("moved to your account's calendar"))];
+                vec![tln!(n("moved").unwrap_or(0), "{n} item moved to your account's calendar", "{n} items moved to your account's calendar")];
             if let Some(c) = n("already").filter(|c| *c > 0) {
-                parts.push(format!("{} {}", plural(c, tl!("was"), tl!("were")), tl!("there already")));
+                parts.push(tln!(c, "{n} was there already", "{n} were there already"));
             }
             let kept = v.get("kept").and_then(Value::as_array).map_or(0, Vec::len);
             if kept > 0 {
-                parts.push(format!("{} {}", plural(kept as u64, tl!("stays"), tl!("stay")), tl!("on this computer")));
+                parts.push(tln!(kept, "{n} stays on this computer", "{n} stay on this computer"));
             }
             Some(parts.join("; "))
         }

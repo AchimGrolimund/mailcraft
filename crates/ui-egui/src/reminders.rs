@@ -44,13 +44,13 @@ fn key_of(r: &Reminder) -> String {
 
 /// `in 10 minutes`, `now`, `25 minutes ago`, `in 2 hours`, `3 days ago`.
 pub(crate) fn when(minutes: i64) -> String {
-    let (n, unit) = match minutes.unsigned_abs() {
+    let unit = match minutes.unsigned_abs() {
         0 => return tl!("now").to_string(),
-        m @ 1..=119 => (m, if m == 1 { tl!("minute") } else { tl!("minutes") }),
-        m @ 120..=2879 => (m / 60, tl!("hours")),
-        m => (m / 1440, tl!("days")),
+        m @ 1..=119 => tln!(m, "{n} minute", "{n} minutes"),
+        m @ 120..=2879 => tln!(m / 60, "{n} hour", "{n} hours"),
+        m => tln!(m / 1440, "{n} day", "{n} days"),
     };
-    if minutes > 0 { format!("{} {n} {unit}", tl!("in")) } else { format!("{n} {unit} {}", tl!("ago")) }
+    if minutes > 0 { crate::i18n::fmt(tl!("in {time}"), &[("time", &unit)]) } else { crate::i18n::fmt(tl!("{time} ago"), &[("time", &unit)]) }
 }
 
 /// Work out what is due, every few seconds and whenever the mailbox changed; ask for attention
@@ -141,7 +141,7 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
     let (mut dismissed, mut snoozed, mut opened) = (None, None, None);
     let mut joined: Option<u64> = None;
     let (mut dismiss_all, mut closed) = (false, false);
-    let title = if rows.len() == 1 { tl!("1 Reminder").to_string() } else { format!("{} {}", rows.len(), tl!("Reminders")) };
+    let title = tln!(rows.len(), "{n} Reminder", "{n} Reminders");
     let height = (rows.len().clamp(1, 6) as f32) * 46.0 + 96.0;
     let builder = crate::windows::like_main(
         ctx,

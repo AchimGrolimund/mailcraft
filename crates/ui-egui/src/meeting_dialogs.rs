@@ -519,11 +519,7 @@ impl ForwardMeeting {
             match app.execute("calendar.forward", self.command()) {
                 Ok(answer) => {
                     let n = answer.get("to").and_then(Value::as_u64).unwrap_or(0);
-                    app.status(if n == 1 {
-                        tl!("Forwarded to 1 person").to_string()
-                    } else {
-                        crate::i18n::fmt(tl!("Forwarded to {n} people"), &[("n", &n.to_string())])
-                    });
+                    app.status(tln!(n, "Forwarded to {n} person", "Forwarded to {n} people"));
                     close = true;
                 }
                 Err(e) => self.error = e,

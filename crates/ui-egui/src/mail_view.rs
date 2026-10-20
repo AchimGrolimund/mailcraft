@@ -84,7 +84,7 @@ fn drag_ghost(ui: &Ui) {
     let Some(pos) = ui.ctx().pointer_interact_pos() else { return };
     let t = Tokens::get(ui.ctx());
     ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-    let text = if drag.0.len() == 1 { tl!("1 message").to_string() } else { format!("{} {}", drag.0.len(), tl!("messages")) };
+    let text = tln!(drag.0.len(), "{n} message", "{n} messages");
     egui::Area::new(egui::Id::new("message_drag_ghost")).order(egui::Order::Tooltip).fixed_pos(pos + vec2(14.0, 16.0)).interactable(false).show(
         ui.ctx(),
         |ui| {
@@ -386,8 +386,7 @@ fn search_bar(app: &mut MailApp, ui: &mut Ui, found: usize) {
     };
     let said = match found {
         0 => crate::i18n::fmt(tl!("No results in {scope}"), &[("scope", &scope)]),
-        1 => crate::i18n::fmt(tl!("1 result in {scope}"), &[("scope", &scope)]),
-        n => crate::i18n::fmt(tl!("{n} results in {scope}"), &[("n", &n.to_string()), ("scope", &scope)]),
+        n => crate::i18n::fmt(&tln!(n, "{n} result in {scope}", "{n} results in {scope}"), &[("scope", &scope)]),
     };
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width() - SCROLL_LANE, 30.0), Sense::hover());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &said));
@@ -448,11 +447,11 @@ fn list(app: &mut MailApp, ui: &mut Ui) {
         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
         ui.painter().rect_filled(r, 0.0, t.panel);
         let n = app.session.unsearched;
-        let text = if n == 1 {
-            tl!("1 older message wasn't searched: its text isn't loaded yet").to_string()
-        } else {
-            crate::i18n::fmt(tl!("{n} older messages weren't searched: their text isn't loaded yet"), &[("n", &n.to_string())])
-        };
+        let text = tln!(
+            n,
+            "{n} older message wasn't searched: its text isn't loaded yet",
+            "{n} older messages weren't searched: their text isn't loaded yet"
+        );
         paint_clipped(ui.painter(), pos2(r.min.x + 10.0, r.min.y + 4.0), r.width() - 20.0, &text, regular(11.5), t.text_dim);
     }
     let row_h = row_height(app.session.prefs.preview_lines);

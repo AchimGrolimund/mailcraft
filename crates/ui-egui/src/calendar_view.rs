@@ -1586,14 +1586,11 @@ fn local_notice(app: &mut MailApp, ui: &mut Ui) {
     };
     p.rect(button, 4.0, fill, Stroke::new(1.0, t.border_strong), StrokeKind::Inside);
     p.text(button.center(), Align2::CENTER_CENTER, action, medium(12.0), t.text);
-    let text = if items == 1 {
-        tl!("1 item here is only on this computer: not in your Outlook calendar. A change to it stays here.").to_string()
-    } else {
-        crate::i18n::fmt(
-            tl!("{n} items here are only on this computer: not in your Outlook calendar. A change to one of them stays here."),
-            &[("n", &items.to_string())],
-        )
-    };
+    let text = tln!(
+        items,
+        "{n} item here is only on this computer: not in your Outlook calendar. A change to it stays here.",
+        "{n} items here are only on this computer: not in your Outlook calendar. A change to one of them stays here."
+    );
     paint_clipped(&p, pos2(r.min.x + 14.0, r.center().y), button.min.x - r.min.x - 26.0, &text, regular(12.0), t.text);
     app.hit.add("calendarLocalOnly", items as u64, button);
     let tip = tl!("Put them into the calendar of your account, where Outlook and your other devices have them too. You are asked first.");
@@ -1946,7 +1943,7 @@ fn tooltip(ui: &mut Ui, item: &Item, twelve: bool, own: Option<&str>) {
     }
     if ev.is_meeting() {
         let count = ev.attendees.len();
-        let people = if count == 1 { tl!("1 attendee").to_string() } else { crate::i18n::fmt(tl!("{n} attendees"), &[("n", &count.to_string())]) };
+        let people = tln!(count, "{n} attendee", "{n} attendees");
         match &ev.organizer {
             Some(who) => line(ui, &format!("{} · {people}", crate::i18n::fmt(tl!("Organizer: {name}"), &[("name", clip_text(who.display(), 100))]))),
             None => line(ui, &people),

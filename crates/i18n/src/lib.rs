@@ -235,12 +235,32 @@ fn pseudo(s: &str) -> &'static str {
     leaked
 }
 
-/// Fill `{name}` placeholders in a (translated) template.
+/// Fill `{name}` placeholders in a (translated) template, in one pass: a value that itself says
+/// `{name}` (a subject a sender wrote) is never filled in again. A placeholder without a value
+/// stays as it is, for a later `fmt`.
 pub fn fmt(template: &str, args: &[(&str, &str)]) -> String {
-    let mut out = template.to_string();
-    for (k, v) in args {
-        out = out.replace(&format!("{{{k}}}"), v);
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let (before, from) = rest.split_at(open);
+        out.push_str(before);
+        let filled = from.find('}').and_then(|close| {
+            let name = from.get(1..close)?;
+            let (_, v) = args.iter().find(|(k, _)| *k == name)?;
+            Some((*v, close + 1))
+        });
+        match filled {
+            Some((v, used)) => {
+                out.push_str(v);
+                rest = from.get(used..).unwrap_or("");
+            }
+            None => {
+                out.push('{');
+                rest = from.get(1..).unwrap_or("");
+            }
+        }
     }
+    out.push_str(rest);
     out
 }
 
@@ -256,6 +276,8 @@ mod tests {
     #[test]
     fn formatting_and_pseudo() {
         assert_eq!(fmt("{n} of {total} items", &[("n", "3"), ("total", "10")]), "3 of 10 items");
+        assert_eq!(fmt("{what} in {where} {", &[("what", "{where}"), ("where", "Inbox")]), "{where} in Inbox {");
+        assert_eq!(fmt("{n} {x} é{", &[("n", "1")]), "1 {x} é{");
         assert_eq!(pseudo("Reply {name}"), "Réply {name}");
         assert_eq!(Lang::Pseudo.t("Inbox"), "Ínbóx");
         assert_eq!(location(Lang::English, "Home › Respond"), "Home › Respond");
