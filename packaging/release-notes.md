@@ -13,6 +13,7 @@
 - The Appointment window no longer turns the whole program light when Appearance follows a dark system ([#266](https://github.com/GITHUB_REPOSITORY/issues/266)).
 - Right-clicking a selected time range in the calendar opens a menu with New Appointment, New Meeting and New All Day Event for that range ([#261](https://github.com/GITHUB_REPOSITORY/issues/261), thanks to @redfoxx15).
 - HTML mail laid out with a width, a maximum width, or centring by automatic margins (the usual centred newsletter card) now displays at that width and centred, not full width and misaligned ([#150](https://github.com/GITHUB_REPOSITORY/issues/150)).
+- Newsletters, statements and notices keep their padding, margins, lines, rounded corners and line spacing, so their boxes and buttons no longer run into the text ([#71](https://github.com/GITHUB_REPOSITORY/issues/71), thanks to @strikerz5).
 
 **Early alpha.** The foundations are in place and tested, but much of what a daily mail program needs is not there yet, and most of the Microsoft 365 behaviour has only been tested against stand-ins. What works is in the [README](https://github.com/GITHUB_REPOSITORY#what-works-today).
 
