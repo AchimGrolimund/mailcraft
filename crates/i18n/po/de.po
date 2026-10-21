@@ -3372,7 +3372,7 @@ msgid "In {place}"
 msgstr "In {place}"
 
 #. name
-#: crates/model/src/mailbox.rs
+#: crates/model/src/mailbox.rs crates/model/src/sync/progress.rs
 #, fuzzy
 msgid "Inbox"
 msgstr "Posteingang"
@@ -6924,7 +6924,7 @@ msgid "Sending"
 msgstr "Senden"
 
 #. interface
-#: crates/ui-egui/src/chrome.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/shared_mailboxes.rs
+#: crates/ui-egui/src/chrome.rs crates/ui-egui/src/inbox_pass.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/shared_mailboxes.rs
 #, fuzzy
 msgid "Sending and receiving…"
 msgstr "Senden und Empfangen…"
