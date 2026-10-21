@@ -2769,6 +2769,9 @@ impl MailApp {
             theme::install_fonts(ctx);
             // Mod with -, = and 0 would also scale the whole window; interface size is in Options.
             ctx.options_mut(|o| o.zoom_with_keyboard = false);
+            // egui closes the window on Mod+Q by itself; here that is Mark as Read. A Mac quits
+            // from its app menu (craft-quit).
+            ctx.options_mut(|o| o.quit_shortcuts.clear());
             self.styled = true;
         }
         // Settled from the main window's input, so every window has the same theme.
