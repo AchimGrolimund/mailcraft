@@ -16,6 +16,8 @@ const MAX_DEPTH: usize = 32;
 const MAX_ID: Id = 1 << 53;
 /// Most changes waiting for the mail server that a file may hold ([`Mailbox::pending`]).
 const MAX_PENDING: usize = 100_000;
+/// The most rules a mailbox keeps; a file with more is cut to this when it is repaired.
+pub const MAX_RULES: usize = 500;
 
 /// Most accounts, folders and colour categories a mailbox file is read with; more are dropped on
 /// load ([`Mailbox::repair`]), so that a hostile file can't make the work on it grow without end.
@@ -2010,6 +2012,10 @@ impl Mailbox {
     /// loop, every message is in a folder, every event in a calendar. Returns what was fixed.
     pub fn repair(&mut self) -> Vec<String> {
         let mut fixed = Vec::new();
+        if self.rules.len() > MAX_RULES {
+            self.rules.truncate(MAX_RULES);
+            fixed.push(format!("rules cut to {MAX_RULES}"));
+        }
         // Ids stay within what JSON numbers hold exactly; anything above gets a new id, so the
         // counter can't run into the end of u64.
         let sane = |id: &Id| *id <= MAX_ID;

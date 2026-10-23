@@ -941,6 +941,24 @@ fn only_a_jmap_or_microsoft_account_has_server_ids() {
     assert_eq!([Local, Imap, Microsoft, Jmap, Unknown].map(AccountKind::sends_mail), [false, true, true, false, false]);
 }
 
+#[test]
+fn repair_trims_rules_to_the_most_a_mailbox_keeps() {
+    let (mut mb, _) = mailbox();
+    for id in 1..=(MAX_RULES as Id + 50) {
+        mb.rules.push(Rule {
+            id,
+            name: "r".into(),
+            enabled: true,
+            conditions: vec![Condition::HasAttachment],
+            actions: vec![Action::Flag],
+            stop: false,
+        });
+    }
+    let fixed = mb.repair();
+    assert_eq!(mb.rules.len(), MAX_RULES);
+    assert!(fixed.iter().any(|f| f.contains("rules")), "{fixed:?}");
+}
+
 /// A mailbox of `accounts` accounts, each with the seven standard folders, as a file would hold it.
 fn many_accounts(accounts: usize) -> Mailbox {
     let mut mb = Mailbox::default();
