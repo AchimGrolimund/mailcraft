@@ -1062,12 +1062,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
-name = "dunce"
-version = "1.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
-
-[[package]]
 name = "ecolor"
 version = "0.36.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2272,16 +2266,15 @@ version = "0.7.0"
 dependencies = [
  "apple-native-keyring-store",
  "arboard",
- "base64",
  "block2 0.6.2",
  "dispatch2",
  "eframe",
  "egui",
  "fmv-macos-events",
- "getrandom 0.3.4",
  "image",
  "keyring-core",
  "log",
+ "mailcraft-charset",
  "mailcraft-control-key",
  "mailcraft-engine",
  "mailcraft-model",
@@ -2294,12 +2287,9 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "objc2-user-notifications 0.3.2",
- "open",
- "pollster 0.4.0",
  "rfd",
  "ring",
  "serde_json",
- "sys-locale",
  "url",
  "webbrowser",
  "windows",
@@ -2315,6 +2305,7 @@ dependencies = [
 name = "mailcraft-charset"
 version = "0.7.0"
 dependencies = [
+ "base64",
  "encoding_rs",
  "proptest",
 ]
@@ -2323,7 +2314,7 @@ dependencies = [
 name = "mailcraft-cli"
 version = "0.7.0"
 dependencies = [
- "base64",
+ "mailcraft-charset",
  "mailcraft-engine",
  "mailcraft-mcp",
  "mailcraft-model",
@@ -2340,8 +2331,8 @@ version = "0.7.0"
 name = "mailcraft-engine"
 version = "0.7.0"
 dependencies = [
- "base64",
  "log",
+ "mailcraft-charset",
  "mailcraft-html",
  "mailcraft-i18n",
  "mailcraft-ical",
@@ -2384,8 +2375,8 @@ dependencies = [
 name = "mailcraft-jmap"
 version = "0.7.0"
 dependencies = [
- "base64",
  "log",
+ "mailcraft-charset",
  "mailcraft-mime",
  "mailcraft-model",
  "mailcraft-time",
@@ -2407,7 +2398,6 @@ dependencies = [
 name = "mailcraft-mime"
 version = "0.7.0"
 dependencies = [
- "base64",
  "mailcraft-charset",
  "mailcraft-html",
  "mailcraft-model",
@@ -2420,7 +2410,7 @@ dependencies = [
 name = "mailcraft-model"
 version = "0.7.0"
 dependencies = [
- "base64",
+ "mailcraft-charset",
  "mailcraft-i18n",
  "mailcraft-time",
  "proptest",
@@ -2433,9 +2423,9 @@ dependencies = [
 name = "mailcraft-net"
 version = "0.7.0"
 dependencies = [
- "base64",
  "flate2",
  "log",
+ "mailcraft-charset",
  "mailcraft-mime",
  "mailcraft-model",
  "mailcraft-proto",
@@ -2453,8 +2443,8 @@ dependencies = [
 name = "mailcraft-proto"
 version = "0.7.0"
 dependencies = [
- "base64",
  "log",
+ "mailcraft-charset",
  "proptest",
  "thiserror 2.0.21",
 ]
@@ -2493,7 +2483,6 @@ dependencies = [
 name = "mailcraft-vcard"
 version = "0.7.0"
 dependencies = [
- "base64",
  "mailcraft-charset",
  "mailcraft-model",
  "mailcraft-time",
@@ -3110,7 +3099,6 @@ version = "5.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa576c76302b7b808eecc68061e67336c47833ef9d22caa74dda10fa9675eebc"
 dependencies = [
- "dunce",
  "is-wsl",
  "libc",
 ]
@@ -4138,15 +4126,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.8",
-]
-
-[[package]]
-name = "sys-locale"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8eab9a99a024a169fe8a903cf9d4a3b3601109bcc13bd9e3c6fff259138626c4"
-dependencies = [
- "libc",
 ]
 
 [[package]]
@@ -5346,8 +5325,8 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 name = "xtask"
 version = "0.7.0"
 dependencies = [
- "base64",
  "image",
+ "mailcraft-charset",
  "mailcraft-i18n",
  "ring",
  "serde_json",

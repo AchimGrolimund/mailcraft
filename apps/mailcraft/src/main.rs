@@ -24,6 +24,7 @@ mod alerts;
 mod apple_events;
 #[cfg(test)]
 mod approval_flow;
+mod block_on;
 mod browser;
 #[cfg(test)]
 mod calendar_flow;
@@ -37,6 +38,7 @@ mod favorites_flow;
 #[cfg(test)]
 mod favorites_organisation_flow;
 mod file_dialogs;
+mod file_launcher;
 #[cfg(test)]
 mod graph_folders_flow;
 #[cfg(test)]
@@ -57,6 +59,7 @@ mod self_update;
 #[cfg(test)]
 mod shared_send_flow;
 mod single_instance;
+mod system_locale;
 #[cfg(test)]
 mod token_renew_flow;
 #[cfg(test)]
@@ -1183,7 +1186,7 @@ fn services(
         update_download: updates.map(|updates| update_download(&download_ctx, updates.clone())),
         updates_turned_off_by_organisation: updater::turned_off_by_organisation(),
         // The system's language, for an interface language left on Automatic.
-        system_locale: sys_locale::get_locale(),
+        system_locale: system_locale::system_locale(),
         ..Default::default()
     }
 }
