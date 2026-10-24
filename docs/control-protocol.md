@@ -77,6 +77,7 @@ each command's `agent` (`"safe"`, `"owner"`, `"never"`) and, for `"owner"`, `nee
 
 | Method | Params | Result |
 |---|---|---|
+| 2026-10-24 | minor | `ui.dialog` name `openCalendar`; commands `calendar.openShared {address}`, `calendar.removeShared {address}`, `ui.allowSharedCalendars` |
 | `engine.execute` | `command`, `params` | the command's result: any id from `engine.commands`, including the window's own commands (`ui.*`, listed below) |
 | `engine.commands` | — | every command: id, label, location, shortcut, params, enabled |
 | `mailbox.inspect` | — | accounts and how much of everything the mailbox holds (`file.info`) |

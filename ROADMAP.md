@@ -16,6 +16,7 @@ and [`docs/calendar-parity.md`](docs/calendar-parity.md).
 
 | Number | Value | Kind |
 |---|---|---|
+| 2026-10-24 | #70 calendars 4: Open Shared Calendar by address (`calendar.openShared`, `calendar.removeShared`): a colleague's calendar is read at `/users/{address}/calendar` with the owner's work or school sign-in, kept on this computer only, under Shared Calendars with a tick, colour and rights; free/busy-only shown as blocks; edit rights write through the same path; the permission is asked for by itself; an Open this calendar bar on sharing invitations |
 | Ribbon/menu catalog coverage | **189 / 311 (60.8%)** | measured (`cargo xtask parity` → [`docs/parity-checklist.md`](docs/parity-checklist.md)) |
 | Ready for real work with a real account | **~25%** | estimated ([how](#methodology)); in daily use on one Microsoft 365 mailbox, the author's; testers signing up (#11), none reporting yet. Whether MailCraft is ready for beta is decided by [the beta checklist](#the-beta-checklist), not by this estimate |
 | Ready as a local viewer and organiser of exported mail | **~55%** | estimated ([how](#methodology)) |

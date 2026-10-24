@@ -89,6 +89,7 @@ be shown when they can't.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-24 | minor | Open Shared Calendar dialog (File › Open & Export, Home › Manage Calendars), Remove Shared Calendar in the folder pane's menu, Open this calendar bar on sharing invitations |
 | 2026-10-11 | major | First version |
 | 2026-10-12 | minor | The message list measured against the target's: rows, header, scroll bar, previews |
 | 2026-10-12 | patch | The calendar's time bar can show a second time zone |

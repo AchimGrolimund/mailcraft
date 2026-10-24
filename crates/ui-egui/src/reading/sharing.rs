@@ -82,10 +82,9 @@ pub(super) fn bar(app: &mut MailApp, ui: &mut Ui, m: &Arc<Message>) {
                     .button(tl!("Open this calendar"))
                     .on_hover_text(tl!("Opens it by their address, on this computer only: it won't appear in Outlook or on your other devices"))
                     .clicked()
+                && let Err(e) = app.begin_open_shared(account, &address)
             {
-                if let Err(e) = app.begin_open_shared(account, &address) {
-                    app.status(e);
-                }
+                app.status(e);
             }
         });
     });
