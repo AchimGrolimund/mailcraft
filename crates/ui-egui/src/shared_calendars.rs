@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! A shared mailbox's calendars in the window (#70): kept in step through Microsoft Graph with
 //! the sign-in of the account the mailbox is opened through, at the mailbox's own address, and
-//! only shown and read here.
+//! shown, read and (with edit rights) changed here.
 //!
 //! A shared mailbox's calendar is there to be ticked from the moment it is added (the engine
 //! keeps one for it, [`mailcraft_engine::cmd::remote::ensure_shared_calendars`]). Nothing of it is
@@ -17,7 +17,9 @@
 //! Its access token is its own (it covers what the mailbox's mail token needn't), kept in memory
 //! and never mixed with the owner's or the mail's; the refresh token that comes back is the
 //! owner's, kept as his. Nothing of a shared mailbox's calendar is a reminder, an alert or part of
-//! what the owner's own calendars show beside it; a change to it is refused for now.
+//! what the owner's own calendars show beside it. Where the owner may edit one it is changed as
+//! his own is, at the mailbox's address; what makes the server send mail from the mailbox waits for
+//! the permission to send from shared mailboxes, asked as for its mail ([`MailApp::ask_shared_send_for`]).
 
 use mailcraft_model::{Account, Id};
 use serde_json::{Value, json};
@@ -190,6 +192,19 @@ impl MailApp {
         } else if !result.token_refused {
             self.shared_calendar_perm.insert(shared, Permission::Given);
         }
+        // What makes the server send mail from the shared mailbox (an answer to a meeting, one
+        // called off or forwarded, one with people invited) found that sending from shared
+        // mailboxes isn't allowed yet (#70): it waits, nothing goes out as the owner, and the
+        // owner is asked as he is for mail (the same permission, the same page).
+        if result.send_consent_needed && self.session.mailbox.account(shared).is_some() {
+            self.calendar.send_waits.insert(shared);
+            if self.dialog.is_some() || !self.ask_shared_send_for(shared, true) {
+                errors.push(
+                    tl!("A meeting answer or invitation from this shared mailbox waits: sending from shared mailboxes needs your permission. Use Send/Receive.")
+                        .to_string(),
+                );
+            }
+        }
     }
 
     /// Keep the tokens a calendar job or the page brought back: the access token is the shared
@@ -216,6 +231,14 @@ impl MailApp {
     #[doc(hidden)]
     pub fn seed_shared_calendar_token(&mut self, shared: Id, tokens: Tokens) {
         self.shared_calendar_tokens.insert(shared, tokens);
+    }
+
+    /// Make `account`'s list of calendars and their rights due at the next look, as a quarter of an
+    /// hour going by does, for a host's tests (which have a stopped clock).
+    #[doc(hidden)]
+    pub fn calendar_list_due(&mut self, account: Id) {
+        self.graph_checked.remove(&account);
+        self.calendar.checked.remove(&account);
     }
 
     /// What File › Info says under a shared mailbox's card about its calendars' permission, and

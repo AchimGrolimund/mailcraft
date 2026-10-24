@@ -29,7 +29,8 @@ fn served() -> (Session, Id, Id) {
         owner: Some(CalendarOwner { address: OWNER.into(), name: "Owner".into() }),
         ..Default::default()
     }];
-    apply_calendars(&mut s, &CalendarsDownload { account: owner, email: OWNER.into(), complete: true, calendars: all }).unwrap();
+    apply_calendars(&mut s, &CalendarsDownload { account: owner, email: OWNER.into(), complete: true, calendars: all, ..Default::default() })
+        .unwrap();
     let shared = s.run("account.addSharedMailbox", &json!({"address": SHARED})).unwrap()["id"].as_u64().unwrap();
     (s, owner, shared)
 }
@@ -40,7 +41,7 @@ fn listing(account: Id, rights: Rights) -> CalendarsDownload {
         RemoteCalendar { id: "sh-main".into(), name: "Calendar".into(), main: true, rights, owner: owner.clone(), ..Default::default() },
         RemoteCalendar { id: "sh-rota".into(), name: "Rota".into(), rights, owner, ..Default::default() },
     ];
-    CalendarsDownload { account, email: SHARED.into(), complete: true, calendars: all }
+    CalendarsDownload { account, email: SHARED.into(), complete: true, calendars: all, ..Default::default() }
 }
 
 fn event(id: &str, title: &str, start: i64) -> RemoteEvent {
@@ -100,6 +101,7 @@ fn a_shared_mailbox_has_a_calendar_to_tick_and_its_own_list_is_unticked_under_my
             email: OWNER.into(),
             complete: true,
             calendars: vec![RemoteCalendar { id: "x".into(), name: "Calendar".into(), main: true, ..Default::default() }],
+            ..Default::default()
         },
     )
     .unwrap();
@@ -122,9 +124,9 @@ fn a_shared_mailbox_is_never_where_new_items_go() {
 }
 
 #[test]
-fn what_is_in_a_shared_mailboxs_calendar_is_read_here_and_never_changed() {
+fn what_is_in_a_calendar_the_owner_may_only_read_is_never_changed_here() {
     let (mut s, _, shared) = served();
-    apply_calendars(&mut s, &listing(shared, Rights::Edit)).unwrap();
+    apply_calendars(&mut s, &listing(shared, Rights::Read)).unwrap();
     let events = vec![event("e-1", "Stand-up", NOW + 3_600)];
     apply_events(&mut s, &download(shared, SHARED, "", events)).unwrap();
     let ev = s.mailbox.events.values().find(|e| e.title == "Stand-up").cloned().unwrap();
@@ -140,13 +142,108 @@ fn what_is_in_a_shared_mailboxs_calendar_is_read_here_and_never_changed() {
         ("calendar.new", json!({"title": "New", "calendar": calendar, "start": "2026-10-14T10:00", "end": "2026-10-14T11:00"})),
     ] {
         let said = s.run(command, &params).unwrap_err().to_string();
-        assert!(said.contains("shared mailbox"), "{command}: {said}");
+        assert!(said.contains("may only read the shared mailbox's calendar"), "{command}: {said}");
     }
     assert_eq!(s.mailbox.event_changes, before, "nothing waits to be sent to a server that was never asked");
     assert_eq!(s.mailbox.event(ev.id).map(|e| e.title.as_str()), Some("Stand-up"));
     // The list says it can only be read.
     let list = s.run("calendar.calendars", &json!({})).unwrap().to_string();
     assert!(list.contains("\"readOnly\":true"));
+}
+
+/// The shared mailbox's calendars listed with edit rights on its main one and read rights on
+/// the other, and a meeting in each.
+fn editable() -> (Session, Id, Id) {
+    let (mut s, owner, shared) = served();
+    let mut list = listing(shared, Rights::Edit);
+    if let Some(rota) = list.calendars.iter_mut().find(|c| c.id == "sh-rota") {
+        rota.rights = Rights::Read;
+    }
+    apply_calendars(&mut s, &list).unwrap();
+    apply_events(&mut s, &download(shared, SHARED, "", vec![event("e-1", "Stand-up", NOW + 3_600)])).unwrap();
+    apply_events(&mut s, &download(shared, SHARED, "sh-rota", vec![event("e-2", "Rota", NOW + 7_200)])).unwrap();
+    (s, owner, shared)
+}
+
+#[test]
+fn with_edit_rights_a_shared_mailboxs_calendar_is_written_to_as_the_owners_own_is() {
+    use mailcraft_model::remote::EventChangeKind;
+    let (mut s, owner, shared) = editable();
+    let stand_up = s.mailbox.events.values().find(|e| e.title == "Stand-up").map(|e| e.id).unwrap();
+    let main = s.mailbox.event(stand_up).map(|e| e.calendar).unwrap();
+    // Changed, made, deleted: each is noted for the shared mailbox's account, never the owner's.
+    s.run("calendar.edit", &json!({"id": stand_up, "title": "Daily stand-up"})).unwrap();
+    let made = s.run("calendar.new", &json!({"title": "Review", "calendar": main, "start": "2026-10-16T10:00", "end": "2026-10-16T11:00"})).unwrap();
+    let made = made["id"].as_u64().unwrap();
+    assert_eq!(s.mailbox.event(made).map(|e| e.origin.account), Some(shared));
+    let kinds: Vec<(EventChangeKind, Id)> = s.mailbox.event_changes.iter().map(|c| (c.kind, c.account)).collect();
+    assert_eq!(kinds, vec![(EventChangeKind::Update, shared), (EventChangeKind::Create, shared)]);
+    let upload = crate::cmd::remote::event_upload(&s, shared).unwrap();
+    assert_eq!((upload.ops.len(), upload.email.as_str()), (2, SHARED));
+    assert!(crate::cmd::remote::event_upload(&s, owner).unwrap().ops.is_empty(), "nothing is told to the owner's own server");
+    s.run("calendar.delete", &json!({"id": stand_up})).unwrap();
+    assert!(s.mailbox.event_changes.iter().any(|c| c.kind == EventChangeKind::Delete && c.account == shared));
+    // The other calendar may only be read.
+    let rota = s.mailbox.events.values().find(|e| e.title == "Rota").map(|e| e.id).unwrap();
+    let said = s.run("calendar.edit", &json!({"id": rota, "title": "x"})).unwrap_err().to_string();
+    assert!(said.contains("may only read"), "{said}");
+}
+
+#[test]
+fn an_event_can_not_cross_between_the_owners_calendar_and_a_shared_mailboxs() {
+    let (mut s, owner, shared) = editable();
+    apply_events(&mut s, &download(owner, OWNER, "", vec![event("mine", "Mine", NOW + 600)])).unwrap();
+    let mine = s.mailbox.events.values().find(|e| e.title == "Mine").map(|e| e.id).unwrap();
+    let shared_main = s.mailbox.calendars.iter().find(|c| c.origin.account == shared && c.origin.id.is_empty()).map(|c| c.id).unwrap();
+    let own_main = s.mailbox.calendars.iter().find(|c| c.origin.account == owner && c.origin.id.is_empty()).map(|c| c.id).unwrap();
+    let said = s.run("calendar.edit", &json!({"id": mine, "calendar": shared_main})).unwrap_err().to_string();
+    assert!(said.contains("kept by the server") && said.contains("not out of it"), "{said}");
+    let theirs = s.mailbox.events.values().find(|e| e.title == "Stand-up").map(|e| e.id).unwrap();
+    let said = s.run("calendar.edit", &json!({"id": theirs, "calendar": own_main})).unwrap_err().to_string();
+    assert!(said.contains("kept by the server"), "{said}");
+    assert!(s.mailbox.event_changes.is_empty());
+}
+
+#[test]
+fn when_the_rights_shrink_what_waits_is_held_and_told_not_dropped_and_goes_if_they_come_back() {
+    let (mut s, _, shared) = editable();
+    let stand_up = s.mailbox.events.values().find(|e| e.title == "Stand-up").map(|e| e.id).unwrap();
+    s.run("calendar.edit", &json!({"id": stand_up, "title": "Daily stand-up"})).unwrap();
+    assert_eq!(crate::cmd::remote::events_waiting(&s, shared).due, 1);
+    // The owner of the mailbox takes the right to edit away; the next listing says so.
+    apply_calendars(&mut s, &listing(shared, Rights::Read)).unwrap();
+    assert_eq!(calendar_named(&s, shared, "Calendar").rights, Rights::Read);
+    assert_eq!(s.mailbox.event_changes.len(), 1, "kept, not dropped");
+    assert!(crate::cmd::remote::event_upload(&s, shared).unwrap().ops.is_empty(), "and not sent");
+    assert_eq!(crate::cmd::remote::events_waiting(&s, shared).due, 0);
+    let held = crate::cmd::remote::held_for_rights(&s.mailbox, shared);
+    assert_eq!(held.iter().map(|(_, name, n)| (name.as_str(), *n)).collect::<Vec<_>>(), [("Calendar", 1)]);
+    assert_eq!(s.mailbox.event(stand_up).map(|e| e.title.as_str()), Some("Daily stand-up"), "as the owner left it");
+    // Rights back: it goes.
+    apply_calendars(&mut s, &listing(shared, Rights::Edit)).unwrap();
+    assert_eq!(crate::cmd::remote::event_upload(&s, shared).unwrap().ops.len(), 1);
+    assert!(crate::cmd::remote::held_for_rights(&s.mailbox, shared).is_empty());
+}
+
+#[test]
+fn a_meeting_in_a_shared_mailbox_is_answered_through_its_calendar_for_its_account() {
+    use mailcraft_model::remote::EventChangeKind;
+    let (mut s, owner, shared) = editable();
+    let invited = RemoteEvent {
+        organizer: Some(mailcraft_model::Address::new("Bo", "bo@example.org")),
+        attendees: vec![mailcraft_model::Attendee { address: mailcraft_model::Address::new("Support", SHARED), ..Default::default() }],
+        is_organizer: Some(false),
+        uid: "uid-planning".into(),
+        ..event("e-3", "Planning", NOW + 10_800)
+    };
+    apply_events(&mut s, &download(shared, SHARED, "", vec![event("e-1", "Stand-up", NOW + 3_600), invited])).unwrap();
+    let planning = s.mailbox.events.values().find(|e| e.title == "Planning").map(|e| e.id).unwrap();
+    s.run("calendar.respond", &json!({"id": planning, "response": "accept"})).unwrap();
+    let noted: Vec<(EventChangeKind, Id)> = s.mailbox.event_changes.iter().map(|c| (c.kind, c.account)).collect();
+    assert_eq!(noted, vec![(EventChangeKind::Respond, shared)]);
+    let upload = crate::cmd::remote::event_upload(&s, shared).unwrap();
+    assert_eq!((upload.ops.len(), upload.ops[0].remote.as_str()), (1, "e-3"));
+    assert!(crate::cmd::remote::event_upload(&s, owner).unwrap().ops.is_empty());
 }
 
 #[test]
@@ -186,7 +283,7 @@ fn only_the_owners_own_calendars_remind() {
         owner: Some(CalendarOwner { address: "bo@example.org".into(), name: "Bo".into() }),
         ..Default::default()
     };
-    let mut own = CalendarsDownload { account: owner, email: OWNER.into(), complete: true, calendars: vec![colleague] };
+    let mut own = CalendarsDownload { account: owner, email: OWNER.into(), complete: true, calendars: vec![colleague], ..Default::default() };
     own.calendars
         .insert(0, RemoteCalendar { id: "own-main".into(), name: "Calendar".into(), main: true, rights: Rights::Edit, ..Default::default() });
     apply_calendars(&mut s, &own).unwrap();
@@ -228,4 +325,62 @@ fn removing_the_shared_mailbox_removes_its_calendars_and_events_from_this_comput
     apply_events(&mut s, &download(again, SHARED, "", vec![event("sup", "Support's", NOW + 600)])).unwrap();
     s.run("account.remove", &json!({"id": owner})).unwrap();
     assert!(s.mailbox.calendars.iter().all(|c| c.origin.account != again) && s.mailbox.events.values().all(|e| e.origin.account != again));
+}
+
+/// A meeting request in the Inbox of `account`, for the meeting `uid` on Thursday the 15th from
+/// two to three, from Bo, to the shared mailbox.
+fn request_in(s: &mut Session, account: Id, uid: &str) -> Id {
+    use mailcraft_model::{Address, Attachment, FolderKind, Message};
+    let ics = format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nSUMMARY:Planning\r\n\
+         DTSTART:20261015T140000Z\r\nDTEND:20261015T150000Z\r\nORGANIZER;CN=Bo Marsh:mailto:bo@example.org\r\n\
+         ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;CN=Support:mailto:{SHARED}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    );
+    let inbox = s.mailbox.folder_of_kind(account, FolderKind::Inbox).unwrap();
+    let message = Message {
+        folder: inbox,
+        message_id: format!("{uid}@example.org"),
+        from: Address::new("Bo Marsh", "bo@example.org"),
+        to: vec![Address::new("Support", SHARED)],
+        subject: "Planning".into(),
+        attachments: vec![Attachment::new("invite.ics", "text/calendar", ics.into_bytes())],
+        ..Default::default()
+    };
+    s.mailbox.add_message(message).unwrap()
+}
+
+#[test]
+fn a_meeting_request_in_a_shared_mailboxs_inbox_is_answered_in_its_calendar_and_from_its_account() {
+    use mailcraft_model::remote::EventChangeKind;
+    let (mut s, owner, shared) = editable();
+    let start = mailcraft_time::DateTime::new(mailcraft_time::Date::new(2026, 10, 15).unwrap(), 14, 0, 0).unwrap().to_timestamp(0);
+    // The server has put the meeting on the shared mailbox's calendar, as it does.
+    let theirs = RemoteEvent {
+        organizer: Some(mailcraft_model::Address::new("Bo Marsh", "bo@example.org")),
+        attendees: vec![mailcraft_model::Attendee { address: mailcraft_model::Address::new("Support", SHARED), ..Default::default() }],
+        is_organizer: Some(false),
+        uid: "uid-plan".into(),
+        title: "Planning".into(),
+        ..event("e-5", "Planning", start)
+    };
+    apply_events(&mut s, &download(shared, SHARED, "", vec![event("e-1", "Stand-up", NOW + 3_600), theirs])).unwrap();
+    let request = request_in(&mut s, shared, "uid-plan");
+    let said = s.run("calendar.invitation", &json!({"message": request})).unwrap();
+    assert_eq!((said["answerable"].as_bool(), said["onServer"].as_bool(), said["blocked"].clone()), (Some(true), Some(true), json!(null)), "{said}");
+    // Answered: tentatively, with another time proposed, which writes to its organizer.
+    s.run(
+        "calendar.respond",
+        &json!({"message": request, "response": "tentative", "send": true, "propose": {"start": "2026-10-16T14:00", "end": "2026-10-16T15:00"}}),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let noted: Vec<(EventChangeKind, Id)> = s.mailbox.event_changes.iter().map(|c| (c.kind, c.account)).collect();
+    assert_eq!(noted, vec![(EventChangeKind::Respond, shared)]);
+    let upload = crate::cmd::remote::event_upload(&s, shared).unwrap();
+    assert_eq!((upload.ops.len(), upload.email.as_str(), upload.ops[0].remote.as_str()), (1, SHARED, "e-5"));
+    assert!(upload.ops[0].send && upload.ops[0].proposed.is_some() && upload.ops[0].mails_others());
+    assert!(crate::cmd::remote::event_upload(&s, owner).unwrap().ops.is_empty(), "nothing is said as the owner");
+    // One whose meeting hasn't come down says it can't be answered yet, and nothing is made up.
+    let early = request_in(&mut s, shared, "uid-not-there");
+    let said = s.run("calendar.invitation", &json!({"message": early})).unwrap();
+    assert_eq!((said["answerable"].as_bool(), said["blocked"].as_str()), (Some(false), Some("calendar")));
 }

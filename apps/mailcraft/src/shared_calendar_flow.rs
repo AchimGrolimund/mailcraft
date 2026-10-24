@@ -4,10 +4,14 @@
 //! calendar timer, this host's Microsoft Graph job and `mailcraft-net`, against the stand-in
 //! (`mailcraft_net::graph::standin`). Nothing here leaves this machine, and nobody is signed in.
 
+use std::sync::{Arc, Mutex};
+
 use mailcraft_engine::Session;
 use mailcraft_model::sync::Tokens;
 use mailcraft_model::{Id, Mailbox, Rights};
+use mailcraft_net::NetError;
 use mailcraft_net::graph::standin::{CalendarAccess, StandIn, TOKEN};
+use mailcraft_net::oauth::GraphTokens;
 use mailcraft_ui_egui::{GraphRequest, MailApp, Services};
 use serde_json::json;
 
@@ -24,7 +28,15 @@ struct Flow {
     server: StandIn,
     shared: Id,
     at: f64,
+    /// Whether the owner has allowed sending from shared mailboxes yet, as the provider says when a
+    /// token for it is asked for; and how often one was asked for.
+    allowed: Arc<Mutex<(bool, usize)>>,
     _route: mailcraft_net::graph::standin::Routed,
+}
+
+fn renewed() -> Result<GraphTokens, NetError> {
+    let tokens = Tokens { access: TOKEN.into(), refresh: "ref-2".into(), expires_at: mailcraft_time::now() + 3_600, ..Default::default() };
+    Ok(GraphTokens { tokens, extras_missing: false, covers_favorites: false })
 }
 
 /// The window, a Microsoft account (whose own calendar has been looked at already) with a shared
@@ -48,18 +60,31 @@ fn flow(access: CalendarAccess) -> Flow {
     let route = server.route();
     let mut app = MailApp::new(Session::at(Mailbox::with_local_account("", ""), NOW, 0), Services::default());
     app.autosave = false;
-    app.services.graph = Some(Box::new(|request: GraphRequest| {
+    let allowed: Arc<Mutex<(bool, usize)>> = Arc::default();
+    let (said, url) = (allowed.clone(), server.url());
+    // (A job of its own, as the host runs one: a Send/Receive hands its mail over piece by piece.)
+    app.services.graph = Some(Box::new(move |request: GraphRequest| {
         let (tx, rx) = std::sync::mpsc::channel();
-        let _ = tx.send(super::graph_in(request, "UTC"));
+        let (said, url) = (said.clone(), url.clone());
+        std::thread::spawn(move || {
+            let _route = mailcraft_net::graph::standin::route(&url);
+            let send = move |_: &mailcraft_model::OAuth, _: &str| {
+                let mut said = said.lock().unwrap();
+                said.1 += 1;
+                if said.0 { renewed() } else { Err(NetError::ConsentNeeded("consent_required".into())) }
+            };
+            let _ = tx.send(super::graph_sending_with(request, "UTC", &|_, _, _| renewed(), &send));
+        });
         rx
     }));
+    app.services.sync = Some(Box::new(|_| std::sync::mpsc::channel().1));
     let owner = app.execute("account.add", json!({"email": OWNER, "kind": "microsoft"})).unwrap()["id"].as_u64().unwrap();
     let fresh = Tokens { access: TOKEN.into(), refresh: "ref".into(), expires_at: mailcraft_time::now() + 3_600, ..Default::default() };
     app.seed_graph_token(owner, fresh.clone());
     let shared = app.execute("account.addSharedMailbox", json!({"address": SHARED})).unwrap()["id"].as_u64().unwrap();
     app.seed_shared_calendar_token(shared, fresh);
     app.execute("view.calendar", json!({})).unwrap();
-    let mut flow = Flow { app, server, shared, at: mailcraft_ui_egui::now_ms(), _route: route };
+    let mut flow = Flow { app, server, shared, at: mailcraft_ui_egui::now_ms(), allowed, _route: route };
     // The owner's own calendar comes down first (nothing of it is what these look at).
     assert!(flow.look());
     flow.take_in();
@@ -74,10 +99,71 @@ impl Flow {
         self.app.calendar_tick_at(true, self.at)
     }
 
-    fn take_in(&mut self) {
-        for _ in 0..4 {
-            self.app.poll_calendar();
+    /// Time goes by, a few seconds at a time, and the window looks at the calendar each time and
+    /// takes in whatever the host answered: enough for a change to wait its quiet moment, go, and
+    /// be seen again.
+    fn go(&mut self) {
+        for _ in 0..8 {
+            self.at += 3_000.0;
+            if self.app.calendar_tick_at(true, self.at) {
+                self.take_in();
+            }
         }
+    }
+
+    /// The shared mailbox's main calendar, ticked, and read once.
+    fn shown(&mut self) -> Id {
+        let placeholder = self.calendar(SHARED).id;
+        self.app.execute("calendar.showCalendar", json!({"id": placeholder})).unwrap();
+        assert!(self.look());
+        self.take_in();
+        self.calendar("Calendar").id
+    }
+
+    /// What the stand-in's shared mailbox has, by title.
+    fn there(&self) -> Vec<String> {
+        let mut state = self.server.state();
+        let mut titles: Vec<String> = state.other(SHARED).map(|o| o.events.iter().map(|e| e.subject.clone()).collect()).unwrap_or_default();
+        titles.sort();
+        titles
+    }
+
+    /// What the owner's own calendar has on the stand-in.
+    fn mine(&self) -> Vec<String> {
+        self.server.state().events.iter().map(|e| e.subject.clone()).collect()
+    }
+
+    /// Everything the stand-in was asked that changes something, and everything asked at `/me`.
+    fn writes(&self) -> Vec<String> {
+        self.server.state().requests.iter().filter(|asked| asked.method != "GET").map(|asked| asked.path.join("/")).collect()
+    }
+
+    /// What was written at `/me` (the owner's own calendar is read there all the while; what is
+    /// asked of a shared mailbox is never at `/me`, which the net crate's own tests prove for every
+    /// request: here, no change reached it).
+    fn at_me(&self) -> Vec<String> {
+        self.writes().into_iter().filter(|path| path.starts_with("v1.0/me")).collect()
+    }
+
+    /// Time goes by far enough for what was held back after a failure to be tried again (the
+    /// session's clock stands still).
+    fn retry(&mut self) {
+        for change in &mut self.app.session.mailbox.event_changes {
+            change.retry_at = 0;
+        }
+        self.at += 650_000.0;
+    }
+
+    fn take_in(&mut self) {
+        for _ in 0..2_000 {
+            self.app.poll_calendar();
+            self.app.poll_graph();
+            if !self.app.calendar_syncing() && !self.app.graph_running() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        panic!("the job didn't end");
     }
 
     fn calendar(&self, name: &str) -> mailcraft_model::Calendar {
@@ -122,11 +208,165 @@ fn a_shared_mailboxs_calendars_come_down_when_ticked_and_nothing_is_asked_at_me(
     );
     // The owner's own calendar was never mixed with it.
     assert!(!flow.titles().iter().any(|t| t == "Dentist"));
-    // A change to one is refused: nothing waits to go, and nothing is written to the server.
-    let stand_up = flow.app.session.mailbox.events.values().find(|e| e.title == "Stand-up").map(|e| e.id).unwrap();
-    assert!(flow.app.execute("calendar.edit", json!({"id": stand_up, "title": "Changed"})).is_err());
+    // What is in the calendar the owner may only read is refused a change: nothing waits to go,
+    // and nothing is written to the server.
+    let team = flow.calendar("Team").id;
+    flow.app.execute("calendar.showCalendar", json!({"id": team})).unwrap();
+    flow.at += 60_000.0;
+    flow.go();
+    let rota = flow.app.session.mailbox.events.values().find(|e| e.title == "Rota").map(|e| e.id).unwrap();
+    assert!(flow.app.execute("calendar.edit", json!({"id": rota, "title": "Changed"})).is_err());
     assert!(flow.app.session.mailbox.event_changes.is_empty());
     assert!(flow.server.state().writes().is_empty());
+}
+
+#[test]
+fn changes_to_a_shared_mailboxs_calendar_go_to_its_own_address_and_never_to_me() {
+    let mut flow = flow(CalendarAccess::Open);
+    let main = flow.shown();
+    // Made in it.
+    let made = flow
+        .app
+        .execute("calendar.new", json!({"title": "Review", "calendar": main, "start": "2026-10-16T10:00", "end": "2026-10-16T11:00"}))
+        .unwrap();
+    let review = made["id"].as_u64().unwrap();
+    flow.go();
+    assert_eq!(flow.there(), ["Away day", "Review", "Rota", "Stand-up"]);
+    assert_eq!(flow.mine(), ["Dentist"], "the owner's own calendar was not written to");
+    assert!(flow.app.session.mailbox.event_changes.is_empty(), "it went, and it was seen");
+    assert_eq!(flow.app.session.mailbox.event(review).map(|e| e.origin.account), Some(flow.shared));
+    assert!(flow.app.session.mailbox.event(review).is_some_and(|e| !e.origin.id.is_empty()), "it is known by what the server calls it");
+    // Changed.
+    flow.app.execute("calendar.edit", json!({"id": review, "title": "Design review"})).unwrap();
+    flow.go();
+    assert_eq!(flow.there(), ["Away day", "Design review", "Rota", "Stand-up"]);
+    // Deleted.
+    flow.app.execute("calendar.delete", json!({"id": review})).unwrap();
+    flow.go();
+    assert_eq!(flow.there(), ["Away day", "Rota", "Stand-up"]);
+    assert!(flow.app.session.mailbox.events.values().all(|e| e.title != "Design review" && e.title != "Review"));
+    assert_eq!(flow.mine(), ["Dentist"]);
+    // All of it for the mailbox's address; nothing, ever, at /me.
+    let writes = flow.writes();
+    assert!(writes.len() >= 3 && writes.iter().all(|line| line.contains("users/support@example.org")), "{writes:?}");
+    assert!(flow.at_me().is_empty(), "{:?}", flow.at_me());
+    assert!(!flow.app.has_sync_problems());
+}
+
+#[test]
+fn a_change_the_server_refuses_is_put_back_and_the_window_says_why() {
+    let mut flow = flow(CalendarAccess::Open);
+    let main = flow.shown();
+    // The owner's right to edit is taken away on the server, which the window doesn't know yet.
+    {
+        let mut state = flow.server.state();
+        if let Some(other) = state.other(SHARED) {
+            for calendar in &mut other.calendars {
+                calendar.can_edit = false;
+            }
+        }
+    }
+    let made = flow
+        .app
+        .execute("calendar.new", json!({"title": "Review", "calendar": main, "start": "2026-10-16T10:00", "end": "2026-10-16T11:00"}))
+        .unwrap();
+    let review = made["id"].as_u64().unwrap();
+    flow.go();
+    // Nothing was written to the server, and the first refusal is tried once more later.
+    assert_eq!(flow.there(), ["Away day", "Rota", "Stand-up"]);
+    assert_eq!(flow.app.session.mailbox.event_changes.len(), 1);
+    flow.retry();
+    flow.go();
+    // Refused again: what the owner wrote is not thrown away, and it is not left in the shared
+    // mailbox's calendar either: it is kept on this computer, and said.
+    assert_eq!(flow.there(), ["Away day", "Rota", "Stand-up"]);
+    assert!(flow.app.session.mailbox.event_changes.is_empty());
+    assert!(flow.app.session.mailbox.event(review).is_some_and(|e| e.origin.account != flow.shared));
+    assert!(flow.app.said_text().contains("wouldn't take"), "{}", flow.app.said_text());
+    assert!(flow.at_me().is_empty());
+}
+
+#[test]
+fn what_waits_is_held_and_told_when_the_owner_may_no_longer_edit_and_goes_when_he_may_again() {
+    let mut flow = flow(CalendarAccess::Open);
+    let main = flow.shown();
+    let flip = |flow: &Flow, can_edit: bool| {
+        let mut state = flow.server.state();
+        if let Some(other) = state.other(SHARED) {
+            for calendar in &mut other.calendars {
+                calendar.can_edit = can_edit;
+            }
+        }
+    };
+    flow.app.execute("calendar.new", json!({"title": "Review", "calendar": main, "start": "2026-10-16T10:00", "end": "2026-10-16T11:00"})).unwrap();
+    // The server stops taking changes; the change is tried once and held; the list that comes
+    // next says the rights shrank.
+    flip(&flow, false);
+    flow.app.calendar_list_due(flow.shared);
+    flow.go();
+    assert_eq!(flow.calendar("Calendar").rights, Rights::Read);
+    assert_eq!(flow.there(), ["Away day", "Rota", "Stand-up"]);
+    assert_eq!(flow.app.session.mailbox.event_changes.len(), 1, "held, not dropped");
+    assert!(flow.app.said_text().contains("held here"), "{}", flow.app.said_text());
+    // Nothing more goes while the rights are what they are.
+    flow.server.state().requests.clear();
+    flow.app.calendar_list_due(flow.shared);
+    flow.go();
+    assert!(flow.writes().is_empty(), "{:?}", flow.writes());
+    assert_eq!(flow.app.session.mailbox.event_changes.len(), 1);
+    // Rights come back: it goes.
+    flip(&flow, true);
+    flow.app.calendar_list_due(flow.shared);
+    flow.retry();
+    flow.go();
+    assert_eq!(flow.there(), ["Away day", "Review", "Rota", "Stand-up"]);
+    assert!(flow.app.session.mailbox.event_changes.is_empty());
+    assert!(flow.at_me().is_empty());
+}
+
+#[test]
+fn a_meeting_in_a_shared_mailbox_is_answered_from_it_once_sending_from_it_is_allowed() {
+    let mut flow = flow(CalendarAccess::Open);
+    {
+        let mut state = flow.server.state();
+        let main = state.other(SHARED).and_then(|o| o.calendars.iter().find(|c| c.main).map(|c| c.id.clone())).unwrap();
+        let invited = state.add_other_event(SHARED, &main, "Planning", utc(20, 9), "busy");
+        if let Some(other) = state.other(SHARED) {
+            for event in &mut other.events {
+                if event.id == invited {
+                    event.is_organizer = false;
+                    event.attendees = vec![json!({"emailAddress": {"address": SHARED, "name": "Support"}, "type": "required"})];
+                }
+            }
+        }
+    }
+    flow.shown();
+    let planning = flow.app.session.mailbox.events.values().find(|e| e.title == "Planning").map(|e| e.id).unwrap();
+    flow.app.execute("calendar.respond", json!({"id": planning, "response": "accept", "send": true})).unwrap();
+    flow.server.state().requests.clear();
+    flow.go();
+    // Sending from shared mailboxes isn't allowed yet: the answer waits, nothing is sent as the
+    // owner, and the window asks, as it does for mail.
+    assert!(flow.allowed.lock().unwrap().1 >= 1);
+    let mail = flow.server.state().mail.clone();
+    let writes = flow.writes();
+    assert!(mail.is_empty() && writes.is_empty(), "{mail:?} {writes:?}");
+    assert_eq!(flow.app.session.mailbox.event_changes.len(), 1);
+    assert_eq!(flow.app.dialog.as_ref().map(|d| d.name()), Some("confirm"));
+    // Allowed: it goes through the shared mailbox's address, and the meeting is answered there.
+    flow.allowed.lock().unwrap().0 = true;
+    flow.app.execute("ui.closeDialog", json!({})).unwrap();
+    flow.app.execute("ui.sync", json!({"account": flow.shared})).unwrap();
+    flow.take_in();
+    flow.go();
+    let mail = flow.server.state().mail.clone();
+    assert!(mail.iter().any(|line| line.starts_with("response:Planning:accept")), "{mail:?}");
+    // (A `$batch` is a read, as Graph has them: the mail run's own.)
+    let writes: Vec<String> = flow.writes().into_iter().filter(|line| !line.ends_with("$batch")).collect();
+    assert!(writes.iter().any(|line| line.ends_with("accept")) && writes.iter().all(|line| line.contains("users/support@example.org")), "{writes:?}");
+    assert!(flow.app.session.mailbox.event_changes.is_empty());
+    assert!(flow.at_me().is_empty(), "{:?}", flow.at_me());
+    assert_eq!(flow.mine(), ["Dentist"]);
 }
 
 #[test]

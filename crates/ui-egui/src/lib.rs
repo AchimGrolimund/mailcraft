@@ -65,6 +65,9 @@ pub mod mail_view;
 mod meeting_dialogs;
 pub mod menubar;
 pub mod nav;
+mod open_shared;
+#[cfg(test)]
+mod open_shared_tests;
 pub mod people_view;
 pub mod reading;
 mod reminders;
@@ -376,9 +379,10 @@ pub struct SignInRequest {
     /// by itself: the owner is sending from one for the first time, and said go ahead. Never
     /// with a sign-in of any other kind.
     pub shared_send: bool,
-    /// With `shared`: ask for reading the calendars of shared mailboxes
-    /// (`Calendars.ReadWrite.Shared`, #70) as well, by itself: the owner ticked a shared
-    /// mailbox's calendar and said go ahead. Never with a sign-in of any other kind.
+    /// Ask for reading other people's calendars (`Calendars.ReadWrite.Shared`, #70) as well, by
+    /// itself, never with a sign-in of any other kind: with `shared`, the owner ticked a shared
+    /// mailbox's calendar and said go ahead; with `graph` alone, the owner opened a calendar by
+    /// address and it is to be read (Open Shared Calendar). One permission, one question.
     pub shared_calendars: bool,
 }
 
@@ -481,6 +485,10 @@ pub struct GraphResult {
     /// A shared mailbox's run had mail to send, and the owner hasn't allowed sending from shared
     /// mailboxes yet (`Mail.Send.Shared`, #70): none of it was sent (it waits); the window asks.
     pub send_consent_needed: bool,
+    /// The account has calendars opened by address (#70) and the owner hasn't allowed reading
+    /// other people's calendars yet (`Calendars.ReadWrite.Shared`): they weren't read; the
+    /// window asks.
+    pub shared_calendars_consent_needed: bool,
     /// The Graph token that was handed in is no longer taken.
     pub token_refused: bool,
     /// The sign-in itself was refused when a token was asked for (it has run out, or was taken
@@ -533,8 +541,8 @@ struct SigningIn {
     shared: Option<Id>,
     /// And for sending from it: what waits in its Outbox goes once it is had, or is held.
     shared_send: bool,
-    /// And for reading the calendars of shared mailboxes: its calendars are read once it is had
-    /// (#70).
+    /// And for reading other people's calendars (one permission): a shared mailbox's (with
+    /// `shared`) or those opened by address (without); read once it is had (#70).
     shared_calendars: bool,
     /// The owner signs in on a page in the browser (no kept token to renew it with).
     browser: bool,
@@ -676,7 +684,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "ui.dialog",
         "Open Dialog",
         "Window",
-        r#"{"name": "commands"|"event"|"meeting"|"editEvent"|"contact"|"editContact"|"task"|"editTask"|"folder"|"goToDate"|"link"|"account"|"categories"|"rules"|"about"|"contributors"|"testers"|"reportProblem"|"proposeTime"|"forwardMeeting"|"proposals", …} (account: "email"?: string to start with, or "id": number for that account's settings, and with "page": "approval" the page that says what to do when its organisation has to approve MailCraft first (as `ui.approvalHelp` opens it); proposeTime: "id"?: number (an item of the calendar) | "message": number (an invitation in the mail); forwardMeeting: "id"?: number; proposals: "id"?: number | "message": number — the first two write to other people only from their own Propose and Send buttons)"#,
+        r#"{"name": "commands"|"event"|"meeting"|"editEvent"|"contact"|"editContact"|"task"|"editTask"|"folder"|"goToDate"|"openCalendar"|"link"|"account"|"categories"|"rules"|"about"|"contributors"|"testers"|"reportProblem"|"proposeTime"|"forwardMeeting"|"proposals", …} (account: "email"?: string to start with, or "id": number for that account's settings, and with "page": "approval" the page that says what to do when its organisation has to approve MailCraft first (as `ui.approvalHelp` opens it); proposeTime: "id"?: number (an item of the calendar) | "message": number (an invitation in the mail); forwardMeeting: "id"?: number; proposals: "id"?: number | "message": number — the first two write to other people only from their own Propose and Send buttons)"#,
     ),
     ("ui.closeDialog", "Close Dialog", "Window", "{}"),
     ("ui.theme", "Interface Theme", "File › Options", r#"{"value": "light"|"dark"|"system"}"#),
@@ -734,9 +742,9 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "ui.allowSharedCalendars",
-        "Allow Reading Shared Mailboxes' Calendars",
-        "File › Info",
-        r#"{"account": number (a shared mailbox), "confirmed": true} — asks the owner, on Microsoft's page in the browser, to let MailCraft read the calendars of the shared mailboxes he was given access to (Calendars.ReadWrite.Shared), by itself and never with a sign-in. The window asks first, when the owner ticks a shared mailbox's calendar for the first time, and File › Info has "Ask again". Allowed, the calendars of that shared mailbox are read with the next look at the calendar; refused, or when an administrator has to approve first, the window says what to do next. Answers {"pending": "signIn", "account": the account it is opened through}"#,
+        "Allow Reading Other People's Calendars",
+        "File › Info and File › Open & Export",
+        r#"{"account": number (a shared mailbox, or a Microsoft account that opens calendars by address), "confirmed": true} — asks the owner, on Microsoft's page in the browser, to let MailCraft read the calendars of the shared mailboxes he was given access to, and the calendars people share with him that he opens by address (Calendars.ReadWrite.Shared, one permission for both), by itself and never with a sign-in. The window asks first, when the owner ticks a shared mailbox's calendar for the first time, and File › Info and File › Open & Export has "Ask again". Allowed, the calendars of that shared mailbox are read with the next look at the calendar; refused, or when an administrator has to approve first, the window says what to do next. Answers {"pending": "signIn", "account": the account it is opened through}"#,
     ),
     (
         "ui.allowSharedSend",
@@ -1027,9 +1035,11 @@ pub struct MailApp {
     shared_next: Option<Id>,
     /// With `shared_next`: that sign-in asks for sending from shared mailboxes too (#70).
     shared_send_next: bool,
-    /// With `shared_next`: that sign-in asks for reading the calendars of shared mailboxes too
-    /// (#70).
+    /// With `shared_next`: that sign-in asks for reading the calendars of shared mailboxes too;
+    /// without it, for reading the calendars opened by address (#70).
     shared_calendars_next: bool,
+    /// Opening other people's calendars by address (#70).
+    open_shared: open_shared::OpenShared,
     /// Where each shared mailbox's calendars stand with the owner's permission for them (#70):
     /// what a run found out, and what was asked.
     shared_calendar_perm: std::collections::HashMap<Id, shared_calendars::Permission>,
@@ -1253,6 +1263,7 @@ impl MailApp {
             shared_next: None,
             shared_send_next: false,
             shared_calendars_next: false,
+            open_shared: Default::default(),
             shared_calendar_perm: Default::default(),
             shared_calendar_tokens: Default::default(),
             shared_send_waits: Default::default(),
@@ -1506,6 +1517,12 @@ impl MailApp {
         if r.is_ok() && id == "view.reminders" {
             self.reminders.asked_for = true;
         }
+        // A calendar opened by address (#70), from the dialog or a script: read at once.
+        if let (Ok(opened), "calendar.openShared") = (&r, id)
+            && let Some(account) = opened.get("account").and_then(Value::as_u64)
+        {
+            self.read_opened_now(account);
+        }
         // Outlook's Favorites are wanted again: they are read at once.
         if r.is_ok() && id == "view.favorites" && params.get("own").and_then(Value::as_bool) == Some(false) {
             for account in self.session.mailbox.accounts.iter().map(|a| a.id).collect::<Vec<_>>() {
@@ -1722,7 +1739,11 @@ impl MailApp {
                     return Some(Err(tl!("Say that this is meant with \"confirmed\": true.").to_string()));
                 }
                 let Some(shared) = p.get("account").and_then(Value::as_u64) else { return Some(Err(tl!("`account` is required").to_string())) };
-                self.begin_shared_calendars_sign_in(shared)
+                if self.session.mailbox.account(shared).is_some_and(mailcraft_model::Account::is_shared) {
+                    self.begin_shared_calendars_sign_in(shared)
+                } else {
+                    self.begin_opened_calendars_sign_in(shared)
+                }
             }
             "ui.allowSharedSend" => {
                 let Some(shared) = p.get("account").and_then(Value::as_u64) else { return Some(Err(tl!("`account` is required").to_string())) };
@@ -1950,7 +1971,8 @@ impl MailApp {
         let favorites = std::mem::take(&mut self.favorites_next) && graph;
         let shared = self.shared_next.take().filter(|_| graph);
         let shared_send = std::mem::take(&mut self.shared_send_next) && shared.is_some();
-        let shared_calendars = std::mem::take(&mut self.shared_calendars_next) && shared.is_some();
+        // (Alone with `graph`: for the calendars opened by address; with a shared mailbox: for its.)
+        let shared_calendars = std::mem::take(&mut self.shared_calendars_next) && graph;
         if self.signing_in.is_some() || self.approving() {
             return Err(tl!("Finish signing in first (your browser is waiting)").to_string());
         }
@@ -2717,6 +2739,10 @@ impl MailApp {
             }
             return self.shared_signed_in(shared, account, answer);
         }
+        // For reading the calendars opened by address (#70): they are read now, or why not is said.
+        if for_shared_calendars {
+            return self.opened_calendars_signed_in(account, answer);
+        }
         let address = self.session.mailbox.account(account).map(|a| a.email.clone()).unwrap_or_default();
         // The owner picks who signs in on the page: it has to be this account. Somebody else's
         // tokens are neither used nor remembered, mail's or Graph's (#103).
@@ -2814,6 +2840,14 @@ impl MailApp {
     /// Whether the last Send/Receive of any account had problems.
     pub fn has_sync_problems(&self) -> bool {
         !self.sync_problems.is_empty()
+    }
+
+    /// What the status bar says now and what the last Send/Receive found wrong, as one text, for a
+    /// host's tests (which have no window to look at).
+    #[doc(hidden)]
+    pub fn said_text(&self) -> String {
+        let status = self.status_msg.as_ref().map(|(said, _)| said.as_str()).unwrap_or_default();
+        format!("{status}\n{}", self.sync_problem_lines().join("\n"))
     }
 
     /// What went wrong in the last Send/Receive, account by account, as lines to show and copy.

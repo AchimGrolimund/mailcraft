@@ -96,7 +96,7 @@ fn listing(shared: Id) -> CalendarsDownload {
         },
         RemoteCalendar { id: "sh-rota".into(), name: "Rota".into(), rights: Rights::Read, owner, ..Default::default() },
     ];
-    CalendarsDownload { account: shared, email: SHARED.into(), complete: true, calendars: all }
+    CalendarsDownload { account: shared, email: SHARED.into(), complete: true, calendars: all, ..Default::default() }
 }
 
 fn events(shared: Id, calendar: &str, title: &str) -> EventsDownload {
@@ -201,7 +201,8 @@ fn the_owner_is_asked_once_by_itself_when_the_sign_in_does_not_cover_shared_cale
     assert_eq!(jobs.lock().unwrap().len(), 1);
     // Not meant without a yes.
     assert!(app.run("ui.allowSharedCalendars", json!({"account": shared})).is_err());
-    assert!(app.run("ui.allowSharedCalendars", json!({"account": owner, "confirmed": true})).is_err());
+    // (An account that isn't there, or doesn't sign in with Microsoft, has no calendars to allow.)
+    assert!(app.run("ui.allowSharedCalendars", json!({"account": 9_999, "confirmed": true})).is_err());
     // Go ahead: Microsoft's page, for shared calendars, by itself, for the owner.
     app.dialog = None;
     assert_eq!(app.run("ui.allowSharedCalendars", json!({"account": shared, "confirmed": true})).unwrap()["account"], owner);

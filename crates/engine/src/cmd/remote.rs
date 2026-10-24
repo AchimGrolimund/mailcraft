@@ -848,6 +848,21 @@ fn new_token(event: Id, salt: u64) -> String {
 /// only read (somebody else's, a calendar of holidays): the server would refuse it anyway.
 pub(crate) fn writable(mailbox: &Mailbox, calendar: Id) -> Result<(), CmdError> {
     match mailbox.calendar(calendar) {
+        // A shared mailbox's calendar, with the rights this account has on it (#70): the owner
+        // of the mailbox sets them, and they are read again at every listing.
+        Some(c) if !c.can_edit() && keeper(mailbox, &c.origin).is_some_and(Account::is_shared) => {
+            if c.rights == Rights::FreeBusy {
+                Err(failed!(
+                    "The shared mailbox's calendar \"{name}\" only shows when its owner is busy: this account can't change it.",
+                    name = c.name
+                ))
+            } else {
+                Err(failed!(
+                    "This account may only read the shared mailbox's calendar \"{name}\": the mailbox's owner hasn't given it edit rights (or they haven't been read yet).",
+                    name = c.name
+                ))
+            }
+        }
         Some(c) if !c.can_edit() && keeper(mailbox, &c.origin).is_some() => {
             if c.rights == Rights::FreeBusy {
                 Err(failed!("The calendar \"{name}\" only shows when its owner is busy: this account can't change it.", name = c.name))
@@ -855,12 +870,6 @@ pub(crate) fn writable(mailbox: &Mailbox, calendar: Id) -> Result<(), CmdError> 
                 Err(failed!("The calendar \"{name}\" can only be read: its owner hasn't let this account change it.", name = c.name))
             }
         }
-        // A shared mailbox's calendar is read here, and a change to it would go nowhere (#70):
-        // not until what is changed in it is sent to its mailbox.
-        Some(c) if keeper(mailbox, &c.origin).is_some_and(Account::is_shared) => Err(failed!(
-            "The calendar \"{name}\" is a shared mailbox's: it is shown here, and changes to it aren't sent to Outlook yet.",
-            name = c.name
-        )),
         _ => Ok(()),
     }
 }
@@ -1059,6 +1068,36 @@ fn unfit(mailbox: &Mailbox, change: &EventChange, here: &HashSet<(Id, &str)>) ->
 /// Whether a noted change still hangs together with the mailbox ([`unfit`]).
 fn holds(mailbox: &Mailbox, change: &EventChange, here: &HashSet<(Id, &str)>) -> bool {
     unfit(mailbox, change, here).is_none()
+}
+
+/// The calendar here that a noted change is about: where its event is, or was.
+fn change_calendar(mailbox: &Mailbox, change: &EventChange) -> Option<Id> {
+    let now = mailbox.event(change.event).filter(|event| event.origin.account == change.account || change.kind == EventChangeKind::Create);
+    now.map(|event| event.calendar).or_else(|| change.base.as_deref().map(|base| base.calendar))
+}
+
+/// Whether a noted change is held back for want of rights (#70): the calendar it is about is one
+/// that a server keeps and this account may no longer change (its rights were read again and
+/// shrank). It is not sent and not dropped: it waits here, and the owner is told
+/// ([`held_for_rights`]).
+fn lacks_rights(mailbox: &Mailbox, change: &EventChange) -> bool {
+    change_calendar(mailbox, change)
+        .and_then(|calendar| mailbox.calendar(calendar))
+        .is_some_and(|calendar| !calendar.can_edit() && keeper(mailbox, &calendar.origin).is_some())
+}
+
+/// The calendars of `account` that changes are held back for, because the account may no longer
+/// change them (#70), with how many each: for the window to tell the owner, by the calendar's name.
+pub fn held_for_rights(mailbox: &Mailbox, account: Id) -> Vec<(Id, String, usize)> {
+    let mut held: Vec<(Id, String, usize)> = Vec::new();
+    for change in mailbox.event_changes.iter().filter(|change| change.account == account && lacks_rights(mailbox, change)) {
+        let Some(calendar) = change_calendar(mailbox, change).and_then(|id| mailbox.calendar(id)) else { continue };
+        match held.iter_mut().find(|(id, ..)| *id == calendar.id) {
+            Some((.., n)) => *n += 1,
+            None => held.push((calendar.id, calendar.name.clone(), 1)),
+        }
+    }
+    held
 }
 
 /// Whether a noted change may go to its server as far as mail is concerned: one that makes the
@@ -1278,7 +1317,12 @@ pub fn events_waiting(s: &Session, account: Id) -> EventsWaiting {
         return waiting;
     }
     let (now, here) = (s.now(), events_here(&s.mailbox));
-    for change in s.mailbox.event_changes.iter().filter(|change| change.account == account && holds(&s.mailbox, change, &here)) {
+    for change in s
+        .mailbox
+        .event_changes
+        .iter()
+        .filter(|change| change.account == account && holds(&s.mailbox, change, &here) && !lacks_rights(&s.mailbox, change))
+    {
         waiting.total += 1;
         // (The end of a move waits for the copy to be seen on the server, for a while.)
         let held = waits_for_copy(&s.mailbox, change, now).filter(|until| *until > change.retry_at);
@@ -1302,7 +1346,11 @@ pub fn event_upload(s: &Session, account: Id) -> Result<EventsUpload, CmdError> 
     let mailbox = &s.mailbox;
     let here = events_here(mailbox);
     let mut ops = Vec::new();
-    for change in mailbox.event_changes.iter().filter(|change| change.account == account && change.retry_at <= now && holds(mailbox, change, &here)) {
+    for change in mailbox
+        .event_changes
+        .iter()
+        .filter(|change| change.account == account && change.retry_at <= now && holds(mailbox, change, &here) && !lacks_rights(mailbox, change))
+    {
         if ops.len() >= MAX_EVENT_OPS {
             break;
         }
@@ -3471,6 +3519,11 @@ pub fn apply_calendars(s: &mut Session, download: &CalendarsDownload) -> CmdResu
     let account = owner(&s.mailbox, download.account, &download.email)?.id;
     let mut download = download.clone();
     download.tidy();
+    // Calendars opened by address (#70) come from the host, never from a server's list, and
+    // only for an address the owner opened under this account.
+    let opened: Vec<mailcraft_model::OpenedCalendar> = s.mailbox.account(account).map(|a| a.opened_calendars.clone()).unwrap_or_default();
+    let is_opened = |id: &str| mailcraft_model::remote::opened_address(id).is_some_and(|a| opened.iter().any(|o| o.address.eq_ignore_ascii_case(&a)));
+    download.calendars.retain(|calendar| !calendar.id.starts_with(mailcraft_model::remote::OPENED_PREFIX) || is_opened(&calendar.id));
     // A list that doesn't say which calendar is the main one can't be told from the calendar
     // that is here already (its events would come a second time, under another calendar's
     // name): nothing is made of it.
@@ -3504,7 +3557,9 @@ pub fn apply_calendars(s: &mut Session, download: &CalendarsDownload) -> CmdResu
                 updated += usize::from(same);
             }
         } else if mailbox.calendars.len() < MAX_CALENDARS {
-            let color = remote.color.unwrap_or_else(|| super::calendar::next_color(mailbox));
+            // (One opened by address has the colour and the tick the owner's list gave it.)
+            let own = opened.iter().find(|o| mailcraft_model::remote::opened_address(&remote.id).is_some_and(|a| o.address.eq_ignore_ascii_case(&a)));
+            let color = own.map(|o| o.color).or(remote.color).unwrap_or_else(|| super::calendar::next_color(mailbox));
             let id = mailbox.alloc_id();
             let origin = Origin { account, id: named, ..Default::default() };
             mailbox.calendars.push(Calendar {
@@ -3512,7 +3567,7 @@ pub fn apply_calendars(s: &mut Session, download: &CalendarsDownload) -> CmdResu
                 name: title,
                 color,
                 // Only the account's own calendar is ticked to begin with.
-                visible: remote.main,
+                visible: remote.main || own.is_some_and(|o| o.ticked),
                 origin,
                 rights: remote.rights,
                 owner: remote.owner.clone(),
@@ -3525,8 +3580,14 @@ pub fn apply_calendars(s: &mut Session, download: &CalendarsDownload) -> CmdResu
     }
     // What the server no longer lists: never the main one, and only when the list is all of it.
     let gone: Vec<Id> = if download.complete {
-        let followed =
-            |calendar: &&Calendar| calendar.origin.account == account && !calendar.origin.id.is_empty() && !listed.contains(&calendar.origin.id);
+        // (One opened by address goes only when the owner removes it: a list that hasn't it, for
+        // a calendar that couldn't be read just now, takes nothing away.)
+        let followed = |calendar: &&Calendar| {
+            calendar.origin.account == account
+                && !calendar.origin.id.is_empty()
+                && !listed.contains(&calendar.origin.id)
+                && !is_opened(&calendar.origin.id)
+        };
         mailbox.calendars.iter().filter(followed).map(|calendar| calendar.id).collect()
     } else {
         Vec::new()
@@ -3541,10 +3602,29 @@ pub fn apply_calendars(s: &mut Session, download: &CalendarsDownload) -> CmdResu
         dropped = tidy_changes(mailbox);
     }
     settle_calendars(mailbox);
-    if added + updated + gone.len() > 0 {
+    let before = s.mailbox.account(account).map(|a| a.opened_calendars.clone());
+    let about_opened = super::calendar_opened::after_list(s, account, &download.refused);
+    let changed_list = s.mailbox.account(account).map(|a| a.opened_calendars.clone()) != before;
+    if added + updated + gone.len() > 0 || changed_list {
         s.mailbox_changed();
     }
-    Ok(json!({"added": added, "updated": updated, "removed": gone.len(), "complete": download.complete, "dropped": dropped_json(&dropped)}))
+    Ok(json!({
+        "added": added, "updated": updated, "removed": gone.len(), "complete": download.complete, "dropped": dropped_json(&dropped),
+        "refused": about_opened["refused"], "duplicates": about_opened["duplicates"],
+    }))
+}
+
+/// Remove the calendars `ids` and their events from the mailbox, and the changes of them that
+/// still waited ([`tidy_changes`]). How many events went. (Calendars opened by address that the
+/// owner removes, #70.)
+pub(crate) fn forget_calendars(mailbox: &mut Mailbox, ids: &[Id]) -> usize {
+    let events: Vec<Id> = mailbox.events.values().filter(|event| ids.contains(&event.calendar)).map(|event| event.id).collect();
+    for id in &events {
+        let _ = mailbox.remove_event(*id);
+    }
+    mailbox.calendars.retain(|calendar| !ids.contains(&calendar.id));
+    tidy_changes(mailbox);
+    events.len()
 }
 
 /// Take in the mailbox's own categories as an account's server has them

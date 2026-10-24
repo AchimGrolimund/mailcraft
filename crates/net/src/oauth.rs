@@ -701,6 +701,63 @@ pub fn refresh_graph_shared_calendars_at(endpoints: &Endpoints, oauth: &OAuth, r
     Ok(GraphTokens { tokens, extras_missing: true, covers_favorites: false })
 }
 
+/// What the tokens of a Graph run for a shared mailbox's calendars are asked for when it has
+/// something to send: a meeting answered, called off or forwarded, or a meeting with people
+/// invited (#70). What its calendars take, and sending from the mailbox on top.
+fn shared_calendar_send_scope() -> String {
+    format!(
+        "{MICROSOFT_GRAPH} {MICROSOFT_GRAPH_MAIL} {MICROSOFT_GRAPH_SHARED} {MICROSOFT_GRAPH_SHARED_CALENDARS} {MICROSOFT_GRAPH_SHARED_SEND} {SIGN_IN_SCOPE}"
+    )
+}
+
+/// [`refresh_graph_shared_calendars`] for a run that has something of a shared mailbox's calendar
+/// to send (#70): the tokens are asked for with `Mail.Send.Shared` too, and for nothing less. A
+/// sign-in that doesn't cover it gets [`NetError::ConsentNeeded`]: nothing is sent, and the window
+/// asks the owner as it does for mail ([`sign_in_for_shared_send`]).
+pub fn refresh_graph_shared_calendars_send(oauth: &OAuth, refresh_token: &str) -> Result<GraphTokens, NetError> {
+    refresh_graph_shared_calendars_send_at(&Endpoints::for_resource(oauth, Resource::GraphMail), oauth, refresh_token)
+}
+
+/// [`refresh_graph_shared_calendars_send`] at endpoints other than the provider's usual ones
+/// (their scope is replaced).
+pub fn refresh_graph_shared_calendars_send_at(endpoints: &Endpoints, oauth: &OAuth, refresh_token: &str) -> Result<GraphTokens, NetError> {
+    let endpoints = Endpoints { scope: shared_calendar_send_scope(), ..endpoints.clone() };
+    let tokens = refresh_for_at(&endpoints, oauth, refresh_token, Resource::GraphMail)?;
+    Ok(GraphTokens { tokens, extras_missing: true, covers_favorites: false })
+}
+
+/// What the tokens of a calendar job for an account with calendars opened by address are asked
+/// for (#70, Open Shared Calendar): what its calendar takes, and `Calendars.ReadWrite.Shared` on
+/// top, the same permission as a shared mailbox's calendars take. Not the mail permissions of
+/// shared mailboxes: an account that only opened somebody's calendar is never asked for those.
+fn opened_calendars_scope() -> String {
+    format!("{MICROSOFT_GRAPH} {MICROSOFT_GRAPH_SHARED_CALENDARS} {SIGN_IN_SCOPE}")
+}
+
+/// [`sign_in_for_shared_calendars`] for an account that opened somebody's calendar by address:
+/// the same one permission, asked for by itself and never with a sign-in, without what reading a
+/// shared mailbox's mail takes.
+pub fn sign_in_for_opened_calendars(oauth: &OAuth, login_hint: &str, open: &dyn Fn(&str), cancel: &AtomicBool) -> Result<Tokens, FavoritesRefusal> {
+    let plain = Endpoints::for_resource(oauth, Resource::Graph);
+    let endpoints = Endpoints { scope: opened_calendars_scope(), consent: String::new(), lesser: String::new(), ..plain };
+    sign_in_for_favorites_within(&endpoints, oauth, login_hint, open, cancel, SIGN_IN_TIMEOUT)
+}
+
+/// [`refresh_graph_shared_calendars`] for a calendar job of an account with calendars opened by
+/// address (#70): asked for with `Calendars.ReadWrite.Shared` too, and for nothing less. A sign-in
+/// that doesn't cover it gets [`NetError::ConsentNeeded`], and the job goes on with the account's
+/// own calendars while the owner is asked ([`sign_in_for_opened_calendars`]).
+pub fn refresh_graph_opened_calendars(oauth: &OAuth, refresh_token: &str) -> Result<GraphTokens, NetError> {
+    refresh_graph_opened_calendars_at(&Endpoints::for_resource(oauth, Resource::Graph), oauth, refresh_token)
+}
+
+/// [`refresh_graph_opened_calendars`] at endpoints other than the provider's usual ones.
+pub fn refresh_graph_opened_calendars_at(endpoints: &Endpoints, oauth: &OAuth, refresh_token: &str) -> Result<GraphTokens, NetError> {
+    let endpoints = Endpoints { scope: opened_calendars_scope(), ..endpoints.clone() };
+    let tokens = refresh_for_at(&endpoints, oauth, refresh_token, Resource::Graph)?;
+    Ok(GraphTokens { tokens, extras_missing: true, covers_favorites: false })
+}
+
 /// One go at signing in: the page (asked for the tokens' scopes and for `consent`), the wait for
 /// the browser, and the code traded in for tokens (for the tokens' scopes only: a token request
 /// names one resource).

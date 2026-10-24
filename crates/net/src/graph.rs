@@ -277,6 +277,9 @@ pub struct EventOptions {
     /// program that shows them by the clock draws across two days for anyone not in UTC. Empty
     /// for UTC. (An event with times goes as instants, which need no zone.)
     pub zone: String,
+    /// For a shared mailbox's calendars (#70): the mailbox's address. Every change is then
+    /// written on `/users/{address}/…` and none on `/me`. Empty for the account's own.
+    pub shared: String,
 }
 
 /// Tell Graph what was done here to the events of the account's main calendar, as the owner of
@@ -870,7 +873,16 @@ fn events_in_at(base: &str, token: &str, query: &EventsQuery) -> Result<EventsDo
     if calendar.is_empty() != query.calendar.trim().is_empty() {
         return Err(NetError::Config("the calendar that was asked for isn't one the server could have".into()));
     }
-    let graph = Graph::at(base, token)?.of_shared(Some(query.shared.as_str()).filter(|address| !address.trim().is_empty()))?;
+    // A calendar opened by address is asked for at its owner's address and never at `/me` (#70):
+    // it is that person's main calendar, so it is asked as a shared mailbox's main one is.
+    if people::unsafe_id(&calendar) {
+        return Err(NetError::Config("the calendar that was asked for isn't one that can be opened by address".into()));
+    }
+    let (shared, listed_calendar) = match people::address_of(&calendar) {
+        Some(address) => (address, String::new()),
+        None => (query.shared.clone(), calendar.clone()),
+    };
+    let graph = Graph::at(base, token)?.of_shared(Some(shared.as_str()).filter(|address| !address.trim().is_empty()))?;
     // Graph won't have the question as it is put (400): put as it was before the newest fields
     // were asked for, the calendar still comes.
     let mut listed = Err(nonsense("the calendar wasn't asked for"));
@@ -878,7 +890,7 @@ fn events_in_at(base: &str, token: &str, query: &EventsQuery) -> Result<EventsDo
     // (The fullest question comes first: what it adds to the next is `has_options`.)
     let mut options = true;
     for fields in [EVENT_FIELDS_OPTIONS, EVENT_FIELDS_FULL, EVENT_FIELDS, EVENT_FIELDS_PLAIN] {
-        listed = events_with(&graph, &calendar, from, to, fields);
+        listed = events_with(&graph, &listed_calendar, from, to, fields);
         match &listed {
             Err(NetError::Proto(ProtoError::Rejected(why))) if why.starts_with(BAD_REQUEST) => {
                 log::debug!("calendar: asked again with fewer fields");
@@ -889,12 +901,16 @@ fn events_in_at(base: &str, token: &str, query: &EventsQuery) -> Result<EventsDo
             _ => break,
         }
     }
-    // A shared mailbox's main calendar that won't be listed to the owner (403: it is shared for
+    // A somebody-else's main calendar that won't be listed to the owner (403: it is shared for
     // free and busy times only) is drawn from those instead, without what anything is (#70).
-    if graph.shared() && calendar.is_empty() && matches!(listed, Err(NetError::Forbidden(_))) {
-        match free_busy_events(&graph, &query.shared, from, to) {
-            Ok(download) => return Ok(download),
-            Err(e) => log::debug!("calendar: free and busy times of a shared mailbox couldn't be had either: {e}"),
+    // That holds for a shared mailbox's and for a calendar opened by address alike.
+    if graph.shared() && listed_calendar.is_empty() && matches!(listed, Err(NetError::Forbidden(_))) {
+        match free_busy_events(&graph, &shared, from, to) {
+            Ok(mut download) => {
+                download.calendar = calendar;
+                return Ok(download);
+            }
+            Err(e) => log::debug!("calendar: free and busy times of somebody's calendar couldn't be had either: {e}"),
         }
     }
     let mut download = listed?;
@@ -1238,14 +1254,51 @@ fn push_events_at(base: &str, token: &str, upload: &EventsUpload, options: &Even
         uploaded.token_refused = true;
         return uploaded;
     };
+    // A shared mailbox's calendars are written at its own address, and an address that is no
+    // path of one writes nothing at all (and certainly nothing at `/me`).
+    let shared = Some(options.shared.as_str()).filter(|address| !address.trim().is_empty());
+    let graph = match graph.of_shared(shared) {
+        Ok(graph) => graph,
+        Err(e) => {
+            for op in upload.ops.iter().take(MAX_EVENT_OPS) {
+                uploaded.outcomes.push(EventOutcome { op: op.clone(), result: EventResult::Refused, error: e.to_string(), ..Default::default() });
+            }
+            return uploaded;
+        }
+    };
     // The zone the calendar is shown in, as the upload names it; else this computer's, as the
     // host knows it.
     let shown = graph_zone(&upload.zone).map(|(_, name)| name);
     let zone = shown.as_deref().unwrap_or_else(|| zone_name(&options.zone));
     for op in upload.ops.iter().take(MAX_EVENT_OPS) {
         let mut op = op.clone();
+        let named = op.calendar.clone();
         op.tidy();
-        match graph.write_event(op, zone) {
+        // A calendar whose id can't be one is not the account's main calendar: nothing is sent
+        // for it (the ids of calendars opened by address are checked the same way, #70).
+        if !named.trim().is_empty() && op.calendar.is_empty() {
+            let error = "that isn't a calendar the server could have".to_string();
+            uploaded.outcomes.push(EventOutcome { op, result: EventResult::Refused, error, ..Default::default() });
+            continue;
+        }
+        // A calendar opened by address is written at its owner's address: through a `Graph` of
+        // its own, never the owner's (and never in an upload that is a shared mailbox's).
+        let opened;
+        let at = match people::address_of(&op.calendar) {
+            None => &graph,
+            Some(address) => match Graph::at(base, token).and_then(|g| g.of_shared(Some(address.as_str()))).ok().filter(|_| !graph.shared()) {
+                Some(g) => {
+                    opened = g;
+                    &opened
+                }
+                None => {
+                    let error = "that calendar can't be changed from here".to_string();
+                    uploaded.outcomes.push(EventOutcome { op, result: EventResult::Refused, error, ..Default::default() });
+                    continue;
+                }
+            },
+        };
+        match at.write_event(op, zone) {
             Wrote::Outcome(outcome, stop) => {
                 uploaded.outcomes.push(*outcome);
                 if stop {
@@ -1272,7 +1325,16 @@ impl Graph<'_> {
             return Wrote::Outcome(outcome(op, EventResult::Refused, "the change says nothing that could be sent".into()), false);
         }
         // The events of the calendar it is in: the account's main one, or another by its name.
-        let events = if op.calendar.is_empty() { EVENTS.to_string() } else { format!("{CALENDARS}/{}/events", http::encode(&op.calendar)) };
+        // (A calendar opened by address is read through a `Graph` that is already at its owner's
+        // address, whose main calendar it is: its events are `/users/{address}/events`.)
+        if people::unsafe_id(&op.calendar) {
+            return Wrote::Outcome(outcome(op, EventResult::Refused, "that isn't a calendar that can be opened by address".into()), false);
+        }
+        let events = if op.calendar.is_empty() || people::address_of(&op.calendar).is_some() {
+            self.mail_path("/events")
+        } else {
+            self.mail_path(&format!("/calendars/{}/events", http::encode(&op.calendar)))
+        };
         // One occurrence of a series, known by its time: Graph says what it calls it.
         let found = if op.of_occurrence() {
             match self.occurrence(&events, &op.series, op.occurrence) {
@@ -1947,7 +2009,8 @@ fn category_color(name: &str) -> Rgb {
 /// One calendar of a list as the mailbox can take it, in the group called `group`.
 fn calendar_of(entry: &Value, group: &str) -> Option<RemoteCalendar> {
     let id = text(entry, "id");
-    (!id.is_empty()).then(|| RemoteCalendar {
+    // (An id that says it was opened by address is never one a server's list can bring: #70.)
+    (!id.is_empty() && !id.starts_with(mailcraft_model::remote::OPENED_PREFIX)).then(|| RemoteCalendar {
         id: id.to_string(),
         name: text(entry, "name").to_string(),
         color: Rgb::parse(text(entry, "hexColor")).or_else(|| calendar_color(text(entry, "color"))),
@@ -2143,6 +2206,9 @@ fn schedule_with(graph: &Graph<'_>, ask: &FreeBusyAsk) -> Result<FreeBusy, NetEr
     Ok(answer)
 }
 
+mod people;
+pub use people::{Opened, open_calendar};
+
 mod settings;
 pub use settings::{MailboxSettings, WorkingHours, mailbox_settings};
 
@@ -2161,7 +2227,11 @@ pub use check::{CHECK_TITLE, CalendarCheck, CheckStep, STEPS as CHECK_STEPS, che
 pub mod standin;
 
 #[cfg(test)]
+mod people_tests;
+#[cfg(test)]
 mod shared_calendar_tests;
+#[cfg(test)]
+mod shared_calendar_write_tests;
 #[cfg(test)]
 mod standin_tests;
 #[cfg(test)]
