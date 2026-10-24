@@ -1119,12 +1119,12 @@ fn what_would_not_arrive_whole_is_not_moved() {
     // The owner's yes to mail doesn't make a meeting movable.
     assert!(refused(&mut s, "calendar.edit", json!({"id": planning, "calendar": side, "send": true})).starts_with("A meeting can't be moved"));
     // Into a calendar the account may only read; and one that is still on its way.
-    s.mailbox.calendars.iter_mut().find(|c| c.id == side).unwrap().read_only = true;
+    s.mailbox.calendars.iter_mut().find(|c| c.id == side).unwrap().rights = mailcraft_model::Rights::Read;
     assert_eq!(
         refused(&mut s, "calendar.edit", json!({"id": dentist, "calendar": side})),
         "The calendar \"Side\" can only be read: its owner hasn't let this account change it."
     );
-    s.mailbox.calendars.iter_mut().find(|c| c.id == side).unwrap().read_only = false;
+    s.mailbox.calendars.iter_mut().find(|c| c.id == side).unwrap().rights = mailcraft_model::Rights::Edit;
     run(&mut s, "calendar.edit", json!({"id": dentist, "title": "Eye test, again"}));
     let waiting = "This item is still on its way to the account's server. Move it once it is there (in a moment).";
     assert_eq!(refused(&mut s, "calendar.edit", json!({"id": dentist, "calendar": side})), waiting);

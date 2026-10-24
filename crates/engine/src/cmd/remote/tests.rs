@@ -2377,7 +2377,7 @@ fn every_calendar_of_the_account_is_a_calendar_here() {
     let all = vec![
         RemoteCalendar { main: true, color: Some(Rgb(1, 2, 3)), ..entry("cal-main", "Calendar", "My Calendars") },
         RemoteCalendar { color: Some(Rgb(4, 5, 6)), ..entry("cal-team", "Team", "My Calendars") },
-        RemoteCalendar { read_only: true, ..entry("cal-holidays", "Holidays\r\nin Wonderland", "Other Calendars") },
+        RemoteCalendar { rights: mailcraft_model::Rights::Read, ..entry("cal-holidays", "Holidays\r\nin Wonderland", "Other Calendars") },
         // Said twice, or with no name the server could call it by: passed over.
         entry("cal-team", "Team again", ""),
         entry("two words", "Odd", ""),
@@ -2385,7 +2385,7 @@ fn every_calendar_of_the_account_is_a_calendar_here() {
     let merged = super::apply_calendars(&mut s, &list(all.clone(), true)).unwrap();
     assert_eq!((merged["added"].as_u64(), merged["updated"].as_u64(), merged["removed"].as_u64()), (Some(2), Some(1), Some(0)));
     let of_account: Vec<_> = s.mailbox.calendars.iter().filter(|c| c.origin.account == account).cloned().collect();
-    let shape: Vec<_> = of_account.iter().map(|c| (c.name.as_str(), c.origin.id.as_str(), c.group.as_str(), c.read_only, c.visible)).collect();
+    let shape: Vec<_> = of_account.iter().map(|c| (c.name.as_str(), c.origin.id.as_str(), c.group.as_str(), !c.can_edit(), c.visible)).collect();
     assert_eq!(
         shape,
         // Only the account's own calendar is ticked to begin with: the rest are listed, and

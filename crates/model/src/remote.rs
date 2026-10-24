@@ -14,8 +14,8 @@ use mailcraft_time::{Date, DateTime, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Account, Address, Attendee, Category, Event, FolderKind, Id, Importance, Labeled, MAX_NAME, OnlineMeeting, OnlineProvider, PostalAddress,
-    Recurrence, Response, ResponseOptions, Rgb, ShowAs,
+    Account, Address, Attendee, CalendarOwner, Category, Event, FolderKind, Id, Importance, Labeled, MAX_NAME, OnlineMeeting, OnlineProvider,
+    PostalAddress, Recurrence, Response, ResponseOptions, Rgb, Rights, ShowAs,
 };
 
 /// Most events and most contacts one download is taken to hold; what is beyond is left out.
@@ -1011,8 +1011,11 @@ pub struct RemoteCalendar {
     /// The name of the group it is listed under; empty for none.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub group: String,
-    /// The account may read it and not change it.
-    pub read_only: bool,
+    /// What the account may do with it.
+    pub rights: Rights,
+    /// Whose it is, as the server says; `None` when it didn't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<CalendarOwner>,
     /// It is the account's main calendar.
     pub main: bool,
     /// The services a meeting in it may be held online with, when the server said.
@@ -1055,6 +1058,7 @@ impl CalendarsDownload {
             seen.push(calendar.id.clone());
             calendar.name = line(&calendar.name, MAX_NAME);
             calendar.group = line(&calendar.group, MAX_NAME);
+            calendar.owner = calendar.owner.as_ref().and_then(|owner| owner.cleaned());
             if let Some(allowed) = &mut calendar.online_providers {
                 allowed.dedup();
                 allowed.truncate(8);
