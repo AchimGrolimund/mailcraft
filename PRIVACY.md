@@ -66,10 +66,14 @@ computer, for you, and for nothing else:
 - reading the list of folders you keep under Favorites in Outlook, if you ask for it;
 - reading and changing the mail of shared mailboxes you have been given access to, if you open one;
 - sending from a shared mailbox, asked for by itself the first time you send from one;
+- reading the calendars of shared mailboxes you have been given access to, asked for by itself the
+  first time you tick one in the calendar's folder list (nothing of a shared mailbox's calendar is
+  read before that, and it comes from your own Microsoft servers with your own sign-in; what you
+  may see of it is up to its owner and your organisation);
 - keeping you signed in (a refresh token, stored as described above).
 
-An administrator who approves MailCraft for an organisation is also asked, in advance, for a
-shared mailbox's calendar; no owner is asked for that yet, and MailCraft does not use it.
+An administrator who approves MailCraft for an organisation is asked, in advance, for all of
+these, so that one approval covers what is asked later.
 
 You can take these back at any time in your Microsoft account's or your organisation's list of
 approved applications; MailCraft then asks again the next time it needs them.

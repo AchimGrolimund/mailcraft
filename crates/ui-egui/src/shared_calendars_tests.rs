@@ -154,13 +154,13 @@ fn ticking_one_reads_the_list_and_what_is_ticked_with_the_owners_sign_in_and_not
     app.poll_calendar();
     // The list came in under the shared mailbox, unticked but for the one that was ticked; its
     // events are its own.
-    assert_eq!(calendar_of(&app, shared, "Rota").visible, false);
+    assert!(!calendar_of(&app, shared, "Rota").visible);
     assert!(calendar_of(&app, shared, "Calendar").visible);
     assert!(app.session.mailbox.events.values().any(|e| e.title == "Stand-up" && e.origin.account == shared));
     // Its token is its own, in memory; the refresh token that came back is the owner's.
     assert_eq!(app.shared_calendar_tokens.get(&shared).map(|t| t.access.as_str()), Some("cal-access"));
     assert_eq!(app.tokens.get(&owner).map(|t| (t.access.as_str(), t.refresh.as_str())), Some(("own-access", "ref-9")));
-    assert!(app.graph_tokens.get(&shared).is_none(), "not mixed with the mail's");
+    assert!(!app.graph_tokens.contains_key(&shared), "not mixed with the mail's");
     assert_eq!(app.shared_calendar_perm.get(&shared), Some(&Permission::Given));
     // Nothing of it is a reminder; and a change to it is refused, so nothing waits to go.
     assert!(mailcraft_engine::cmd::view::due_reminders(&app.session, app.session.local_now()).is_empty());
@@ -180,7 +180,7 @@ fn ticking_one_reads_the_list_and_what_is_ticked_with_the_owners_sign_in_and_not
     app.poll_calendar();
     assert!(app.session.mailbox.events.values().any(|e| e.title == "Rota" && e.origin.account == shared));
     // (A job that brought only another calendar is no failure.)
-    assert!(app.calendar.failures.get(&shared).is_none());
+    assert!(!app.calendar.failures.contains_key(&shared));
 }
 
 #[test]
@@ -209,7 +209,7 @@ fn the_owner_is_asked_once_by_itself_when_the_sign_in_does_not_cover_shared_cale
     app.poll_sign_in();
     // Allowed: read at once, with what came back, and never asked again.
     assert_eq!(app.shared_calendar_tokens.get(&shared).map(|t| t.access.as_str()), Some("cal-access"));
-    assert!(app.shared_calendar_perm.get(&shared).is_none());
+    assert!(!app.shared_calendar_perm.contains_key(&shared));
     answers.lock().unwrap().push_back(GraphResult { account: shared, events: Some(events(shared, "", "Stand-up")), ..Default::default() });
     assert!(tick(&mut app));
     assert_eq!(jobs.lock().unwrap()[1].3, "cal-access", "the token that covers it goes along");

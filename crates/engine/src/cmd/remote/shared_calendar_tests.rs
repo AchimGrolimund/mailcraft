@@ -200,7 +200,7 @@ fn only_the_owners_own_calendars_remind() {
         ..download(shared, SHARED, "", vec![RemoteEvent { show_as: ShowAs::Busy, ..event("freebusy:3:4:busy", "", soon) }])
     };
     apply_events(&mut s, &blocks).unwrap();
-    assert_eq!(s.mailbox.events.values().filter(|e| e.reminder_minutes.is_some() || e.title.is_empty()).count() >= 4, true);
+    assert!(s.mailbox.events.values().filter(|e| e.reminder_minutes.is_some() || e.title.is_empty()).count() >= 4);
     let due: Vec<String> = due_reminders(&s, s.local_now()).into_iter().map(|r| r.title).collect();
     assert_eq!(due, ["Mine"], "nothing of a shared mailbox's or of a colleague's");
     let calendars: Vec<(String, bool)> = s.mailbox.calendars.iter().map(|c| (c.name.clone(), is_own_calendar(&s.mailbox, c))).collect();
