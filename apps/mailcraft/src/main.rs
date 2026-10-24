@@ -876,7 +876,7 @@ fn graph_sending_with(mut request: GraphRequest, zone: &str, renew: Renew<'_>, r
             }
         }
     }
-    let shared_address = request.account.is_shared().then(|| request.account.email.clone());
+    let shared_address = request.account.shared_mailbox();
     let mut refused = false;
     for message in &request.outbox {
         if refused {
