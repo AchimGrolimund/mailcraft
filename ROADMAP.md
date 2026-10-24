@@ -82,13 +82,13 @@ not yet run against any other server.
 
 Beta is for Microsoft accounts (personal, or work or school). It is reached when every item below
 passes; each is checked by testers' reports and GitHub issues, not by estimate. Where each stands
-(2026-10-20):
+(2026-10-24):
 
 | # | Beta must pass | Status |
 |---|---|---|
-| B1 | At least 5 testers, none of them authors, each on a Microsoft account (personal, or work or school) | In progress: 6 signed up ([#11](https://github.com/UCS-Care-Group/mailcraft/issues/11)), 3 of them on Microsoft accounts |
+| B1 | At least 5 testers, none of them authors, each on a Microsoft account (personal, or work or school) | In progress: 11 signed up ([#11](https://github.com/UCS-Care-Group/mailcraft/issues/11)), 6 of them on Microsoft accounts; 4 of those also for the beta run, 1 short |
 | B2 | Each uses MailCraft on 14 working days (Monday to Friday; about three weeks), on at least 2 devices | Not started: the beta run begins once the testers are there (R8) |
-| B3 | Windows x64, macOS (Apple silicon and Intel) and Linux x86_64, each with at least one tester | In progress: Windows x64, macOS on Apple silicon and Linux x86_64 each have a tester on a Microsoft account; an Intel Mac is wanted. All are built in CI |
+| B3 | Windows x64, macOS (Apple silicon and Intel) and Linux x86_64, each with at least one tester | Met on paper: each platform, an Intel Mac included, has a tester on a Microsoft account signed up for the beta run; to be proven in it. All are built in CI |
 | B4 | No data-loss incident, and no crash that loses work, in those 14 working days | Not started: counted during the beta run |
 | B5 | Reading, filing, searching, forwarding and replying in rich text, with the quoted original kept | Built (R3, R4, R6.2); to be proven in the beta run |
 | B6 | Accepting and declining a meeting; reminders come up as system notifications while MailCraft runs | In progress: meetings are answered from the reading pane and the calendar; desktop alerts (R7.1, 0.5.2) seen on Linux; Windows and macOS still to be seen ([#25](https://github.com/UCS-Care-Group/mailcraft/issues/25)) |
@@ -111,7 +111,7 @@ The steps R1–R8 of the roadmap reset lead to the checklist above, tracked in
 | R5 | Sign-ins remembered on Linux and FreeBSD (Secret Service) | Done; across a restart on GNOME and KDE still to be seen |
 | R6 | 200,000 messages: bodies read when wanted, a log-structured mailbox, a word index, search on the server | Done: open 1.5 s, under 1 GB, a search in 0.16 s |
 | R7 | Desktop Alerts, Copy Diagnostics, told of (and installing) a new version | Built (0.5.2); Desktop Alerts seen on Linux; Windows and macOS still to be seen ([#25](https://github.com/UCS-Care-Group/mailcraft/issues/25)) |
-| R8 | The beta run: 5 testers on Microsoft accounts, 14 working days, nothing lost | Recruiting ([#11](https://github.com/UCS-Care-Group/mailcraft/issues/11)): 6 signed up, 3 on Microsoft accounts; Intel Mac wanted |
+| R8 | The beta run: 5 testers on Microsoft accounts, 14 working days, nothing lost | Recruiting ([#11](https://github.com/UCS-Care-Group/mailcraft/issues/11)): 11 signed up, 6 on Microsoft accounts, 4 of them for the beta run; one more wanted |
 
 Two things outside the code stand in the way of testers in other organisations: the publisher
 verification of MailCraft's Microsoft registration (in progress; until then an administrator
@@ -314,6 +314,7 @@ follows:
 
 | Date | Change |
 |---|---|
+| 2026-10-24 | Testers recounted: B1 4 of 5, B3 met on paper |
 | 2026-10-23 | #327: the message list arranged by categories, a message under each of its categories (progress log) |
 | 2026-10-23 | Quitting on macOS is MailCraft's own code, no craft-libs (progress log) |
 | 2026-10-23 | #300: a message only partly here says its whole size (progress log) |
