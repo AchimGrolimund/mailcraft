@@ -53,6 +53,7 @@ pub mod dates;
 pub mod dialogs;
 pub mod favorites_sync;
 pub mod files;
+mod folder_properties;
 pub mod forms;
 pub mod graph_fetch;
 mod graph_switch;
@@ -1421,7 +1422,11 @@ impl MailApp {
                 return opened;
             }
             self.dialog = dialogs::open_dialog(self, name, &params);
-            return Ok(json!({"pending": name}));
+            // Folder Properties asks the engine first: when the engine refuses, there is no
+            // dialog, and the command runs below so that the refusal is said as any command's is.
+            if self.dialog.is_some() || name != "folderProperties" {
+                return Ok(json!({"pending": name}));
+            }
         }
         // A message not fetched yet is fetched first, and then the command goes on (R3.2).
         if let Some(r) = self.fetch_first(id, &params) {

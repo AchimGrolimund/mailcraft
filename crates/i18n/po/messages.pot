@@ -74,6 +74,11 @@ msgid "(none)"
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "* The sizes leave out messages whose size isn't known here: only their headers are on this computer and their server gave no size, or they were too large to download."
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/forms.rs
 msgid "+ action"
 msgstr ""
@@ -950,6 +955,11 @@ msgstr ""
 msgid "August"
 msgstr ""
 
+#. interface, name
+#: crates/ui-egui/src/folder_properties.rs
+msgid "AutoArchive"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/backstage.rs crates/ui-egui/src/calendar_view.rs crates/ui-egui/src/ribbon.rs
 msgid "Automatic"
@@ -1423,7 +1433,7 @@ msgid "Clipboard"
 msgstr ""
 
 #. interface, ribbon
-#: crates/ui-egui/src/account_setup.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/meeting_dialogs.rs crates/ui-egui/src/reminders.rs crates/ui-egui/src/ribbon.rs crates/ui-egui/src/sync_panel.rs crates/ui-egui/src/tasks_view.rs
+#: crates/ui-egui/src/account_setup.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/folder_properties.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/meeting_dialogs.rs crates/ui-egui/src/reminders.rs crates/ui-egui/src/ribbon.rs crates/ui-egui/src/sync_panel.rs crates/ui-egui/src/tasks_view.rs
 msgid "Close"
 msgstr ""
 
@@ -2498,8 +2508,8 @@ msgstr ""
 msgid "Fold the calendars of this group away"
 msgstr ""
 
-#. name, ribbon location
-#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar_opened.rs crates/engine/src/cmd/folder.rs crates/engine/src/cmd/mail.rs crates/engine/src/cmd/rules.rs crates/model/src/mailbox.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/menubar.rs
+#. interface, name, ribbon location
+#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar_opened.rs crates/engine/src/cmd/folder.rs crates/engine/src/cmd/mail.rs crates/engine/src/cmd/rules.rs crates/model/src/mailbox.rs crates/ui-egui/src/folder_properties.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/menubar.rs
 msgid "Folder"
 msgstr ""
 
@@ -2510,9 +2520,31 @@ msgid ""
 "Pane"
 msgstr ""
 
+#. ribbon
+#: crates/ui-egui/src/ribbon.rs
+msgid ""
+"Folder\n"
+"Properties"
+msgstr ""
+
 #. command label
 #: crates/engine/src/cmd/view.rs
 msgid "Folder Pane"
+msgstr ""
+
+#. command label
+#: crates/engine/src/cmd/folder.rs
+msgid "Folder Properties"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "Folder Size"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "Folder Size…"
 msgstr ""
 
 #. interface
@@ -2686,8 +2718,8 @@ msgstr ""
 msgid "Full messages: {done} of {total}"
 msgstr ""
 
-#. interface
-#: crates/ui-egui/src/backstage.rs
+#. interface, name
+#: crates/ui-egui/src/backstage.rs crates/ui-egui/src/folder_properties.rs
 msgid "General"
 msgstr ""
 
@@ -2769,6 +2801,11 @@ msgstr ""
 #. command label
 #: crates/engine/src/cmd/folder.rs
 msgid "Go to Folder"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "Go to the folder"
 msgstr ""
 
 #. interface
@@ -2876,6 +2913,11 @@ msgstr ""
 msgid "How it repeats is for its organizer to say."
 msgstr ""
 
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "How many messages each folder holds and the space they take"
+msgstr ""
+
 #. command label
 #: crates/ui-egui/src/lib.rs
 msgid "I'm an Administrator: Approve MailCraft for My Organisation"
@@ -2959,6 +3001,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/lib.rs
 msgid "In the Outbox: it is on its way"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "In the folder pane's order"
 msgstr ""
 
 #. interface
@@ -3382,7 +3429,7 @@ msgid "Local mailbox"
 msgstr ""
 
 #. interface
-#: crates/ui-egui/src/forms.rs
+#: crates/ui-egui/src/folder_properties.rs crates/ui-egui/src/forms.rs
 msgid "Location"
 msgstr ""
 
@@ -3434,6 +3481,16 @@ msgstr ""
 #. what a command says
 #: crates/model/src/mailbox.rs
 msgid "Mail can't be moved or copied into a Microsoft account from another account or a local folder yet: this version can't put a message on Microsoft's server"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "Mail folder"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "Mail folder: the account's {folder}"
 msgstr ""
 
 #. interface
@@ -3582,7 +3639,7 @@ msgid "MailCraft's data has been removed: nothing is sent or received"
 msgstr ""
 
 #. interface
-#: crates/ui-egui/src/backstage.rs crates/ui-egui/src/nav.rs
+#: crates/ui-egui/src/backstage.rs crates/ui-egui/src/folder_properties.rs crates/ui-egui/src/nav.rs
 msgid "Mailbox"
 msgstr ""
 
@@ -3717,8 +3774,8 @@ msgstr ""
 msgid "Message Preview"
 msgstr ""
 
-#. ribbon, ribbon location
-#: crates/engine/src/cmd/view.rs crates/ui-egui/src/ribbon.rs
+#. interface, ribbon, ribbon location
+#: crates/engine/src/cmd/view.rs crates/ui-egui/src/folder_properties.rs crates/ui-egui/src/ribbon.rs
 msgid "Messages"
 msgstr ""
 
@@ -3735,6 +3792,21 @@ msgstr ""
 #. command label, interface, ribbon
 #: crates/engine/src/cmd/mail.rs crates/ui-egui/src/mail_view.rs crates/ui-egui/src/ribbon.rs
 msgid "Messages from Sender"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "Messages in the folder and the folders under it"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "Messages in the folder as its server counted them at the last Send/Receive that read it to the end"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "Messages in the folder itself"
 msgstr ""
 
 #. interface
@@ -3975,7 +4047,7 @@ msgid "My organisation has to approve MailCraft first: what to do"
 msgstr ""
 
 #. interface
-#: crates/ui-egui/src/forms.rs
+#: crates/ui-egui/src/folder_properties.rs crates/ui-egui/src/forms.rs
 msgid "Name"
 msgstr ""
 
@@ -4561,7 +4633,7 @@ msgid "On the"
 msgstr ""
 
 #. interface
-#: crates/ui-egui/src/mail_view/server_rows.rs
+#: crates/ui-egui/src/folder_properties.rs crates/ui-egui/src/mail_view/server_rows.rs
 msgid "On the server"
 msgstr ""
 
@@ -4942,6 +5014,11 @@ msgstr ""
 msgid "Pattern"
 msgstr ""
 
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "Pending development"
+msgstr ""
+
 #. command label, interface, name, ribbon location
 #: crates/engine/src/cmd/people.rs crates/engine/src/cmd/view.rs crates/engine/src/session.rs crates/ui-egui/src/people_view.rs
 msgid "People"
@@ -4950,6 +5027,11 @@ msgstr ""
 #. command label, ribbon
 #: crates/engine/src/cmd/mail.rs crates/ui-egui/src/ribbon.rs
 msgid "Permanently Delete"
+msgstr ""
+
+#. interface, name
+#: crates/ui-egui/src/folder_properties.rs
+msgid "Permissions"
 msgstr ""
 
 #. interface
@@ -5047,6 +5129,11 @@ msgstr ""
 msgid "Point at one to see why."
 msgstr ""
 
+#. interface, name
+#: crates/ui-egui/src/folder_properties.rs
+msgid "Policy"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/forms.rs
 msgid "Postal code"
@@ -5075,6 +5162,16 @@ msgstr ""
 #. command label, interface, ribbon
 #: crates/engine/src/cmd/calendar.rs crates/ui-egui/src/calendar_view.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/ribbon.rs
 msgid "Private"
+msgstr ""
+
+#. ribbon, ribbon location
+#: crates/engine/src/cmd/folder.rs crates/ui-egui/src/ribbon.rs
+msgid "Properties"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/nav.rs
+msgid "Properties…"
 msgstr ""
 
 #. interface
@@ -6489,7 +6586,7 @@ msgid "Single Line"
 msgstr ""
 
 #. interface, name
-#: crates/engine/src/session.rs crates/ui-egui/src/signatures.rs
+#: crates/engine/src/session.rs crates/ui-egui/src/folder_properties.rs crates/ui-egui/src/signatures.rs
 msgid "Size"
 msgstr ""
 
@@ -6711,6 +6808,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/graph_switch.rs
 msgid "Switch without Them"
+msgstr ""
+
+#. interface, name
+#: crates/ui-egui/src/folder_properties.rs
+msgid "Synchronization"
 msgstr ""
 
 #. name
@@ -7224,6 +7326,16 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/shared_mailboxes.rs
 msgid "The sign-in to {address} waiting in your browser was stopped so the shared mailbox could be read. Send/Receive will ask you to sign in again."
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "The space the folder and the folders under it take on this computer"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "The space the folder's own messages take on this computer"
 msgstr ""
 
 #. interface
@@ -7881,6 +7993,16 @@ msgid "Top Level"
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "Total messages"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "Total size"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/account_setup/help.rs
 msgid "Trouble on that page? Sign in for mail only"
 msgstr ""
@@ -7925,8 +8047,8 @@ msgstr ""
 msgid "Two Weeks Ago"
 msgstr ""
 
-#. command label
-#: crates/engine/src/cmd/format.rs
+#. command label, interface
+#: crates/engine/src/cmd/format.rs crates/ui-egui/src/folder_properties.rs
 msgid "Type"
 msgstr ""
 
@@ -7965,9 +8087,14 @@ msgstr ""
 msgid "Undo {what}"
 msgstr ""
 
-#. name
-#: crates/engine/src/session.rs
+#. interface, name
+#: crates/engine/src/session.rs crates/ui-egui/src/folder_properties.rs
 msgid "Unread"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "Unread messages in the folder itself"
 msgstr ""
 
 #. ribbon
@@ -8915,7 +9042,7 @@ msgid "no account is kept in step through Microsoft Graph"
 msgstr ""
 
 #. what a command says
-#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/calendar_opened.rs crates/engine/src/cmd/calendar_settings.rs crates/engine/src/cmd/compose.rs crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/graph_send.rs crates/engine/src/cmd/graph_switch.rs crates/engine/src/cmd/offline.rs crates/engine/src/cmd/remote.rs crates/engine/src/cmd/search_server.rs crates/engine/src/cmd/shared.rs crates/engine/src/cmd/signature.rs
+#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/calendar_opened.rs crates/engine/src/cmd/calendar_settings.rs crates/engine/src/cmd/compose.rs crates/engine/src/cmd/folder.rs crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/graph_send.rs crates/engine/src/cmd/graph_switch.rs crates/engine/src/cmd/offline.rs crates/engine/src/cmd/remote.rs crates/engine/src/cmd/search_server.rs crates/engine/src/cmd/shared.rs crates/engine/src/cmd/signature.rs
 msgid "no account with id {id}"
 msgstr ""
 
@@ -9683,6 +9810,11 @@ msgstr ""
 msgid "{folder} - {mailbox}"
 msgstr ""
 
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "{folder} Properties"
+msgstr ""
+
 #. what a command says
 #: crates/model/src/sync/progress.rs
 msgid "{folder}: {done} of {total}"
@@ -10046,7 +10178,7 @@ msgstr[0] ""
 msgstr[1] ""
 
 #. interface
-#: crates/ui-egui/src/backstage.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/mail_view.rs
+#: crates/ui-egui/src/backstage.rs crates/ui-egui/src/folder_properties.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/mail_view.rs
 msgid "{n} message"
 msgid_plural "{n} messages"
 msgstr[0] ""
@@ -10074,6 +10206,13 @@ msgstr[0] ""
 msgstr[1] ""
 
 #. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "{n} message of unknown size"
+msgid_plural "{n} messages of unknown size"
+msgstr[0] ""
+msgstr[1] ""
+
+#. interface
 #: crates/ui-egui/src/lib.rs
 msgid "{n} message removed"
 msgid_plural "{n} messages removed"
@@ -10091,6 +10230,13 @@ msgstr[1] ""
 #: crates/i18n/src/date.rs crates/ui-egui/src/backstage.rs crates/ui-egui/src/reminders.rs
 msgid "{n} minute"
 msgid_plural "{n} minutes"
+msgstr[0] ""
+msgstr[1] ""
+
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "{n} more folder isn't listed."
+msgid_plural "{n} more folders aren't listed."
 msgstr[0] ""
 msgstr[1] ""
 
@@ -10220,9 +10366,16 @@ msgstr[0] ""
 msgstr[1] ""
 
 #. interface
-#: crates/ui-egui/src/backstage.rs
+#: crates/ui-egui/src/backstage.rs crates/ui-egui/src/folder_properties.rs
 msgid "{n} unread"
 msgid_plural "{n} unread"
+msgstr[0] ""
+msgstr[1] ""
+
+#. interface
+#: crates/ui-egui/src/folder_properties.rs
+msgid "{n} unread on the server"
+msgid_plural "{n} unread on the server"
 msgstr[0] ""
 msgstr[1] ""
 

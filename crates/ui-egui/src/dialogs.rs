@@ -104,6 +104,9 @@ pub enum Dialog {
     ReportProblem(Box<crate::report_problem::Draft>),
     /// Propose New Time, Forward, or the list of what was proposed ([`crate::meeting_dialogs`]).
     Meeting(crate::meeting_dialogs::MeetingDialog),
+    /// A folder's or an account's Properties, with Folder Size… over them
+    /// ([`crate::folder_properties`]).
+    FolderProperties(Box<crate::folder_properties::FolderProperties>),
 }
 
 /// The tabs of About: the program, the people who made it, and the people who test it
@@ -173,6 +176,7 @@ impl Dialog {
             Dialog::Form(f) => f.name(),
             Dialog::ReportProblem(_) => "reportProblem",
             Dialog::Meeting(d) => d.name(),
+            Dialog::FolderProperties(_) => "folderProperties",
         }
     }
 
@@ -244,9 +248,13 @@ impl Dialog {
     }
 }
 
-/// [`Dialog::open`], and the dialogs of a meeting beside it (`proposeTime`, `forwardMeeting`,
-/// `proposals`), which ask the engine what they are about.
+/// [`Dialog::open`], and the dialogs beside it that ask the engine what they are about: those of
+/// a meeting (`proposeTime`, `forwardMeeting`, `proposals`) and Folder Properties
+/// (`folderProperties`).
 pub(crate) fn open_dialog(app: &mut MailApp, name: &str, params: &Value) -> Option<Dialog> {
+    if name == "folderProperties" {
+        return crate::folder_properties::FolderProperties::open(app, params).map(|d| Dialog::FolderProperties(Box::new(d)));
+    }
     match crate::meeting_dialogs::MeetingDialog::open(name, app, params) {
         Some(dialog) => Some(Dialog::Meeting(dialog)),
         None => Dialog::open(name, app, params),
@@ -748,6 +756,8 @@ pub fn input_dialog(id: &str, params: &Value) -> Option<&'static str> {
         "calendar.openShared" if !has("address") => Some("openCalendar"),
         "rules.list" => Some("rules"),
         "category.list" => Some("categories"),
+        // (What it answers is a table to look at.)
+        "folder.properties" => Some("folderProperties"),
         "ui.reportProblem" if !has("what") => Some("reportProblem"),
         _ => None,
     }
@@ -1370,6 +1380,20 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
         Dialog::Meeting(dialog) => {
             let mut done = false;
             let open = window(ctx, dialog.title(), dialog.width(), |ui| done = dialog.show(app, ui));
+            close |= !open || done;
+        }
+        // Folder Size, open over the tabs, takes Escape and Enter; Enter on a button that has the
+        // keyboard is that button's.
+        Dialog::FolderProperties(dialog) => {
+            let enter = enter && ctx.memory(|m| m.focused().is_none());
+            let over = dialog.size_open;
+            let mut done = false;
+            let title = dialog.title.clone();
+            let open = window(ctx, &title, crate::folder_properties::WIDTH, |ui| done = dialog.show(ui, enter && !over));
+            if over {
+                close = false;
+                done |= dialog.show_size(app, ctx, escape, enter);
+            }
             close |= !open || done;
         }
     }
