@@ -7199,6 +7199,11 @@ msgid "Share"
 msgstr "Compartir"
 
 #. interface
+#: crates/ui-egui/src/calendar_view.rs
+msgid "Shared Calendars"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/backstage.rs
 #, fuzzy
 msgid "Shared mailbox · No access: Microsoft won't open it for you. Send/Receive tries again"
@@ -8108,6 +8113,11 @@ msgstr "La aprobación no se completó."
 #, fuzzy
 msgid "The calendar \"{name}\" can only be read: its owner hasn't let this account change it."
 msgstr "El calendario «{name}» es de solo lectura: su propietario no ha permitido que esta cuenta lo cambie."
+
+#. what a command says
+#: crates/engine/src/cmd/remote.rs
+msgid "The calendar \"{name}\" only shows when its owner is busy: this account can't change it."
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/calendar_sync.rs

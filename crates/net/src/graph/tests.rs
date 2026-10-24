@@ -2117,7 +2117,7 @@ fn the_accounts_calendars_come_with_their_groups_and_colours() {
         1 => {
             assert!(
                 request.starts_with(
-                    "GET /v1.0/me/calendarGroups/g%2F1%3D/calendars?%24top=50&%24select=id%2Cname%2Ccolor%2ChexColor%2CcanEdit%2CisDefaultCalendar%2CallowedOnlineMeetingProviders "
+                    "GET /v1.0/me/calendarGroups/g%2F1%3D/calendars?%24top=50&%24select=id%2Cname%2Ccolor%2ChexColor%2CcanEdit%2CcanViewPrivateItems%2Cowner%2CisDefaultCalendar%2CallowedOnlineMeetingProviders "
                 ),
                 "{request}"
             );
@@ -2125,7 +2125,8 @@ fn the_accounts_calendars_come_with_their_groups_and_colours() {
                 vec![
                     json!({"id": "c-main", "name": "Calendar", "color": "auto", "hexColor": "", "canEdit": true, "isDefaultCalendar": true,
                         "allowedOnlineMeetingProviders": ["teamsForBusiness", "skypeForBusiness", "somethingNew", 7]}),
-                    json!({"id": "c-team", "name": "Team\r\nplans", "color": "lightGreen", "hexColor": "#2e8b57", "canEdit": true, "isDefaultCalendar": false}),
+                    json!({"id": "c-team", "name": "Team\r\nplans", "color": "lightGreen", "hexColor": "#2e8b57", "canEdit": true, "isDefaultCalendar": false,
+                        "owner": {"name": "Bo\r\nExample", "address": "bo@example.org"}}),
                     json!({"id": "c-pink", "name": "Pink", "color": "lightPink", "hexColor": "", "canEdit": true}),
                 ],
                 None,
@@ -2133,7 +2134,7 @@ fn the_accounts_calendars_come_with_their_groups_and_colours() {
         }
         _ => page(
             vec![
-                json!({"id": "c-holidays", "name": "Holidays", "color": "auto", "canEdit": false, "isDefaultCalendar": true}),
+                json!({"id": "c-holidays", "name": "Holidays", "color": "auto", "canEdit": false, "isDefaultCalendar": true, "owner": "nobody"}),
                 json!({"id": "c-team", "name": "Said twice"}),
                 json!({"name": "No id"}),
                 json!("noise"),
@@ -2145,7 +2146,8 @@ fn the_accounts_calendars_come_with_their_groups_and_colours() {
     assert_eq!((server.asked(), download.complete, download.account), (3, true, 0));
     assert!(server.request(0).starts_with("GET /v1.0/me/calendarGroups?%24top=50&%24select=id%2Cname HTTP/1.1\r\n"), "{}", server.request(0));
     assert!(server.request(0).contains(&format!("Authorization: Bearer {TOKEN}\r\n")));
-    let read: Vec<_> = download.calendars.iter().map(|c| (c.id.as_str(), c.name.as_str(), c.group.as_str(), c.color, c.read_only, c.main)).collect();
+    let read: Vec<_> =
+        download.calendars.iter().map(|c| (c.id.as_str(), c.name.as_str(), c.group.as_str(), c.color, !c.rights.can_edit(), c.main)).collect();
     assert_eq!(
         read,
         [
@@ -2161,12 +2163,18 @@ fn the_accounts_calendars_come_with_their_groups_and_colours() {
     use mailcraft_model::OnlineProvider::{SkypeForBusiness, Teams};
     assert_eq!(download.calendars[0].online_providers, Some(vec![Teams, SkypeForBusiness]));
     assert_eq!(download.calendars[1].online_providers, None);
+    // Whose each is, as Graph says: one line, bounded; nothing when it isn't a name and an address.
+    let owners: Vec<_> = download.calendars.iter().map(|c| c.owner.as_ref().map(|o| (o.address.as_str(), o.name.as_str()))).collect();
+    assert_eq!(owners, [None, Some(("bo@example.org", "Bo  Example")), None, None]);
     // Should Graph not have the question with that in it (400), the calendars come without.
     let server = FakeHttp::start(|n, request| match n {
         0 => page(vec![json!({"id": "g-1", "name": "My Calendars"})], None),
         1 => answer("400 Bad Request", "", &graph_error("BadRequest", "Could not find a property named 'allowedOnlineMeetingProviders'.")),
         _ => {
-            assert!(request.contains("%24select=id%2Cname%2Ccolor%2ChexColor%2CcanEdit%2CisDefaultCalendar "), "{request}");
+            assert!(
+                request.contains("%24select=id%2Cname%2Ccolor%2ChexColor%2CcanEdit%2CcanViewPrivateItems%2Cowner%2CisDefaultCalendar "),
+                "{request}"
+            );
             page(vec![json!({"id": "c-main", "name": "Calendar", "isDefaultCalendar": true})], None)
         }
     });

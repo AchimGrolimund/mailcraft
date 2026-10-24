@@ -85,8 +85,8 @@ use mailcraft_model::remote::{
 };
 use mailcraft_model::sync::SharedRefusal;
 use mailcraft_model::{
-    Address, Attendee, Category, Freq, Importance, Labeled, Message, OnlineMeeting, OnlineProvider, PostalAddress, Recurrence, Response,
-    ResponseOptions, Rgb, ShowAs,
+    Address, Attendee, CalendarOwner, Category, Freq, Importance, Labeled, Message, OnlineMeeting, OnlineProvider, PostalAddress, Recurrence,
+    Response, ResponseOptions, Rgb, Rights, ShowAs,
 };
 use mailcraft_proto::ProtoError;
 use mailcraft_time::{Date, DateTime, Timestamp, Weekday};
@@ -1834,9 +1834,9 @@ fn contact_of(entry: &Value) -> Option<RemoteContact> {
 }
 
 const CALENDAR_GROUPS: &str = "/v1.0/me/calendarGroups";
-const CALENDAR_FIELDS: &str = "id,name,color,hexColor,canEdit,isDefaultCalendar";
+const CALENDAR_FIELDS: &str = "id,name,color,hexColor,canEdit,canViewPrivateItems,owner,isDefaultCalendar";
 /// The same with what a calendar's meetings may be held online with, which is asked for first.
-const CALENDAR_FIELDS_ONLINE: &str = "id,name,color,hexColor,canEdit,isDefaultCalendar,allowedOnlineMeetingProviders";
+const CALENDAR_FIELDS_ONLINE: &str = "id,name,color,hexColor,canEdit,canViewPrivateItems,owner,isDefaultCalendar,allowedOnlineMeetingProviders";
 const MASTER_CATEGORIES: &str = "/v1.0/me/outlook/masterCategories";
 const GET_SCHEDULE: &str = "/v1.0/me/calendar/getSchedule";
 /// Most groups of calendars one account is taken to have.
@@ -1928,7 +1928,11 @@ fn calendar_of(entry: &Value, group: &str) -> Option<RemoteCalendar> {
         name: text(entry, "name").to_string(),
         color: Rgb::parse(text(entry, "hexColor")).or_else(|| calendar_color(text(entry, "color"))),
         group: group.to_string(),
-        read_only: entry.get("canEdit").and_then(Value::as_bool) == Some(false),
+        rights: if entry.get("canEdit").and_then(Value::as_bool) == Some(false) { Rights::Read } else { Rights::Edit },
+        owner: entry
+            .get("owner")
+            .filter(|owner| owner.is_object())
+            .and_then(|owner| CalendarOwner { address: text(owner, "address").to_string(), name: text(owner, "name").to_string() }.cleaned()),
         main: entry.get("isDefaultCalendar").and_then(Value::as_bool).unwrap_or(false),
         // What its meetings may be held online with, when the answer says (it was asked for).
         online_providers: entry

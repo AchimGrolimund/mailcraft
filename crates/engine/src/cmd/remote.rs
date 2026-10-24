@@ -76,7 +76,9 @@ use mailcraft_model::remote::{
     RemoteContact, RemoteEvent, RemoteEventKind, RemoteFavorite, clean_key, id_tag,
 };
 use mailcraft_model::zoned;
-use mailcraft_model::{Account, Attendee, Calendar, Contact, Event, FolderKind, Id, Importance, Mailbox, OnlineMeeting, Origin, Proposal, Response};
+use mailcraft_model::{
+    Account, Attendee, Calendar, Contact, Event, FolderKind, Id, Importance, Mailbox, OnlineMeeting, Origin, Proposal, Response, Rights,
+};
 use mailcraft_time::{Date, DateTime, Timestamp, Weekday, Zone};
 use serde_json::{Value, json};
 
@@ -802,8 +804,12 @@ fn new_token(event: Id, salt: u64) -> String {
 /// only read (somebody else's, a calendar of holidays): the server would refuse it anyway.
 pub(crate) fn writable(mailbox: &Mailbox, calendar: Id) -> Result<(), CmdError> {
     match mailbox.calendar(calendar) {
-        Some(c) if c.read_only && keeper(mailbox, &c.origin).is_some() => {
-            Err(failed!("The calendar \"{name}\" can only be read: its owner hasn't let this account change it.", name = c.name))
+        Some(c) if !c.can_edit() && keeper(mailbox, &c.origin).is_some() => {
+            if c.rights == Rights::FreeBusy {
+                Err(failed!("The calendar \"{name}\" only shows when its owner is busy: this account can't change it.", name = c.name))
+            } else {
+                Err(failed!("The calendar \"{name}\" can only be read: its owner hasn't let this account change it.", name = c.name))
+            }
         }
         _ => Ok(()),
     }
@@ -3417,9 +3423,14 @@ pub fn apply_calendars(s: &mut Session, download: &CalendarsDownload) -> CmdResu
         let at = mailbox.calendars.iter().position(|calendar| calendar.origin.account == account && calendar.origin.id == named);
         if let Some(calendar) = at.and_then(|at| mailbox.calendars.get_mut(at)) {
             let color = remote.color.unwrap_or(calendar.color);
-            let same = calendar.name == title && calendar.color == color && calendar.group == remote.group && calendar.read_only == remote.read_only;
+            let same = calendar.name == title
+                && calendar.color == color
+                && calendar.group == remote.group
+                && calendar.rights == remote.rights
+                && calendar.owner == remote.owner;
             if !same {
-                (calendar.name, calendar.color, calendar.group, calendar.read_only) = (title, color, remote.group.clone(), remote.read_only);
+                (calendar.name, calendar.color, calendar.group) = (title, color, remote.group.clone());
+                (calendar.rights, calendar.owner) = (remote.rights, remote.owner.clone());
                 updated += 1;
             }
             // What its meetings may be held online with, when the list says (else: as it was).
@@ -3438,7 +3449,8 @@ pub fn apply_calendars(s: &mut Session, download: &CalendarsDownload) -> CmdResu
                 // Only the account's own calendar is ticked to begin with.
                 visible: remote.main,
                 origin,
-                read_only: remote.read_only,
+                rights: remote.rights,
+                owner: remote.owner.clone(),
                 group: remote.group.clone(),
                 online_providers: remote.online_providers.clone(),
                 ..Default::default()

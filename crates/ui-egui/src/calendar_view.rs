@@ -804,7 +804,7 @@ fn pane_of(panes: &[PaneView], calendar: Id) -> usize {
 /// Whether a calendar is one the account may read and not change.
 fn read_only(app: &MailApp, calendar: Id) -> bool {
     let mailbox = &app.session.mailbox;
-    mailbox.calendar(calendar).is_some_and(|c| c.read_only && mailcraft_engine::cmd::remote::keeper(mailbox, &c.origin).is_some())
+    mailbox.calendar(calendar).is_some_and(|c| !c.can_edit() && mailcraft_engine::cmd::remote::keeper(mailbox, &c.origin).is_some())
 }
 
 /// Working in a block makes its calendar the one being worked in (where the ribbon's New
@@ -1359,6 +1359,7 @@ fn group_title(title: &str) -> &str {
     match title {
         "My Calendars" => tl!("My Calendars"),
         "Other Calendars" => tl!("Other Calendars"),
+        "Shared Calendars" => tl!("Shared Calendars"),
         "On this computer" => tl!("On this computer"),
         other => other,
     }
@@ -2072,7 +2073,7 @@ fn event_input(app: &mut MailApp, resp: Response, item: &Item, tips: bool) {
     let account = item.ev.origin.account;
     let others: Vec<(Id, String)> = {
         let calendars = app.session.mailbox.calendars.iter().take(50).filter(|c| c.id != item.ev.calendar);
-        let fits = |c: &&mailcraft_model::Calendar| own || (c.origin.account == account && !c.read_only);
+        let fits = |c: &&mailcraft_model::Calendar| own || (c.origin.account == account && c.can_edit());
         calendars.filter(fits).map(|c| (c.id, calendar_label(&app.session, c))).collect()
     };
     let importance = item.ev.importance;
@@ -7312,9 +7313,9 @@ mod tests {
         use crate::calendar_sync::testing::event as on_server;
         let (mut rig, _server, account) = Rig::served(vec![on_server("e-1", "Dentist", NOW + 18 * 3600)]);
         let download = json!({"account": account, "complete": true, "calendars": [
-            {"id": "c-hol", "name": "Holidays", "main": false, "readOnly": true, "group": "Other Calendars"},
-            {"id": "c-team", "name": "Team", "main": false, "readOnly": false, "group": "Projects", "color": [46, 139, 87]},
-            {"id": "c-main", "name": "Calendar", "main": true, "readOnly": false, "group": "My Calendars"},
+            {"id": "c-hol", "name": "Holidays", "main": false, "rights": "read", "group": "Other Calendars"},
+            {"id": "c-team", "name": "Team", "main": false, "rights": "edit", "group": "Projects", "color": [46, 139, 87]},
+            {"id": "c-main", "name": "Calendar", "main": true, "rights": "edit", "group": "My Calendars"},
         ]});
         rig.run("sync.applyCalendars", json!({"download": download}));
         let id_of = |rig: &Rig, name: &str| rig.app.session.mailbox.calendars.iter().find(|c| c.name == name).map(|c| c.id).unwrap();

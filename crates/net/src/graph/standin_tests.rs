@@ -319,8 +319,12 @@ fn an_event_of_another_calendar_is_written_through_that_calendar() {
     );
     // The list of calendars says which is the main one, and which may be changed.
     let list = calendars_at(&server.url(), TOKEN).unwrap();
-    let told: Vec<(&str, bool, bool)> = list.calendars.iter().map(|c| (c.name.as_str(), c.main, c.read_only)).collect();
+    let told: Vec<(&str, bool, bool)> = list.calendars.iter().map(|c| (c.name.as_str(), c.main, !c.rights.can_edit())).collect();
     assert_eq!(told, [("Calendar", true, false), ("Team", false, false), ("Bo's calendar", false, false), ("Holidays", false, true)]);
+    // And whose each is: the signed-in person's own, or somebody else's that is shared with them.
+    let whose: Vec<&str> = list.calendars.iter().map(|c| c.owner.as_ref().map_or("", |o| o.address.as_str())).collect();
+    let own = server.state().owner.clone();
+    assert_eq!(whose, [own.as_str(), own.as_str(), "else@example.org", own.as_str()]);
 }
 
 #[test]
