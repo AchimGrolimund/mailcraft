@@ -375,6 +375,10 @@ impl MailApp {
         // The Favorites as Outlook has them, when they came along ([`crate::favorites_sync`]).
         self.take_in_favorites(account, &mut result);
         self.take_in_calendar_list(account, result.calendars.as_ref(), result.categories.as_ref(), result.extras_missing, &mut errors);
+        // Calendars opened by address that the sign-in doesn't let be read yet: the owner is asked (#70).
+        if result.shared_calendars_consent_needed {
+            self.shared_calendars_consent(account);
+        }
         if let Some(hours) = result.mailbox_hours.take() {
             self.take_in_mailbox_hours(account, &hours);
         }
@@ -719,7 +723,10 @@ impl MailApp {
             c.origin.account == account && (c.origin.id.is_empty() || c.visible || directory || unseen.contains(&c.id))
         };
         let mut asks: Vec<mailcraft_model::remote::CalendarAsk> = Vec::new();
-        for calendar in self.session.mailbox.calendars.iter().filter(followed).take(MAX_ASKED) {
+        // (Those the owner opened by address first: they count within the same cap, #70.)
+        let mut ordered: Vec<&mailcraft_model::Calendar> = self.session.mailbox.calendars.iter().filter(followed).collect();
+        ordered.sort_by_key(|c| !c.origin.id.starts_with(mailcraft_model::remote::OPENED_PREFIX));
+        for calendar in ordered.into_iter().take(MAX_ASKED) {
             if !asks.iter().any(|ask| ask.calendar == calendar.origin.id) {
                 let series = remote::expected_series(&self.session, account, &calendar.origin.id, from, to);
                 asks.push(mailcraft_model::remote::CalendarAsk { calendar: calendar.origin.id.clone(), series });
@@ -738,10 +745,14 @@ impl MailApp {
         extras_missing: bool,
         errors: &mut Vec<String>,
     ) {
-        if let Some(list) = calendars
-            && let Err(e) = remote::apply_calendars(&mut self.session, list)
-        {
-            errors.push(crate::i18n::fmt(tl!("The list of calendars couldn't be taken in: {error}"), &[("error", &e.to_string())]));
+        if let Some(list) = calendars {
+            match remote::apply_calendars(&mut self.session, list) {
+                // What came of the calendars opened by address (#70).
+                Ok(applied) => self.take_in_opened(account, &applied),
+                Err(e) => {
+                    errors.push(crate::i18n::fmt(tl!("The list of calendars couldn't be taken in: {error}"), &[("error", &e.to_string())]));
+                }
+            }
         }
         if let Some(list) = categories {
             // They came: the sign-in covers them.

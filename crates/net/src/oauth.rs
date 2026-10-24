@@ -1488,5 +1488,8 @@ impl Redirect {
     }
 }
 
+mod shared_calendars;
+pub use shared_calendars::{refresh_graph_shared_calendars, refresh_graph_shared_calendars_at, sign_in_for_shared_calendars};
+
 #[cfg(test)]
 mod tests;

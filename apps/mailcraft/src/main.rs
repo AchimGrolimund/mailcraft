@@ -50,6 +50,8 @@ mod logging;
 #[cfg(target_os = "macos")]
 mod menubar;
 mod opened_files;
+#[cfg(test)]
+mod opened_flow;
 mod picture_cache;
 mod quit;
 #[cfg(target_os = "macos")]
@@ -503,6 +505,12 @@ fn sign_in_with(request: SignInRequest, open_page: &dyn Fn(&str) -> bool) -> Res
         let asked = mailcraft_net::oauth::sign_in_for_shared_send(&request.oauth, &request.email, &open, &request.cancel);
         return asked.map_err(|refusal| unopened(favorites_refusal(refusal)));
     }
+    // Calendars are opened by address for the first time (#70): the page comes up for what
+    // reading other people's calendars takes, by itself.
+    if request.graph && request.shared_calendars {
+        let asked = mailcraft_net::oauth::sign_in_for_shared_calendars(&request.oauth, &request.email, &open, &request.cancel);
+        return asked.map_err(|refusal| unopened(favorites_refusal(refusal)));
+    }
     if request.graph && request.shared {
         let asked = mailcraft_net::oauth::sign_in_for_shared(&request.oauth, &request.email, &open, &request.cancel);
         return asked.map_err(|refusal| unopened(favorites_refusal(refusal)));
@@ -652,6 +660,16 @@ fn graph(request: GraphRequest) -> GraphResult {
 
 /// [`graph`], with the owner's time zone as `zone` (a name Microsoft Graph knows).
 fn graph_in(request: GraphRequest, zone: &str) -> GraphResult {
+    graph_in_with(request, zone, &mailcraft_net::oauth::refresh_graph_shared_calendars)
+}
+
+/// [`graph_in`], with how a token that covers other people's calendars is had as `renew_calendars`
+/// (the tests' own, which asks nobody).
+fn graph_in_with(
+    request: GraphRequest,
+    zone: &str,
+    renew_calendars: &dyn Fn(&mailcraft_model::OAuth, &str) -> Result<mailcraft_net::oauth::GraphTokens, mailcraft_net::NetError>,
+) -> GraphResult {
     use mailcraft_net::oauth;
     // A token for everything Graph is asked for, and for reading the Favorites of Outlook when
     // the window wants that too (it stops wanting it for the day once it was told no).
@@ -671,7 +689,57 @@ fn graph_in(request: GraphRequest, zone: &str) -> GraphResult {
         }
     };
     // (And for sending from a shared mailbox, when it has mail to send: #70.)
-    graph_sending_with(request, zone, renew, &oauth::refresh_graph_shared_send)
+    let (request, opened) = opened_token(request, shared, renew_calendars);
+    let mut out = graph_sending_with(request, zone, renew, &oauth::refresh_graph_shared_send);
+    out.shared_calendars_consent_needed = opened.consent_needed;
+    if out.tokens.is_none() {
+        out.tokens = opened.tokens;
+    }
+    out
+}
+
+/// What [`opened_token`] found out.
+#[derive(Default)]
+struct OpenedToken {
+    /// The token that was obtained, when one was: it covers other people's calendars.
+    tokens: Option<Tokens>,
+    /// The sign-in doesn't cover reading other people's calendars: the window asks the owner.
+    consent_needed: bool,
+}
+
+/// A calendar job of an account with calendars opened by address (#70) needs a token that covers
+/// reading other people's calendars (`Calendars.ReadWrite.Shared`); one that was handed in may
+/// not, and a refusal of it would read as "no rights". So such a job gets its own, from the
+/// refresh token, and when the sign-in doesn't cover it the job goes on without those calendars
+/// (the account's own are read as ever) and says that the owner is to be asked. A job that is not
+/// the calendar's (mail's, a shared mailbox's) never reads them, and is left as it is.
+fn opened_token(
+    mut request: GraphRequest,
+    shared: bool,
+    renew: &dyn Fn(&mailcraft_model::OAuth, &str) -> Result<mailcraft_net::oauth::GraphTokens, mailcraft_net::NetError>,
+) -> (GraphRequest, OpenedToken) {
+    let mut found = OpenedToken::default();
+    if request.account.opened_calendars.is_empty() || request.mail.is_some() || shared {
+        request.account.opened_calendars.clear();
+        return (request, found);
+    }
+    if request.refresh.is_empty() {
+        // (Nothing to renew with: what the token covers isn't known, so they are left for later.)
+        request.account.opened_calendars.clear();
+        return (request, found);
+    }
+    match renew(&request.oauth, &request.refresh) {
+        Ok(got) => {
+            request.access = got.tokens.access.clone();
+            found.tokens = Some(got.tokens);
+        }
+        Err(e) => {
+            found.consent_needed = e.is_consent_needed();
+            log::info!("calendar: other people's calendars aren't read in this run (consent needed: {})", found.consent_needed);
+            request.account.opened_calendars.clear();
+        }
+    }
+    (request, found)
 }
 
 /// How a job gets a token for Microsoft Graph when the window handed it none: from the sign-in
@@ -863,7 +931,14 @@ fn graph_sending_with(mut request: GraphRequest, zone: &str, renew: Renew<'_>, r
     let mut others: Vec<String> = request.asks.iter().map(|ask| ask.calendar.clone()).filter(|calendar| !calendar.is_empty()).collect();
     if request.directory && !refused {
         match graph::calendars(&access) {
-            Ok(list) => {
+            Ok(mut list) => {
+                // The calendars the owner opened by address (#70), each read at its own address:
+                // those that can be read are in the list as calendars of the account, and those
+                // that can't are said, with why.
+                let (opened, no_good) = open_by_address(&access, &request.account.opened_calendars);
+                list.calendars.extend(opened);
+                list.refused = no_good.0;
+                refused |= no_good.1;
                 // Every calendar there is comes with the wide stretch, known here already or not.
                 // (Not from a list that doesn't say which one is the main calendar: that one
                 // comes anyway, and would then come twice.)
@@ -896,6 +971,9 @@ fn graph_sending_with(mut request: GraphRequest, zone: &str, renew: Renew<'_>, r
             Err(e) if e.is_refused_sign_in() => refused = true,
             Err(e) => out.errors.push(format!("Couldn't bring the calendar down: {e}")),
         }
+        // Those opened by address come first (the owner asked for them by name): they count
+        // within the same cap as the account's other calendars.
+        others.sort_by_key(|calendar| !calendar.starts_with(mailcraft_model::remote::OPENED_PREFIX));
         for calendar in others.iter().take(MAX_OTHER_CALENDARS) {
             if refused {
                 break;
@@ -1028,8 +1106,36 @@ fn mailbox_hours(email: &str, hours: mailcraft_net::graph::WorkingHours) -> mail
     }
 }
 
-/// Most calendars of an account, beside its main one, that are brought down in one go.
+/// Most calendars of an account, beside its main one, that are brought down in one go: those
+/// the server lists and those the owner opened by address, together.
 const MAX_OTHER_CALENDARS: usize = 20;
+
+/// Read the calendars opened by address with `token`: the calendars that can be read (named by
+/// their owners, with their rights), and those that can't, with why; and whether the sign-in
+/// itself was refused. At most [`mailcraft_model::MAX_OPENED_CALENDARS`], one request each.
+fn open_by_address(
+    token: &str,
+    opened: &[mailcraft_model::OpenedCalendar],
+) -> (Vec<mailcraft_model::remote::RemoteCalendar>, (Vec<mailcraft_model::remote::OpenedRefusal>, bool)) {
+    use mailcraft_model::remote::OpenedRefusal;
+    use mailcraft_net::graph::{self, Opened};
+    let (mut read, mut refusals, mut signed_out) = (Vec::new(), Vec::new(), false);
+    for one in opened.iter().take(mailcraft_model::MAX_OPENED_CALENDARS) {
+        if signed_out {
+            break;
+        }
+        match graph::open_calendar(token, &one.address) {
+            Opened::Read(calendar) => read.push(*calendar),
+            Opened::Refused(why) => {
+                // (Said by what happened, never by whom: the address is not in the log.)
+                log::info!("calendar: a calendar opened by address couldn't be read ({why:?})");
+                refusals.push(OpenedRefusal { address: one.address.clone(), why });
+            }
+            Opened::SignInRefused => signed_out = true,
+        }
+    }
+    (read, (refusals, signed_out))
+}
 
 /// When the people a meeting is for are free and busy, for its Scheduling Assistant: one
 /// question to Microsoft Graph, about when their time is taken and how, never by what. It

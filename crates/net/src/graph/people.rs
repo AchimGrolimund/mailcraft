@@ -19,7 +19,9 @@
 //! A free and busy question is the one thing here that goes through `/me` (`getSchedule` asks
 //! about any address, as the Scheduling Assistant does): nothing of the calendar itself does.
 
-use mailcraft_model::remote::{EventsDownload, FreeBusyAsk, OPENED_PREFIX, OpenedWhy, RemoteCalendar, RemoteEvent, RemoteEventKind, opened_address};
+use mailcraft_model::remote::{
+    EventsDownload, FreeBusyAsk, MAX_SCHEDULE_STRETCH, OPENED_PREFIX, OpenedWhy, RemoteCalendar, RemoteEvent, RemoteEventKind, opened_address,
+};
 use mailcraft_model::{CalendarOwner, Rights, ShowAs};
 use mailcraft_time::Timestamp;
 use serde_json::Value;
@@ -163,6 +165,15 @@ fn free_busy_only(base: &str, token: &str, address: &str) -> Option<RemoteCalend
 /// the block's own times, so that a block that moved is another one.
 pub(super) fn free_busy_download(base: &str, token: &str, calendar: &str, from: Timestamp, to: Timestamp) -> Result<EventsDownload, NetError> {
     let address = address_of(calendar).ok_or_else(|| NetError::Config("the calendar isn't one that was opened by address".into()))?;
+    // The schedule is asked for a stretch of two months at most: the wide stretch of a Send/Receive
+    // (a month back, a year ahead) is cut to the weeks round today, and what the download says
+    // it is complete for is that stretch alone. A look at other days asks for those.
+    let (from, to) = if to.saturating_sub(from) > MAX_SCHEDULE_STRETCH {
+        let start = from.max(mailcraft_time::now().saturating_sub(7 * mailcraft_time::DAY));
+        (start, to.min(start.saturating_add(MAX_SCHEDULE_STRETCH - mailcraft_time::DAY)))
+    } else {
+        (from, to)
+    };
     let ask = FreeBusyAsk { people: vec![address.clone()], from, to };
     let schedule = schedule_at(base, token, &ask)?;
     let mut download = EventsDownload { calendar: calendar.to_string(), from, to, complete: true, ..Default::default() };

@@ -2094,3 +2094,23 @@ fn a_shared_mailboxs_tokens_are_asked_for_with_its_permission_and_nothing_less()
     assert!(refresh_graph_shared_at(&endpoints_of(&server), &oauth(), "re-fresh").unwrap_err().is_consent_needed());
     assert_eq!(server.asked(), 1);
 }
+
+#[test]
+fn other_peoples_calendars_are_asked_for_with_their_permission_and_nothing_less() {
+    let granted = r#"{"token_type":"Bearer","expires_in":3600,"access_token":"calendars-access","refresh_token":"re-fresh-2"}"#;
+    let unasked = r#"{"error":"invalid_grant","error_description":"AADSTS65001: The user or administrator has not consented to use the application with ID 'client-1' named 'MailCraft'.","error_codes":[65001],"suberror":"consent_required"}"#;
+    let server = FakeHttp::answering(ok(granted));
+    let got = refresh_graph_shared_calendars_at(&endpoints_of(&server), &oauth(), "re-fresh").unwrap();
+    assert_eq!((got.tokens.access.as_str(), got.tokens.refresh.as_str(), server.asked()), ("calendars-access", "re-fresh-2", 1));
+    let scope = form_of(&server, 0)["scope"].to_string();
+    assert!(scope.contains("Calendars.ReadWrite.Shared") && scope.contains("Calendars.ReadWrite "), "{scope}");
+    // Never the mail permissions, nor the read-only twin.
+    assert!(!scope.contains("Mail.ReadWrite") && !scope.contains("Calendars.Read.Shared"), "{scope}");
+    // Not agreed to yet: the owner is to be asked on the page; nothing is asked without it.
+    let server = FakeHttp::answering(response("400 Bad Request", unasked));
+    assert!(refresh_graph_shared_calendars_at(&endpoints_of(&server), &oauth(), "re-fresh").unwrap_err().is_consent_needed());
+    assert_eq!(server.asked(), 1);
+    // An ordinary sign-in and the others' refreshes don't carry it.
+    assert!(!shared_scope().contains("Calendars.ReadWrite.Shared") && !admin_scope().is_empty());
+    assert!(!format!("{MICROSOFT_GRAPH} {MICROSOFT_GRAPH_EXTRAS} {SIGN_IN_SCOPE}").contains("Shared"));
+}

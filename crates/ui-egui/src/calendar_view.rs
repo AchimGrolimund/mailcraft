@@ -1407,6 +1407,12 @@ fn calendar_menu(ui: &mut Ui, app: &mut MailApp, row: &CalendarRow, several: boo
             }
         }
     });
+    // One opened by address is the owner's own list's: it comes off it here (#70).
+    let opened = app.session.mailbox.calendar(row.id).is_some_and(|c| mailcraft_model::remote::opened_address(&c.origin.id).is_some());
+    if opened {
+        ui.separator();
+        mi(ui, app, "Remove Shared Calendar", "calendar.removeShared", json!({"id": row.id}));
+    }
 }
 
 /// The account whose sign-in covers everything but the optional extras (the mailbox's own
@@ -7189,6 +7195,7 @@ mod tests {
                 RemoteCalendar { id: "c-main".into(), name: "Calendar".into(), main: true, ..Default::default() },
                 RemoteCalendar { id: "c-side".into(), name: "Side".into(), ..Default::default() },
             ],
+            ..Default::default()
         };
         mailcraft_engine::cmd::remote::apply_calendars(&mut rig.app.session, &list).unwrap();
         let of = |rig: &Rig, name: &str| {

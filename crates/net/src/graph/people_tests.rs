@@ -214,3 +214,16 @@ fn an_id_a_servers_list_brings_that_says_it_was_opened_by_address_is_not_a_calen
     let entry = serde_json::json!({"id": "user:victim@example.org", "name": "Trick", "canEdit": true});
     assert!(calendar_of(&entry, "").is_none());
 }
+
+#[test]
+fn the_blocks_of_a_wide_stretch_are_those_of_the_weeks_round_today() {
+    let server = StandIn::start().unwrap();
+    server.state().add_person("fay@example.org", "Fay", Access::FreeBusy);
+    let now = mailcraft_time::now();
+    server.state().person("fay@example.org").unwrap().busy = vec![(now + 3_600, now + 7_200, "busy".into())];
+    // A month back to a year ahead, as a Send/Receive asks: more than a schedule can be asked for.
+    let wide = EventsQuery { calendar: opened_id("fay@example.org"), from: now - 31 * 86_400, to: now + 366 * 86_400, series: Vec::new() };
+    let download = events_in_at(&server.url(), TOKEN, &wide).unwrap();
+    assert_eq!(download.events.len(), 1);
+    assert!(download.to - download.from <= 62 * 86_400 && download.from <= now && download.to > now, "{} {}", download.from, download.to);
+}

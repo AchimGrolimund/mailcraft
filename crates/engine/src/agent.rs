@@ -351,6 +351,7 @@ const ACCOUNTS: &[&str] = &[
     "ui.connectMicrosoft",
     "ui.connectFavorites",
     "ui.allowSharedSend",
+    "ui.allowSharedCalendars",
     "ui.checkCalendar",
     "ui.adminConsent",
     "ui.signInAgain",

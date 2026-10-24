@@ -340,6 +340,18 @@ fn open(app: &mut MailApp, ui: &mut Ui, t: &Tokens) {
     if tile(ui, "open", tl!("Open Mailbox File"), tl!("Replace what is open with a .mailcraft file"), t) {
         let _ = app.run("ui.open", json!({}));
     }
+    // A colleague's calendar, by address (#70); kept on this computer only.
+    if app.session.mailbox.accounts.iter().any(crate::open_shared::can_open)
+        && tile(
+            ui,
+            "calendar",
+            tl!("Open Shared Calendar"),
+            tl!("A colleague's calendar, by their address, with your work or school account. Kept on this computer only"),
+            t,
+        )
+    {
+        let _ = app.run("ui.dialog", json!({"name": "openCalendar"}));
+    }
     section(ui, tl!("Save out"), t);
     if tile(ui, "save", tl!("Save Mailbox As"), tl!("Everything here in one .mailcraft file"), t) {
         let _ = app.run("file.saveAs", json!({}));

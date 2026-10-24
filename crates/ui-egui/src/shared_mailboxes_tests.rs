@@ -546,6 +546,7 @@ fn add_shared_mailbox_waits_for_a_sign_in_being_renewed() {
     let (renewed, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     app.signing_in = Some(crate::SigningIn {
+        shared_calendars: false,
         graph: false,
         favorites: false,
         quiet: true,
