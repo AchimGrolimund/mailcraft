@@ -31,7 +31,7 @@ fn on_me(server: &StandIn) -> Vec<String> {
 }
 
 fn query(address: &str) -> EventsQuery {
-    EventsQuery { calendar: opened_id(address), from: NOW - 86_400, to: NOW + 7 * 86_400, series: Vec::new() }
+    EventsQuery { calendar: opened_id(address), from: NOW - 86_400, to: NOW + 7 * 86_400, series: Vec::new(), shared: String::new() }
 }
 
 #[test]
@@ -66,8 +66,10 @@ fn a_person_who_shares_only_free_and_busy_is_opened_as_blocks() {
     // Its events can't be listed: the blocks come from the schedule, named by how they show.
     let download = events_in_at(&server.url(), TOKEN, &query("fay@example.org")).unwrap();
     assert_eq!(download.calendar, "user:fay@example.org");
-    let shown: Vec<(&str, ShowAs)> = download.events.iter().map(|event| (event.title.as_str(), event.show_as)).collect();
-    assert_eq!(shown, [("Busy", ShowAs::Busy), ("Out of Office", ShowAs::OutOfOffice)]);
+    assert!(download.free_busy);
+    let shown: Vec<ShowAs> = download.events.iter().map(|event| event.show_as).collect();
+    assert_eq!(shown, [ShowAs::Busy, ShowAs::OutOfOffice]);
+    assert!(download.events.iter().all(|event| event.title.is_empty()));
     assert!(download.events.iter().all(|event| event.attendees.is_empty() && event.description.is_empty() && !event.id.is_empty()));
     // Nothing of the calendar itself came from `/me`.
     assert!(on_me(&server).is_empty(), "{:?}", on_me(&server));
@@ -106,8 +108,11 @@ fn an_address_that_isnt_one_asks_nothing() {
     ] {
         assert_eq!(opened(&server, hostile), Opened::Refused(OpenedWhy::NoSuchPerson), "{hostile}");
         // Nor are events or changes asked for under an id that says "by address" and names none.
-        let events =
-            events_in_at(&server.url(), TOKEN, &EventsQuery { calendar: format!("user:{hostile}"), from: NOW, to: NOW + 3_600, series: Vec::new() });
+        let events = events_in_at(
+            &server.url(),
+            TOKEN,
+            &EventsQuery { calendar: format!("user:{hostile}"), from: NOW, to: NOW + 3_600, series: Vec::new(), shared: String::new() },
+        );
         assert!(events.is_err(), "{hostile}");
         let create = EventOp {
             kind: EventChangeKind::Create,
@@ -153,7 +158,7 @@ fn a_series_of_an_opened_calendar_is_asked_for_at_the_persons_mailbox() {
     assert!(on_me(&server).is_empty(), "{:?}", on_me(&server));
     let seen = server.state().requests.clone();
     let batch = seen.iter().find(|asked| asked.path.last().is_some_and(|last| last == "$batch")).expect("the series were asked for together");
-    assert!(batch.body.contains("/users/kim@example.org/calendar/events/"), "{}", batch.body);
+    assert!(batch.body.contains("/users/kim@example.org/events/"), "{}", batch.body);
 }
 
 fn new_event(mark: &str, calendar: &str, title: &str) -> EventOp {
@@ -216,14 +221,21 @@ fn an_id_a_servers_list_brings_that_says_it_was_opened_by_address_is_not_a_calen
 }
 
 #[test]
-fn the_blocks_of_a_wide_stretch_are_those_of_the_weeks_round_today() {
+fn the_blocks_of_a_wide_stretch_are_asked_for_in_stretches() {
     let server = StandIn::start().unwrap();
     server.state().add_person("fay@example.org", "Fay", Access::FreeBusy);
     let now = mailcraft_time::now();
     server.state().person("fay@example.org").unwrap().busy = vec![(now + 3_600, now + 7_200, "busy".into())];
-    // A month back to a year ahead, as a Send/Receive asks: more than a schedule can be asked for.
-    let wide = EventsQuery { calendar: opened_id("fay@example.org"), from: now - 31 * 86_400, to: now + 366 * 86_400, series: Vec::new() };
+    // A month back to a year ahead, as a Send/Receive asks: more than a schedule is asked for at once.
+    let wide = EventsQuery {
+        calendar: opened_id("fay@example.org"),
+        from: now - 31 * 86_400,
+        to: now + 366 * 86_400,
+        series: Vec::new(),
+        shared: String::new(),
+    };
     let download = events_in_at(&server.url(), TOKEN, &wide).unwrap();
     assert_eq!(download.events.len(), 1);
-    assert!(download.to - download.from <= 62 * 86_400 && download.from <= now && download.to > now, "{} {}", download.from, download.to);
+    // (Asked in stretches a schedule can be asked for: the whole window is covered.)
+    assert!(download.complete && download.from == wide.from && download.to == wide.to);
 }

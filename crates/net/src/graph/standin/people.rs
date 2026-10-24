@@ -85,6 +85,11 @@ impl State {
         let Some(person) = self.people.get(at) else { return Err(super::not_found()) };
         let denied = || refuse(403, "ErrorAccessDenied", "Access is denied. Check credentials and try again.");
         let (access, name, address) = (person.access, person.name.clone(), person.address.clone());
+        // `POST /users/{address}/calendar/getSchedule`: free and busy times are what a person who
+        // shares nothing else may still be asked for.
+        if rest == ["calendar", "getSchedule"] && method == "POST" && access != Access::Missing {
+            return self.get_schedule(asked);
+        }
         match access {
             Access::Missing => return Err(refuse(404, "ErrorInvalidUser", format!("The requested user '{address}' is invalid."))),
             Access::None | Access::FreeBusy => return Err(denied()),
@@ -104,9 +109,8 @@ impl State {
         let owner = std::mem::replace(&mut self.owner, address.clone());
         let before = std::mem::replace(&mut self.at, format!("users/{}", crate::http::encode(&address).replace("%40", "@")));
         let answer = match rest {
-            ["calendar", "calendarView"] if method == "GET" => self.calendar_view(asked, None),
-            ["calendar", "events", tail @ ..] => self.events_at(asked, method, Some(main.as_str()), tail),
-            ["events", tail @ ..] => self.events_at(asked, method, None, tail),
+            ["calendar", "calendarView"] | ["calendarView"] if method == "GET" => self.calendar_view(asked, None),
+            ["calendar", "events", tail @ ..] | ["events", tail @ ..] => self.events_at(asked, method, Some(main.as_str()), tail),
             _ => Err(refuse(400, "BadRequest", "Resource not found for the segment.")),
         };
         self.at = before;

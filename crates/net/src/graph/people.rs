@@ -16,18 +16,15 @@
 //! the calendar is shown as blocks marked Busy, Tentative, Out of Office or Working Elsewhere,
 //! never with a subject, and never changed here.
 //!
-//! A free and busy question is the one thing here that goes through `/me` (`getSchedule` asks
-//! about any address, as the Scheduling Assistant does): nothing of the calendar itself does.
+//! The blocks of such a calendar are drawn by the same code as a shared mailbox's (the `Graph`
+//! is simply at the person's address): nothing of the calendar itself goes through `/me`.
 
-use mailcraft_model::remote::{
-    EventsDownload, FreeBusyAsk, MAX_SCHEDULE_STRETCH, OPENED_PREFIX, OpenedWhy, RemoteCalendar, RemoteEvent, RemoteEventKind, opened_address,
-};
-use mailcraft_model::{CalendarOwner, Rights, ShowAs};
-use mailcraft_time::Timestamp;
+use mailcraft_model::remote::{FreeBusyAsk, OPENED_PREFIX, OpenedWhy, RemoteCalendar, opened_address};
+use mailcraft_model::{CalendarOwner, Rights};
 use serde_json::Value;
 
 use super::{ASK_TIMEOUT, CALENDAR_FIELDS, Graph, MAX_PAGE, calendar_of, schedule_at, shared_mailbox_path};
-use crate::{NetError, http};
+use crate::http;
 
 /// The address a calendar's id names, when it is one that was opened by address.
 pub(super) fn address_of(calendar: &str) -> Option<String> {
@@ -38,31 +35,6 @@ pub(super) fn address_of(calendar: &str) -> Option<String> {
 /// to be asked of the server at all (it would otherwise be taken for an ordinary calendar's).
 pub(super) fn unsafe_id(calendar: &str) -> bool {
     calendar.starts_with(OPENED_PREFIX) && opened_address(calendar).is_none()
-}
-
-/// `/v1.0/users/{address}/calendar` for an id that names an address.
-fn root_of(calendar: &str) -> Option<String> {
-    let address = address_of(calendar)?;
-    Some(format!("/v1.0{}/calendar", shared_mailbox_path(&address).ok()?))
-}
-
-/// Where the events of the calendar are listed, when it was opened by address.
-pub(super) fn view_path(calendar: &str) -> Option<String> {
-    root_of(calendar).map(|root| format!("{root}/calendarView"))
-}
-
-/// Where the events of the calendar are made, changed and deleted, when it was opened by address.
-pub(super) fn events_path(calendar: &str) -> Option<String> {
-    root_of(calendar).map(|root| format!("{root}/events"))
-}
-
-/// Where a series is asked for by its id (without Graph's version, as a batch has it): the
-/// owner's own events for an ordinary calendar, the person's for one opened by address.
-pub(super) fn series_root(calendar: &str) -> String {
-    match address_of(calendar).and_then(|address| shared_mailbox_path(&address).ok()) {
-        Some(path) => format!("{path}/calendar/events"),
-        None => "/me/events".to_string(),
-    }
 }
 
 /// How opening a calendar by address went.
@@ -86,7 +58,7 @@ pub fn open_calendar(token: &str, address: &str) -> Opened {
 pub(super) fn open_calendar_at(base: &str, token: &str, address: &str) -> Opened {
     let Some(address) = mailcraft_model::mailbox_address(address) else { return Opened::Refused(OpenedWhy::NoSuchPerson) };
     let id = mailcraft_model::remote::opened_id(&address);
-    let Some(root) = root_of(&id) else { return Opened::Refused(OpenedWhy::NoSuchPerson) };
+    let Ok(root) = shared_mailbox_path(&address).map(|path| format!("/v1.0{path}/calendar")) else { return Opened::Refused(OpenedWhy::NoSuchPerson) };
     let Ok(graph) = Graph::at(base, token) else { return Opened::SignInRefused };
     let url = graph.url(&format!("{root}?{}", http::form(&[("$select", CALENDAR_FIELDS)])));
     let reply = match graph.ask(&url, "GET", &[], None, ASK_TIMEOUT, MAX_PAGE) {
@@ -158,41 +130,4 @@ fn free_busy_only(base: &str, token: &str, address: &str) -> Option<RemoteCalend
         owner: CalendarOwner { address: address.to_string(), name: address.to_string() }.cleaned(),
         ..Default::default()
     })
-}
-
-/// The blocks of `address`'s time in a stretch, as events of the calendar `calendar` that are
-/// marked Busy, Tentative, Out of Office or Working Elsewhere and say no more. An id is made of
-/// the block's own times, so that a block that moved is another one.
-pub(super) fn free_busy_download(base: &str, token: &str, calendar: &str, from: Timestamp, to: Timestamp) -> Result<EventsDownload, NetError> {
-    let address = address_of(calendar).ok_or_else(|| NetError::Config("the calendar isn't one that was opened by address".into()))?;
-    // The schedule is asked for a stretch of two months at most: the wide stretch of a Send/Receive
-    // (a month back, a year ahead) is cut to the weeks round today, and what the download says
-    // it is complete for is that stretch alone. A look at other days asks for those.
-    let (from, to) = if to.saturating_sub(from) > MAX_SCHEDULE_STRETCH {
-        let start = from.max(mailcraft_time::now().saturating_sub(7 * mailcraft_time::DAY));
-        (start, to.min(start.saturating_add(MAX_SCHEDULE_STRETCH - mailcraft_time::DAY)))
-    } else {
-        (from, to)
-    };
-    let ask = FreeBusyAsk { people: vec![address.clone()], from, to };
-    let schedule = schedule_at(base, token, &ask)?;
-    let mut download = EventsDownload { calendar: calendar.to_string(), from, to, complete: true, ..Default::default() };
-    let person = schedule.people.iter().find(|person| person.email.eq_ignore_ascii_case(&address));
-    let Some(person) = person.filter(|person| person.error.is_empty()) else {
-        return Err(NetError::Forbidden("this account may not see when that person is busy".into()));
-    };
-    for block in person.busy.iter().filter(|block| block.show_as != ShowAs::Free) {
-        download.events.push(RemoteEvent {
-            id: format!("busy-{}-{}-{}", block.start, block.end, block.show_as.code()),
-            title: block.show_as.label().to_string(),
-            start: block.start,
-            end: block.end,
-            show_as: block.show_as,
-            kind: RemoteEventKind::Single,
-            ..Default::default()
-        });
-    }
-    // (What is more than is kept is more than was asked for: the stretch is what is complete.)
-    download.complete = person.busy.len() < mailcraft_model::remote::MAX_BUSY;
-    Ok(download)
 }

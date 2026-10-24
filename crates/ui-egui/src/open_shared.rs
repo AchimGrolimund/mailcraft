@@ -155,8 +155,10 @@ impl MailApp {
         }
     }
 
-    /// `ui.allowSharedCalendars`: Microsoft's page, for reading other people's calendars too.
-    pub(crate) fn begin_shared_calendars_sign_in(&mut self, account: Id) -> Result<Value, String> {
+    /// `ui.allowSharedCalendars` for an account that opens calendars by address: Microsoft's page,
+    /// for reading other people's calendars too (the same permission as a shared mailbox's
+    /// calendars take, asked for without what shared mailboxes' mail takes).
+    pub(crate) fn begin_opened_calendars_sign_in(&mut self, account: Id) -> Result<Value, String> {
         let owner = self.session.mailbox.account(account).filter(|a| a.oauth.is_some()).cloned();
         let owner = owner.ok_or_else(|| tl!("This account has no sign-in with Microsoft").to_string())?;
         let oauth = owner.oauth.clone().ok_or_else(|| tl!("This account has no sign-in with Microsoft").to_string())?;
@@ -171,7 +173,7 @@ impl MailApp {
     /// The owner answered on Microsoft's page about other people's calendars: with the tokens,
     /// the calendars are read now; without, those that were never read come off the list, and
     /// why not is said.
-    pub(crate) fn shared_calendars_signed_in(&mut self, account: Id, answer: Result<Tokens, String>) {
+    pub(crate) fn opened_calendars_signed_in(&mut self, account: Id, answer: Result<Tokens, String>) {
         use crate::approval::NO_BROWSER;
         use crate::favorites_sync::{NEEDS_APPROVAL, REFUSED_BY_ORGANISATION, REFUSED_FOR_ACCOUNT};
         self.session.sync_status.clear();

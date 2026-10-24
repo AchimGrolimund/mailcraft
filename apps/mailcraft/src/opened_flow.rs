@@ -150,7 +150,8 @@ fn a_person_who_shares_only_free_and_busy_is_shown_as_blocks_that_cannot_be_chan
     let fay = flow.calendar("fay@example.org").expect("listed by its address: nothing says a name");
     assert_eq!(fay.rights, Rights::FreeBusy);
     let seen: Vec<String> = flow.server.state().requests.iter().map(|r| format!("{} /{} -> {}", r.method, r.path.join("/"), r.status)).collect();
-    assert_eq!(flow.titles_in(fay.id), ["Busy"], "{seen:#?}");
+    // (Blocks say no more than how the time shows: they have no title.)
+    assert_eq!(flow.titles_in(fay.id), [""], "{seen:#?}");
     // Nothing can be made in it, or changed.
     let made = flow.app.execute("calendar.new", json!({"title": "No", "start": "2026-10-14T18:00", "calendar": fay.id}));
     assert!(made.is_err(), "{made:?}");
