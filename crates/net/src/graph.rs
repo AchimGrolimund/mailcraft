@@ -866,6 +866,10 @@ fn events_in_at(base: &str, token: &str, query: &EventsQuery) -> Result<EventsDo
     if calendar.is_empty() != query.calendar.trim().is_empty() {
         return Err(NetError::Config("the calendar that was asked for isn't one the server could have".into()));
     }
+    // A calendar opened by address is asked for at its owner's address and never at `/me` (#70).
+    if people::unsafe_id(&calendar) {
+        return Err(NetError::Config("the calendar that was asked for isn't one that can be opened by address".into()));
+    }
     let graph = Graph::at(base, token)?;
     // Graph won't have the question as it is put (400): put as it was before the newest fields
     // were asked for, the calendar still comes.
@@ -885,6 +889,11 @@ fn events_in_at(base: &str, token: &str, query: &EventsQuery) -> Result<EventsDo
             _ => break,
         }
     }
+    // Somebody's calendar that is shared as free and busy only can't be listed: its blocks come
+    // from the schedule instead (#70).
+    if matches!(listed, Err(NetError::Forbidden(_))) && people::address_of(&calendar).is_some() {
+        return people::free_busy_download(base, token, &calendar, from, to);
+    }
     let mut download = listed?;
     download.calendar = calendar;
     download.has_categories = full;
@@ -899,7 +908,7 @@ fn events_in_at(base: &str, token: &str, query: &EventsQuery) -> Result<EventsDo
     }
     // (Asked of a series what could be asked of the events: no more, so that it comes at all.)
     let of_series = if options { SERIES_FIELDS_OPTIONS } else { SERIES_FIELDS };
-    for (series, answer) in graph.series(&wanted, of_series) {
+    for (series, answer) in graph.series(&people::series_root(&download.calendar), &wanted, of_series) {
         match answer {
             Series::Found(event) => download.events.push(*event),
             Series::Gone => download.gone.push(series),
@@ -924,7 +933,7 @@ enum Series {
 impl Graph<'_> {
     /// Ask for the series called `ids` as themselves, [`BATCH_SIZE`] to a request. Every one
     /// gets an answer, in order.
-    fn series(&self, ids: &[String], fields: &str) -> Vec<(String, Series)> {
+    fn series(&self, root: &str, ids: &[String], fields: &str) -> Vec<(String, Series)> {
         let mut out: Vec<(String, Series)> = Vec::new();
         let select = http::form(&[("$select", fields)]);
         for some in ids.chunks(BATCH_SIZE) {
@@ -935,7 +944,7 @@ impl Graph<'_> {
                     json!({
                         "id": n.to_string(),
                         "method": "GET",
-                        "url": format!("/me/events/{}?{select}", http::encode(id)),
+                        "url": format!("{root}/{}?{select}", http::encode(id)),
                         "headers": {"Prefer": EVENT_PREFERENCES},
                     })
                 })
@@ -962,7 +971,7 @@ impl Graph<'_> {
                 Ok(reply) if matches!(reply.status, 400 | 404 | 405 | 415 | 501) => {
                     log::debug!("calendar: the series are asked for one by one");
                     for (slot, id) in answers.iter_mut().zip(some) {
-                        *slot = self.one_series(id, &select);
+                        *slot = self.one_series(root, id, &select);
                     }
                 }
                 Ok(reply) => log::debug!("calendar: the series couldn't be asked for (status {})", reply.status),
@@ -974,8 +983,8 @@ impl Graph<'_> {
     }
 
     /// One series, asked for by itself.
-    fn one_series(&self, id: &str, select: &str) -> Series {
-        let url = self.url(&format!("{EVENTS}/{}?{select}", http::encode(id)));
+    fn one_series(&self, root: &str, id: &str, select: &str) -> Series {
+        let url = self.url(&format!("/v1.0{root}/{}?{select}", http::encode(id)));
         match self.ask(&url, "GET", &[("Prefer", EVENT_PREFERENCES)], None, ASK_TIMEOUT, MAX_PAGE) {
             Ok(reply) if reply.status == 200 => {
                 let entry = serde_json::from_slice::<Value>(&reply.body).unwrap_or(Value::Null);
@@ -1007,7 +1016,9 @@ fn events_with(graph: &Graph<'_>, calendar: &str, from: Timestamp, to: Timestamp
     let mut download = EventsDownload { from, to, complete: true, ..Default::default() };
     let mut seen: HashSet<String> = HashSet::new();
     let mut unread = 0usize;
-    let view = if calendar.is_empty() { CALENDAR_VIEW.to_string() } else { format!("{CALENDARS}/{}/calendarView", http::encode(calendar)) };
+    let view = people::view_path(calendar).unwrap_or_else(|| {
+        if calendar.is_empty() { CALENDAR_VIEW.to_string() } else { format!("{CALENDARS}/{}/calendarView", http::encode(calendar)) }
+    });
     let first = graph.url(&format!("{view}?{query}"));
     let whole =
         graph.list(Doing::Calendar, first, &[("Prefer", EVENT_PREFERENCES)], MAX_LISTED_EVENTS, &mut |entry: &Value| match event_of(entry) {
@@ -1228,7 +1239,15 @@ fn push_events_at(base: &str, token: &str, upload: &EventsUpload, options: &Even
     let zone = shown.as_deref().unwrap_or_else(|| zone_name(&options.zone));
     for op in upload.ops.iter().take(MAX_EVENT_OPS) {
         let mut op = op.clone();
+        let named = op.calendar.clone();
         op.tidy();
+        // A calendar whose id can't be one is not the account's main calendar: nothing is sent
+        // for it (the ids of calendars opened by address are checked the same way, #70).
+        if !named.trim().is_empty() && op.calendar.is_empty() {
+            let error = "that isn't a calendar the server could have".to_string();
+            uploaded.outcomes.push(EventOutcome { op, result: EventResult::Refused, error, ..Default::default() });
+            continue;
+        }
         match graph.write_event(op, zone) {
             Wrote::Outcome(outcome, stop) => {
                 uploaded.outcomes.push(*outcome);
@@ -1256,7 +1275,12 @@ impl Graph<'_> {
             return Wrote::Outcome(outcome(op, EventResult::Refused, "the change says nothing that could be sent".into()), false);
         }
         // The events of the calendar it is in: the account's main one, or another by its name.
-        let events = if op.calendar.is_empty() { EVENTS.to_string() } else { format!("{CALENDARS}/{}/events", http::encode(&op.calendar)) };
+        if people::unsafe_id(&op.calendar) {
+            return Wrote::Outcome(outcome(op, EventResult::Refused, "that isn't a calendar that can be opened by address".into()), false);
+        }
+        let events = people::events_path(&op.calendar).unwrap_or_else(|| {
+            if op.calendar.is_empty() { EVENTS.to_string() } else { format!("{CALENDARS}/{}/events", http::encode(&op.calendar)) }
+        });
         // One occurrence of a series, known by its time: Graph says what it calls it.
         let found = if op.of_occurrence() {
             match self.occurrence(&events, &op.series, op.occurrence) {
@@ -1923,7 +1947,8 @@ fn category_color(name: &str) -> Rgb {
 /// One calendar of a list as the mailbox can take it, in the group called `group`.
 fn calendar_of(entry: &Value, group: &str) -> Option<RemoteCalendar> {
     let id = text(entry, "id");
-    (!id.is_empty()).then(|| RemoteCalendar {
+    // (An id that says it was opened by address is never one a server's list can bring: #70.)
+    (!id.is_empty() && !id.starts_with(mailcraft_model::remote::OPENED_PREFIX)).then(|| RemoteCalendar {
         id: id.to_string(),
         name: text(entry, "name").to_string(),
         color: Rgb::parse(text(entry, "hexColor")).or_else(|| calendar_color(text(entry, "color"))),
@@ -2056,6 +2081,9 @@ fn schedule_at(base: &str, token: &str, ask: &FreeBusyAsk) -> Result<FreeBusy, N
     Ok(answer)
 }
 
+mod people;
+pub use people::{Opened, open_calendar};
+
 mod settings;
 pub use settings::{MailboxSettings, WorkingHours, mailbox_settings};
 
@@ -2073,6 +2101,8 @@ pub use check::{CHECK_TITLE, CalendarCheck, CheckStep, STEPS as CHECK_STEPS, che
 #[cfg(any(test, feature = "stand-in"))]
 pub mod standin;
 
+#[cfg(test)]
+mod people_tests;
 #[cfg(test)]
 mod standin_tests;
 #[cfg(test)]

@@ -33,7 +33,7 @@ fn listed(s: &mut Session, account: Id) {
         entry("c-cy", "Cy", "My Calendars", Rights::Edit, owned("cy@example.org", "Cy")),
         entry("c-hol", "Holidays", "Other Calendars", Rights::Read, None),
     ];
-    let download = CalendarsDownload { account, email: "ada@example.org".into(), complete: true, calendars: all };
+    let download = CalendarsDownload { account, email: "ada@example.org".into(), complete: true, calendars: all, ..Default::default() };
     remote::apply_calendars(s, &download).unwrap();
 }
 
@@ -75,6 +75,7 @@ fn rights_and_owner_follow_the_server_at_every_listing() {
             RemoteCalendar { main: true, ..entry("c-main", "Calendar", "My Calendars", Rights::Edit, None) },
             entry("c-bo", "Bo", "Other Calendars", Rights::Edit, owned("bo@example.org", "Bo E.")),
         ],
+        ..Default::default()
     };
     remote::apply_calendars(&mut s, &again).unwrap();
     assert_eq!((bo(&s).rights, bo(&s).owner), (Rights::Edit, owned("bo@example.org", "Bo E.")));

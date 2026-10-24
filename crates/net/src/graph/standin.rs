@@ -82,12 +82,14 @@
 mod changes;
 mod drafts;
 mod messages;
+mod people;
 mod search;
 mod send;
 
 pub use changes::Fault;
 pub use drafts::Attached;
 pub use messages::{Mail, Message};
+pub use people::{Access, Person};
 pub use send::Sent;
 
 use std::cell::RefCell;
@@ -378,6 +380,8 @@ pub struct State {
     /// The mailboxes other than the owner's that it knows (#70); any other address is 404
     /// (`ErrorInvalidUser`).
     pub others: Vec<OtherMailbox>,
+    /// The people whose calendars were shared with the owner (#70), at `/users/{address}/calendar…`.
+    pub people: Vec<Person>,
     /// Whose mailbox is being answered for: empty for the owner's (`me`), else
     /// `users/{address}` as the links it writes name it.
     at: String,
@@ -902,6 +906,9 @@ impl State {
     /// `/v1.0/users/{user}/…`: another mailbox, answered as the owner's own is, with its folders
     /// and its mail in their place for as long as it takes (#70).
     fn of_user(&mut self, asked: &Asked, method: &str, user: &str, rest: &[&str]) -> Result<Answer, Refusal> {
+        if let Some(at) = self.people.iter().position(|person| person.address.eq_ignore_ascii_case(user)) {
+            return self.of_person(asked, method, at, rest);
+        }
         let Some(at) = self.others.iter().position(|other| other.address.eq_ignore_ascii_case(user)) else {
             return Err(refuse(404, "ErrorInvalidUser", format!("The requested user '{user}' is invalid.")));
         };
@@ -1912,6 +1919,7 @@ impl State {
                 self.events_at(asked, method, Some(main.as_str()), tail)
             }
             ["calendars", calendar, "events", tail @ ..] => self.events_at(asked, method, Some(*calendar), tail),
+            ["calendar", "getSchedule"] if method == "POST" => self.get_schedule(asked),
             ["calendarView"] if method == "GET" => self.calendar_view(asked, None),
             ["calendars", calendar, "calendarView"] if method == "GET" => self.calendar_view(asked, Some(*calendar)),
             ["calendars"] | ["calendarGroups", _, "calendars"] if method == "GET" => {

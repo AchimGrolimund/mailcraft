@@ -2372,7 +2372,13 @@ fn every_calendar_of_the_account_is_a_calendar_here() {
     use mailcraft_model::Rgb;
     use mailcraft_model::remote::{CalendarsDownload, CategoriesDownload, RemoteCalendar};
     let (mut s, account, first, _, main) = served();
-    let list = |calendars: Vec<RemoteCalendar>, complete: bool| CalendarsDownload { account, email: "ada@example.org".into(), complete, calendars };
+    let list = |calendars: Vec<RemoteCalendar>, complete: bool| CalendarsDownload {
+        account,
+        email: "ada@example.org".into(),
+        complete,
+        calendars,
+        ..Default::default()
+    };
     let entry = |id: &str, name: &str, group: &str| RemoteCalendar { id: id.into(), name: name.into(), group: group.into(), ..Default::default() };
     let all = vec![
         RemoteCalendar { main: true, color: Some(Rgb(1, 2, 3)), ..entry("cal-main", "Calendar", "My Calendars") },
@@ -2427,6 +2433,7 @@ fn every_calendar_of_the_account_is_a_calendar_here() {
         email: "bo@example.org".into(),
         complete: true,
         calendars: vec![RemoteCalendar { main: true, ..entry("cal-only", "Calendar", "") }],
+        ..Default::default()
     };
     assert_eq!(super::apply_calendars(&mut alone, &one).unwrap()["added"], 1);
     assert_eq!(alone.mailbox.calendars.iter().filter(|c| c.origin.account == only).map(|c| c.visible).collect::<Vec<_>>(), [true]);
@@ -2829,6 +2836,7 @@ fn an_event_of_another_calendar_is_sent_through_that_calendar() {
         email: "ada@example.org".into(),
         complete: true,
         calendars: vec![entry("cal-main", "Calendar", true), entry("cal-team", "Team", false)],
+        ..Default::default()
     };
     super::apply_calendars(&mut s, &list).unwrap();
     let in_team = EventsDownload { calendar: "cal-team".into(), ..october(account, vec![remote("t-1", "Retro", at(2026, 10, 15, 13, 0), 60)]) };

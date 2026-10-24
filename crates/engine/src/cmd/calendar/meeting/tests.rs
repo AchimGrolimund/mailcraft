@@ -46,6 +46,7 @@ fn session() -> (Session, Id, Id, Id) {
             RemoteCalendar { id: "c-main".into(), name: "Calendar".into(), main: true, ..Default::default() },
             RemoteCalendar { id: "c-side".into(), name: "Side".into(), ..Default::default() },
         ],
+        ..Default::default()
     };
     apply_calendars(&mut s, &list).unwrap();
     let calendar = |name: &str| s.mailbox.calendars.iter().find(|c| c.origin.account == account && c.origin.id == name).map(|c| c.id).unwrap();
