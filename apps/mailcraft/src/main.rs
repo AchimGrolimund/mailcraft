@@ -57,6 +57,8 @@ mod quit_macos;
 mod secrets;
 mod self_update;
 #[cfg(test)]
+mod shared_calendar_flow;
+#[cfg(test)]
 mod shared_send_flow;
 mod single_instance;
 mod system_locale;
@@ -497,6 +499,12 @@ fn sign_in_with(request: SignInRequest, open_page: &dyn Fn(&str) -> bool) -> Res
     }
     // A shared mailbox is to be read (#70): the page comes up for what reading shared mailboxes
     // takes, by itself, in the same words for a no as the Favorites'.
+    // A shared mailbox's calendar was ticked for the first time, and the owner said go ahead
+    // (#70): the page comes up for what reading shared mailboxes' calendars takes, by itself.
+    if request.graph && request.shared && request.shared_calendars {
+        let asked = mailcraft_net::oauth::sign_in_for_shared_calendars(&request.oauth, &request.email, &open, &request.cancel);
+        return asked.map_err(|refusal| unopened(favorites_refusal(refusal)));
+    }
     // Mail is to be sent from a shared mailbox for the first time, and the owner said go ahead
     // (#70): the page comes up for what sending from shared mailboxes takes too, by itself.
     if request.graph && request.shared && request.shared_send {
@@ -659,8 +667,12 @@ fn graph_in(request: GraphRequest, zone: &str) -> GraphResult {
     let mail = request.mail.is_some();
     // (A shared mailbox's, with what reading shared mailboxes takes: #70.)
     let shared = request.mail.as_ref().is_some_and(|mail| mail.shared);
+    // (A shared mailbox's calendars, with what reading those takes: #70.)
+    let shared_calendars = !mail && request.account.is_shared();
     let renew: Renew<'_> = &|settings, refresh, favorites| {
-        if shared {
+        if shared_calendars {
+            oauth::refresh_graph_shared_calendars(settings, refresh)
+        } else if shared {
             oauth::refresh_graph_shared(settings, refresh)
         } else if mail {
             oauth::refresh_graph_mail(settings, refresh)
@@ -856,19 +868,26 @@ fn graph_sending_with(mut request: GraphRequest, zone: &str, renew: Renew<'_>, r
     // The wide stretch with the contacts, every quarter of an hour; otherwise the days on screen.
     let now = mailcraft_time::now();
     let stretch = if request.directory { Some((now - CALENDAR_BEHIND, now + CALENDAR_AHEAD)) } else { request.calendar };
+    // A shared mailbox's calendars (#70): asked for at its own address, and only those that are
+    // ticked (the window says which, in the asks); no contacts, categories or settings of it.
+    let shared_address = request.account.is_shared().then(|| request.account.email.clone());
     // The series the mailbox expects in each calendar's stretch: asked about by name when the
     // stretch brings nothing of them.
     let expected = |calendar: &str| request.asks.iter().find(|ask| ask.calendar == calendar).map(|ask| ask.series.clone()).unwrap_or_default();
     // Which calendars the account has, and in which groups: with the wide stretch.
     let mut others: Vec<String> = request.asks.iter().map(|ask| ask.calendar.clone()).filter(|calendar| !calendar.is_empty()).collect();
     if request.directory && !refused {
-        match graph::calendars(&access) {
+        let listed = match &shared_address {
+            Some(address) => graph::shared_calendars(&access, address),
+            None => graph::calendars(&access),
+        };
+        match listed {
             Ok(list) => {
                 // Every calendar there is comes with the wide stretch, known here already or not.
                 // (Not from a list that doesn't say which one is the main calendar: that one
-                // comes anyway, and would then come twice.)
+                // comes anyway, and would then come twice.) A shared mailbox's only when ticked.
                 let told_apart = list.calendars.iter().any(|calendar| calendar.main);
-                for calendar in list.calendars.iter().filter(|calendar| told_apart && !calendar.main) {
+                for calendar in list.calendars.iter().filter(|calendar| told_apart && !calendar.main && shared_address.is_none()) {
                     if !others.contains(&calendar.id) {
                         others.push(calendar.id.clone());
                     }
@@ -876,14 +895,22 @@ fn graph_sending_with(mut request: GraphRequest, zone: &str, renew: Renew<'_>, r
                 out.calendars = Some(list.for_account(&request.account));
             }
             Err(e) if e.is_refused_sign_in() => refused = true,
+            // A shared mailbox that lists no calendars to this account (its calendar is shared
+            // for free and busy times only, or not at all): its main one is asked for all the
+            // same, and says which.
+            Err(NetError::Forbidden(_)) if shared_address.is_some() => log::info!("calendar: a shared mailbox lists no calendars to this account"),
             Err(e) => out.errors.push(format!("Couldn't bring the list of calendars down: {e}")),
         }
     }
     if let Some((from, to)) = stretch.filter(|_| !refused) {
-        let main = graph::EventsQuery { calendar: String::new(), from, to, series: expected("") };
+        let shared = shared_address.clone().unwrap_or_default();
+        // (A shared mailbox's main calendar when it is ticked.)
+        let wants_main = shared_address.is_none() || request.asks.iter().any(|ask| ask.calendar.is_empty());
+        let main = graph::EventsQuery { calendar: String::new(), from, to, series: expected(""), shared: shared.clone() };
         let days = |instant: i64| mailcraft_time::DateTime::from_timestamp(instant, 0).date.iso();
-        match graph::events_in(&access, &main) {
-            Ok(events) => {
+        match wants_main.then(|| graph::events_in(&access, &main)) {
+            None => {}
+            Some(Ok(events)) => {
                 log::info!(
                     "calendar: the main calendar came down: {} events from {} to {} (all of them: {})",
                     events.events.len(),
@@ -893,14 +920,15 @@ fn graph_sending_with(mut request: GraphRequest, zone: &str, renew: Renew<'_>, r
                 );
                 out.events = Some(events.for_account(&request.account));
             }
-            Err(e) if e.is_refused_sign_in() => refused = true,
-            Err(e) => out.errors.push(format!("Couldn't bring the calendar down: {e}")),
+            Some(Err(e)) if e.is_refused_sign_in() => refused = true,
+            Some(Err(e)) if shared_address.is_some() => out.errors.push(format!("Couldn't bring the shared mailbox's calendar down: {e}")),
+            Some(Err(e)) => out.errors.push(format!("Couldn't bring the calendar down: {e}")),
         }
         for calendar in others.iter().take(MAX_OTHER_CALENDARS) {
             if refused {
                 break;
             }
-            let query = graph::EventsQuery { calendar: calendar.clone(), from, to, series: expected(calendar) };
+            let query = graph::EventsQuery { calendar: calendar.clone(), from, to, series: expected(calendar), shared: shared.clone() };
             match graph::events_in(&access, &query) {
                 Ok(events) => {
                     log::info!(
@@ -917,7 +945,7 @@ fn graph_sending_with(mut request: GraphRequest, zone: &str, renew: Renew<'_>, r
             }
         }
     }
-    if request.directory && !refused {
+    if request.directory && !refused && shared_address.is_none() {
         match graph::contacts(&access) {
             Ok(contacts) => out.contacts = Some(contacts.for_account(&request.account)),
             Err(e) if e.is_refused_sign_in() => refused = true,
@@ -926,7 +954,7 @@ fn graph_sending_with(mut request: GraphRequest, zone: &str, renew: Renew<'_>, r
     }
     // The mailbox's own categories and their colours: an extra that an older sign-in doesn't
     // cover, and nothing to trouble the owner with when it can't be had.
-    if request.directory && !refused {
+    if request.directory && !refused && shared_address.is_none() {
         match graph::categories(&access) {
             Ok(categories) => out.categories = Some(categories.for_account(&request.account)),
             Err(NetError::Forbidden(_)) => out.extras_missing = true,

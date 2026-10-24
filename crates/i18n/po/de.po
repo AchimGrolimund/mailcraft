@@ -662,6 +662,11 @@ msgid "Allow MailCraft to read shared mailboxes on the page that opened in your 
 msgstr "Erlauben Sie MailCraft auf der Seite, die sich in Ihrem Browser geöffnet hat, freigegebene Postfächer zu lesen…"
 
 #. interface
+#: crates/ui-egui/src/shared_calendars.rs
+msgid "Allow MailCraft to read shared mailboxes' calendars on the page that opened in your browser…"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/shared_mailboxes.rs
 #, fuzzy
 msgid "Allow MailCraft to send from shared mailboxes on the page that opened in your browser…"
@@ -672,6 +677,11 @@ msgstr "Erlauben Sie MailCraft auf der Seite, die sich in Ihrem Browser geöffne
 #, fuzzy
 msgid "Allow New Time Proposals"
 msgstr "Neue Zeitvorschläge zulassen"
+
+#. command label
+#: crates/ui-egui/src/lib.rs
+msgid "Allow Reading Shared Mailboxes' Calendars"
+msgstr ""
 
 #. command label
 #: crates/ui-egui/src/lib.rs
@@ -972,6 +982,11 @@ msgid "As the people you write to see it"
 msgstr "So, wie Ihre Empfänger es sehen"
 
 #. interface
+#: crates/ui-egui/src/backstage.rs
+msgid "Ask again"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/reading/remote.rs
 #, fuzzy
 msgid "Ask before downloading pictures from this domain's senders again"
@@ -982,6 +997,11 @@ msgstr "Vor dem Herunterladen von Bildern der Absender dieser Domäne wieder fra
 #, fuzzy
 msgid "Ask before downloading this sender's pictures again"
 msgstr "Vor dem Herunterladen von Bildern dieses Absenders wieder fragen"
+
+#. interface
+#: crates/ui-egui/src/backstage.rs
+msgid "Ask for permission to read the calendars of shared mailboxes: Microsoft's page opens in your browser. Without it, nothing of this mailbox's calendars is read."
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/reading/remote.rs
@@ -1244,6 +1264,31 @@ msgstr "Kalender und Kontakte"
 #, fuzzy
 msgid "Calendar and contacts need your permission: File › Info › Connect calendar and contacts"
 msgstr "Kalender und Kontakte brauchen Ihre Erlaubnis: Datei › Informationen › Kalender und Kontakte verbinden"
+
+#. interface
+#: crates/ui-egui/src/shared_calendars.rs
+msgid "Calendars: allowed"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/shared_calendars.rs
+msgid "Calendars: asking for your permission…"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/shared_calendars.rs
+msgid "Calendars: not allowed ({why})"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/shared_calendars.rs
+msgid "Calendars: not asked yet (ticking one of them asks)"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/shared_calendars.rs
+msgid "Calendars: waiting for your permission"
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/reading/invitation.rs
@@ -1774,7 +1819,7 @@ msgid "Contacts don't go to Deleted Items."
 msgstr "Kontakte werden nicht in „Gelöschte Elemente“ verschoben."
 
 #. interface
-#: crates/ui-egui/src/account_setup.rs crates/ui-egui/src/shared_mailboxes.rs
+#: crates/ui-egui/src/account_setup.rs crates/ui-egui/src/shared_calendars.rs crates/ui-egui/src/shared_mailboxes.rs
 #, fuzzy
 msgid "Continue"
 msgstr "Weiter"
@@ -6690,6 +6735,11 @@ msgid "Saving the mailbox… {done} of {total} messages"
 msgstr "Postfach wird gespeichert… {done} von {total} Nachrichten"
 
 #. interface
+#: crates/ui-egui/src/lib.rs
+msgid "Say that this is meant with \"confirmed\": true."
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/report_problem.rs
 msgid "Say what happened (`what`)"
 msgstr ""
@@ -7209,6 +7259,11 @@ msgstr "Freigegebenes Postfach · das Konto, über das es geöffnet wurde, ist n
 msgid "Shared mailboxes weren't allowed: {error}"
 msgstr "Freigegebene Postfächer wurden nicht erlaubt: {error}"
 
+#. interface
+#: crates/ui-egui/src/shared_calendars.rs
+msgid "Shared mailboxes' calendars weren't allowed: {error}"
+msgstr ""
+
 #. ribbon
 #: crates/ui-egui/src/ribbon.rs
 #, fuzzy
@@ -7266,6 +7321,11 @@ msgstr "Menüband-Registerkarte anzeigen"
 #, fuzzy
 msgid "Show Send/Receive Progress"
 msgstr "Status von Senden/Empfangen anzeigen"
+
+#. interface
+#: crates/ui-egui/src/shared_calendars.rs
+msgid "Show a Shared Mailbox's Calendars"
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/alerts.rs
@@ -8000,7 +8060,7 @@ msgid "That is too long for a report: shorten it"
 msgstr ""
 
 #. interface
-#: crates/ui-egui/src/shared_mailboxes.rs
+#: crates/ui-egui/src/shared_calendars.rs crates/ui-egui/src/shared_mailboxes.rs
 #, fuzzy
 msgid "That isn't a shared mailbox"
 msgstr "Das ist kein freigegebenes Postfach"
@@ -8096,6 +8156,11 @@ msgstr "Der Kalender „{name}“ kann nur gelesen werden: Sein Besitzer hat die
 
 #. what a command says
 #: crates/engine/src/cmd/remote.rs
+msgid "The calendar \"{name}\" is a shared mailbox's: it is shown here, and changes to it aren't sent to Outlook yet."
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/remote.rs
 msgid "The calendar \"{name}\" only shows when its owner is busy: this account can't change it."
 msgstr ""
 
@@ -8152,6 +8217,11 @@ msgstr "Der Kalender wird bereits aktualisiert."
 #, fuzzy
 msgid "The calendar is being updated: try again in a moment."
 msgstr "Der Kalender wird aktualisiert: Versuchen Sie es gleich noch einmal."
+
+#. interface
+#: crates/ui-egui/src/shared_calendars.rs
+msgid "The calendars of the shared mailbox wait: {error}"
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/calendar_sync.rs
@@ -8373,7 +8443,7 @@ msgid "The shared mailbox's e-mail address"
 msgstr "Die E-Mail-Adresse des freigegebenen Postfachs"
 
 #. interface
-#: crates/ui-egui/src/shared_mailboxes.rs
+#: crates/ui-egui/src/shared_calendars.rs crates/ui-egui/src/shared_mailboxes.rs
 #, fuzzy
 msgid "The sign-in of the account this shared mailbox is opened through was refused: sign in again with Send/Receive"
 msgstr "Die Anmeldung des Kontos, über das dieses freigegebene Postfach geöffnet ist, wurde abgelehnt: Melden Sie sich mit Senden/Empfangen erneut an"
@@ -8507,7 +8577,7 @@ msgid "This account has no mail server to send the answer through."
 msgstr "Dieses Konto hat keinen Mailserver, über den die Antwort gesendet werden kann."
 
 #. interface
-#: crates/ui-egui/src/lib.rs crates/ui-egui/src/shared_mailboxes.rs
+#: crates/ui-egui/src/lib.rs crates/ui-egui/src/shared_calendars.rs crates/ui-egui/src/shared_mailboxes.rs
 #, fuzzy
 msgid "This account has no sign-in with Microsoft"
 msgstr "Dieses Konto hat keine Microsoft-Anmeldung"
@@ -8952,7 +9022,7 @@ msgid "This series is still on its way to the account's server. Change one of it
 msgstr "Diese Serie ist noch unterwegs zum Server des Kontos. Ändern Sie einen ihrer Tage, sobald sie dort ist (gleich)."
 
 #. interface
-#: crates/ui-egui/src/shared_mailboxes.rs
+#: crates/ui-egui/src/shared_calendars.rs crates/ui-egui/src/shared_mailboxes.rs
 #, fuzzy
 msgid "This shared mailbox's account is gone"
 msgstr "Das Konto dieses freigegebenen Postfachs ist nicht mehr vorhanden"
@@ -9072,6 +9142,14 @@ msgstr ""
 "Um aus {address} zu senden, benötigt MailCraft Ihre Erlaubnis, aus freigegebenen Postfächern zu senden. Die Microsoft-Seite öffnet sich dazu einmalig in Ihrem Browser.\n"
 "\n"
 "Ob Ihre E-Mail als {address} oder in deren Auftrag gesendet wird, entscheidet Ihre Organisation. Bis Sie es erlauben, wartet die E-Mail in ihrem Postausgang, und nichts wird von Ihrer eigenen Adresse gesendet."
+
+#. interface
+#: crates/ui-egui/src/shared_calendars.rs
+msgid ""
+"To show the calendars of {address}, MailCraft needs your permission to read the calendars of shared mailboxes. Microsoft's page opens in your browser to ask you, once.\n"
+"\n"
+"What you may see of a calendar is for its owner and your organisation to decide: this changes nothing about that. Until you allow it, nothing of {address}'s calendars is read."
+msgstr ""
 
 #. what a command says
 #: crates/engine/src/cmd/compose.rs
@@ -9796,6 +9874,11 @@ msgid "Your name"
 msgstr "Ihr Name"
 
 #. interface
+#: crates/ui-egui/src/shared_calendars.rs
+msgid "Your organisation doesn't allow MailCraft to read shared mailboxes' calendars"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/approval.rs
 #, fuzzy
 msgid "Your organisation has approved MailCraft"
@@ -9824,6 +9907,11 @@ msgstr "Ihre Organisation behält das Erteilen dieser Berechtigung ihren Adminis
 #, fuzzy
 msgid "Your organisation's administrator has to approve reading shared mailboxes once: File › Info"
 msgstr "Der Administrator Ihrer Organisation muss das Lesen freigegebener Postfächer einmalig genehmigen: Datei › Informationen"
+
+#. interface
+#: crates/ui-egui/src/shared_calendars.rs
+msgid "Your organisation's administrator has to approve reading shared mailboxes' calendars once: File › Info"
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/report_problem.rs
