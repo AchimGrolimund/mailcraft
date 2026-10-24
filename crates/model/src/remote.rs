@@ -791,6 +791,17 @@ impl EventOp {
         self.to = recipients(std::mem::take(&mut self.to));
     }
 
+    /// Whether the server sends mail to other people for this change (#70): an answer that is
+    /// sent, a meeting called off, a meeting forwarded, and a meeting made or changed with
+    /// people invited. From a shared mailbox that is sending from it.
+    pub fn mails_others(&self) -> bool {
+        match self.kind {
+            EventChangeKind::Respond | EventChangeKind::Forward => self.send,
+            EventChangeKind::Delete => self.cancel,
+            EventChangeKind::Create | EventChangeKind::Update => self.fields.attendees.as_ref().is_some_and(|who| !who.is_empty()),
+        }
+    }
+
     /// It is about one occurrence of a series, known by its series and its time only.
     pub fn of_occurrence(&self) -> bool {
         self.remote.is_empty() && !self.series.is_empty() && self.kind != EventChangeKind::Create

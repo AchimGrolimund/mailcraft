@@ -848,6 +848,21 @@ fn new_token(event: Id, salt: u64) -> String {
 /// only read (somebody else's, a calendar of holidays): the server would refuse it anyway.
 pub(crate) fn writable(mailbox: &Mailbox, calendar: Id) -> Result<(), CmdError> {
     match mailbox.calendar(calendar) {
+        // A shared mailbox's calendar, with the rights this account has on it (#70): the owner
+        // of the mailbox sets them, and they are read again at every listing.
+        Some(c) if !c.can_edit() && keeper(mailbox, &c.origin).is_some_and(Account::is_shared) => {
+            if c.rights == Rights::FreeBusy {
+                Err(failed!(
+                    "The shared mailbox's calendar \"{name}\" only shows when its owner is busy: this account can't change it.",
+                    name = c.name
+                ))
+            } else {
+                Err(failed!(
+                    "This account may only read the shared mailbox's calendar \"{name}\": the mailbox's owner hasn't given it edit rights (or they haven't been read yet).",
+                    name = c.name
+                ))
+            }
+        }
         Some(c) if !c.can_edit() && keeper(mailbox, &c.origin).is_some() => {
             if c.rights == Rights::FreeBusy {
                 Err(failed!("The calendar \"{name}\" only shows when its owner is busy: this account can't change it.", name = c.name))
@@ -855,12 +870,6 @@ pub(crate) fn writable(mailbox: &Mailbox, calendar: Id) -> Result<(), CmdError> 
                 Err(failed!("The calendar \"{name}\" can only be read: its owner hasn't let this account change it.", name = c.name))
             }
         }
-        // A shared mailbox's calendar is read here, and a change to it would go nowhere (#70):
-        // not until what is changed in it is sent to its mailbox.
-        Some(c) if keeper(mailbox, &c.origin).is_some_and(Account::is_shared) => Err(failed!(
-            "The calendar \"{name}\" is a shared mailbox's: it is shown here, and changes to it aren't sent to Outlook yet.",
-            name = c.name
-        )),
         _ => Ok(()),
     }
 }
@@ -1059,6 +1068,36 @@ fn unfit(mailbox: &Mailbox, change: &EventChange, here: &HashSet<(Id, &str)>) ->
 /// Whether a noted change still hangs together with the mailbox ([`unfit`]).
 fn holds(mailbox: &Mailbox, change: &EventChange, here: &HashSet<(Id, &str)>) -> bool {
     unfit(mailbox, change, here).is_none()
+}
+
+/// The calendar here that a noted change is about: where its event is, or was.
+fn change_calendar(mailbox: &Mailbox, change: &EventChange) -> Option<Id> {
+    let now = mailbox.event(change.event).filter(|event| event.origin.account == change.account || change.kind == EventChangeKind::Create);
+    now.map(|event| event.calendar).or_else(|| change.base.as_deref().map(|base| base.calendar))
+}
+
+/// Whether a noted change is held back for want of rights (#70): the calendar it is about is one
+/// that a server keeps and this account may no longer change (its rights were read again and
+/// shrank). It is not sent and not dropped: it waits here, and the owner is told
+/// ([`held_for_rights`]).
+fn lacks_rights(mailbox: &Mailbox, change: &EventChange) -> bool {
+    change_calendar(mailbox, change)
+        .and_then(|calendar| mailbox.calendar(calendar))
+        .is_some_and(|calendar| !calendar.can_edit() && keeper(mailbox, &calendar.origin).is_some())
+}
+
+/// The calendars of `account` that changes are held back for, because the account may no longer
+/// change them (#70), with how many each: for the window to tell the owner, by the calendar's name.
+pub fn held_for_rights(mailbox: &Mailbox, account: Id) -> Vec<(Id, String, usize)> {
+    let mut held: Vec<(Id, String, usize)> = Vec::new();
+    for change in mailbox.event_changes.iter().filter(|change| change.account == account && lacks_rights(mailbox, change)) {
+        let Some(calendar) = change_calendar(mailbox, change).and_then(|id| mailbox.calendar(id)) else { continue };
+        match held.iter_mut().find(|(id, ..)| *id == calendar.id) {
+            Some((.., n)) => *n += 1,
+            None => held.push((calendar.id, calendar.name.clone(), 1)),
+        }
+    }
+    held
 }
 
 /// Whether a noted change may go to its server as far as mail is concerned: one that makes the
@@ -1278,7 +1317,12 @@ pub fn events_waiting(s: &Session, account: Id) -> EventsWaiting {
         return waiting;
     }
     let (now, here) = (s.now(), events_here(&s.mailbox));
-    for change in s.mailbox.event_changes.iter().filter(|change| change.account == account && holds(&s.mailbox, change, &here)) {
+    for change in s
+        .mailbox
+        .event_changes
+        .iter()
+        .filter(|change| change.account == account && holds(&s.mailbox, change, &here) && !lacks_rights(&s.mailbox, change))
+    {
         waiting.total += 1;
         // (The end of a move waits for the copy to be seen on the server, for a while.)
         let held = waits_for_copy(&s.mailbox, change, now).filter(|until| *until > change.retry_at);
@@ -1302,7 +1346,11 @@ pub fn event_upload(s: &Session, account: Id) -> Result<EventsUpload, CmdError> 
     let mailbox = &s.mailbox;
     let here = events_here(mailbox);
     let mut ops = Vec::new();
-    for change in mailbox.event_changes.iter().filter(|change| change.account == account && change.retry_at <= now && holds(mailbox, change, &here)) {
+    for change in mailbox
+        .event_changes
+        .iter()
+        .filter(|change| change.account == account && change.retry_at <= now && holds(mailbox, change, &here) && !lacks_rights(mailbox, change))
+    {
         if ops.len() >= MAX_EVENT_OPS {
             break;
         }

@@ -56,7 +56,7 @@ fn delete(remote: &str) -> EventOp {
 /// Send `ops` to the stand-in, in the owner's zone `zone`.
 fn push(server: &StandIn, ops: Vec<EventOp>, zone: &str) -> Vec<EventOutcome> {
     let upload = EventsUpload { account: 3, email: "owner@example.org".into(), ops, ..Default::default() };
-    let uploaded = push_events_at(&server.url(), TOKEN, &upload, &EventOptions { zone: zone.into() });
+    let uploaded = push_events_at(&server.url(), TOKEN, &upload, &EventOptions { zone: zone.into(), ..Default::default() });
     assert!(!uploaded.token_refused);
     uploaded.outcomes
 }

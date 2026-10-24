@@ -2816,6 +2816,14 @@ impl MailApp {
         !self.sync_problems.is_empty()
     }
 
+    /// What the status bar says now and what the last Send/Receive found wrong, as one text, for a
+    /// host's tests (which have no window to look at).
+    #[doc(hidden)]
+    pub fn said_text(&self) -> String {
+        let status = self.status_msg.as_ref().map(|(said, _)| said.as_str()).unwrap_or_default();
+        format!("{status}\n{}", self.sync_problem_lines().join("\n"))
+    }
+
     /// What went wrong in the last Send/Receive, account by account, as lines to show and copy.
     pub(crate) fn sync_problem_lines(&self) -> Vec<String> {
         let mut out = Vec::new();

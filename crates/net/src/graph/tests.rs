@@ -1296,7 +1296,7 @@ proptest! {
             comment: title.clone(),
         }).collect::<Vec<_>>();
         let upload = EventsUpload { account: 3, email: "ada@example.org".into(), ops, ..Default::default() };
-        let uploaded = push_events_at(&server.url(""), TOKEN, &upload, &EventOptions { zone });
+        let uploaded = push_events_at(&server.url(""), TOKEN, &upload, &EventOptions { zone, ..Default::default() });
         prop_assert!(uploaded.outcomes.len() <= upload.ops.len());
         for outcome in &uploaded.outcomes {
             prop_assert!(!outcome.error.contains('\n') && outcome.error.chars().count() < 300, "{}", outcome.error);
@@ -1463,7 +1463,7 @@ fn times_and_whole_days_are_written_as_graph_takes_them() {
     let sent = |time: EventTime, zone: &str| {
         let before = server.asked();
         let fields = EventFields { time: Some(time), ..Default::default() };
-        push_events_at(&server.url(""), TOKEN, &upload(vec![update("e-1", fields)]), &EventOptions { zone: zone.into() });
+        push_events_at(&server.url(""), TOKEN, &upload(vec![update("e-1", fields)]), &EventOptions { zone: zone.into(), ..Default::default() });
         body_of(&server.request(before))
     };
     let stamp = |text: &str, zone: &str| json!({"dateTime": text, "timeZone": zone});
@@ -1511,17 +1511,19 @@ fn times_and_whole_days_are_written_as_graph_takes_them() {
         }
     });
     let whole_day = create(EventFields { title: Some("Offsite".into()), time: Some(days), ..Default::default() });
-    let uploaded = push_events_at(&picky.url(""), TOKEN, &upload(vec![whole_day.clone()]), &EventOptions { zone: "Mars/Olympus".into() });
+    let uploaded =
+        push_events_at(&picky.url(""), TOKEN, &upload(vec![whole_day.clone()]), &EventOptions { zone: "Mars/Olympus".into(), ..Default::default() });
     assert_eq!((uploaded.outcomes[0].result, uploaded.outcomes[0].remote.as_str(), picky.asked()), (EventResult::Done, "e-new", 2));
     assert_eq!(body_of(&picky.request(0))["start"], stamp("2026-10-31T00:00:00", "Mars/Olympus"));
     assert_eq!(body_of(&picky.request(1))["start"], stamp("2026-10-31T00:00:00", "UTC"));
     // Refused in UTC too, it is refused; and an event with times is not asked about twice.
     let never = FakeHttp::answering(answer("400 Bad Request", "", &graph_error("ErrorInvalidRequest", "No.")));
-    let uploaded = push_events_at(&never.url(""), TOKEN, &upload(vec![whole_day]), &EventOptions { zone: "Mars/Olympus".into() });
+    let uploaded =
+        push_events_at(&never.url(""), TOKEN, &upload(vec![whole_day]), &EventOptions { zone: "Mars/Olympus".into(), ..Default::default() });
     assert_eq!((uploaded.outcomes[0].result, never.asked()), (EventResult::Refused, 2));
     let timed =
         create(EventFields { title: Some("Lunch".into()), time: Some(EventTime { start: 0, end: 60, all_day: false }), ..Default::default() });
-    let uploaded = push_events_at(&never.url(""), TOKEN, &upload(vec![timed]), &EventOptions { zone: "Mars/Olympus".into() });
+    let uploaded = push_events_at(&never.url(""), TOKEN, &upload(vec![timed]), &EventOptions { zone: "Mars/Olympus".into(), ..Default::default() });
     assert_eq!((uploaded.outcomes[0].result, never.asked()), (EventResult::Refused, 3));
 }
 
@@ -2049,7 +2051,7 @@ fn meetings_series_and_answers_are_written_as_graph_takes_them() {
         respond(Response::Declined, false),
         respond(Response::None, true),
     ];
-    let options = EventOptions { zone: "Pacific Standard Time".into() };
+    let options = EventOptions { zone: "Pacific Standard Time".into(), ..Default::default() };
     let uploaded = push_events_at(&server.url(""), TOKEN, &upload(ops), &options);
     assert_eq!(server.asked(), 8);
     // A series with people invited: by the clock in the owner's zone, with its rule and who is asked.
@@ -2101,7 +2103,8 @@ fn meetings_series_and_answers_are_written_as_graph_takes_them() {
         0 => answer("400 Bad Request", "", &graph_error("TimeZoneNotSupportedException", "A valid TimeZone value must be specified.")),
         _ => json_answer("201 Created", r#"{"id":"made"}"#),
     });
-    let uploaded = push_events_at(&server.url(""), TOKEN, &upload(vec![create(meeting)]), &EventOptions { zone: "Nowhere/Land".into() });
+    let uploaded =
+        push_events_at(&server.url(""), TOKEN, &upload(vec![create(meeting)]), &EventOptions { zone: "Nowhere/Land".into(), ..Default::default() });
     assert_eq!((server.asked(), uploaded.outcomes[0].result), (2, EventResult::Done));
     let again = body_of(&server.request(1));
     assert_eq!(again["start"], json!({"dateTime": "2026-10-12T16:00:00", "timeZone": "UTC"}));
@@ -2380,7 +2383,7 @@ fn an_event_with_zones_of_its_own_is_written_by_their_clocks() {
     let sent = |fields: EventFields, shown: &str| {
         let before = server.asked();
         let upload = EventsUpload { zone: shown.into(), ..upload(vec![update("e-1", fields)]) };
-        let uploaded = push_events_at(&server.url(""), TOKEN, &upload, &EventOptions { zone: "Hawaiian Standard Time".into() });
+        let uploaded = push_events_at(&server.url(""), TOKEN, &upload, &EventOptions { zone: "Hawaiian Standard Time".into(), ..Default::default() });
         (uploaded.outcomes[0].result, (server.asked() > before).then(|| body_of(&server.request(before))))
     };
     let stamp = |text: &str, zone: &str| json!({"dateTime": text, "timeZone": zone});

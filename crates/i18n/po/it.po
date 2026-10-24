@@ -208,6 +208,11 @@ msgid "A calendar change couldn't be sent yet and will be tried again: {error}"
 msgstr "Non è stato ancora possibile inviare una modifica al calendario; verrà ritentato: {error}"
 
 #. interface
+#: crates/ui-egui/src/calendar_sync.rs
+msgid "A change to a shared mailbox's calendar was refused: this account may not edit it. It is tried once more, and then put back."
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/graph_switch.rs
 #, fuzzy
 msgid "A copy of the mailbox is being saved for a switch already: wait for it to finish."
@@ -236,6 +241,11 @@ msgstr "Una cassetta postale grande richiede un po' di tempo. {account} passa a 
 #, fuzzy
 msgid "A mailbox kept here, with no mail server"
 msgstr "Una cassetta postale conservata qui, senza server di posta"
+
+#. interface
+#: crates/ui-egui/src/shared_calendars.rs
+msgid "A meeting answer or invitation from this shared mailbox waits: sending from shared mailboxes needs your permission. Use Send/Receive."
+msgstr ""
 
 #. what a command says
 #: crates/engine/src/cmd/calendar/meeting.rs
@@ -8168,11 +8178,6 @@ msgstr "Il calendario «{name}» è di sola lettura: il proprietario non ha cons
 
 #. what a command says
 #: crates/engine/src/cmd/remote.rs
-msgid "The calendar \"{name}\" is a shared mailbox's: it is shown here, and changes to it aren't sent to Outlook yet."
-msgstr ""
-
-#. what a command says
-#: crates/engine/src/cmd/remote.rs
 msgid "The calendar \"{name}\" only shows when its owner is busy: this account can't change it."
 msgstr ""
 
@@ -8448,6 +8453,11 @@ msgstr "Impossibile aggiungere la cassetta postale condivisa"
 msgid "The shared mailbox opened through it is removed from this device too."
 msgstr "Anche la cassetta postale condivisa aperta tramite esso viene rimossa da questo dispositivo."
 
+#. what a command says
+#: crates/engine/src/cmd/remote.rs
+msgid "The shared mailbox's calendar \"{name}\" only shows when its owner is busy: this account can't change it."
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/dialogs.rs
 #, fuzzy
@@ -8593,6 +8603,11 @@ msgstr "Questo account non ha un server di posta tramite cui inviare la risposta
 #, fuzzy
 msgid "This account has no sign-in with Microsoft"
 msgstr "Questo account non ha un accesso con Microsoft"
+
+#. what a command says
+#: crates/engine/src/cmd/remote.rs
+msgid "This account may only read the shared mailbox's calendar \"{name}\": the mailbox's owner hasn't given it edit rights (or they haven't been read yet)."
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/account_setup.rs
@@ -9070,6 +9085,11 @@ msgid "Thursday"
 msgstr "giovedì"
 
 #. interface
+#: crates/ui-egui/src/reading/invitation.rs
+msgid "Tick this shared mailbox's calendar in the calendar's folder pane to answer its meeting requests."
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/lib.rs
 #, fuzzy
 msgid "Tidying the mailbox's content folder…"
@@ -9144,6 +9164,14 @@ msgstr "A"
 #, fuzzy
 msgid "To Me"
 msgstr "A me"
+
+#. interface
+#: crates/ui-egui/src/shared_mailboxes.rs
+msgid ""
+"To answer or send meetings from {address}, MailCraft needs your permission to send from shared mailboxes. Microsoft's page opens in your browser to ask you, once.\n"
+"\n"
+"Whether the answer goes as {address} or on its behalf is your organisation's choice. Until you allow it, the answer waits on this computer, and nothing is sent from your own address."
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/shared_mailboxes.rs
@@ -11640,6 +11668,11 @@ msgid "{n} change waiting for the IMAP server won't reach it; it stays in the ba
 msgid_plural "{n} changes waiting for the IMAP server won't reach it; they stay in the backup copy."
 msgstr[0] "{n} modifica in attesa per il server IMAP non lo raggiungerà; resta nella copia di backup."
 msgstr[1] "{n} modifiche in attesa per il server IMAP non lo raggiungeranno; restano nella copia di backup."
+
+#. interface
+#: crates/ui-egui/src/calendar_sync.rs
+msgid "{n} changes to the calendar \"{name}\" are held here, not sent: this account may no longer change it. They are sent if it may again."
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/backstage.rs crates/ui-egui/src/chrome.rs crates/ui-egui/src/lib.rs

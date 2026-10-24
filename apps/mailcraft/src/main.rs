@@ -682,8 +682,13 @@ fn graph_in(request: GraphRequest, zone: &str) -> GraphResult {
             oauth::refresh_graph(settings, refresh)
         }
     };
-    // (And for sending from a shared mailbox, when it has mail to send: #70.)
-    graph_sending_with(request, zone, renew, &oauth::refresh_graph_shared_send)
+    // (And for sending from a shared mailbox, when it has mail to send, or a calendar change
+    // that makes the server send some: #70.)
+    if shared_calendars {
+        graph_sending_with(request, zone, renew, &oauth::refresh_graph_shared_calendars_send)
+    } else {
+        graph_sending_with(request, zone, renew, &oauth::refresh_graph_shared_send)
+    }
 }
 
 /// How a job gets a token for Microsoft Graph when the window handed it none: from the sign-in
@@ -740,6 +745,39 @@ fn graph_sending_with(mut request: GraphRequest, zone: &str, renew: Renew<'_>, r
             }
         }
     }
+    // A shared mailbox's calendar changes that make the server send mail to other people (an
+    // answer, a meeting called off or forwarded, a meeting with people invited): they go with a
+    // token that covers sending from it (#70), or they wait for the owner's permission, and
+    // everything else goes all the same. (Same as its mail: the window asks the owner.)
+    let sending_calendar = request.account.is_shared()
+        && request.mail.is_none()
+        && request.changes.as_ref().is_some_and(|changes| changes.ops.iter().any(mailcraft_model::remote::EventOp::mails_others));
+    if sending_calendar {
+        let kept = if request.refresh.is_empty() {
+            Err(NetError::Config("no sign-in to renew".into()))
+        } else {
+            renew_send(&request.oauth, &request.refresh)
+        };
+        match kept {
+            Ok(got) => {
+                access = got.tokens.access.clone();
+                out.tokens = Some(got.tokens);
+            }
+            Err(e) => {
+                if e.is_consent_needed() {
+                    log::info!(
+                        "calendar: sending from a shared mailbox isn't allowed yet; what writes to other people waits for the owner's permission"
+                    );
+                    out.send_consent_needed = true;
+                } else {
+                    log::info!("calendar: no token for sending from a shared mailbox ({e}); what writes to other people waits");
+                }
+                if let Some(changes) = request.changes.as_mut() {
+                    changes.ops.retain(|op| !op.mails_others());
+                }
+            }
+        }
+    }
     if access.is_empty() {
         // For everything Graph is asked for; a sign-in from before the newest of it was asked
         // for gets its tokens for what it covers, and says what is missing.
@@ -770,6 +808,7 @@ fn graph_sending_with(mut request: GraphRequest, zone: &str, renew: Renew<'_>, r
             }
         }
     }
+    let shared_address = request.account.is_shared().then(|| request.account.email.clone());
     let mut refused = false;
     for message in &request.outbox {
         if refused {
@@ -853,7 +892,8 @@ fn graph_sending_with(mut request: GraphRequest, zone: &str, renew: Renew<'_>, r
     // comes down: what comes down then is what the server has after it.
     if let Some(changes) = request.changes.as_ref().filter(|changes| !changes.ops.is_empty() && !refused) {
         log::info!("calendar: {} changes go to the server", changes.ops.len());
-        let uploaded = graph::push_events(&access, changes, &graph::EventOptions { zone: zone.to_string() });
+        let uploaded =
+            graph::push_events(&access, changes, &graph::EventOptions { zone: zone.to_string(), shared: shared_address.clone().unwrap_or_default() });
         // What the server made of each change, for the log: the kind of change, what was sent
         // of it by name, and the answer, never what the event says.
         for outcome in &uploaded.outcomes {
@@ -868,9 +908,9 @@ fn graph_sending_with(mut request: GraphRequest, zone: &str, renew: Renew<'_>, r
     // The wide stretch with the contacts, every quarter of an hour; otherwise the days on screen.
     let now = mailcraft_time::now();
     let stretch = if request.directory { Some((now - CALENDAR_BEHIND, now + CALENDAR_AHEAD)) } else { request.calendar };
-    // A shared mailbox's calendars (#70): asked for at its own address, and only those that are
-    // ticked (the window says which, in the asks); no contacts, categories or settings of it.
-    let shared_address = request.account.is_shared().then(|| request.account.email.clone());
+    // A shared mailbox's calendars (#70): asked for and written at its own address, and only
+    // those that are ticked are asked for (the window says which, in the asks); no contacts,
+    // categories or settings of it.
     // The series the mailbox expects in each calendar's stretch: asked about by name when the
     // stretch brings nothing of them.
     let expected = |calendar: &str| request.asks.iter().find(|ask| ask.calendar == calendar).map(|ask| ask.series.clone()).unwrap_or_default();

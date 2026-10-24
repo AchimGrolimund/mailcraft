@@ -701,6 +701,31 @@ pub fn refresh_graph_shared_calendars_at(endpoints: &Endpoints, oauth: &OAuth, r
     Ok(GraphTokens { tokens, extras_missing: true, covers_favorites: false })
 }
 
+/// What the tokens of a Graph run for a shared mailbox's calendars are asked for when it has
+/// something to send: a meeting answered, called off or forwarded, or a meeting with people
+/// invited (#70). What its calendars take, and sending from the mailbox on top.
+fn shared_calendar_send_scope() -> String {
+    format!(
+        "{MICROSOFT_GRAPH} {MICROSOFT_GRAPH_MAIL} {MICROSOFT_GRAPH_SHARED} {MICROSOFT_GRAPH_SHARED_CALENDARS} {MICROSOFT_GRAPH_SHARED_SEND} {SIGN_IN_SCOPE}"
+    )
+}
+
+/// [`refresh_graph_shared_calendars`] for a run that has something of a shared mailbox's calendar
+/// to send (#70): the tokens are asked for with `Mail.Send.Shared` too, and for nothing less. A
+/// sign-in that doesn't cover it gets [`NetError::ConsentNeeded`]: nothing is sent, and the window
+/// asks the owner as it does for mail ([`sign_in_for_shared_send`]).
+pub fn refresh_graph_shared_calendars_send(oauth: &OAuth, refresh_token: &str) -> Result<GraphTokens, NetError> {
+    refresh_graph_shared_calendars_send_at(&Endpoints::for_resource(oauth, Resource::GraphMail), oauth, refresh_token)
+}
+
+/// [`refresh_graph_shared_calendars_send`] at endpoints other than the provider's usual ones
+/// (their scope is replaced).
+pub fn refresh_graph_shared_calendars_send_at(endpoints: &Endpoints, oauth: &OAuth, refresh_token: &str) -> Result<GraphTokens, NetError> {
+    let endpoints = Endpoints { scope: shared_calendar_send_scope(), ..endpoints.clone() };
+    let tokens = refresh_for_at(&endpoints, oauth, refresh_token, Resource::GraphMail)?;
+    Ok(GraphTokens { tokens, extras_missing: true, covers_favorites: false })
+}
+
 /// One go at signing in: the page (asked for the tokens' scopes and for `consent`), the wait for
 /// the browser, and the code traded in for tokens (for the tokens' scopes only: a token request
 /// names one resource).

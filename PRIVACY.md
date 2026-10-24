@@ -65,8 +65,9 @@ computer, for you, and for nothing else:
 - reading your mailbox settings (working hours and categories);
 - reading the list of folders you keep under Favorites in Outlook, if you ask for it;
 - reading and changing the mail of shared mailboxes you have been given access to, if you open one;
-- sending from a shared mailbox, asked for by itself the first time you send from one;
-- reading the calendars of shared mailboxes you have been given access to, asked for by itself the
+- sending from a shared mailbox, asked for by itself the first time you send from one (an
+  answer to a meeting or an invitation from a shared mailbox's calendar is sending from it);
+- reading and changing the calendars of shared mailboxes you have been given access to, asked for by itself the
   first time you tick one in the calendar's folder list (nothing of a shared mailbox's calendar is
   read before that, and it comes from your own Microsoft servers with your own sign-in; what you
   may see of it is up to its owner and your organisation);

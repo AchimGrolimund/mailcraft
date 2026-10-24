@@ -277,6 +277,9 @@ pub struct EventOptions {
     /// program that shows them by the clock draws across two days for anyone not in UTC. Empty
     /// for UTC. (An event with times goes as instants, which need no zone.)
     pub zone: String,
+    /// For a shared mailbox's calendars (#70): the mailbox's address. Every change is then
+    /// written on `/users/{address}/…` and none on `/me`. Empty for the account's own.
+    pub shared: String,
 }
 
 /// Tell Graph what was done here to the events of the account's main calendar, as the owner of
@@ -1238,6 +1241,18 @@ fn push_events_at(base: &str, token: &str, upload: &EventsUpload, options: &Even
         uploaded.token_refused = true;
         return uploaded;
     };
+    // A shared mailbox's calendars are written at its own address, and an address that is no
+    // path of one writes nothing at all (and certainly nothing at `/me`).
+    let shared = Some(options.shared.as_str()).filter(|address| !address.trim().is_empty());
+    let graph = match graph.of_shared(shared) {
+        Ok(graph) => graph,
+        Err(e) => {
+            for op in upload.ops.iter().take(MAX_EVENT_OPS) {
+                uploaded.outcomes.push(EventOutcome { op: op.clone(), result: EventResult::Refused, error: e.to_string(), ..Default::default() });
+            }
+            return uploaded;
+        }
+    };
     // The zone the calendar is shown in, as the upload names it; else this computer's, as the
     // host knows it.
     let shown = graph_zone(&upload.zone).map(|(_, name)| name);
@@ -1272,7 +1287,11 @@ impl Graph<'_> {
             return Wrote::Outcome(outcome(op, EventResult::Refused, "the change says nothing that could be sent".into()), false);
         }
         // The events of the calendar it is in: the account's main one, or another by its name.
-        let events = if op.calendar.is_empty() { EVENTS.to_string() } else { format!("{CALENDARS}/{}/events", http::encode(&op.calendar)) };
+        let events = if op.calendar.is_empty() {
+            self.mail_path("/events")
+        } else {
+            self.mail_path(&format!("/calendars/{}/events", http::encode(&op.calendar)))
+        };
         // One occurrence of a series, known by its time: Graph says what it calls it.
         let found = if op.of_occurrence() {
             match self.occurrence(&events, &op.series, op.occurrence) {
@@ -2162,6 +2181,8 @@ pub mod standin;
 
 #[cfg(test)]
 mod shared_calendar_tests;
+#[cfg(test)]
+mod shared_calendar_write_tests;
 #[cfg(test)]
 mod standin_tests;
 #[cfg(test)]
