@@ -870,7 +870,7 @@ fn graph_sending_with(mut request: GraphRequest, zone: &str, renew: Renew<'_>, r
     let stretch = if request.directory { Some((now - CALENDAR_BEHIND, now + CALENDAR_AHEAD)) } else { request.calendar };
     // A shared mailbox's calendars (#70): asked for at its own address, and only those that are
     // ticked (the window says which, in the asks); no contacts, categories or settings of it.
-    let shared_address = request.account.is_shared().then(|| request.account.email.clone());
+    let shared_address = request.account.shared_mailbox();
     // The series the mailbox expects in each calendar's stretch: asked about by name when the
     // stretch brings nothing of them.
     let expected = |calendar: &str| request.asks.iter().find(|ask| ask.calendar == calendar).map(|ask| ask.series.clone()).unwrap_or_default();
