@@ -368,6 +368,11 @@ pub struct EventsDownload {
     /// not (a server that couldn't be asked for that), all of it stays as it is here.
     #[serde(skip_serializing_if = "is_false")]
     pub has_options: bool,
+    /// The calendar can't be listed by this account, only its free and busy times can be had
+    /// (#70): the events are blocks of time without a title or a place, and the calendar is
+    /// shown as such ([`crate::Rights::FreeBusy`]).
+    #[serde(skip_serializing_if = "is_false")]
+    pub free_busy: bool,
 }
 
 impl EventsDownload {

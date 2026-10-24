@@ -108,6 +108,7 @@ pub(crate) fn graph_base() -> String {
     GRAPH.to_string()
 }
 const SEND_MAIL: &str = "/v1.0/me/sendMail";
+#[cfg(test)]
 const CALENDAR_VIEW: &str = "/v1.0/me/calendarView";
 const CONTACTS: &str = "/v1.0/me/contacts";
 const EVENTS: &str = "/v1.0/me/events";
@@ -245,6 +246,9 @@ pub struct EventsQuery {
     /// server no longer has is known to be gone ([`EventsDownload::gone`]), and one that was cut
     /// short comes with its new end.
     pub series: Vec<String>,
+    /// For a shared mailbox's calendar (#70): the mailbox's address. Everything is then asked on
+    /// `/users/{address}/…` and nothing on `/me`. Empty for the account's own.
+    pub shared: String,
 }
 
 /// [`events`] of any calendar of the account, with every series that happens in the stretch as
@@ -866,7 +870,7 @@ fn events_in_at(base: &str, token: &str, query: &EventsQuery) -> Result<EventsDo
     if calendar.is_empty() != query.calendar.trim().is_empty() {
         return Err(NetError::Config("the calendar that was asked for isn't one the server could have".into()));
     }
-    let graph = Graph::at(base, token)?;
+    let graph = Graph::at(base, token)?.of_shared(Some(query.shared.as_str()).filter(|address| !address.trim().is_empty()))?;
     // Graph won't have the question as it is put (400): put as it was before the newest fields
     // were asked for, the calendar still comes.
     let mut listed = Err(nonsense("the calendar wasn't asked for"));
@@ -883,6 +887,14 @@ fn events_in_at(base: &str, token: &str, query: &EventsQuery) -> Result<EventsDo
                 options = false;
             }
             _ => break,
+        }
+    }
+    // A shared mailbox's main calendar that won't be listed to the owner (403: it is shared for
+    // free and busy times only) is drawn from those instead, without what anything is (#70).
+    if graph.shared() && calendar.is_empty() && matches!(listed, Err(NetError::Forbidden(_))) {
+        match free_busy_events(&graph, &query.shared, from, to) {
+            Ok(download) => return Ok(download),
+            Err(e) => log::debug!("calendar: free and busy times of a shared mailbox couldn't be had either: {e}"),
         }
     }
     let mut download = listed?;
@@ -935,7 +947,7 @@ impl Graph<'_> {
                     json!({
                         "id": n.to_string(),
                         "method": "GET",
-                        "url": format!("/me/events/{}?{select}", http::encode(id)),
+                        "url": self.batch_path(&format!("/events/{}?{select}", http::encode(id))),
                         "headers": {"Prefer": EVENT_PREFERENCES},
                     })
                 })
@@ -975,7 +987,7 @@ impl Graph<'_> {
 
     /// One series, asked for by itself.
     fn one_series(&self, id: &str, select: &str) -> Series {
-        let url = self.url(&format!("{EVENTS}/{}?{select}", http::encode(id)));
+        let url = self.url(&self.mail_path(&format!("/events/{}?{select}", http::encode(id))));
         match self.ask(&url, "GET", &[("Prefer", EVENT_PREFERENCES)], None, ASK_TIMEOUT, MAX_PAGE) {
             Ok(reply) if reply.status == 200 => {
                 let entry = serde_json::from_slice::<Value>(&reply.body).unwrap_or(Value::Null);
@@ -1007,7 +1019,11 @@ fn events_with(graph: &Graph<'_>, calendar: &str, from: Timestamp, to: Timestamp
     let mut download = EventsDownload { from, to, complete: true, ..Default::default() };
     let mut seen: HashSet<String> = HashSet::new();
     let mut unread = 0usize;
-    let view = if calendar.is_empty() { CALENDAR_VIEW.to_string() } else { format!("{CALENDARS}/{}/calendarView", http::encode(calendar)) };
+    let view = if calendar.is_empty() {
+        graph.mail_path("/calendarView")
+    } else {
+        graph.mail_path(&format!("/calendars/{}/calendarView", http::encode(calendar)))
+    };
     let first = graph.url(&format!("{view}?{query}"));
     let whole =
         graph.list(Doing::Calendar, first, &[("Prefer", EVENT_PREFERENCES)], MAX_LISTED_EVENTS, &mut |entry: &Value| match event_of(entry) {
@@ -1838,7 +1854,6 @@ const CALENDAR_FIELDS: &str = "id,name,color,hexColor,canEdit,canViewPrivateItem
 /// The same with what a calendar's meetings may be held online with, which is asked for first.
 const CALENDAR_FIELDS_ONLINE: &str = "id,name,color,hexColor,canEdit,canViewPrivateItems,owner,isDefaultCalendar,allowedOnlineMeetingProviders";
 const MASTER_CATEGORIES: &str = "/v1.0/me/outlook/masterCategories";
-const GET_SCHEDULE: &str = "/v1.0/me/calendar/getSchedule";
 /// Most groups of calendars one account is taken to have.
 const MAX_GROUPS: usize = 30;
 
@@ -1850,7 +1865,16 @@ const MAX_GROUPS: usize = 30;
 /// groups, the calendars come without them. [`CalendarsDownload::complete`] and
 /// [`CalendarsDownload::for_account`] are as for [`events`].
 pub fn calendars(token: &str) -> Result<CalendarsDownload, NetError> {
-    calendars_at(&graph_base(), token)
+    calendars_at(&graph_base(), token, None)
+}
+
+/// The calendars of the shared mailbox at `address` (#70), as [`calendars`] lists the account's
+/// own, for the owner of `token` (an access token for Graph that covers shared calendars):
+/// asked at `/users/{address}/calendars` and never on `/me`. A shared mailbox has no groups
+/// of calendars to list, so none is named. A mailbox whose calendar is shared for free and busy
+/// times only doesn't list its calendars at all: that is [`NetError::Forbidden`].
+pub fn shared_calendars(token: &str, address: &str) -> Result<CalendarsDownload, NetError> {
+    calendars_at(&graph_base(), token, Some(address))
 }
 
 /// The mailbox's own list of categories, with a colour for each, for the owner of `token`. This
@@ -1963,10 +1987,18 @@ fn calendars_of(graph: &Graph<'_>, path: &str, group: &str, download: &mut Calen
     whole
 }
 
-/// [`calendars`] from Graph at `base`.
-fn calendars_at(base: &str, token: &str) -> Result<CalendarsDownload, NetError> {
-    let graph = Graph::at(base, token)?;
+/// [`calendars`] from Graph at `base`, or the calendars of the shared mailbox at `shared`.
+fn calendars_at(base: &str, token: &str, shared: Option<&str>) -> Result<CalendarsDownload, NetError> {
+    let graph = Graph::at(base, token)?.of_shared(shared)?;
     let mut download = CalendarsDownload { complete: true, ..Default::default() };
+    if graph.shared() {
+        // (One flat list: a shared mailbox's groups of calendars aren't of the owner's concern.)
+        download.complete = calendars_of(&graph, &graph.mail_path("/calendars"), "", &mut download)?;
+        download.tidy();
+        download.complete &= !download.calendars.is_empty();
+        log::debug!("calendars: {} of a shared mailbox's, complete: {}", download.calendars.len(), download.complete);
+        return Ok(download);
+    }
     let mut groups: Vec<(String, String)> = Vec::new();
     let query = http::form(&[("$top", PAGE_SIZE), ("$select", "id,name")]);
     let grouped = graph.list(Doing::Calendar, graph.url(&format!("{CALENDAR_GROUPS}?{query}")), &[], MAX_GROUPS, &mut |entry: &Value| {
@@ -2008,6 +2040,62 @@ fn categories_at(base: &str, token: &str) -> Result<CategoriesDownload, NetError
 
 /// [`schedule`] from Graph at `base`.
 fn schedule_at(base: &str, token: &str, ask: &FreeBusyAsk) -> Result<FreeBusy, NetError> {
+    schedule_with(&Graph::at(base, token)?, ask)
+}
+
+/// The longest stretch of free and busy times that is asked for one shared mailbox's calendar in
+/// one go, and most such goes for one download: the window of a calendar download (a month back,
+/// a year ahead) in 60-day stretches, with room to spare.
+const SCHEDULE_STRETCH: Timestamp = 60 * 86_400;
+const MAX_SCHEDULE_ASKS: usize = 9;
+
+/// A shared mailbox's main calendar as its free and busy times alone (#70): what the owner of
+/// the token may see of a calendar that is shared for those. Each stretch of time that is taken
+/// is an event with no title and no place, only how it shows (busy, tentative, out of office,
+/// working elsewhere); an event is known again by when it is and how it shows. The window is
+/// asked for in stretches of [`SCHEDULE_STRETCH`]. A shared mailbox that tells nothing of its
+/// time either is [`NetError::Forbidden`] again.
+fn free_busy_events(graph: &Graph<'_>, address: &str, from: Timestamp, to: Timestamp) -> Result<EventsDownload, NetError> {
+    let denied = || NetError::Forbidden("this account may only see when this calendar is busy, and that can't be had".into());
+    let mut download = EventsDownload { from, to, complete: true, free_busy: true, ..Default::default() };
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut at = from;
+    for n in 0..MAX_SCHEDULE_ASKS {
+        if at >= to {
+            break;
+        }
+        let end = to.min(at.saturating_add(SCHEDULE_STRETCH));
+        let answer = schedule_with(graph, &FreeBusyAsk { people: vec![address.to_string()], from: at, to: end })?;
+        let Some(person) = answer.people.first() else { return Err(denied()) };
+        if !person.error.is_empty() {
+            return Err(denied());
+        }
+        for busy in &person.busy {
+            let id = format!("freebusy:{}:{}:{}", busy.start, busy.end, busy.show_as.code());
+            if busy.show_as != ShowAs::Free && seen.insert(id.clone()) && download.events.len() < MAX_LISTED_EVENTS {
+                download.events.push(RemoteEvent {
+                    id,
+                    start: busy.start,
+                    end: busy.end,
+                    show_as: busy.show_as,
+                    is_organizer: Some(false),
+                    ..Default::default()
+                });
+            }
+        }
+        at = end;
+        // Not all of the window was asked for: nothing is removed for being missing from it.
+        if n + 1 == MAX_SCHEDULE_ASKS && at < to {
+            download.complete = false;
+        }
+    }
+    log::debug!("calendar: {} blocks of free and busy time from a shared mailbox", download.events.len());
+    Ok(download)
+}
+
+/// [`schedule`], asked of `graph`: on `/me` for the account, on `/users/{address}` for a shared
+/// mailbox's own time.
+fn schedule_with(graph: &Graph<'_>, ask: &FreeBusyAsk) -> Result<FreeBusy, NetError> {
     let mut ask = ask.clone();
     ask.tidy();
     if ask.people.is_empty() {
@@ -2016,7 +2104,6 @@ fn schedule_at(base: &str, token: &str, ask: &FreeBusyAsk) -> Result<FreeBusy, N
     if ask.to <= ask.from || ask.to.saturating_sub(ask.from) > MAX_SCHEDULE_STRETCH {
         return Err(NetError::Config("free and busy times are asked for a stretch of 62 days at most".into()));
     }
-    let graph = Graph::at(base, token)?;
     let body = json!({
         "schedules": ask.people,
         "startTime": date_time(ask.from, false, ""),
@@ -2025,7 +2112,7 @@ fn schedule_at(base: &str, token: &str, ask: &FreeBusyAsk) -> Result<FreeBusy, N
     })
     .to_string();
     let headers = [("Content-Type", "application/json"), ("Prefer", "outlook.timezone=\"UTC\"")];
-    let reply = graph.ask(&graph.url(GET_SCHEDULE), "POST", &headers, Some(&body), ASK_TIMEOUT, MAX_PAGE)?;
+    let reply = graph.ask(&graph.url(&graph.mail_path("/calendar/getSchedule")), "POST", &headers, Some(&body), ASK_TIMEOUT, MAX_PAGE)?;
     if reply.status != 200 {
         return Err(graph.refusal(Doing::Calendar, &reply, &body));
     }
@@ -2073,6 +2160,8 @@ pub use check::{CHECK_TITLE, CalendarCheck, CheckStep, STEPS as CHECK_STEPS, che
 #[cfg(any(test, feature = "stand-in"))]
 pub mod standin;
 
+#[cfg(test)]
+mod shared_calendar_tests;
 #[cfg(test)]
 mod standin_tests;
 #[cfg(test)]

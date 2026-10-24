@@ -554,6 +554,12 @@ impl Account {
         self.shared_of.is_some()
     }
 
+    /// The shared mailbox's own address, when this is one. Read here rather than at each call
+    /// site so that callers hold a "mailbox" and not an address.
+    pub fn shared_mailbox(&self) -> Option<String> {
+        self.shared_of.as_ref().map(|_| self.email.clone())
+    }
+
     /// The name the servers know the owner by: the login name, or else the address.
     pub fn login(&self) -> &str {
         let user = self.username.trim();

@@ -742,10 +742,12 @@ fn server_start(event: &Event, offset_at: &dyn Fn(Timestamp) -> i32) -> Timestam
 /// The main calendar of an account's server in the mailbox, when a download has brought one and
 /// the mailbox still has the account: where an event made here goes to be on the server too.
 pub(crate) fn server_calendar(mailbox: &Mailbox) -> Option<&Calendar> {
-    // The default account's first.
+    // The default account's first; never a shared mailbox's (#70), which is no place for what
+    // its owner makes without saying where.
     mailbox
         .accounts
         .iter()
+        .filter(|account| !account.is_shared())
         .find_map(|account| mailbox.calendars.iter().find(|calendar| calendar.origin.account == account.id && calendar.origin.id.is_empty()))
 }
 
@@ -772,6 +774,48 @@ pub fn only_here(mailbox: &Mailbox) -> Vec<(Id, usize)> {
 pub fn stays_here(mailbox: &Mailbox, id: Id) -> bool {
     let own = |calendar: Id| mailbox.calendar(calendar).is_some_and(|calendar| keeper(mailbox, &calendar.origin).is_none());
     server_calendar(mailbox).is_some() && mailbox.event(id).is_some_and(|event| own(event.calendar))
+}
+
+/// Whether the events of `calendar` are the owner's own to be reminded of (#70): those of the
+/// account's own calendars and of the ones kept on this computer. Not a shared mailbox's, not a
+/// calendar somebody shares with the account (they are the other person's to be reminded of), and
+/// not one that is only free and busy blocks.
+pub fn is_own_calendar(mailbox: &Mailbox, calendar: &Calendar) -> bool {
+    match keeper(mailbox, &calendar.origin) {
+        None => true,
+        Some(account) => !account.is_shared() && calendar.rights != Rights::FreeBusy && !super::calendar_settings::is_shared_with(account, calendar),
+    }
+}
+
+/// Give every shared mailbox that has none a calendar to be ticked (#70): its main one, unticked
+/// and read only, named after its address, until the server lists it. Ticking it is what makes a
+/// run read the shared mailbox's calendars (and ask the owner for permission, once). Whether
+/// anything was added.
+pub fn ensure_shared_calendars(s: &mut Session) -> bool {
+    let mailbox = &mut s.mailbox;
+    let wanted: Vec<(Id, String)> = mailbox
+        .accounts
+        .iter()
+        .filter(|account| account.is_shared() && mailbox.owner_of(account.id).is_some())
+        .filter(|account| !mailbox.calendars.iter().any(|calendar| calendar.origin.account == account.id && calendar.origin.id.is_empty()))
+        .map(|account| (account.id, account.email.trim().chars().take(mailcraft_model::MAX_NAME).collect()))
+        .collect();
+    let mut added = false;
+    for (account, name) in wanted {
+        if mailbox.calendars.len() >= MAX_CALENDARS {
+            break;
+        }
+        let id = mailbox.alloc_id();
+        let color = super::calendar::next_color(mailbox);
+        let name = if name.is_empty() { SERVER_CALENDAR.to_string() } else { name };
+        let origin = Origin { account, ..Default::default() };
+        mailbox.calendars.push(Calendar { id, name, color, visible: false, origin, rights: Rights::Read, ..Default::default() });
+        added = true;
+    }
+    if added {
+        s.mailbox_changed();
+    }
+    added
 }
 
 /// Whether one more change to an event may be noted for a server: a mailbox that can't reach its
@@ -811,6 +855,12 @@ pub(crate) fn writable(mailbox: &Mailbox, calendar: Id) -> Result<(), CmdError> 
                 Err(failed!("The calendar \"{name}\" can only be read: its owner hasn't let this account change it.", name = c.name))
             }
         }
+        // A shared mailbox's calendar is read here, and a change to it would go nowhere (#70):
+        // not until what is changed in it is sent to its mailbox.
+        Some(c) if keeper(mailbox, &c.origin).is_some_and(Account::is_shared) => Err(failed!(
+            "The calendar \"{name}\" is a shared mailbox's: it is shown here, and changes to it aren't sent to Outlook yet.",
+            name = c.name
+        )),
         _ => Ok(()),
     }
 }
@@ -2858,6 +2908,21 @@ pub fn merge_events(mailbox: &mut Mailbox, download: &EventsDownload, offset_at:
     }
     let (calendar, new_calendar) = calendar_for(mailbox, account, remote_calendar)?;
     let mut merged = Merged { calendar, new_calendar, ..Default::default() };
+    // A calendar whose events can't be listed, only its free and busy times (#70), is shown as
+    // that; one whose events can be listed again is at least read.
+    if let Some(shown) = mailbox.calendars.iter_mut().find(|shown| shown.id == calendar) {
+        let rights = if download.free_busy {
+            Rights::FreeBusy
+        } else if shown.rights == Rights::FreeBusy {
+            Rights::Read
+        } else {
+            shown.rights
+        };
+        if shown.rights != rights {
+            shown.rights = rights;
+            merged.settled = true;
+        }
+    }
     // What the mailbox has from this account's server, by what the server calls it: a name is
     // one event's, whichever calendar it sits in here (one that strayed is put back in its own).
     // Two of the same (only a file from elsewhere could hold that) leave one.
@@ -3652,3 +3717,6 @@ fn apply_event_changes_command(s: &mut Session, v: &Value) -> CmdResult {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod shared_calendar_tests;

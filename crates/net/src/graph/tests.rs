@@ -2142,7 +2142,7 @@ fn the_accounts_calendars_come_with_their_groups_and_colours() {
             None,
         ),
     });
-    let download = calendars_at(&server.url(""), TOKEN).unwrap();
+    let download = calendars_at(&server.url(""), TOKEN, None).unwrap();
     assert_eq!((server.asked(), download.complete, download.account), (3, true, 0));
     assert!(server.request(0).starts_with("GET /v1.0/me/calendarGroups?%24top=50&%24select=id%2Cname HTTP/1.1\r\n"), "{}", server.request(0));
     assert!(server.request(0).contains(&format!("Authorization: Bearer {TOKEN}\r\n")));
@@ -2178,7 +2178,7 @@ fn the_accounts_calendars_come_with_their_groups_and_colours() {
             page(vec![json!({"id": "c-main", "name": "Calendar", "isDefaultCalendar": true})], None)
         }
     });
-    let download = calendars_at(&server.url(""), TOKEN).unwrap();
+    let download = calendars_at(&server.url(""), TOKEN, None).unwrap();
     assert_eq!((server.asked(), download.calendars.len(), download.complete, &download.calendars[0].online_providers), (3, 1, true, &None));
 
     // No groups to be had: the calendars as one list. Nothing at all: no reason to take every
@@ -2187,15 +2187,15 @@ fn the_accounts_calendars_come_with_their_groups_and_colours() {
         0 => answer("400 Bad Request", "", &graph_error("BadRequest", "no groups here")),
         _ => page(vec![json!({"id": "c-main", "name": "Calendar", "isDefaultCalendar": true})], None),
     });
-    let download = calendars_at(&server.url(""), TOKEN).unwrap();
+    let download = calendars_at(&server.url(""), TOKEN, None).unwrap();
     assert!(server.request(1).starts_with("GET /v1.0/me/calendars?%24top=50&"), "{}", server.request(1));
     assert_eq!((download.calendars.len(), download.calendars[0].group.as_str(), download.complete), (1, "", true));
     let server = FakeHttp::answering(page(Vec::new(), None));
-    let download = calendars_at(&server.url(""), TOKEN).unwrap();
+    let download = calendars_at(&server.url(""), TOKEN, None).unwrap();
     assert_eq!((download.calendars.len(), download.complete), (0, false));
     // A sign-in that is no longer taken is that, and nothing more is asked.
     let server = FakeHttp::answering(answer("401 Unauthorized", "", "{}"));
-    let refused = calendars_at(&server.url(""), TOKEN).unwrap_err();
+    let refused = calendars_at(&server.url(""), TOKEN, None).unwrap_err();
     assert!(refused.is_refused_sign_in() && server.asked() == 1, "{refused:?}");
     assert_no_token(&refused);
 }
@@ -2326,7 +2326,7 @@ proptest! {
         if let Ok(download) = events_in_at(&server.url(""), TOKEN, &EventsQuery { from, to, series: vec!["s-1".into()], ..Default::default() }) {
             prop_assert!(download.events.iter().all(|event| !event.id.is_empty() && event.categories.len() <= 50));
         }
-        if let Ok(list) = calendars_at(&server.url(""), TOKEN) {
+        if let Ok(list) = calendars_at(&server.url(""), TOKEN, None) {
             prop_assert!(list.calendars.iter().all(|calendar| !calendar.id.is_empty()));
         }
         let _ = categories_at(&server.url(""), TOKEN);

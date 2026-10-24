@@ -830,6 +830,9 @@ struct Item {
     pane: usize,
     /// Its calendar lies under another one: it is drawn dimmer.
     dim: bool,
+    /// Its calendar shows only when its owner is busy (#70): a block with no title of its own,
+    /// which says how the time shows.
+    free_busy: bool,
 }
 
 impl Item {
@@ -848,7 +851,13 @@ impl Item {
 
     fn title(&self) -> &str {
         let title = self.ev.title.trim();
-        if title.is_empty() { tl!("(No title)") } else { clip_text(title, 200) }
+        if !title.is_empty() {
+            clip_text(title, 200)
+        } else if self.free_busy {
+            tl!(self.ev.show_as.label())
+        } else {
+            tl!("(No title)")
+        }
     }
 
     fn times(&self, twelve: bool) -> String {
@@ -874,7 +883,8 @@ fn gather(app: &MailApp, from: Date, to: Date, t: &Tokens, panes: &[PaneView]) -
             let tags = ev.categories.iter().skip(1).take(3).map(|name| c32(mailbox.category_color(name))).collect();
             let pane = pane_of(panes, ev.calendar);
             let dim = panes.get(pane).is_some_and(|pane| pane.tabs.len() > 1 && pane.front != ev.calendar);
-            Some(Item { occ, ev, color, edge, tags, pane, dim })
+            let free_busy = mailbox.calendar(ev.calendar).is_some_and(|c| c.rights == mailcraft_model::Rights::FreeBusy);
+            Some(Item { occ, ev, color, edge, tags, pane, dim, free_busy })
         })
         .collect()
 }
