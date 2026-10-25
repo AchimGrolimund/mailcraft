@@ -13,6 +13,7 @@
 
 **Fixes**
 - When Add Account can't check an account's servers, MailCraft's log now says why, as the dialog does (never with the password), so the reason can go into a problem report ([#432](https://github.com/GITHUB_REPOSITORY/issues/432)).
+- A cancellation in the mail now offers Remove from Calendar only when it comes from the meeting's organizer (or, for a meeting your mail server keeps, from that account); a calendar file you import replaces a meeting only when it names the same organizer; mail you import from a file never goes into an Outbox; replies and forwards quote what you saw in an HTML message, not the plain-text version its sender wrote beside it; address suggestions ignore Junk E-mail and a sender's future date; and "always download pictures" trusts only mail your server holds, by its `dmarc` result.
 - Links in mail and in MailCraft's own windows now go through the same check before the system opens them on Windows and macOS as on Linux, and a web address that can't be read properly, or has no host, is no longer a link.
 - A comma or semicolon in an attachment's name is replaced when it is opened or saved, so Windows can't take the rest of the name for something else to open; the name shown is the name used.
 - More kinds of file that can run or connect when opened (theme packs, server location files and a few others) are saved, never opened from a message.
