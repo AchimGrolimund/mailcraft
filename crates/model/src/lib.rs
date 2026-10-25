@@ -16,6 +16,7 @@ mod load_limit;
 mod mailbox;
 mod message;
 mod offline;
+pub mod pop;
 pub mod provider;
 pub mod remote;
 pub mod rich;
@@ -123,7 +124,11 @@ mod calendar_rights_tests;
 #[cfg(test)]
 mod mailbox_tests;
 #[cfg(test)]
+mod pop_tests;
+#[cfg(test)]
 mod recurrence_tests;
+#[cfg(test)]
+mod search_people_tests;
 #[cfg(test)]
 mod search_quotes_tests;
 #[cfg(test)]
