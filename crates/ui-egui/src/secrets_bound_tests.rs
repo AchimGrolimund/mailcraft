@@ -73,6 +73,17 @@ fn the_key_names_the_address_and_the_servers() {
         ..Default::default()
     };
     assert_eq!(MailApp::secret_key("refresh", &microsoft), "refresh:me@example.org|graph");
+    // AU2-V8: a mailbox file's IMAP account that says it is shared does not get the owner's Graph token.
+    let shared = mailcraft_model::Account {
+        kind: mailcraft_model::AccountKind::Imap,
+        shared_of: Some(1),
+        incoming: Some(mailcraft_model::Server { host: "imap.elsewhere.example".into(), port: 993, security: Default::default() }),
+        ..microsoft.clone()
+    };
+    assert_ne!(MailApp::secret_key("refresh", &shared), MailApp::secret_key("refresh", &microsoft));
+    assert!(MailApp::secret_key("refresh", &shared).contains("imap=imap.elsewhere.example:993"));
+    let shared_microsoft = mailcraft_model::Account { shared_of: Some(1), ..microsoft.clone() };
+    assert_eq!(MailApp::secret_key("refresh", &shared_microsoft), MailApp::secret_key("refresh", &microsoft));
 }
 
 #[test]
@@ -88,6 +99,18 @@ fn a_secret_is_not_found_after_a_server_changes_and_the_old_one_goes() {
 
     assert_eq!(a.remembered("password", "avery@mail.example"), None);
     assert!(store.get(OLD).is_none() && store.get(NEW).is_none());
+    assert!(!a.passwords.contains_key(&id));
+}
+
+#[test]
+fn undo_of_a_server_change_drops_what_was_typed_for_the_new_one() {
+    let (store, seen) = (Store::default(), Seen::default());
+    let mut a = app(&store, &seen);
+    let id = add(&mut a);
+    a.execute("account.edit", json!({"id": id, "incoming": {"host": "imap.other.example", "port": 993}})).unwrap();
+    a.passwords.insert(id, "typed for the other".into());
+    a.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(a.session.mailbox.account(id).and_then(|x| x.incoming.as_ref()).map(|s| s.host.as_str()), Some("imap.mail.example"));
     assert!(!a.passwords.contains_key(&id));
 }
 

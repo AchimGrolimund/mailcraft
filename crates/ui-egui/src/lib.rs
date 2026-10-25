@@ -60,8 +60,12 @@ mod graph_switch;
 pub mod i18n;
 pub mod icons;
 mod inbox_pass;
+pub mod jmap_mail;
 mod keep_offline;
 pub mod keys;
+#[cfg(test)]
+#[path = "late_work_tests.rs"]
+mod late_work_tests;
 pub mod mail_view;
 mod meeting_dialogs;
 pub mod menubar;
@@ -78,6 +82,7 @@ mod report_problem;
 pub mod ribbon;
 pub mod scheduling;
 mod search_pills;
+mod search_suggest;
 #[cfg(test)]
 #[path = "secrets_bound_tests.rs"]
 mod secrets_bound_tests;
@@ -160,6 +165,19 @@ pub struct Services {
     /// Desktop: search a Microsoft mailbox on its server, one page, on a background thread
     /// (R6.2: More results on the server, only on the owner's click).
     pub graph_search: Option<Box<dyn Fn(server_search::GraphSearchJob) -> Receiver<mailcraft_model::sync::GraphSearchResult>>>,
+    /// A host that reaches JMAP servers (over `fetch` in the browser): read an account kept in step
+    /// over JMAP (M6) as the job says, as a task of its own: connect to the account's server with
+    /// the job's secret, read what the request asks for (`mailcraft_jmap::sync_mail`) and hand the
+    /// run back through the channel in pieces as it goes (`JmapMailResult::partial` on all but the
+    /// last), waking the UI for each. Absent where no host does (the desktop app has no runner for
+    /// it yet): a JMAP account then has no Send/Receive ([`jmap_mail`]).
+    pub jmap: Option<Box<dyn Fn(jmap_mail::JmapJob) -> Receiver<mailcraft_model::sync::JmapMailResult>>>,
+    /// The same host: fetch messages of a JMAP account whole, as `graph_fetch` does for a Microsoft
+    /// account (`mailcraft_jmap::fetch::fetch_messages`).
+    pub jmap_fetch: Option<Box<dyn Fn(jmap_mail::JmapFetchJob) -> Receiver<mailcraft_model::sync::GraphFetchResult>>>,
+    /// The host holds the credential of its JMAP accounts itself (a page that signed the owner in):
+    /// the window never asks for a password, and its JMAP jobs go without one.
+    pub jmap_host_credentials: bool,
     /// Desktop: ask the DNS for a domain's mail exchangers on a background thread (best first),
     /// so account setup can tell whose servers an address at a company's own domain uses. Only
     /// the domain is given, never the mailbox name.
@@ -282,6 +300,13 @@ pub struct Services {
     /// Web: told the interface language's code (`en`) whenever it changes, for the page's
     /// `<html lang>`.
     pub on_language: Option<Box<dyn Fn(&str)>>,
+}
+
+impl Services {
+    /// Whether this build reaches mail servers at all: with mail connections, or over JMAP.
+    pub fn can_sync(&self) -> bool {
+        self.sync.is_some() || self.jmap.is_some()
+    }
 }
 
 /// The system's clipboard with HTML on it ([`Services::clipboard`]).
@@ -558,6 +583,9 @@ struct SigningIn {
     shared_calendars: bool,
     /// The owner signs in on a page in the browser (no kept token to renew it with).
     browser: bool,
+    /// The mailbox opening it was started under ([`Session::openings`]): an answer that comes
+    /// after another mailbox took its place is thrown away.
+    opening: u64,
     rx: Receiver<Result<Tokens, String>>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -602,6 +630,10 @@ pub struct UiState {
     /// Passwords and sign-ins kept by the system are filed under the servers they go to; the
     /// ones kept before that were moved (once, for the mailbox opened at start).
     pub sign_ins_bound: bool,
+    /// The names (never the secrets) of every entry MailCraft has put in the credential store,
+    /// so that removing the data, or turning remembering off, finds the ones of mailboxes that
+    /// are no longer open.
+    pub remembered_keys: Vec<String>,
     /// Mailbox files whose accounts' servers the owner confirmed, with a fingerprint of the
     /// addresses and servers confirmed ([`unconfirmed`]).
     pub confirmed_mailboxes: Vec<ConfirmedMailbox>,
@@ -667,6 +699,7 @@ impl Default for UiState {
             microsoft_client_id: String::new(),
             remember_sign_in: true,
             sign_ins_bound: false,
+            remembered_keys: Vec::new(),
             confirmed_mailboxes: Vec::new(),
             dismissed_reminders: Vec::new(),
             download_pictures: false,
@@ -1094,8 +1127,8 @@ pub struct MailApp {
     setup_sign_in: Option<Result<Tokens, String>>,
     /// An administrator's approval the host is waiting on, and what the last came to ([`approval`]).
     approvals: approval::Approvals,
-    /// A synchronisation in flight.
-    sync_rx: Option<Receiver<SyncResult>>,
+    /// A synchronisation in flight: an IMAP run, or a JMAP account's ([`MailRun`]).
+    sync_rx: Option<MailRun>,
     /// What the run in flight has come to so far, piece by piece.
     sync_totals: mailcraft_engine::cmd::account::SyncTotals,
     /// The run in flight: whose it is, how much was still waiting to go out when it turned to
@@ -1243,6 +1276,14 @@ pub struct MailApp {
     pub(crate) updates: updates::Updates,
     /// The desktop alerts shown, and the mailbox as the last Send/Receive found it ([`alerts`]).
     pub(crate) alerts: alerts::State,
+}
+
+/// A Send/Receive of one account in flight, its pieces to come. A JMAP account's run takes the place
+/// of an IMAP one, so that whatever waits for a Send/Receive (another run, Cancel, Skip, a round by
+/// itself, the calendar's job) waits for it too.
+pub(crate) enum MailRun {
+    Imap(Receiver<SyncResult>),
+    Jmap { account: Id, pieces: Receiver<mailcraft_model::sync::JmapMailResult> },
 }
 
 impl MailApp {
@@ -1421,7 +1462,7 @@ impl MailApp {
             None if id == "ui.sync" => {
                 !self.data_removed
                     && self.session.enabled("sync.request")
-                    && self.services.sync.is_some()
+                    && self.services.can_sync()
                     && self.sync_rx.is_none()
                     && (self.graph_rx.is_none() || self.inbox_check.under_way())
                     && self.signing_in.is_none()
@@ -1539,6 +1580,10 @@ impl MailApp {
         };
         let edited =
             if id == "account.edit" { params.get("id").and_then(Value::as_u64).and_then(|a| self.session.mailbox.account(a)).cloned() } else { None };
+        // Undo and Redo may put an account's servers back as they were before an edit.
+        let keys = |a: &mailcraft_model::Account| ["password", "refresh"].map(|k| Self::secret_key(k, a));
+        let undone =
+            matches!(id, "edit.undo" | "edit.redo").then(|| self.session.mailbox.accounts.iter().map(|a| (a.id, keys(a))).collect::<Vec<_>>());
         if let Some(r) = self.through_saver(id, &params) {
             return r;
         }
@@ -1602,6 +1647,17 @@ impl MailApp {
             self.passwords.remove(&before.id);
             self.tokens.remove(&before.id);
             self.graph_tokens.remove(&before.id);
+        }
+        // Likewise when Undo or Redo changed them: what was typed for the ones it had goes to none
+        // of the others.
+        if let (Ok(_), Some(before)) = (&r, undone) {
+            for (account, was) in before {
+                if self.session.mailbox.account(account).map(keys) != Some(was) {
+                    self.passwords.remove(&account);
+                    self.tokens.remove(&account);
+                    self.graph_tokens.remove(&account);
+                }
+            }
         }
         // Starting to write brings up the Message tab; finishing goes back to Home.
         if r.is_ok() && composing != self.session.compose.is_some() {
@@ -1739,9 +1795,13 @@ impl MailApp {
                 self.ui.remember_sign_in = on;
                 if !on {
                     // Switched off: what was kept goes too.
-                    let addresses: Vec<String> = self.session.mailbox.accounts.iter().map(|a| a.email.clone()).collect();
-                    for address in addresses {
-                        self.forget_secrets(&address);
+                    let left = self.forget_every_secret();
+                    if !left.is_empty() {
+                        self.status(tln!(
+                            left.len(),
+                            "{n} remembered sign-in could not be removed from the credential store",
+                            "{n} remembered sign-ins could not be removed from the credential store"
+                        ));
                     }
                 }
                 Ok(json!({"value": on}))
@@ -1897,15 +1957,22 @@ impl MailApp {
     /// `refresh`), the account's address and the servers it goes to, so that an account that
     /// names other servers (a mailbox from a file, a changed setting) is not given the secret.
     /// A Microsoft account kept in step through Graph goes to Microsoft alone: its sign-in page
-    /// and Graph are fixed. The one place this name is made.
+    /// and Graph are fixed (a shared mailbox is such an account too; one of another kind that a
+    /// file calls shared is not, and gets the name of its servers, never the owner's token).
+    /// The one place this name is made.
     pub(crate) fn secret_key(kind: &str, a: &mailcraft_model::Account) -> String {
         let address = a.email.trim().to_ascii_lowercase();
         let server = |s: &Option<mailcraft_model::Server>| match s {
             Some(s) => format!("{}:{}", s.host.trim().to_ascii_lowercase(), s.port),
             None => "none".to_string(),
         };
-        if a.kind == mailcraft_model::AccountKind::Microsoft || a.shared_of.is_some() {
+        if a.kind == mailcraft_model::AccountKind::Microsoft {
             format!("{kind}:{address}|graph")
+        } else if a.kind == mailcraft_model::AccountKind::Jmap {
+            // (Its whole session address: another one, on the same server or not, is another server;
+            // and a bearer token is no password.)
+            let (session, bearer) = a.jmap.as_ref().map_or(("none", false), |j| (j.session.trim(), j.bearer));
+            format!("{kind}:{address}|jmap={session}|bearer={bearer}")
         } else {
             format!("{kind}:{address}|imap={}|smtp={}", server(&a.incoming), server(&a.outgoing))
         }
@@ -1933,16 +2000,50 @@ impl MailApp {
     }
 
     /// Have the operating system remember a secret for `address`, when the owner wants that.
-    fn remember(&self, kind: &str, address: &str, secret: &str) {
+    fn remember(&mut self, kind: &str, address: &str, secret: &str) {
         if !self.ui.remember_sign_in || secret.is_empty() || self.data_removed {
             return;
         }
         let Some(account) = self.account_at(address) else { return };
-        if let Some(store) = &self.services.secrets
-            && let Err(e) = store.set(&Self::secret_key(kind, account), secret)
-        {
-            log::warn!("couldn't keep the sign-in for next time: {e}");
+        let key = Self::secret_key(kind, account);
+        let Some(store) = &self.services.secrets else { return };
+        match store.set(&key, secret) {
+            Ok(()) => self.index_secret_key(key),
+            Err(e) => log::warn!("couldn't keep the sign-in for next time: {e}"),
         }
+    }
+
+    /// Note the name of an entry put in the credential store (the name alone, in `ui.json`).
+    fn index_secret_key(&mut self, key: String) {
+        // (A bound: a mailbox's accounts are few, and a file can't make this list grow.)
+        if self.ui.remembered_keys.len() < 1000 && !self.ui.remembered_keys.contains(&key) {
+            self.ui.remembered_keys.push(key);
+        }
+    }
+
+    /// Delete every entry MailCraft put in the credential store: those noted in `remembered_keys`
+    /// (whichever mailbox they were for), those of this mailbox's accounts, and the old names.
+    /// Gives the names of the ones that are still there afterwards.
+    pub(crate) fn forget_every_secret(&mut self) -> Vec<String> {
+        let mut keys: Vec<String> = std::mem::take(&mut self.ui.remembered_keys);
+        for a in &self.session.mailbox.accounts {
+            for kind in ["password", "refresh"] {
+                keys.push(Self::secret_key(kind, a));
+                keys.push(Self::legacy_secret_key(kind, &a.email));
+            }
+        }
+        keys.sort();
+        keys.dedup();
+        let Some(store) = &self.services.secrets else { return Vec::new() };
+        let mut left = Vec::new();
+        for key in keys {
+            store.delete(&key);
+            if store.get(&key).is_some() {
+                left.push(key);
+            }
+        }
+        self.ui.remembered_keys = left.clone();
+        left
     }
 
     /// Tell the owner, once a session, when the system's credential store can't be used, so that
@@ -1954,13 +2055,6 @@ impl MailApp {
         if self.secrets_trouble.is_none() {
             self.secrets_trouble = Some(trouble);
             self.status(trouble.notice());
-        }
-    }
-
-    /// Drop everything the operating system remembers for `address`.
-    pub(crate) fn forget_secrets(&self, address: &str) {
-        if let Some(account) = self.account_at(address) {
-            self.forget_account_secrets(account);
         }
     }
 
@@ -1982,19 +2076,25 @@ impl MailApp {
         if self.ui.sign_ins_bound {
             return;
         }
+        let mut moved = Vec::new();
         if let Some(store) = &self.services.secrets {
             for a in &self.session.mailbox.accounts {
                 for kind in ["password", "refresh"] {
                     let old = Self::legacy_secret_key(kind, &a.email);
                     if let Some(secret) = store.get(&old).filter(|s| !s.is_empty()) {
-                        if let Err(e) = store.set(&Self::secret_key(kind, a), &secret) {
+                        let new = Self::secret_key(kind, a);
+                        if let Err(e) = store.set(&new, &secret) {
                             log::warn!("couldn't move a remembered sign-in: {e}");
                             continue;
                         }
                         store.delete(&old);
+                        moved.push(new);
                     }
                 }
             }
+        }
+        for key in moved {
+            self.index_secret_key(key);
         }
         self.ui.sign_ins_bound = true;
     }
@@ -2052,7 +2152,8 @@ impl MailApp {
             shared_calendars,
         };
         let rx = sign_in(request);
-        self.signing_in = Some(SigningIn { graph, favorites, quiet, account, shared, shared_send, shared_calendars, browser, rx, cancel });
+        let opening = self.session.openings();
+        self.signing_in = Some(SigningIn { graph, favorites, quiet, account, shared, shared_send, shared_calendars, browser, opening, rx, cancel });
         self.session.sync_status = waiting.to_string();
         Ok(())
     }
@@ -2132,8 +2233,12 @@ impl MailApp {
         if self.sync_rx.is_some() || self.graph_rx.is_some() {
             return Err(tl!("Send/Receive is already running").to_string());
         }
-        if self.services.sync.is_none() {
-            return Err(tl!("This build can't connect to mail servers (a browser can't open mail connections). Use the desktop app, or bring mail in with File › Import.").to_string());
+        let cant_connect = || {
+            tl!("This build can't connect to mail servers (a browser can't open mail connections). Use the desktop app, or bring mail in with File › Import.")
+                .to_string()
+        };
+        if !self.services.can_sync() {
+            return Err(cant_connect());
         }
         let quiet = p.get("quiet").and_then(Value::as_bool).unwrap_or(false);
         // Never two jobs for one account at once: the calendar's job (a short one, but the
@@ -2172,6 +2277,13 @@ impl MailApp {
                 self.sync_queue.pop_front().map(|(first, _)| first).ok_or_else(none)?
             }
         };
+        // Nor has one kept in step over JMAP, where the host runs JMAP (M6).
+        if self.services.jmap.is_some() && self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Jmap) {
+            return self.start_jmap_mail(account, quiet, p);
+        }
+        if self.services.sync.is_none() {
+            return Err(cant_connect());
+        }
         // An account kept in step through Microsoft Graph has no IMAP leg at all (R3).
         if self.session.mailbox.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Microsoft) {
             let after_sign_in = p.get("afterSignIn").and_then(Value::as_bool).unwrap_or(false);
@@ -2256,7 +2368,7 @@ impl MailApp {
         }
         let Some(start) = &self.services.sync else { return Err(tl!("This build can't connect to mail servers").to_string()) };
         self.sync_run = Some((account, None, false, quiet));
-        self.sync_rx = Some(start(request));
+        self.sync_rx = Some(MailRun::Imap(start(request)));
         self.session.sync_status = tl!("Sending and receiving…").to_string();
         Ok(json!({"started": true, "account": account}))
     }
@@ -2333,9 +2445,13 @@ impl MailApp {
     }
 
     fn server_accounts(&self) -> Vec<Id> {
-        // (Not a JMAP account yet: the window has no runner for one, so every run of it would end
-        // in a refusal.)
-        let runs = |a: &&mailcraft_model::Account| a.kind.has_server() && a.kind != mailcraft_model::AccountKind::Jmap;
+        // A JMAP account where the host runs JMAP (without, every run of it would end in a
+        // refusal); the others where it opens mail connections, or, when it reaches no server
+        // at all, to be told so.
+        let runs = |a: &&mailcraft_model::Account| match a.kind {
+            mailcraft_model::AccountKind::Jmap => self.services.jmap.is_some(),
+            kind => kind.has_server() && (self.services.sync.is_some() || self.services.jmap.is_none()),
+        };
         self.session.mailbox.accounts.iter().filter(runs).map(|a| a.id).collect()
     }
 
@@ -2370,6 +2486,13 @@ impl MailApp {
             self.passwords.clear();
             self.tokens.clear();
             self.graph_tokens.clear();
+            // Work started for the old mailbox stays with it: a sign-in on its way is called
+            // off, and a switch to Graph (its copy, its backup) is forgotten.
+            if let Some(s) = self.signing_in.take() {
+                s.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.session.sync_status.clear();
+            }
+            self.forget_graph_switch();
             // And a mailbox from a file is held back until its servers are confirmed.
             self.judge_mailbox();
         }
@@ -2385,6 +2508,10 @@ impl MailApp {
         }
         let account = self.session.mailbox.owner_of(account).map_or(account, |owner| owner.id);
         let Some(a) = self.session.mailbox.account(account) else { return false };
+        // (A JMAP account's secret is in memory only, never with the operating system.)
+        if a.kind == mailcraft_model::AccountKind::Jmap {
+            return self.jmap_secret(account).is_some();
+        }
         if a.oauth.is_some() {
             let kept = self.tokens.get(&account).is_some_and(|t| t.fresh(mailcraft_time::now()) || !t.refresh.is_empty());
             self.services.sign_in.is_some() && (kept || self.remembered("refresh", &a.email).is_some())
@@ -2414,7 +2541,7 @@ impl MailApp {
             }
         }
         let busy = self.sync_rx.is_some() || self.graph_rx.is_some() || self.signing_in.is_some() || self.approving();
-        if self.services.sync.is_none() || busy || self.dialog.is_some() {
+        if !self.services.can_sync() || busy || self.dialog.is_some() {
             return;
         }
         // The round's Inbox passes come before anything else of it (#276); neither starts while
@@ -2767,7 +2894,14 @@ impl MailApp {
         let (account, for_graph, for_favorites) = (waiting.account, waiting.graph, waiting.favorites);
         let asked_for = !waiting.quiet;
         let (for_shared, for_shared_send, for_shared_calendars) = (waiting.shared, waiting.shared_send, waiting.shared_calendars);
+        let started_under = waiting.opening;
         self.signing_in = None;
+        // Another mailbox took the place of the one it was for: its accounts are other accounts,
+        // whatever their ids, and this answer is nobody's.
+        if started_under != self.session.openings() {
+            self.session.sync_status.clear();
+            return;
+        }
         // A day at most, whatever the provider said; a sign-in is asked for again after.
         let now = mailcraft_time::now();
         let answer = answer.and_then(|tokens| {
@@ -2994,7 +3128,11 @@ impl MailApp {
     pub fn poll_sync(&mut self) {
         // A few pieces a frame: each one redraws the lists, and the window should stay quick.
         for _ in 0..4 {
-            let Some(rx) = &self.sync_rx else { return };
+            // (A JMAP account's run has pieces of its own: [`jmap_mail`].)
+            if matches!(self.sync_rx, Some(MailRun::Jmap { .. })) {
+                return self.poll_jmap();
+            }
+            let Some(MailRun::Imap(rx)) = &self.sync_rx else { return };
             let piece = match rx.try_recv() {
                 Ok(piece) => piece,
                 Err(std::sync::mpsc::TryRecvError::Empty) => return,
@@ -3049,9 +3187,9 @@ impl MailApp {
                     tokens.access.clear();
                 }
             } else if totals.errors.is_empty() {
-                if let Some(password) = self.passwords.get(&account) {
+                if let Some(password) = self.passwords.get(&account).cloned() {
                     // It went through: this password is worth remembering.
-                    self.remember("password", &address, password);
+                    self.remember("password", &address, &password);
                 }
                 // And nothing is left of the last run's problems.
                 self.note_sync_problems(account, &[], true);
@@ -3229,7 +3367,7 @@ impl MailApp {
         let waiting = self.sync_rx.is_some() || self.graph_rx.is_some() || self.signing_in.is_some() || self.approving();
         if !self.synthetic.is_empty() || waiting || !self.sync_queue.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
-        } else if self.auto_sync && self.services.sync.is_some() && self.session.prefs.sync_minutes > 0 && !self.server_accounts().is_empty() {
+        } else if self.auto_sync && self.services.can_sync() && self.session.prefs.sync_minutes > 0 && !self.server_accounts().is_empty() {
             // Nothing is happening: look again in a while, in case a Send/Receive round is due or
             // something waits to go out.
             ctx.request_repaint_after(std::time::Duration::from_millis(1_500));
@@ -3625,6 +3763,8 @@ impl MailApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.sent_title = title;
         }
+        // Pictures are kept as textures only while something on screen shows them.
+        reading::images::Pictures::of(&ctx).lock().unwrap_or_else(|e| e.into_inner()).release_unseen(&ctx);
         self.frame_ms = now_ms() - t0;
         self.report_dirty();
     }
