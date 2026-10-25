@@ -12,8 +12,8 @@ use mailcraft_model::sync::{
     Deleted, FlagsPushed, FolderDelta, FolderState, Moved, RemoteFlags, RemoteOp, SyncRequest, SyncResult, SyncStage, summary_line_in,
 };
 use mailcraft_model::{
-    Account, AccountKind, Directory, FlagStatus, Folder, FolderKind, Id, JmapServer, Mailbox, Message, OAuth, OAuthProvider, Pending, Security,
-    Server, clean_name,
+    Account, AccountKind, Directory, FlagStatus, Folder, FolderKind, Id, JmapServer, MailIdentity, Mailbox, Message, OAuth, OAuthProvider, Pending,
+    Security, Server, clean_name,
 };
 use serde_json::{Value, json};
 
@@ -25,7 +25,7 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new("account.add", "Add Account", "File › Info", add).params(ACCOUNT),
         CommandSpec::new("account.edit", "Account Settings", "File › Info", edit).params(r#"{"id": number, …the fields of account.add, "downloadInFull"?: "upTo10Mb"|"upTo25Mb"|"upTo50Mb"|"everything" (a Microsoft account: which messages are fetched whole in the background), "keepOffline"?: "3d"|"1w"|"2w"|"1m"|"3m"|"6m"|"12m"|"2y"|"5y"|"10y"|"all" (a Microsoft account's mail to keep offline: how far back, by received date, mail is kept in full on this computer; older mail keeps its headers and preview. A shared mailbox follows its owner's. Shortening it removes nothing by itself: account.thinOffline does)}"#),
-        CommandSpec::new("account.remove", "Remove Account", "File › Info", remove).params(r#"{"id": number} — removes the account, its mail and what is kept for it on this computer (bodies and attachments leave the content folder once a state without it is saved; no Undo step is kept); nothing on the server is touched. The only account leaves an empty mailbox, as at a first start. Answers {"deleted": id, "leftToSweep": n (content files the sweep removes later)}"#),
+        CommandSpec::new("account.remove", "Remove Account", "File › Info", remove).params(r#"{"id": number} — removes the account, its mail and what is kept for it on this computer (bodies and attachments leave the content folder once a state without it is saved; no Undo step is kept), and what came from its server: its events, contacts, to-dos and calendars (what was made here and not sent yet stays, as this computer's own), Outlook's list of categories, and, where the window's settings are kept (the window, not mailcraft-cli), its mailbox's working hours; nothing on the server is touched. The only account leaves an empty mailbox, as at a first start. Answers {"deleted": id, "leftToSweep": n (content files the sweep removes later)}"#),
         CommandSpec::new("account.list", "List Accounts", "File › Info", list).pure(),
         CommandSpec::new("account.preset", "Suggest Account Settings", "File › Info", preset)
             .pure()
@@ -427,9 +427,12 @@ fn in_memory(m: &Message) -> u64 {
 /// Remove account `id` (with the shared mailboxes opened through it) and what is kept on disk
 /// for its mail (#177): the bodies and attachments that only its messages name go from the
 /// mailbox's content folder once a state without the account is saved ([`crate::store::forget_when_saved`]),
-/// not hours later with the sweep. Content another account's mail names too stays for it. No
-/// Undo step is kept (`Session::run`), as it would hold the mail on disk. The last account makes
-/// way for a fresh placeholder, as at a first start (#313).
+/// not hours later with the sweep. Content another account's mail names too stays for it. What
+/// came from their servers goes too (#325): their events, contacts and calendars
+/// ([`super::remote::forget`]), Outlook's list of categories, and their mailbox's working hours
+/// where the session holds the window's settings (`Session::run`).
+/// No Undo step is kept (`Session::run`), as it would hold the mail on disk. The last account
+/// makes way for a fresh placeholder, as at a first start (#313).
 ///
 /// Answers how many content files were left to the sweep (hours later, the same result): those
 /// of messages past [`HASH_BUDGET`] and names past the store's waiting list.
@@ -462,12 +465,25 @@ pub(crate) fn remove_within(s: &mut Session, id: Id, budget: u64) -> Result<usiz
         Vec::new()
     };
     let gone: HashSet<Id> = s.mailbox.messages.iter().filter(|(_, m)| going.contains(&m.account)).map(|(mid, _)| *mid).collect();
-    // A shared mailbox's calendars and their events go with it (#70): they are copies of what its
-    // server keeps, and nothing would ever update them again.
-    let shared: Vec<Id> = s.mailbox.accounts.iter().filter(|a| a.is_shared() && going.contains(&a.id)).map(|a| a.id).collect();
-    for account in shared {
+    // What came from their servers goes with them, whoever removes them (#325): the window, the
+    // CLI or an agent. Their events, contacts and calendars (a shared mailbox's too, #70: copies
+    // of what its server keeps, which nothing would ever update again), in the mailbox's order:
+    // which of their calendars is kept as the mailbox's own, when only theirs are left, doesn't
+    // depend on a hash.
+    let accounts: Vec<Id> = s.mailbox.accounts.iter().filter(|a| going.contains(&a.id)).map(|a| a.id).collect();
+    // Outlook's list of categories, which is the mailbox's, from whichever Microsoft account read
+    // it last: one that stays reads its own again with its contacts, which the window brings
+    // every quarter of an hour.
+    // (A shared mailbox reads no list of categories of its own: the owner's sign-in reads the
+    // owner's.)
+    let microsoft = s.mailbox.accounts.iter().any(|a| going.contains(&a.id) && a.kind == AccountKind::Microsoft && !a.is_shared());
+    for account in accounts {
         super::remote::forget(s, account)?;
     }
+    if microsoft {
+        s.mailbox.outlook_categories.clear();
+    }
+    // (Their mailbox's working hours go once the removal has gone through: `Session::run`.)
     s.mailbox.remove_account(id)?;
     // A mailbox always has an account (#313). The placeholder goes in before `mailbox_changed`,
     // whose `normalize` moves the folder on screen to its Inbox and a message being written to
@@ -1030,7 +1046,9 @@ fn move_finished(mb: &mut Mailbox, account: Id, on_server: &mut OnServer, moved:
             mb.pending.push(Pending::Move { account, message, from, uid, synced: synced.map(|flags| flags.at(uid)), to });
         }
         // Deleted for good meanwhile: the next run deletes it where the server has it now.
-        (Some(Pending::Delete { message_id, .. }), Some((from, uid))) => mb.pending.push(Pending::Delete { account, from, uid, message_id }),
+        (Some(Pending::Delete { message_id, seen, .. }), Some((from, uid))) => {
+            mb.pending.push(Pending::Delete { account, from, uid, message_id, seen })
+        }
         // Put back meanwhile: the next run moves it back on the server too.
         (None, Some((from, uid))) => {
             let back = on_server.by_remote.get(&moved.from).copied().filter(|folder| *folder != moved.to_folder);
@@ -1108,9 +1126,7 @@ fn original_id(m: &Message) -> Option<&str> {
 /// the same thing, from and to the same people. For a copy that came back without the
 /// Message-ID it left with.
 fn same_mail(a: &Message, b: &Message) -> bool {
-    let words = |m: &Message| m.subject.split_whitespace().collect::<Vec<_>>().join(" ");
-    let people = |m: &Message| m.to.iter().chain(&m.cc).map(|address| address.email.to_ascii_lowercase()).collect::<Vec<_>>();
-    a.date != 0 && a.date == b.date && a.from.email.eq_ignore_ascii_case(&b.from.email) && words(a) == words(b) && people(a) == people(b)
+    MailIdentity::of(a).fits(b)
 }
 
 /// The message here that `theirs`, just come down into `folder`, is the server's copy of: one
@@ -1156,7 +1172,7 @@ fn renumbered(mb: &mut Mailbox, account: Id, on_server: &mut OnServer, folder: I
         }
         let findable = match &*p {
             Pending::Move { message, .. } => mb.message(*message).is_some_and(|m| !m.message_id.is_empty()),
-            Pending::Delete { message_id, .. } => !message_id.is_empty(),
+            Pending::Delete { message_id, seen, .. } => !message_id.is_empty() && seen.is_some(),
         };
         match p {
             Pending::Move { uid, synced, .. } if findable => (*uid, *synced) = (0, synced.map(|flags| flags.at(0))),
@@ -1196,7 +1212,7 @@ fn renumbered(mb: &mut Mailbox, account: Id, on_server: &mut OnServer, folder: I
             note += &format!(" {kept} change(s) made here will be made again as its messages come back.");
         }
         if lost > 0 {
-            note += &format!(" {lost} change(s) made here could not be kept: the message had no Message-ID to find it by.");
+            note += &format!(" {lost} change(s) made here could not be kept: the message could not be found again for certain.");
         }
         counts.notes.push(note);
     }
@@ -1205,23 +1221,40 @@ fn renumbered(mb: &mut Mailbox, account: Id, on_server: &mut OnServer, folder: I
 
 /// Whether `theirs`, come down from server mailbox `remote` after it was numbered anew, is the
 /// copy a move or a deletion made here waits for ([`renumbered`]): it then gets its UID, and the
-/// next run pushes it.
-fn waited_for(mb: &mut Mailbox, account: Id, remote: &str, theirs: &Message) -> bool {
+/// next run pushes it. A Message-ID is the sender's to choose, so the change goes only to the
+/// one arrival with that id that is also the same mail (date, sender, subject and recipients).
+/// When several arrivals share the id, or the one that does is not that mail, the change is
+/// dropped, and the owner told: it must never reach another message. `shared` is how many
+/// arrivals of this run have `theirs`'s Message-ID.
+fn waited_for(mb: &mut Mailbox, account: Id, remote: &str, theirs: &Message, shared: usize, counts: &mut Counts) -> bool {
     if theirs.message_id.is_empty() {
         return false;
     }
-    let original = original_id(theirs);
-    let same = |id: &str| !id.is_empty() && (id == theirs.message_id || Some(id) == original);
     let messages = &mb.messages;
-    let found = mb.pending.iter_mut().find(|p| {
+    let at = mb.pending.iter().position(|p| {
         p.account() == account
             && p.source() == (remote, 0)
             && match p {
-                Pending::Move { message, .. } => messages.get(message).is_some_and(|m| same(&m.message_id)),
-                Pending::Delete { message_id, .. } => same(message_id),
+                Pending::Move { message, .. } => messages.get(message).is_some_and(|m| m.message_id == theirs.message_id),
+                Pending::Delete { message_id, .. } => *message_id == theirs.message_id,
             }
     });
-    match found {
+    let Some(at) = at else { return false };
+    let is_it = shared == 1
+        && match mb.pending.get(at) {
+            Some(Pending::Move { message, .. }) => messages.get(message).is_some_and(|m| MailIdentity::of(m).fits(theirs)),
+            Some(Pending::Delete { seen, .. }) => seen.as_ref().is_some_and(|seen| seen.fits(theirs)),
+            None => false,
+        };
+    if !is_it {
+        mb.pending.remove(at);
+        counts.notes.push(
+            "A change made here to a message could not be matched to its new copy for certain (more than one message has its Message-ID, or the copy differs), so it was not made on the server."
+                .to_string(),
+        );
+        return false;
+    }
+    match mb.pending.get_mut(at) {
         Some(Pending::Move { uid, synced, .. }) => (*uid, *synced) = (theirs.uid, synced.map(|flags| flags.at(theirs.uid))),
         Some(Pending::Delete { uid, .. }) => *uid = theirs.uid,
         None => return false,
@@ -1353,6 +1386,13 @@ fn take_in(mb: &mut Mailbox, account: Id, on_server: &mut OnServer, delta: Folde
     // up in Deleted Items, Junk, Sent and the rest was put there (a message deleted on a phone
     // was "1 new message").
     let arriving = matches!(delta.kind, FolderKind::Inbox | FolderKind::Custom) || old_seen == 0;
+    // How many of these arrivals have each Message-ID: only a lone one can be the copy a change waits for.
+    let mut shared: HashMap<String, usize> = HashMap::new();
+    if reset {
+        for m in &delta.new {
+            *shared.entry(m.message_id.clone()).or_default() += 1;
+        }
+    }
     for mut m in delta.new {
         let uid = m.uid;
         // Here already, or on its way out of that mailbox by a change still to be pushed.
@@ -1360,7 +1400,7 @@ fn take_in(mb: &mut Mailbox, account: Id, on_server: &mut OnServer, delta: Folde
             continue;
         }
         // The copy a move or deletion made here was waiting for, the mailbox numbered anew.
-        if uid != 0 && waited_for(mb, account, &delta.remote, &m) {
+        if uid != 0 && waited_for(mb, account, &delta.remote, &m, shared.get(&m.message_id).copied().unwrap_or(1), counts) {
             on_server.leaving.insert((folder, uid));
             counts.matched += 1;
             continue;

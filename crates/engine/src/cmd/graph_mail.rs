@@ -105,19 +105,28 @@ fn full_sweep_due(s: &Session, account: Id) -> bool {
 
 /// The Inbox pass of `account` (#276): only its Inbox's delta, from the link kept for it, to be
 /// run before anything else of a Send/Receive. `None` for an account with no Inbox pass: not one
-/// kept in step through Graph, one that can't be read, or one whose Inbox has no delta link yet
-/// (never read to its end, or a round under way: the run itself brings it in).
+/// kept in step through Graph, one that can't be read, or one whose Inbox is part-way through a
+/// round (its link is the next page of it: the run itself brings it in). An Inbox whose id is
+/// known but that has never been read (no link yet) is read from its start. One the server's id
+/// isn't known for (never listed) has none: the run lists the folders first.
 pub fn graph_inbox_request(s: &Session, account: Id) -> Option<GraphMailRequest> {
     let a = s.mailbox.account(account).filter(|a| a.kind == AccountKind::Microsoft)?;
     let shared = shared_mailbox(s, account).ok()?;
     let inbox = s.mailbox.folder_of_kind(account, FolderKind::Inbox).and_then(|id| s.mailbox.folder(id))?;
-    let server = inbox.server.as_ref().filter(|server| !server.id.is_empty() && !server.delta.is_empty() && server.caught_up)?;
+    let (id, links) = match inbox.server.as_ref()? {
+        server if server.id.is_empty() => return None,
+        server if server.delta.is_empty() => (server.id.clone(), Vec::new()),
+        server if server.caught_up => {
+            (server.id.clone(), vec![GraphLink { folder: server.id.clone(), link: server.delta.clone(), caught_up: true, counts: None }])
+        }
+        _ => return None,
+    };
     Some(GraphMailRequest {
         account,
         email: a.email.clone(),
         shared,
-        links: vec![GraphLink { folder: server.id.clone(), link: server.delta.clone(), caught_up: true, counts: None }],
-        inbox_pass: Some(GraphFolder { id: server.id.clone(), name: inbox.name.clone(), kind: FolderKind::Inbox, ..Default::default() }),
+        links,
+        inbox_pass: Some(GraphFolder { id, name: inbox.name.clone(), kind: FolderKind::Inbox, ..Default::default() }),
         ..Default::default()
     })
 }
@@ -563,6 +572,7 @@ fn change_done(mb: &mut Mailbox, account: Id, change: &FolderChange, outcome: &C
 /// Take in every folder the server listed, by server id (a JMAP server's too: its mailboxes are
 /// known by their ids as Graph's folders are).
 pub(super) fn take_listing(mb: &mut Mailbox, account: Id, listing: &FolderListing, taken: &mut Taken) {
+    release_outbox(mb, account, listing);
     let mut listed: HashSet<&str> = HashSet::new();
     // The server's folders as this mailbox has them, by server id, as they are found or made.
     let mut here: HashMap<String, Id> =
@@ -610,6 +620,30 @@ pub(super) fn take_listing(mb: &mut Mailbox, account: Id, listing: &FolderListin
         taken.removed += gone.len();
         mb.remove_folders(&gone);
         taken.removed += super::graph_switch::sweep_unlisted(mb, account);
+    }
+}
+
+/// The Outbox here is the queue mail is sent from; it follows no folder of the server (AU2-V2).
+/// 0.8.0 and before bound it to the server's Outbox, whose items were then sent from here with
+/// the owner's rights. A listing that now has that folder as a folder like another lets go of the
+/// bond; what the server delivered into it is forgotten here (it comes down again into the
+/// server's Outbox as a folder of its own) and is not sent.
+fn release_outbox(mb: &mut Mailbox, account: Id, listing: &FolderListing) {
+    let bound: Vec<Id> = mb
+        .folders
+        .iter()
+        .filter(|f| f.account == account && f.kind == FolderKind::Outbox)
+        .filter(|f| f.server.as_ref().is_some_and(|s| listing.folders.iter().any(|l| l.id == s.id && l.kind != FolderKind::Outbox)))
+        .map(|f| f.id)
+        .collect();
+    for folder in bound {
+        let delivered: Vec<Id> = mb.messages_in(folder).filter(|m| super::graph_send::from_server(m)).map(|m| m.id).collect();
+        for id in delivered {
+            let _ = mb.forget_message(id);
+        }
+        if let Ok(f) = mb.folder_mut(folder) {
+            f.server = None;
+        }
     }
 }
 
@@ -673,3 +707,7 @@ mod tests;
 #[cfg(test)]
 #[path = "graph_sweep_tests.rs"]
 mod sweep_tests;
+
+#[cfg(test)]
+#[path = "graph_inbox_first_tests.rs"]
+mod inbox_first_tests;

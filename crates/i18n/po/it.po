@@ -112,6 +112,11 @@ msgid "+{n} more"
 msgstr "altri {n}"
 
 #. interface
+#: crates/ui-egui/src/lib.rs
+msgid ", stopped at a limit"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/sync_panel.rs
 #, fuzzy
 msgid ", {n} sent"
@@ -337,6 +342,12 @@ msgstr "Un'immagine sul web comunica al mittente che il messaggio è stato apert
 #, fuzzy
 msgid "A picture you asked for is kept for a month, so that reading the message again doesn't ask its sender's server again. Nothing kept is ever run, and it is checked like a new download before it is shown."
 msgstr "Un'immagine richiesta viene conservata per un mese, così rileggendo il messaggio non la si richiede di nuovo al server del mittente. Nulla di ciò che viene conservato viene mai eseguito, e prima di essere mostrato viene controllato come un nuovo download."
+
+#. interface
+#: crates/ui-egui/src/account_setup.rs
+#, fuzzy
+msgid "A port is a number from 1 to 65535"
+msgstr "Una porta è un numero da 1 a 65535"
 
 #. interface
 #: crates/ui-egui/src/forms.rs
@@ -693,6 +704,16 @@ msgstr "Devono essere soddisfatte tutte le condizioni"
 msgid "Allow"
 msgstr "Consenti"
 
+#. command label
+#: crates/ui-egui/src/lib.rs
+msgid "Allow Keeping Tasks in Step with Microsoft To Do"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "Allow MailCraft to keep your tasks in step with Microsoft To Do on the page that opened in your browser…"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/open_shared.rs
 msgid "Allow MailCraft to read other people's calendars on the page that opened in your browser…"
@@ -791,6 +812,12 @@ msgstr "Richiesta di un agente"
 #, fuzzy
 msgid "An agent wants to {what}."
 msgstr "Un agente vuole {what}."
+
+#. interface
+#: crates/ui-egui/src/account_setup.rs
+#, fuzzy
+msgid "An application ID and a tenant are letters, digits, dots and dashes"
+msgstr "Un ID applicazione e un tenant contengono lettere, cifre, punti e trattini"
 
 #. interface
 #: crates/ui-egui/src/lib.rs
@@ -918,6 +945,11 @@ msgid "Apply Downloaded Messages"
 msgstr "Applica messaggi scaricati"
 
 #. command label
+#: crates/engine/src/cmd/tasks_remote.rs
+msgid "Apply Downloaded To-dos"
+msgstr ""
+
+#. command label
 #: crates/engine/src/cmd/search_server.rs
 #, fuzzy
 msgid "Apply Results from the Server"
@@ -945,6 +977,11 @@ msgstr "Applica Invia/Ricevi con Microsoft Graph"
 #, fuzzy
 msgid "Apply Sent Calendar Changes"
 msgstr "Applica modifiche al calendario inviate"
+
+#. command label
+#: crates/engine/src/cmd/tasks_remote.rs
+msgid "Apply Sent To-do Changes"
+msgstr ""
 
 #. interface, ribbon, ribbon location
 #: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar/meeting.rs crates/engine/src/cmd/calendar_extra.rs crates/engine/src/cmd/zones.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/ribbon.rs
@@ -1062,6 +1099,11 @@ msgstr "Chiedi di nuovo prima di scaricare immagini dai mittenti di questo domin
 #, fuzzy
 msgid "Ask before downloading this sender's pictures again"
 msgstr "Chiedi di nuovo prima di scaricare le immagini di questo mittente"
+
+#. interface
+#: crates/ui-egui/src/backstage.rs
+msgid "Ask for permission to read and change your To Do lists and tasks: Microsoft's page opens in your browser. Without it, tasks stay on this computer."
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/backstage.rs
@@ -1399,7 +1441,7 @@ msgid "Calibri"
 msgstr "Calibri"
 
 #. interface
-#: crates/ui-egui/src/account_setup.rs crates/ui-egui/src/account_setup/help.rs crates/ui-egui/src/chrome.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/meeting_dialogs.rs crates/ui-egui/src/report_problem.rs
+#: crates/ui-egui/src/account_setup.rs crates/ui-egui/src/account_setup/help.rs crates/ui-egui/src/chrome.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/import_tree.rs crates/ui-egui/src/meeting_dialogs.rs crates/ui-egui/src/report_problem.rs
 #, fuzzy
 msgid "Cancel"
 msgstr "Annulla"
@@ -1665,6 +1707,11 @@ msgid "Choose where to save the diagnostics: GitHub's page opens once they are s
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src/backstage.rs
+msgid "Choose whether these tasks are sent to a Microsoft account's To Do. Nothing is sent unless you say so."
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/forms.rs
 #, fuzzy
 msgid "City"
@@ -1915,7 +1962,7 @@ msgid "Contacts don't go to Deleted Items."
 msgstr "I contatti non vanno in Posta eliminata."
 
 #. interface
-#: crates/ui-egui/src/account_setup.rs crates/ui-egui/src/open_shared.rs crates/ui-egui/src/shared_calendars.rs crates/ui-egui/src/shared_mailboxes.rs
+#: crates/ui-egui/src/account_setup.rs crates/ui-egui/src/open_shared.rs crates/ui-egui/src/shared_calendars.rs crates/ui-egui/src/shared_mailboxes.rs crates/ui-egui/src/task_sync.rs
 #, fuzzy
 msgid "Continue"
 msgstr "Continua"
@@ -2402,6 +2449,11 @@ msgstr "Ignora promemoria"
 
 #. command label
 #: crates/ui-egui/src/lib.rs
+msgid "Dismiss Settings Notice"
+msgstr ""
+
+#. command label
+#: crates/ui-egui/src/lib.rs
 #, fuzzy
 msgid "Dismiss Update Notice"
 msgstr "Ignora avviso di aggiornamento"
@@ -2783,6 +2835,11 @@ msgid "Every event and task, as .ics"
 msgstr "Tutti gli eventi e le attività, come .ics"
 
 #. interface
+#: crates/ui-egui/src/backstage.rs
+msgid "Every mbox file under a folder, keeping its subfolders, into one new folder"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/signatures.rs
 #, fuzzy
 msgid "Every message with this signature gets heavier by as much."
@@ -2940,7 +2997,7 @@ msgid "February"
 msgstr "febbraio"
 
 #. command label, name, ribbon location
-#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/calendar/invitation.rs crates/engine/src/cmd/calendar_extra.rs crates/engine/src/cmd/calendar_opened.rs crates/engine/src/cmd/calendar_settings.rs crates/engine/src/cmd/file.rs crates/engine/src/cmd/folder.rs crates/engine/src/cmd/graph_switch.rs crates/engine/src/cmd/offline.rs crates/engine/src/cmd/shared.rs crates/engine/src/cmd/signature.rs crates/engine/src/cmd/zones.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/menubar.rs
+#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/calendar/invitation.rs crates/engine/src/cmd/calendar_extra.rs crates/engine/src/cmd/calendar_opened.rs crates/engine/src/cmd/calendar_settings.rs crates/engine/src/cmd/file.rs crates/engine/src/cmd/folder.rs crates/engine/src/cmd/graph_switch.rs crates/engine/src/cmd/offline.rs crates/engine/src/cmd/shared.rs crates/engine/src/cmd/signature.rs crates/engine/src/cmd/tasks_remote.rs crates/engine/src/cmd/zones.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/menubar.rs
 #, fuzzy
 msgid "File"
 msgstr "File"
@@ -3220,6 +3277,12 @@ msgstr "Inoltra"
 msgid "Forward This Occurrence…"
 msgstr "Inoltra questa occorrenza…"
 
+#. command label, interface, ribbon
+#: crates/engine/src/cmd/compose.rs crates/ui-egui/src/mail_view.rs crates/ui-egui/src/ribbon.rs
+#, fuzzy
+msgid "Forward as Attachment"
+msgstr "Inoltra come allegato"
+
 #. interface
 #: crates/ui-egui/src/meeting_dialogs.rs
 #, fuzzy
@@ -3233,6 +3296,11 @@ msgstr[1] "Inoltrato a {n} persone"
 #, fuzzy
 msgid "Forward…"
 msgstr "Inoltra…"
+
+#. interface
+#: crates/ui-egui/src/import_tree.rs
+msgid "Found in {path}. Nothing is imported until you press Import."
+msgstr ""
 
 #. what a command says
 #: crates/model/src/sync/progress.rs
@@ -3464,6 +3532,30 @@ msgstr "Ha un allegato"
 msgid "Held:"
 msgstr "Trattenuto:"
 
+#. interface
+#: crates/ui-egui/src/approval.rs
+#, fuzzy
+msgid ""
+"Hello,\n"
+"\n"
+"I would like to use MailCraft with my work account. MailCraft is an open-source mail and calendar program that runs on my own computer. Our organisation lets only an administrator approve a new program, so it needs your approval once, for the whole organisation. Microsoft's page for that is here:\n"
+"\n"
+"{link}\n"
+"\n"
+"After you approve, your browser may show a page that can't be reached. That is expected: it is an address on your own computer, where nothing is listening, and the approval has been given by then.\n"
+"\n"
+"Thank you"
+msgstr ""
+"Salve,\n"
+"\n"
+"vorrei usare MailCraft con il mio account di lavoro. MailCraft è un programma di posta e calendario open source che funziona sul mio computer. Nella nostra organizzazione solo un amministratore può approvare un nuovo programma, quindi serve la Sua approvazione una volta, per tutta l'organizzazione. La pagina di Microsoft per farlo è qui:\n"
+"\n"
+"{link}\n"
+"\n"
+"Dopo l'approvazione, il browser potrebbe mostrare una pagina non raggiungibile. È previsto: è un indirizzo sul Suo computer, dove non c'è nulla in ascolto, e a quel punto l'approvazione è già stata data.\n"
+"\n"
+"Grazie"
+
 #. interface, name, ribbon, ribbon location
 #: crates/ui-egui/src/lib.rs crates/ui-egui/src/menubar.rs crates/ui-egui/src/ribbon.rs
 #, fuzzy
@@ -3569,6 +3661,11 @@ msgstr "Sono un amministratore: approvalo per la mia organizzazione"
 
 #. interface
 #: crates/ui-egui/src/account_setup/help.rs
+msgid "If no browser opened, check that this computer has a default browser (on Windows: Settings, Apps, Default apps), then press Open the page again."
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/account_setup/help.rs
 #, fuzzy
 msgid "If that page said you need admin approval"
 msgstr "Se quella pagina indicava che serve l'approvazione dell'amministratore"
@@ -3598,10 +3695,15 @@ msgid "If you have one, paste its application (client) ID here. It comes from a 
 msgstr "Se se ne dispone, incollare qui il relativo ID applicazione (client). Proviene da una registrazione di app in Microsoft Entra: un client pubblico con URI di reindirizzamento http://localhost, per account in qualsiasi directory e account personali."
 
 #. command label, interface, ribbon
-#: crates/engine/src/cmd/file.rs crates/ui-egui/src/backstage.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/ribbon.rs
+#: crates/engine/src/cmd/file.rs crates/ui-egui/src/backstage.rs crates/ui-egui/src/import_tree.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/ribbon.rs
 #, fuzzy
 msgid "Import"
 msgstr "Importa"
+
+#. command label, interface
+#: crates/engine/src/cmd/file.rs crates/ui-egui/src/backstage.rs crates/ui-egui/src/dialogs.rs
+msgid "Import a Folder of Mailboxes"
+msgstr ""
 
 #. interface, name
 #: crates/engine/src/session.rs crates/ui-egui/src/calendar_view.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/tasks_view.rs
@@ -3635,7 +3737,17 @@ msgstr "Importato {what} in una cartella locale: Microsoft non consente a un pro
 
 #. interface
 #: crates/ui-egui/src/lib.rs
+msgid "Imported {what} into the new folder {name}"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/lib.rs
 msgid "Imported {what}; stopped after {count}: the file has more than one import takes"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/import_tree.rs
+msgid "Importing… {messages} of {total}"
 msgstr ""
 
 #. interface
@@ -3710,7 +3822,7 @@ msgid "Indexing mail: {percent}%"
 msgstr "Indicizzazione posta: {percent}%"
 
 #. command label, interface, name, ribbon location
-#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/file.rs crates/engine/src/cmd/graph_switch.rs crates/engine/src/cmd/offline.rs crates/engine/src/cmd/shared.rs crates/ui-egui/src/backstage.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/menubar.rs
+#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/file.rs crates/engine/src/cmd/graph_switch.rs crates/engine/src/cmd/offline.rs crates/engine/src/cmd/shared.rs crates/engine/src/cmd/tasks_remote.rs crates/ui-egui/src/backstage.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/menubar.rs
 #, fuzzy
 msgid "Info"
 msgstr "Informazioni"
@@ -3871,7 +3983,7 @@ msgstr "La sua posta è sincronizzata tramite Microsoft Graph, senza server di p
 
 #. interface
 #: crates/ui-egui/src/dialogs.rs
-msgid "Its messages, attachments, settings and remembered sign-in go with it."
+msgid "Its messages, attachments, settings and remembered sign-in go with it, and so do the calendar, contacts, tasks and working hours that came from its server."
 msgstr ""
 
 #. interface
@@ -3973,6 +4085,11 @@ msgstr "Solo questo"
 #. interface
 #: crates/ui-egui/src/open_shared.rs
 msgid "Keep Both"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "Keep Tasks in Step with Microsoft To Do"
 msgstr ""
 
 #. interface
@@ -4192,6 +4309,11 @@ msgid "Looking for this meeting on your calendar…"
 msgstr "Ricerca di questa riunione nel calendario…"
 
 #. interface
+#: crates/ui-egui/src/import_tree.rs
+msgid "Looking… {folders}, {files}, {messages} so far"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/forms.rs
 #, fuzzy
 msgid "Low"
@@ -4358,6 +4480,12 @@ msgid "MailCraft doesn't send mail from a JMAP account yet"
 msgstr "MailCraft non invia ancora posta da un account JMAP"
 
 #. interface
+#: crates/ui-egui/src/account_setup.rs
+#, fuzzy
+msgid "MailCraft doesn't support POP yet. Use your provider's IMAP server instead (usually imap.<your domain>, port 993)."
+msgstr "MailCraft non supporta ancora POP. Usare invece il server IMAP del proprio provider (di solito imap.<proprio dominio>, porta 993)."
+
+#. interface
 #: crates/ui-egui/src/credits.rs
 #, fuzzy
 msgid "MailCraft is tested on real mail, by people who use it every day and tell us what goes wrong. Thank you."
@@ -4385,6 +4513,12 @@ msgstr "MailCraft la conserva in memoria fino alla chiusura dell'app. Non viene 
 #, fuzzy
 msgid "MailCraft looks for a new version once a day (File › Options). Only GitHub is asked."
 msgstr "MailCraft cerca una nuova versione una volta al giorno (File › Opzioni). Viene interpellato solo GitHub."
+
+#. interface
+#: crates/ui-egui/src/updates.rs
+#, fuzzy
+msgid "MailCraft now installs its updates itself. Turn this off in File › Options."
+msgstr "MailCraft ora installa da sé i propri aggiornamenti. È possibile disattivarlo in File › Opzioni."
 
 #. interface
 #: crates/ui-egui/src/dialogs.rs
@@ -5449,6 +5583,12 @@ msgid "Not Junk"
 msgstr "Posta attendibile"
 
 #. interface
+#: crates/ui-egui/src
+#, fuzzy
+msgid "Not allowed by your organisation"
+msgstr "Non consentito dalla propria organizzazione"
+
+#. interface
 #: crates/ui-egui/src/scheduling.rs
 #, fuzzy
 msgid "Not an address"
@@ -5459,6 +5599,12 @@ msgstr "Non è un indirizzo"
 #, fuzzy
 msgid "Not an e-mail address: {names}"
 msgstr "Non è un indirizzo di posta elettronica: {names}"
+
+#. interface
+#: crates/ui-egui/src
+#, fuzzy
+msgid "Not available for this account"
+msgstr "Non disponibile per questo account"
 
 #. interface
 #: crates/ui-egui/src/widgets.rs
@@ -5491,7 +5637,7 @@ msgid "Not kept anywhere yet: use Open & Export › Save Mailbox As."
 msgstr "Non ancora conservata da nessuna parte: usare Apri ed esporta › Salva cassetta postale con nome."
 
 #. interface
-#: crates/ui-egui/src/account_setup/help.rs
+#: crates/ui-egui/src/account_setup/help.rs crates/ui-egui/src/task_sync.rs
 #, fuzzy
 msgid "Not now"
 msgstr "Non ora"
@@ -5545,6 +5691,11 @@ msgid "Nothing in it: replaces what is open here"
 msgstr "Vuota: sostituisce ciò che è aperto qui"
 
 #. interface
+#: crates/ui-egui/src/import_tree.rs
+msgid "Nothing is added to your mail until it has all been read."
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/mail_view.rs
 #, fuzzy
 msgid "Nothing matches the search."
@@ -5593,7 +5744,7 @@ msgid "Numbering"
 msgstr "Elenco numerato"
 
 #. interface
-#: crates/ui-egui/src/calendar_sync.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/updates.rs
+#: crates/ui-egui/src/calendar_sync.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/settings_notice.rs crates/ui-egui/src/updates.rs
 #, fuzzy
 msgid "OK"
 msgstr "OK"
@@ -5733,6 +5884,12 @@ msgstr ""
 #, fuzzy
 msgid "Only on"
 msgstr "Solo il"
+
+#. interface
+#: crates/ui-egui/src/calendar_view.rs
+#, fuzzy
+msgid "Only on this computer: not in your Outlook calendar"
+msgstr "Solo su questo computer: non nel calendario di Outlook"
 
 #. interface
 #: crates/ui-egui/src/reading.rs
@@ -6002,6 +6159,12 @@ msgstr "Posta in uscita (SMTP)"
 #, fuzzy
 msgid "Outlook's Favorites"
 msgstr "Preferiti di Outlook"
+
+#. interface
+#: crates/ui-egui/src
+#, fuzzy
+msgid "Outlook's Favorites are now read through Microsoft Graph. To show MailCraft's own instead, turn them off in File › Options."
+msgstr "I Preferiti di Outlook ora vengono letti tramite Microsoft Graph. Per mostrare invece quelli di MailCraft, disattivarli in File › Opzioni."
 
 #. interface
 #: crates/ui-egui/src/favorites_sync.rs
@@ -6807,6 +6970,12 @@ msgstr "Riavvia per aggiornare"
 msgid "Restart to update"
 msgstr "Riavvia per aggiornare"
 
+#. interface
+#: crates/ui-egui/src/updates.rs
+#, fuzzy
+msgid "Restart to update is the owner's click."
+msgstr "Solo il proprietario può fare clic su Riavvia per aggiornare."
+
 #. ribbon
 #: crates/ui-egui/src/ribbon.rs
 #, fuzzy
@@ -7164,6 +7333,12 @@ msgstr "Cerca comandi"
 msgid "Search People"
 msgstr "Cerca contatti"
 
+#. command label
+#: crates/engine/src/cmd/view.rs
+#, fuzzy
+msgid "Search Suggestions"
+msgstr "Suggerimenti di ricerca"
+
 #. interface
 #: crates/ui-egui/src/ribbon.rs
 #, fuzzy
@@ -7302,7 +7477,7 @@ msgid "Send & Receive"
 msgstr "Invia e ricevi"
 
 #. ribbon location
-#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/calendar_settings.rs crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/graph_send.rs crates/engine/src/cmd/jmap_mail.rs crates/engine/src/cmd/remote.rs crates/engine/src/cmd/sync_progress.rs crates/ui-egui/src/lib.rs
+#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/calendar_settings.rs crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/graph_send.rs crates/engine/src/cmd/jmap_mail.rs crates/engine/src/cmd/remote.rs crates/engine/src/cmd/sync_progress.rs crates/engine/src/cmd/tasks_remote.rs crates/ui-egui/src/lib.rs
 #, fuzzy
 msgid "Send / Receive"
 msgstr "Invia/Ricevi"
@@ -7319,6 +7494,16 @@ msgstr "Invia di nuovo"
 msgid "Send Cancellation"
 msgstr "Invia annullamento"
 
+#. command label
+#: crates/engine/src/cmd/tasks_remote.rs
+msgid "Send Local Tasks to To Do"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "Send Tasks"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/dialogs.rs
 #, fuzzy
@@ -7330,6 +7515,11 @@ msgstr "Inviare questo invito?"
 #, fuzzy
 msgid "Send Update"
 msgstr "Invia aggiornamento"
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "Send Your Local Tasks to To Do?"
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/dialogs.rs crates/ui-egui/src/reading/invitation.rs
@@ -7385,6 +7575,16 @@ msgid "Send the update to them? The account's server sends them the change by ma
 msgstr "Inviare loro l'aggiornamento? Il server dell'account invia loro la modifica per posta."
 
 #. interface
+#: crates/ui-egui/src/backstage.rs
+msgid "Send to To Do…"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "Send to {address}"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/meeting_dialogs.rs
 #, fuzzy
 msgid "Send writes to: {people}."
@@ -7395,6 +7595,13 @@ msgstr "Invia scrive a: {people}."
 #, fuzzy
 msgid "Send your answer to the organizer? You can write a note to go with it."
 msgstr "Inviare la risposta all'organizzatore? È possibile aggiungere una nota."
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "Send your {n} local task to {address}'s To Do?"
+msgid_plural "Send your {n} local tasks to {address}'s To Do?"
+msgstr[0] ""
+msgstr[1] ""
 
 #. interface, ribbon
 #: crates/ui-egui/src/chrome.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/ribbon.rs
@@ -8305,6 +8512,46 @@ msgstr "Attività"
 msgid "Tasks"
 msgstr "Attività"
 
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "Tasks stay on this computer for now: {error}"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "Tasks weren't allowed to be kept in step: {error}"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "Tasks: asking for your permission…"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "Tasks: kept in step with Microsoft To Do"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "Tasks: kept on this computer only (not allowed yet)"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "Tasks: not allowed ({why})"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "Tasks: not asked yet"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "Tasks: waiting for your permission"
+msgstr ""
+
 #. name
 #: crates/model/src/calendar.rs
 #, fuzzy
@@ -8695,6 +8942,12 @@ msgid "The folder \"{folder}\" and everything in it will be deleted."
 msgstr "La cartella «{folder}» e tutto il suo contenuto verranno eliminati."
 
 #. interface
+#: crates/ui-egui/src/account_setup.rs
+#, fuzzy
+msgid "The incoming mail server isn't a host name (letters, digits, dots and dashes)"
+msgstr "Il server della posta in arrivo non è un nome host (lettere, cifre, punti e trattini)"
+
+#. interface
 #: crates/ui-egui/src/backstage.rs
 #, fuzzy
 msgid "The interface fonts are Inter, Source Sans 3 and JetBrains Mono (SIL Open Font License 1.1). Every icon is drawn in code and is original work. No artwork, fonts or text from other mail programs are included."
@@ -8820,6 +9073,18 @@ msgid "The organizer of this meeting doesn't take proposals of another time."
 msgstr "L'organizzatore di questa riunione non accetta proposte di un altro orario."
 
 #. interface
+#: crates/ui-egui/src/account_setup.rs
+#, fuzzy
+msgid "The outgoing mail server isn't a host name (letters, digits, dots and dashes)"
+msgstr "Il server della posta in uscita non è un nome host (lettere, cifre, punti e trattini)"
+
+#. interface
+#: crates/ui-egui/src/updates.rs
+#, fuzzy
+msgid "The owner hasn't allowed update checks."
+msgstr "Il proprietario non ha consentito la ricerca di aggiornamenti."
+
+#. interface
 #: crates/ui-egui/src/signatures.rs
 msgid "The picture was too big, so it was made smaller ({w} px wide)."
 msgstr "L'immagine era troppo grande ed è stata ridotta ({w} px di larghezza)."
@@ -8852,6 +9117,21 @@ msgstr ""
 #, fuzzy
 msgid "The server's name"
 msgstr "Il nome del server"
+
+#. interface
+#: crates/ui-egui/src/settings_notice.rs
+msgid "The settings file (ui.json) couldn't be read, so the default settings were restored. It couldn't be renamed, so it was left as it is and won't be overwritten."
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/settings_notice.rs
+msgid "The settings file (ui.json) couldn't be read, so the default settings were restored. It was left as it is and won't be overwritten."
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/settings_notice.rs
+msgid "The settings file (ui.json) couldn't be read, so the default settings were restored. The old file was renamed {file}."
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/dialogs.rs
@@ -8934,6 +9214,21 @@ msgid "The test appointment is gone again. Nothing else in the calendar was read
 msgstr "L'appuntamento di prova è stato rimosso. Nient'altro nel calendario è stato letto o modificato."
 
 #. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "The to-dos couldn't be kept in step: the job stopped unexpectedly"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "The to-dos couldn't be taken in: {error}"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "The to-dos sent couldn't be noted: {error}"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/meeting_dialogs.rs crates/ui-egui/src/reading/invitation.rs crates/ui-egui/src/report_problem.rs
 #, fuzzy
 msgid "The window isn't up yet."
@@ -8992,6 +9287,16 @@ msgid "These could not be removed. Remove them yourself:"
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "These tasks exist only on this computer. Choose the Microsoft account whose To Do gets them, and every task you make from now on. Until you choose, they stay here and nothing of them is sent."
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "These tasks exist only on this computer. If you send them, they and every task you make from now on are kept in step with Microsoft To Do. Until you do, they stay here and nothing of them is sent. File › Info offers this again."
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/data_removal.rs
 msgid "These were left alone:"
 msgstr ""
@@ -9033,10 +9338,15 @@ msgid "This account has no mail server to send the answer through."
 msgstr "Questo account non ha un server di posta tramite cui inviare la risposta."
 
 #. interface
-#: crates/ui-egui/src/lib.rs crates/ui-egui/src/open_shared.rs crates/ui-egui/src/shared_calendars.rs crates/ui-egui/src/shared_mailboxes.rs
+#: crates/ui-egui/src/lib.rs crates/ui-egui/src/open_shared.rs crates/ui-egui/src/shared_calendars.rs crates/ui-egui/src/shared_mailboxes.rs crates/ui-egui/src/task_sync.rs
 #, fuzzy
 msgid "This account has no sign-in with Microsoft"
 msgstr "Questo account non ha un accesso con Microsoft"
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "This account may not use its to-dos through Microsoft Graph"
+msgstr ""
 
 #. what a command says
 #: crates/engine/src/cmd/remote.rs
@@ -9613,6 +9923,14 @@ msgid ""
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid ""
+"To keep the tasks of {address} in step with Microsoft To Do, MailCraft needs your permission to read and change your To Do lists and tasks. Microsoft's page opens in your browser to ask you, once.\n"
+"\n"
+"Until you allow it, tasks stay on this computer and nothing of them is sent to Microsoft."
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/open_shared.rs
 msgid ""
 "To open other people's calendars, MailCraft needs your permission to read the calendars people share with you. Microsoft's page opens in your browser to ask you, once.\n"
@@ -9638,6 +9956,11 @@ msgid ""
 "To show the calendars of {address}, MailCraft needs your permission to read the calendars of shared mailboxes. Microsoft's page opens in your browser to ask you, once.\n"
 "\n"
 "What you may see of a calendar is for its owner and your organisation to decide: this changes nothing about that. Until you allow it, nothing of {address}'s calendars is read."
+msgstr ""
+
+#. command label
+#: crates/engine/src/cmd/tasks_remote.rs
+msgid "To-do Changes to Send"
 msgstr ""
 
 #. what a command says
@@ -9736,6 +10059,12 @@ msgid "Tuesday"
 msgstr "martedì"
 
 #. interface
+#: crates/ui-egui/src/updates.rs
+#, fuzzy
+msgid "Turned off by your organisation"
+msgstr "Disattivato dalla propria organizzazione"
+
+#. interface
 #: crates/ui-egui/src/people_view.rs
 #, fuzzy
 msgid "Turns {age} on {date}"
@@ -9758,6 +10087,12 @@ msgstr "Due settimane fa"
 #, fuzzy
 msgid "Type"
 msgstr "Digita"
+
+#. interface
+#: crates/ui-egui/src/account_setup.rs
+#, fuzzy
+msgid "Type the name of the incoming mail server"
+msgstr "Digitare il nome del server della posta in arrivo"
 
 #. interface
 #: crates/ui-egui/src/dialogs.rs
@@ -10393,6 +10728,11 @@ msgid "Your name"
 msgstr "Il proprio nome"
 
 #. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "Your organisation doesn't allow MailCraft to keep tasks in step with Microsoft To Do"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/shared_calendars.rs
 msgid "Your organisation doesn't allow MailCraft to read shared mailboxes' calendars"
 msgstr ""
@@ -10422,6 +10762,29 @@ msgid "Your organisation keeps this permission for its administrators to give. O
 msgstr "L'organizzazione riserva agli amministratori la concessione di questa autorizzazione. Dopo che uno di loro l'ha approvata, sceglierla di nuovo qui. Fino ad allora vengono mostrati i Preferiti conservati in MailCraft."
 
 #. interface
+#: crates/ui-egui/src/account_setup/help.rs
+#, fuzzy
+msgid "Your organisation lets only an administrator approve a new program, and none has approved MailCraft yet. Nothing is wrong with your account or your password."
+msgstr "Nella propria organizzazione solo un amministratore può approvare un nuovo programma, e nessuno ha ancora approvato MailCraft. L'account e la password sono a posto."
+
+#. interface
+#: crates/ui-egui/src/account_setup/help.rs
+#, fuzzy
+msgid "Your organisation lets only an administrator approve a new program. Nothing is wrong with your account or your password, and there is nothing to wait for here."
+msgstr "Nella propria organizzazione solo un amministratore può approvare un nuovo programma. L'account e la password sono a posto, e qui non c'è nulla da attendere."
+
+#. interface
+#: crates/ui-egui/src/account_setup/help.rs
+#, fuzzy
+msgid "Your organisation then lets only an administrator approve a new program. Nothing is wrong with your account or your password."
+msgstr "In tal caso, nella propria organizzazione solo un amministratore può approvare un nuovo programma. L'account e la password sono a posto."
+
+#. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "Your organisation's administrator has to approve keeping tasks in step with Microsoft To Do once: File › Info"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/open_shared.rs
 msgid "Your organisation's administrator has to approve reading other people's calendars once: File › Info"
 msgstr ""
@@ -10436,6 +10799,12 @@ msgstr "L'amministratore dell'organizzazione deve approvare una volta la lettura
 #: crates/ui-egui/src/shared_calendars.rs
 msgid "Your organisation's administrator has to approve reading shared mailboxes' calendars once: File › Info"
 msgstr ""
+
+#. interface
+#: crates/ui-egui/src
+#, fuzzy
+msgid "Your organisation's administrator has to approve this once"
+msgstr "L'amministratore della propria organizzazione deve approvarlo una volta"
 
 #. interface
 #: crates/ui-egui/src/report_problem.rs
@@ -10655,11 +11024,23 @@ msgid_plural "and {n} more"
 msgstr[0] ""
 msgstr[1] ""
 
+#. interface
+#: crates/ui-egui/src/import_tree.rs
+msgid "and {n} more folder"
+msgid_plural "and {n} more folders"
+msgstr[0] ""
+msgstr[1] ""
+
 #. what a command says, why a command can't run
 #: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar/invitation.rs
 #, fuzzy
 msgid "calendar"
 msgstr "calendario"
+
+#. what a command says
+#: crates/engine/src/import_tree.rs
+msgid "cancelled"
+msgstr ""
 
 #. what a command says
 #: crates/engine/src/cmd/people.rs
@@ -10878,7 +11259,7 @@ msgid "it opens, replaces or saves the mailbox file"
 msgstr "apre, sostituisce o salva il file della cassetta postale"
 
 #. interface
-#: crates/ui-egui/src/graph_switch.rs
+#: crates/ui-egui/src/graph_switch.rs crates/ui-egui/src/import_tree.rs
 #, fuzzy
 msgid "it stopped unexpectedly"
 msgstr "si è interrotto in modo imprevisto"
@@ -11067,6 +11448,11 @@ msgid "no signature named \"{name}\""
 msgstr "nessuna firma denominata «{name}»"
 
 #. what a command says
+#: crates/engine/src/cmd/tasks_remote.rs
+msgid "no such account"
+msgstr ""
+
+#. what a command says
 #: crates/engine/src/cmd/mail.rs
 #, fuzzy
 msgid "no such attachment"
@@ -11095,6 +11481,11 @@ msgstr "nessuna cartella {folder}"
 #, fuzzy
 msgid "nothing is selected in the message"
 msgstr "nel messaggio non è selezionato nulla"
+
+#. what a command says
+#: crates/engine/src/import_tree.rs
+msgid "nothing is waiting to be imported"
+msgstr ""
 
 #. why a command can't run
 #: crates/engine/src/cmd/search_server.rs
@@ -11149,6 +11540,12 @@ msgstr "ogni"
 #, fuzzy
 msgid "on"
 msgstr "il"
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+#, fuzzy
+msgid "only the headers of this message are here, so it can't be forwarded as an attachment"
+msgstr "qui ci sono solo le intestazioni di questo messaggio, quindi non può essere inoltrato come allegato"
 
 #. why a command can't run
 #: crates/engine/src/cmd/calendar/invitation.rs
@@ -11227,6 +11624,12 @@ msgstr "selezionare prima un'attività"
 msgid "select an appointment first"
 msgstr "selezionare prima un appuntamento"
 
+#. why a command can't run
+#: crates/engine/src/cmd/compose.rs
+#, fuzzy
+msgid "select only one message to forward as an attachment"
+msgstr "selezionare un solo messaggio da inoltrare come allegato"
+
 #. what a command says, why a command can't run
 #: crates/engine/src/cmd/shared.rs
 #, fuzzy
@@ -11276,6 +11679,11 @@ msgid "that message isn't held"
 msgstr "quel messaggio non è trattenuto"
 
 #. what a command says
+#: crates/engine/src/import_tree.rs
+msgid "that was only looked at, not read in full"
+msgstr ""
+
+#. what a command says
 #: crates/engine/src/cmd/calendar/invitation.rs crates/engine/src/cmd/calendar_opened.rs crates/engine/src/cmd/compose.rs
 #, fuzzy
 msgid "the account is gone"
@@ -11286,6 +11694,11 @@ msgstr "l'account non c'è più"
 #, fuzzy
 msgid "the browser can't keep a copy of the mailbox beside it: switch in the desktop app"
 msgstr "il browser non può conservare una copia della cassetta postale accanto a essa: eseguire il passaggio nell'app desktop"
+
+#. interface
+#: crates/ui-egui/src/import_tree.rs
+msgid "the browser can't read folders by path"
+msgstr ""
 
 #. what a command says
 #: crates/engine/src/cmd/calendar/meeting.rs
@@ -11472,6 +11885,12 @@ msgstr "la firma non c'è più"
 msgid "the task is gone"
 msgstr "l'attività non c'è più"
 
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+#, fuzzy
+msgid "the text of this message can't be read on this computer, so it can't be forwarded as an attachment"
+msgstr "il testo di questo messaggio non può essere letto su questo computer, quindi non può essere inoltrato come allegato"
+
 #. interface
 #: crates/ui-egui/src/dialogs.rs
 #, fuzzy
@@ -11640,6 +12059,18 @@ msgid "this message has no subject to look for"
 msgstr "questo messaggio non ha un oggetto da cercare"
 
 #. what a command says
+#: crates/engine/src/cmd/compose.rs
+#, fuzzy
+msgid "this message isn't downloaded yet: open it once you're online, then forward it as an attachment"
+msgstr "questo messaggio non è ancora stato scaricato: aprirlo quando si è online, poi inoltrarlo come allegato"
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+#, fuzzy
+msgid "this message was too large to download: only its header is here, so it can't be forwarded as an attachment"
+msgstr "questo messaggio era troppo grande per essere scaricato: qui c'è solo la sua intestazione, quindi non può essere inoltrato come allegato"
+
+#. what a command says
 #: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar/invitation.rs
 #, fuzzy
 msgid "this series has too many cancelled days"
@@ -11658,6 +12089,11 @@ msgid "time"
 msgid_plural "times"
 msgstr[0] "volta"
 msgstr[1] "volte"
+
+#. what a command says
+#: crates/engine/src/cmd/tasks.rs
+msgid "too many deletions are waiting to be sent to Microsoft To Do; wait for them to go first"
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/data_removal.rs
@@ -11861,6 +12297,11 @@ msgstr "{days} (tutto il giorno)"
 #, fuzzy
 msgid "{done} of {total}"
 msgstr "{done} di {total}"
+
+#. interface
+#: crates/ui-egui/src/import_tree.rs
+msgid "{folders} will be made under a new folder called {name} on this computer, with {messages}."
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/lib.rs crates/ui-egui/src/nav.rs
@@ -12260,6 +12701,27 @@ msgid_plural "{n} events in view"
 msgstr[0] "{n} evento visualizzato"
 msgstr[1] "{n} eventi visualizzati"
 
+#. interface
+#: crates/ui-egui/src/lib.rs
+msgid "{n} file left out"
+msgid_plural "{n} files left out"
+msgstr[0] ""
+msgstr[1] ""
+
+#. interface
+#: crates/ui-egui/src/import_tree.rs
+msgid "{n} file or folder is left out: not a mailbox file, a link, or over a limit"
+msgid_plural "{n} files or folders are left out: not mailbox files, links, or over a limit"
+msgstr[0] ""
+msgstr[1] ""
+
+#. interface
+#: crates/ui-egui/src/import_tree.rs
+msgid "{n} folder"
+msgid_plural "{n} folders"
+msgstr[0] ""
+msgstr[1] ""
+
 #. date and time, interface
 #: crates/i18n/src/date.rs crates/ui-egui/src/reminders.rs
 #, fuzzy
@@ -12309,7 +12771,14 @@ msgstr[0] "{n} elemento selezionato"
 msgstr[1] "{n} elementi selezionati"
 
 #. interface
-#: crates/ui-egui/src/backstage.rs crates/ui-egui/src/folder_properties.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/mail_view.rs
+#: crates/ui-egui/src/import_tree.rs
+msgid "{n} mailbox file"
+msgid_plural "{n} mailbox files"
+msgstr[0] ""
+msgstr[1] ""
+
+#. interface
+#: crates/ui-egui/src/backstage.rs crates/ui-egui/src/folder_properties.rs crates/ui-egui/src/import_tree.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/mail_view.rs
 #, fuzzy
 msgid "{n} message"
 msgid_plural "{n} messages"
@@ -12331,6 +12800,13 @@ msgid "{n} message in this conversation:"
 msgid_plural "{n} messages in this conversation:"
 msgstr[0] "{n} messaggio in questa conversazione:"
 msgstr[1] "{n} messaggi in questa conversazione:"
+
+#. interface
+#: crates/ui-egui/src/import_tree.rs
+msgid "{n} message is already here and is left out"
+msgid_plural "{n} messages are already here and are left out"
+msgstr[0] ""
+msgstr[1] ""
 
 #. interface
 #: crates/ui-egui/src/forms.rs
@@ -12531,6 +13007,13 @@ msgstr[0] "{n} attività"
 msgstr[1] "{n} attività"
 
 #. interface
+#: crates/ui-egui/src/task_sync.rs
+msgid "{n} task exists only on this computer"
+msgid_plural "{n} tasks exist only on this computer"
+msgstr[0] ""
+msgstr[1] ""
+
+#. interface
 #: crates/ui-egui/src/backstage.rs crates/ui-egui/src/folder_properties.rs
 #, fuzzy
 msgid "{n} unread"
@@ -12620,6 +13103,11 @@ msgstr "{rule}, dal {day}"
 
 #. interface
 #: crates/ui-egui/src/lib.rs
+msgid "{said}; {left}{more}"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/lib.rs
 #, fuzzy
 msgid "{saving} · MailCraft closes when it is done"
 msgstr "{saving} · MailCraft si chiude al termine"
@@ -12703,6 +13191,10 @@ msgstr "{why}, quindi gli accessi non vengono memorizzati: MailCraft li richiede
 #, fuzzy
 msgid "{why}. {n} changes made in it here wait on this computer."
 msgstr "{why}. {n} modifiche apportate qui sono in attesa su questo computer."
+
+#, fuzzy
+#~ msgid "Its messages, attachments, settings and remembered sign-in go with it, and so do the calendar, contacts and working hours that came from its server."
+#~ msgstr "I suoi messaggi, allegati, impostazioni e l'accesso memorizzato vengono rimossi con esso, così come il calendario, i contatti e l'orario di lavoro arrivati dal suo server."
 
 #, fuzzy
 #~ msgid "the last account can't be removed"

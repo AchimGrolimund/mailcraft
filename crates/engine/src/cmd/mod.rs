@@ -24,6 +24,10 @@ pub mod format;
 #[cfg(test)]
 mod format_tests;
 #[cfg(test)]
+mod forward_attachment_headers_tests;
+#[cfg(test)]
+mod forward_attachment_tests;
+#[cfg(test)]
 mod full_count_tests;
 pub mod graph_down;
 pub mod graph_drafts;
@@ -48,12 +52,17 @@ mod quote_tests;
 pub mod remote;
 pub mod rules;
 pub mod search_server;
+#[cfg(test)]
+mod search_suggest_tests;
 pub mod shared;
 pub mod signature;
 #[cfg(test)]
 mod signature_tests;
 pub mod sync_progress;
 pub mod tasks;
+pub mod tasks_remote;
+#[cfg(test)]
+mod tasks_remote_tests;
 pub mod view;
 #[cfg(test)]
 mod wipe_tests;
@@ -95,6 +104,7 @@ pub fn registry() -> Registry {
     v.extend(graph_switch::specs());
     v.extend(graph_send::specs());
     v.extend(remote::specs());
+    v.extend(tasks_remote::specs());
     v.extend(sync_progress::specs());
     v.extend(search_server::specs());
     Registry::new(v)

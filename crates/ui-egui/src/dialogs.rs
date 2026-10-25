@@ -107,6 +107,8 @@ pub enum Dialog {
     /// A folder's or an account's Properties, with Folder Size… over them
     /// ([`crate::folder_properties`]).
     FolderProperties(Box<crate::folder_properties::FolderProperties>),
+    /// What is in a folder of mbox files, before it is imported ([`crate::import_tree`]).
+    ImportTree(Box<crate::import_tree::ImportTree>),
 }
 
 /// The tabs of About: the program, the people who made it, and the people who test it
@@ -133,12 +135,14 @@ pub struct Question {
     /// A note the owner may write to go along (with a cancellation, with an answer): the
     /// parameter it becomes, what is written so far, and what the empty field says.
     pub note: Option<(&'static str, String, String)>,
+    /// What the button that goes nowhere says, when not Cancel (`Not now`).
+    pub cancel: Option<String>,
 }
 
 impl Question {
     /// A question with one way of going ahead, which adds `with` to the parameters.
     pub(crate) fn new(title: &str, text: String, action: &str, with: Value) -> Question {
-        Question { title: title.to_string(), text, action: action.to_string(), with, more: Vec::new(), note: None }
+        Question { title: title.to_string(), text, action: action.to_string(), with, more: Vec::new(), note: None, cancel: None }
     }
 
     /// One more way of going ahead.
@@ -177,6 +181,7 @@ impl Dialog {
             Dialog::ReportProblem(_) => "reportProblem",
             Dialog::Meeting(d) => d.name(),
             Dialog::FolderProperties(_) => "folderProperties",
+            Dialog::ImportTree(_) => "importTree",
         }
     }
 
@@ -254,6 +259,10 @@ impl Dialog {
 pub(crate) fn open_dialog(app: &mut MailApp, name: &str, params: &Value) -> Option<Dialog> {
     if name == "folderProperties" {
         return crate::folder_properties::FolderProperties::open(app, params).map(|d| Dialog::FolderProperties(Box::new(d)));
+    }
+    if name == "importTree" {
+        let path = params.get("path").and_then(Value::as_str)?;
+        return Some(Dialog::ImportTree(Box::new(crate::import_tree::ImportTree::open(app, path))));
     }
     match crate::meeting_dialogs::MeetingDialog::open(name, app, params) {
         Some(dialog) => Some(Dialog::Meeting(dialog)),
@@ -357,7 +366,9 @@ pub fn confirmation(app: &MailApp, id: &str, params: &Value) -> Option<Question>
             // Pictures and opened attachments are kept by their address and by file, not by account.
             let text = format!(
                 "{text} {} {}",
-                tl!("Its messages, attachments, settings and remembered sign-in go with it."),
+                tl!(
+                    "Its messages, attachments, settings and remembered sign-in go with it, and so do the calendar, contacts, tasks and working hours that came from its server."
+                ),
                 tl!(
                     "Downloaded pictures and opened attachments can't be told apart by account: File › Info › Remove MailCraft's data from this computer clears them."
                 )
@@ -805,6 +816,7 @@ fn all_commands(app: &MailApp) -> Vec<(String, String, String, String, bool)> {
                     | "sync.applyEventChanges"
                     | "compose.set"
                     | "compose.suggest"
+                    | "view.searchSuggestions"
                     | "account.preset"
                     | "mail.select"
                     | "calendar.select"
@@ -1257,13 +1269,13 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
                         }
                     }
                     button_row(ui, |ui| {
-                        if ui.add(egui::Button::new(tl!("Cancel")).min_size(vec2(72.0, 26.0))).clicked() {
+                        if ui.add(egui::Button::new(ask.cancel.as_deref().unwrap_or(tl!("Cancel"))).min_size(vec2(72.0, 26.0))).clicked() {
                             close = true;
                         }
                     });
                 } else {
                     button_row(ui, |ui| {
-                        if ui.add(egui::Button::new(tl!("Cancel")).min_size(vec2(72.0, 26.0))).clicked() {
+                        if ui.add(egui::Button::new(ask.cancel.as_deref().unwrap_or(tl!("Cancel"))).min_size(vec2(72.0, 26.0))).clicked() {
                             close = true;
                         }
                         for (label, with) in ask.more.iter().rev() {
@@ -1393,6 +1405,11 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
         }
         // Folder Size, open over the tabs, takes Escape and Enter; Enter on a button that has the
         // keyboard is that button's.
+        Dialog::ImportTree(dialog) => {
+            let mut done = false;
+            let open = window(ctx, tl!("Import a Folder of Mailboxes"), crate::import_tree::WIDTH, |ui| done = dialog.show(app, ui, enter));
+            close |= !open || done;
+        }
         Dialog::FolderProperties(dialog) => {
             let enter = enter && ctx.memory(|m| m.focused().is_none());
             let over = dialog.size_open;

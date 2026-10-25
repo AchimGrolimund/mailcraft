@@ -741,7 +741,40 @@ pub enum Pending {
         uid: u32,
         #[serde(default, rename = "messageId", skip_serializing_if = "String::is_empty")]
         message_id: String,
+        /// What the message said of itself when it was deleted. A Message-ID is chosen by the
+        /// sender, so a numbered-anew mailbox only gives its UID to a copy that is also the same
+        /// mail by this. Absent in a mailbox file of 0.8.0 and before: such a change is not
+        /// carried over a renumbering.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seen: Option<MailIdentity>,
     },
+}
+
+/// What a message says of itself apart from its Message-ID: when it was sent, by whom, about
+/// what and to whom. Two arrivals with one Message-ID are one mail only if these agree too.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MailIdentity {
+    pub date: i64,
+    pub from: String,
+    pub subject: String,
+    pub people: Vec<String>,
+}
+
+impl MailIdentity {
+    pub fn of(m: &Message) -> MailIdentity {
+        MailIdentity {
+            date: m.date,
+            from: m.from.email.to_ascii_lowercase(),
+            subject: m.subject.split_whitespace().collect::<Vec<_>>().join(" "),
+            people: m.to.iter().chain(&m.cc).map(|a| a.email.to_ascii_lowercase()).take(200).collect(),
+        }
+    }
+
+    /// Whether `m` is the mail this was taken from (a mail with no date is never known again).
+    pub fn fits(&self, m: &Message) -> bool {
+        self.date != 0 && *self == MailIdentity::of(m)
+    }
 }
 
 impl Pending {
@@ -826,6 +859,14 @@ pub struct Mailbox {
     /// to be told, oldest first ([`crate::remote::EventChange`]).
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::sync::lenient_list")]
     pub event_changes: Vec<crate::remote::EventChange>,
+    /// To-dos deleted here that a Microsoft account's server (To Do) is yet to be told about,
+    /// oldest first ([`crate::TaskGone`]).
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::sync::lenient_list")]
+    pub task_gone: Vec<crate::TaskGone>,
+    /// What the owner said about the to-dos that exist only here (#248): until a yes, none goes
+    /// to a server.
+    #[serde(skip_serializing_if = "crate::LocalTasks::is_unasked")]
+    pub local_tasks: crate::LocalTasks,
     /// Changes to events that a server said it took and that no download has shown yet
     /// ([`crate::remote::EventCheck`]).
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::sync::lenient_list")]
@@ -876,6 +917,8 @@ impl Default for Mailbox {
             signatures: Vec::new(),
             pending: Vec::new(),
             event_changes: Vec::new(),
+            task_gone: Vec::new(),
+            local_tasks: crate::LocalTasks::Unasked,
             event_checks: Vec::new(),
             favorites_from_server: Vec::new(),
             queued: Vec::new(),
@@ -1011,6 +1054,18 @@ impl Mailbox {
         self.pending.retain(|p| !going.contains(&p.account()));
         self.event_changes.retain(|change| !going.contains(&change.account));
         self.event_checks.retain(|check| !going.contains(&check.account));
+        self.task_gone.retain(|gone| !going.contains(&gone.account));
+        // Its to-dos stay, as to-dos of this computer only.
+        for task in self.tasks.values_mut().filter(|t| going.contains(&t.origin.account)) {
+            let task = Arc::make_mut(task);
+            task.origin = crate::Origin::default();
+            task.list.clear();
+            task.synced = None;
+            task.local_only = false;
+        }
+        if matches!(self.local_tasks, crate::LocalTasks::SendTo(a) if going.contains(&a)) {
+            self.local_tasks = crate::LocalTasks::Unasked;
+        }
         self.queued.retain(|queued| !going.contains(&queued.account()));
         self.favorites_from_server.retain(|list| !going.contains(&list.account));
         self.tidy_listed_twice();
@@ -1920,22 +1975,22 @@ impl Mailbox {
         if self.stays_on_server(id) {
             return Err(invalid(NOT_MOVING_YET));
         }
-        let (was_in, account, uid, message_id) = {
+        let (was_in, account, uid, message_id, seen) = {
             let m = self.message(id).ok_or(not_found("message", id))?;
-            (m.folder, m.account, m.uid, m.message_id.clone())
+            (m.folder, m.account, m.uid, m.message_id.clone(), (!m.message_id.is_empty()).then(|| MailIdentity::of(m)))
         };
         self.queue_graph_delete(id);
         match self.waiting_move(id).and_then(|at| self.pending.get_mut(at)) {
             Some(op) => {
                 if let Pending::Move { account, from, uid, .. } = &mut *op {
-                    let delete = Pending::Delete { account: *account, from: std::mem::take(from), uid: *uid, message_id };
+                    let delete = Pending::Delete { account: *account, from: std::mem::take(from), uid: *uid, message_id, seen };
                     *op = delete;
                 }
             }
             None => {
                 let from = self.folder(was_in).filter(|f| f.account == account && !f.remote.is_empty()).map(|f| f.remote.clone());
                 if let (Some(from), true) = (from, uid != 0) {
-                    self.pending.push(Pending::Delete { account, from, uid, message_id });
+                    self.pending.push(Pending::Delete { account, from, uid, message_id, seen });
                 }
             }
         }
@@ -2110,7 +2165,17 @@ impl Mailbox {
         self.tasks.get_mut(&id).map(Arc::make_mut).ok_or(not_found("task", id))
     }
 
+    /// Delete a to-do. One that an account's server keeps is noted, so that the server is told.
     pub fn remove_task(&mut self, id: Id) -> Result<(), ModelError> {
+        let task = self.tasks.remove(&id).ok_or(not_found("task", id))?;
+        if task.origin.is_remote() && !task.origin.id.is_empty() && self.task_gone.len() < crate::task::MAX_TASK_GONE {
+            self.task_gone.push(crate::TaskGone { account: task.origin.account, id: task.origin.id.clone(), list: task.list.clone() });
+        }
+        Ok(())
+    }
+
+    /// Remove a to-do without telling any server: it is gone from there already.
+    pub fn remove_task_quietly(&mut self, id: Id) -> Result<(), ModelError> {
         self.tasks.remove(&id).map(|_| ()).ok_or(not_found("task", id))
     }
 
@@ -2454,7 +2519,7 @@ impl Mailbox {
             let waiting = uid == 0
                 && match &op {
                     Pending::Move { message, .. } => self.messages.get(message).is_some_and(|m| !m.message_id.is_empty()),
-                    Pending::Delete { message_id, .. } => !message_id.is_empty(),
+                    Pending::Delete { message_id, seen, .. } => !message_id.is_empty() && seen.is_some(),
                 };
             let Some(source) = source.filter(|source| (uid != 0 || waiting) && !on_server.contains(&(*source, uid))) else { continue };
             if let Pending::Move { message, synced, to, .. } = &mut op {

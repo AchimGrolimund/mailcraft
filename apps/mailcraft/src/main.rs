@@ -66,6 +66,8 @@ mod secrets;
 mod self_update;
 mod sender_images;
 #[cfg(test)]
+mod settings_unread_tests;
+#[cfg(test)]
 mod shared_calendar_flow;
 #[cfg(test)]
 mod shared_send_flow;
@@ -87,7 +89,7 @@ use mailcraft_model::Mailbox;
 use mailcraft_model::sync::Tokens;
 use mailcraft_ui_egui::{
     AdminConsentAnswer, AdminConsentRequest, CalendarCheckRequest, CalendarCheckResult, CalendarCheckStep, FreeBusyRequest, FreeBusyResult,
-    GraphRequest, GraphResult, MailApp, Services, SignInRequest, UiState,
+    GraphRequest, GraphResult, MailApp, Services, SettingsUnread, SignInRequest, UiState,
     window_geometry::{WindowGeometry, take_rescue},
 };
 
@@ -277,27 +279,87 @@ fn prefs_enabled() -> bool {
     std::env::var_os("MAILCRAFT_NO_PREFS").is_none()
 }
 
-fn load_prefs(app: &mut MailApp) {
-    if !prefs_enabled() {
-        return;
-    }
-    if let Some(ui) = prefs_path().and_then(|p| read_prefs(&p)) {
-        app.apply_prefs(ui);
+/// The preferences, read once at start (before the window opens, for its size and place), and
+/// what became of the file when it couldn't be read. Nothing for a run without preferences.
+fn load_prefs() -> (Option<UiState>, Option<SettingsUnread>) {
+    match prefs_path() {
+        Some(path) if prefs_enabled() => read_prefs(&path),
+        _ => (None, None),
     }
 }
 
+/// A settings file that couldn't be set aside stays where it was, and this run's settings
+/// aren't saved over it.
+static PREFS_LEFT_IN_PLACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The preferences in `path`. A file that can't be read as them (damaged, or written by a version
-/// that keeps them otherwise) is moved aside to `ui.json.damaged`, so the next save doesn't
-/// overwrite what the owner had set and it can still be looked at.
-fn read_prefs(path: &std::path::Path) -> Option<UiState> {
-    let bytes = std::fs::read(path).ok()?;
-    let ui = serde_json::from_slice::<UiState>(&bytes);
-    if ui.is_err() {
-        let mut aside = path.as_os_str().to_os_string();
-        aside.push(".damaged");
-        let _ = std::fs::rename(path, aside);
+/// that keeps them otherwise) is moved aside to `ui.json.damaged` (or `.damaged-2` and on, so an
+/// earlier one is kept), so the next save doesn't overwrite what the owner had set and it can
+/// still be looked at; the window says so. One that can't be read at all, or can't be moved
+/// aside, is left where it is and not saved over (the window says which). The log names the kind of error and where in
+/// the file it is, never what the file says.
+fn read_prefs(path: &std::path::Path) -> (Option<UiState>, Option<SettingsUnread>) {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (None, None),
+        Err(e) => {
+            log::warn!("the settings file couldn't be read ({:?}); it is left as it is and not saved over", e.kind());
+            PREFS_LEFT_IN_PLACE.store(true, std::sync::atomic::Ordering::Relaxed);
+            return (None, Some(SettingsUnread::CouldntRead));
+        }
+    };
+    let e = match serde_json::from_slice::<UiState>(&bytes) {
+        Ok(ui) => return (Some(ui), None),
+        Err(e) => e,
+    };
+    let at = format!("{:?} error at line {}, column {}", e.classify(), e.line(), e.column());
+    match set_aside(path) {
+        Ok(aside) => {
+            let name = aside.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            log::warn!("the settings file couldn't be read ({at}); set aside as {name}, started with MailCraft's own settings");
+            (None, Some(SettingsUnread::SetAside(name)))
+        }
+        Err(_) => {
+            log::warn!("the settings file couldn't be read ({at}) nor set aside; it is left as it is and not saved over");
+            PREFS_LEFT_IN_PLACE.store(true, std::sync::atomic::Ordering::Relaxed);
+            (None, Some(SettingsUnread::LeftInPlace))
+        }
     }
-    ui.ok()
+}
+
+/// How many damaged copies of the settings are kept; past that the oldest is replaced.
+const MAX_DAMAGED_COPIES: usize = 20;
+
+/// Move the settings file at `path` to `<file>.damaged` (or `.damaged-2` and on) without
+/// replacing anything already there: a name is taken when anything is on it, a link that leads
+/// nowhere included (`symlink_metadata`, which doesn't follow it, and which only an absent name
+/// answers with an error). When all the names are taken, the oldest plain file among them is
+/// replaced, so settings go on being saved however often the file has been damaged.
+fn set_aside(path: &std::path::Path) -> std::io::Result<PathBuf> {
+    let name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    let mut oldest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for n in 1..=MAX_DAMAGED_COPIES {
+        let mut aside = name.clone();
+        aside.push(if n == 1 { ".damaged".to_string() } else { format!(".damaged-{n}") });
+        let aside = path.with_file_name(aside);
+        match std::fs::symlink_metadata(&aside) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::rename(path, &aside)?;
+                return Ok(aside);
+            }
+            Err(e) => return Err(e),
+            Ok(meta) if meta.is_file() => {
+                let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                if oldest.as_ref().is_none_or(|(t, _)| modified < *t) {
+                    oldest = Some((modified, aside));
+                }
+            }
+            Ok(_) => {}
+        }
+    }
+    let (_, aside) = oldest.ok_or_else(|| std::io::Error::other("no name is free for a damaged copy"))?;
+    std::fs::rename(path, &aside)?;
+    Ok(aside)
 }
 
 /// Write the preferences so that a crash leaves the old file or the whole new one, readable by
@@ -309,17 +371,9 @@ fn write_prefs(path: &std::path::Path, ui: &UiState) -> std::io::Result<()> {
     mailcraft_engine::store::write_atomic(path, &serde_json::to_vec_pretty(ui).map_err(std::io::Error::other)?)
 }
 
-/// The saved window geometry, read before the window opens (`load_prefs` runs after).
-fn saved_window() -> Option<WindowGeometry> {
-    if !prefs_enabled() {
-        return None;
-    }
-    read_prefs(&prefs_path()?)?.window?.sanitized()
-}
-
 fn save_prefs(app: &MailApp) {
     // Its data was removed from this computer (File › Info): nothing is written back.
-    if !prefs_enabled() || app.data_removed {
+    if !prefs_enabled() || app.data_removed || PREFS_LEFT_IN_PLACE.load(std::sync::atomic::Ordering::Relaxed) {
         return;
     }
     if let Some(p) = prefs_path() {
@@ -526,6 +580,12 @@ fn sign_in_with(request: SignInRequest, open_page: &dyn Fn(&str) -> bool) -> Res
     // (#70): the page comes up for what sending from shared mailboxes takes too, by itself.
     if request.graph && request.shared && request.shared_send {
         let asked = mailcraft_net::oauth::sign_in_for_shared_send(&request.oauth, &request.email, &open, &request.cancel);
+        return asked.map_err(|refusal| unopened(favorites_refusal(refusal)));
+    }
+    // A tasks run found the sign-in doesn't cover the To Do lists (#248) and the owner said go
+    // ahead: the page comes up for that permission alone, by itself.
+    if request.graph && request.tasks {
+        let asked = mailcraft_net::oauth::sign_in_for_tasks(&request.oauth, &request.email, &open, &request.cancel);
         return asked.map_err(|refusal| unopened(favorites_refusal(refusal)));
     }
     // Calendars are opened by address for the first time (#70): the page comes up for the same
@@ -1139,6 +1199,60 @@ fn graph_sending_with(mut request: GraphRequest, zone: &str, renew: Renew<'_>, r
     out
 }
 
+/// Keep an account's tasks in step with Microsoft To Do (#248): a token of its own for the lists
+/// (a sign-in from before they were asked for gets none: the answer says the owner is to be
+/// asked), what waits to go up told to the server, then the lists and tasks read whole. Nothing
+/// of a task is logged.
+fn tasks_job(job: mailcraft_ui_egui::task_sync::TasksJob) -> mailcraft_ui_egui::task_sync::TasksResult {
+    tasks_job_with(job, &mailcraft_net::oauth::refresh_graph_tasks)
+}
+
+/// [`tasks_job`], with how the token is had as `renew` (the tests' own, which asks nobody).
+fn tasks_job_with(
+    job: mailcraft_ui_egui::task_sync::TasksJob,
+    renew: &dyn Fn(&mailcraft_model::OAuth, &str) -> Result<mailcraft_net::oauth::GraphTokens, mailcraft_net::NetError>,
+) -> mailcraft_ui_egui::task_sync::TasksResult {
+    use mailcraft_model::remote_tasks::TaskResult;
+    use mailcraft_net::{NetError, graph};
+    let mut out = mailcraft_ui_egui::task_sync::TasksResult { account: job.account.id, ..Default::default() };
+    let access = match renew(&job.oauth, &job.refresh) {
+        Ok(got) => {
+            let access = got.tokens.access.clone();
+            out.tokens = Some(got.tokens);
+            access
+        }
+        Err(e) => {
+            out.consent_needed = e.is_consent_needed();
+            out.sign_in_refused = !out.consent_needed && e.is_refused_sign_in();
+            if !out.consent_needed && !out.sign_in_refused {
+                out.errors.push(format!("Couldn't sign in to Microsoft for the tasks: {e}"));
+            }
+            return out;
+        }
+    };
+    if !job.upload.ops.is_empty() {
+        let uploaded = graph::push_tasks(&access, &job.upload).for_account(&job.account);
+        out.denied = uploaded.outcomes.iter().any(|o| o.result == TaskResult::Denied);
+        let refused = uploaded.token_refused;
+        out.uploaded = Some(uploaded);
+        if refused {
+            out.sign_in_refused = true;
+            return out;
+        }
+    }
+    if out.denied {
+        return out;
+    }
+    match graph::tasks(&access) {
+        Ok(download) => out.download = Some(download.for_account(&job.account)),
+        // The token covers the permission and Graph still says no: the organisation keeps it.
+        Err(NetError::Forbidden(_)) => out.denied = true,
+        Err(e) if e.is_refused_sign_in() => out.sign_in_refused = true,
+        Err(e) => out.errors.push(format!("Couldn't bring the tasks down: {e}")),
+    }
+    out
+}
+
 /// File › Info › Check Calendar Connection: on the account's real server, and only because the
 /// owner asked for it and said yes to what it does. One appointment is made a year from today
 /// in the main calendar, read back, changed (once as an instant, once said in this computer's
@@ -1276,9 +1390,11 @@ fn services(
     let approval_ctx = ctx.clone();
     let fetch_ctx = ctx.clone();
     let search_ctx = ctx.clone();
+    let tasks_ctx = ctx.clone();
     let update_ctx = ctx.clone();
     let download_ctx = ctx.clone();
     let copy_ctx = ctx.clone();
+    let tree_ctx = ctx.clone();
     let alert_ctx = ctx.clone();
     let (sync_ctx, sign_in_ctx, graph_ctx, mx_ctx, test_ctx) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone(), ctx);
     let sync_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1321,6 +1437,10 @@ fn services(
         graph_search: Some(Box::new(move |job: mailcraft_ui_egui::server_search::GraphSearchJob| {
             background(&search_ctx, "server search", move || mailcraft_net::graph::search_messages(&job.access, &job.request))
         })),
+        // The tasks of a Microsoft account, kept in step with Microsoft To Do (#248).
+        graph_tasks: Some(Box::new(move |job: mailcraft_ui_egui::task_sync::TasksJob| {
+            background(&tasks_ctx, "microsoft to do", move || tasks_job(job))
+        })),
         lookup_mx: Some(Box::new(move |domain| {
             background(&mx_ctx, "mail exchangers", move || mailcraft_net::lookup_mx(&domain).map_err(|e| e.to_string()))
         })),
@@ -1331,6 +1451,13 @@ fn services(
         // mailbox takes a while to write, and the window shows a spinner meanwhile (#118).
         write_copy: Some(Box::new(move |path, mailbox| {
             background(&copy_ctx, "mailbox copy", move || mailcraft_engine::store::save_single(&path, &mailbox).map(|_| ()))
+        })),
+        // A folder of mbox files, walked, read and parsed off the window's thread (#420); the
+        // window shows its progress and cancels it.
+        import_tree: Some(Box::new(move |job: mailcraft_ui_egui::import_tree::TreeJob| {
+            background(&tree_ctx, "folder import", move || {
+                mailcraft_engine::import_tree::load_path(&job.path, None, job.count_only, &job.progress).map_err(|e| e.to_string())
+            })
         })),
         // A picture a message keeps on the web, once the owner asked for that message's pictures.
         // The address is the message's choice, so `fetch` checks where it leads before it goes
@@ -1612,7 +1739,8 @@ fn main() -> eframe::Result {
     // DirectX 12 has no GPU driver (see graphics.rs).
     #[cfg(target_os = "windows")]
     graphics::configure(&mut options, eframe::wgpu::Backends::from_env());
-    let restored = saved_window();
+    let (prefs, settings_unread) = load_prefs();
+    let restored = prefs.as_ref().and_then(|ui| ui.window).and_then(WindowGeometry::sanitized);
     if let Some(window) = restored {
         options.viewport = window.apply(options.viewport);
     }
@@ -1673,7 +1801,10 @@ fn main() -> eframe::Result {
             // A Microsoft account still on IMAP is offered the switch to Graph (R3.7): only for a
             // mailbox kept in a file, which is where the copy from before the switch goes.
             app.offer_graph_switch = kept && !sample;
-            load_prefs(&mut app);
+            if let Some(ui) = prefs {
+                app.apply_prefs(ui);
+            }
+            app.settings_unread = settings_unread;
             app.ui.window = restored;
             app.integrated_titlebar = cfg!(target_os = "macos");
             let mut key_file = None;
@@ -1719,28 +1850,4 @@ fn main() -> eframe::Result {
             )))
         }),
     )
-}
-
-#[cfg(test)]
-mod prefs_tests {
-    use super::*;
-
-    #[test]
-    fn prefs_written_whole_and_a_damaged_file_kept_aside() {
-        let dir = std::env::temp_dir().join(format!("mailcraft-prefs-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join("ui.json");
-        let ui = UiState::default();
-        write_prefs(&path, &ui).unwrap();
-        let back = read_prefs(&path).unwrap();
-        assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&ui).unwrap());
-        // Nothing left beside it but the file itself.
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
-
-        std::fs::write(&path, b"{\"theme\": ").unwrap();
-        assert!(read_prefs(&path).is_none());
-        assert!(!path.exists());
-        assert_eq!(std::fs::read(dir.join("ui.json.damaged")).unwrap(), b"{\"theme\": ");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 }
