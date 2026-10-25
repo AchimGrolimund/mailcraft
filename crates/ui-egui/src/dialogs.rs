@@ -364,7 +364,9 @@ pub fn confirmation(app: &MailApp, id: &str, params: &Value) -> Option<Question>
             // Pictures and opened attachments are kept by their address and by file, not by account.
             let text = format!(
                 "{text} {} {}",
-                tl!("Its messages, attachments, settings and remembered sign-in go with it."),
+                tl!(
+                    "Its messages, attachments, settings and remembered sign-in go with it, and so do the calendar, contacts and working hours that came from its server."
+                ),
                 tl!(
                     "Downloaded pictures and opened attachments can't be told apart by account: File › Info › Remove MailCraft's data from this computer clears them."
                 )
@@ -812,6 +814,7 @@ fn all_commands(app: &MailApp) -> Vec<(String, String, String, String, bool)> {
                     | "sync.applyEventChanges"
                     | "compose.set"
                     | "compose.suggest"
+                    | "view.searchSuggestions"
                     | "account.preset"
                     | "mail.select"
                     | "calendar.select"
