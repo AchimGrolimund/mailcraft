@@ -28,3 +28,8 @@ sync_github_name = false
 
 [people.vvaltson]
 sync_github_name = true
+
+[people.AchimGrolimund]
+real_name = "Achim Grolimund"
+display_name = "Achim Grolimund"
+sync_github_name = true
