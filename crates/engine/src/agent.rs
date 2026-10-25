@@ -400,6 +400,7 @@ const SETTINGS: &[&str] = &[
     "ui.updateCheck",
     "ui.updateInstall",
     "ui.dismissUpdateNotice",
+    "ui.dismissSettingsNotice",
 ];
 
 const NEVER: &[&str] = &[

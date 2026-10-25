@@ -294,6 +294,11 @@ msgid "A picture you asked for is kept for a month, so that reading the message 
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src/account_setup.rs
+msgid "A port is a number from 1 to 65535"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/forms.rs
 msgid "A rule needs a name, and something to look for."
 msgstr ""
@@ -669,6 +674,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/agent_gate.rs
 msgid "An agent wants to {what}."
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/account_setup.rs
+msgid "An application ID and a tenant are letters, digits, dots and dashes"
 msgstr ""
 
 #. interface
@@ -2023,6 +2033,11 @@ msgstr ""
 
 #. command label
 #: crates/ui-egui/src/lib.rs
+msgid "Dismiss Settings Notice"
+msgstr ""
+
+#. command label
+#: crates/ui-egui/src/lib.rs
 msgid "Dismiss Update Notice"
 msgstr ""
 
@@ -2923,6 +2938,20 @@ msgstr ""
 msgid "Held:"
 msgstr ""
 
+#. interface
+#: crates/ui-egui/src/approval.rs
+msgid ""
+"Hello,\n"
+"\n"
+"I would like to use MailCraft with my work account. MailCraft is an open-source mail and calendar program that runs on my own computer. Our organisation lets only an administrator approve a new program, so it needs your approval once, for the whole organisation. Microsoft's page for that is here:\n"
+"\n"
+"{link}\n"
+"\n"
+"After you approve, your browser may show a page that can't be reached. That is expected: it is an address on your own computer, where nothing is listening, and the approval has been given by then.\n"
+"\n"
+"Thank you"
+msgstr ""
+
 #. interface, name, ribbon, ribbon location
 #: crates/ui-egui/src/lib.rs crates/ui-egui/src/menubar.rs crates/ui-egui/src/ribbon.rs
 msgid "Help"
@@ -3704,6 +3733,11 @@ msgid "MailCraft doesn't send mail from a JMAP account yet"
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src/account_setup.rs
+msgid "MailCraft doesn't support POP yet. Use your provider's IMAP server instead (usually imap.<your domain>, port 993)."
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/credits.rs
 msgid "MailCraft is tested on real mail, by people who use it every day and tell us what goes wrong. Thank you."
 msgstr ""
@@ -3726,6 +3760,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/updates.rs
 msgid "MailCraft looks for a new version once a day (File › Options). Only GitHub is asked."
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/updates.rs
+msgid "MailCraft now installs its updates itself. Turn this off in File › Options."
 msgstr ""
 
 #. interface
@@ -4603,6 +4642,11 @@ msgid "Not Junk"
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src
+msgid "Not allowed by your organisation"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/scheduling.rs
 msgid "Not an address"
 msgstr ""
@@ -4610,6 +4654,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/meeting_dialogs.rs
 msgid "Not an e-mail address: {names}"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src
+msgid "Not available for this account"
 msgstr ""
 
 #. interface
@@ -4728,7 +4777,7 @@ msgid "Numbering"
 msgstr ""
 
 #. interface
-#: crates/ui-egui/src/calendar_sync.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/updates.rs
+#: crates/ui-egui/src/calendar_sync.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/settings_notice.rs crates/ui-egui/src/updates.rs
 msgid "OK"
 msgstr ""
 
@@ -4845,6 +4894,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/forms.rs
 msgid "Only on"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/calendar_view.rs
+msgid "Only on this computer: not in your Outlook calendar"
 msgstr ""
 
 #. interface
@@ -5077,6 +5131,11 @@ msgstr ""
 #. command label
 #: crates/ui-egui/src/lib.rs
 msgid "Outlook's Favorites"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src
+msgid "Outlook's Favorites are now read through Microsoft Graph. To show MailCraft's own instead, turn them off in File › Options."
 msgstr ""
 
 #. interface
@@ -5756,6 +5815,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/updates.rs
 msgid "Restart to update"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/updates.rs
+msgid "Restart to update is the owner's click."
 msgstr ""
 
 #. ribbon
@@ -7362,6 +7426,11 @@ msgid "The folder \"{folder}\" and everything in it will be deleted."
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src/account_setup.rs
+msgid "The incoming mail server isn't a host name (letters, digits, dots and dashes)"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/backstage.rs
 msgid "The interface fonts are Inter, Source Sans 3 and JetBrains Mono (SIL Open Font License 1.1). Every icon is drawn in code and is original work. No artwork, fonts or text from other mail programs are included."
 msgstr ""
@@ -7467,6 +7536,16 @@ msgid "The organizer of this meeting doesn't take proposals of another time."
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src/account_setup.rs
+msgid "The outgoing mail server isn't a host name (letters, digits, dots and dashes)"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/updates.rs
+msgid "The owner hasn't allowed update checks."
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/signatures.rs
 msgid "The picture was too big, so it was made smaller ({w} px wide)."
 msgstr ""
@@ -7494,6 +7573,21 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/account_setup.rs
 msgid "The server's name"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/settings_notice.rs
+msgid "The settings file (ui.json) couldn't be read, so the default settings were restored. It couldn't be renamed, so it was left as it is and won't be overwritten."
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/settings_notice.rs
+msgid "The settings file (ui.json) couldn't be read, so the default settings were restored. It was left as it is and won't be overwritten."
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/settings_notice.rs
+msgid "The settings file (ui.json) couldn't be read, so the default settings were restored. The old file was renamed {file}."
 msgstr ""
 
 #. interface
@@ -8246,6 +8340,11 @@ msgid "Tuesday"
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src/updates.rs
+msgid "Turned off by your organisation"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/people_view.rs
 msgid "Turns {age} on {date}"
 msgstr ""
@@ -8263,6 +8362,11 @@ msgstr ""
 #. command label, interface
 #: crates/engine/src/cmd/format.rs crates/ui-egui/src/folder_properties.rs
 msgid "Type"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/account_setup.rs
+msgid "Type the name of the incoming mail server"
 msgstr ""
 
 #. interface
@@ -8820,6 +8924,21 @@ msgid "Your organisation keeps this permission for its administrators to give. O
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src/account_setup/help.rs
+msgid "Your organisation lets only an administrator approve a new program, and none has approved MailCraft yet. Nothing is wrong with your account or your password."
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/account_setup/help.rs
+msgid "Your organisation lets only an administrator approve a new program. Nothing is wrong with your account or your password, and there is nothing to wait for here."
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/account_setup/help.rs
+msgid "Your organisation then lets only an administrator approve a new program. Nothing is wrong with your account or your password."
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/open_shared.rs
 msgid "Your organisation's administrator has to approve reading other people's calendars once: File › Info"
 msgstr ""
@@ -8832,6 +8951,11 @@ msgstr ""
 #. interface
 #: crates/ui-egui/src/shared_calendars.rs
 msgid "Your organisation's administrator has to approve reading shared mailboxes' calendars once: File › Info"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src
+msgid "Your organisation's administrator has to approve this once"
 msgstr ""
 
 #. interface
