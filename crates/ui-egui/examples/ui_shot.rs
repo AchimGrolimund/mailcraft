@@ -36,6 +36,8 @@
 //! turn that off for the computer from the start, and `{"host": {"updates": "didntStart 0.4.2"}}`
 //! has the running version be one newly installed that didn't start twice running, with 0.4.2
 //! kept to go back to.
+//! `{"host": {"tasksWork": true}}` has every Microsoft account's To Do work, so that the window
+//! asks whether the tasks that exist only here are to be sent to it (#248).
 //! And a Graph job (`{"host": {"graph": …}}`): `"consent"` (Microsoft wants the owner's
 //! permission first), `"refused"` (it refused the sign-in) or `"sendConsent"` (a shared
 //! mailbox's mail waits for permission to send from shared mailboxes, #70), `"opened"` (the
@@ -588,6 +590,11 @@ fn main() {
     services.alert = Some(Box::new(StandInAlerts(host.clone())));
     // Remove MailCraft's data (#177): offered, and removes nothing here.
     services.data_wipe = Some(Box::new(StandInWipe));
+    // Open MailCraft's data folder (#460): offered, and opens nothing here.
+    services.data_folder = Some(mailcraft_ui_egui::data_removal::DataFolder {
+        path: std::path::PathBuf::from("/home/you/.config/mailcraft"),
+        open: Box::new(|_| Ok(())),
+    });
     // The organisation has turned updating by itself off for the computer.
     services.updates_turned_off_by_organisation = lines.iter().any(|l| l.pointer("/host/updates").and_then(|v| v.as_str()) == Some("organisation"));
     // A newly installed version that didn't start twice running, with the one before it kept.
@@ -598,6 +605,8 @@ fn main() {
     }
     let mut app = MailApp::new(session, services).with_control(rx);
     app.autosave = false;
+    // Every frame may be a shot: a password shown with its eye is drawn as dots (#438).
+    app.headless_shots = true;
     // (With a host that answers, nothing is to happen by itself: what a shot shows, its script asked for.)
     app.auto_sync = !stood_in;
     if let Some(overlay) = lines.iter().find_map(|l| l.get("overlayScrollBars").and_then(|v| v.as_bool())) {
@@ -635,6 +644,10 @@ fn main() {
                 host.told(said);
                 // In front or not, for desktop alerts about new mail.
                 harness.input_mut().focused = !host.unfocused;
+            }
+            // Every Microsoft account's To Do works (the question about the local tasks follows).
+            if said.get("tasksWork").is_some() {
+                harness.state_mut().stand_in_tasks_work();
             }
             // A search on the server is asked with a token of this session (invented).
             if said.get("serverSearch").is_some() {

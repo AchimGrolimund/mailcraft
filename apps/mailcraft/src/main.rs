@@ -279,6 +279,15 @@ fn prefs_enabled() -> bool {
     std::env::var_os("MAILCRAFT_NO_PREFS").is_none()
 }
 
+/// File › Info › Open MailCraft's data folder (#460): the settings folder (the one Remove
+/// MailCraft's data clears first), and the system's own opener for whichever folder the window
+/// shows: that one, or the open mailbox's own when it is kept elsewhere. None for a run that keeps
+/// nothing.
+fn data_folder(keeps_data: bool) -> Option<mailcraft_ui_egui::data_removal::DataFolder> {
+    let path = mailcraft_control_key::settings_dir().filter(|_| keeps_data)?;
+    Some(mailcraft_ui_egui::data_removal::DataFolder { path, open: Box::new(file_launcher::open_folder) })
+}
+
 /// The preferences, read once at start (before the window opens, for its size and place), and
 /// what became of the file when it couldn't be read. Nothing for a run without preferences.
 fn load_prefs() -> (Option<UiState>, Option<SettingsUnread>) {
@@ -580,6 +589,12 @@ fn sign_in_with(request: SignInRequest, open_page: &dyn Fn(&str) -> bool) -> Res
     // (#70): the page comes up for what sending from shared mailboxes takes too, by itself.
     if request.graph && request.shared && request.shared_send {
         let asked = mailcraft_net::oauth::sign_in_for_shared_send(&request.oauth, &request.email, &open, &request.cancel);
+        return asked.map_err(|refusal| unopened(favorites_refusal(refusal)));
+    }
+    // A tasks run found the sign-in doesn't cover the To Do lists (#248) and the owner said go
+    // ahead: the page comes up for that permission alone, by itself.
+    if request.graph && request.tasks {
+        let asked = mailcraft_net::oauth::sign_in_for_tasks(&request.oauth, &request.email, &open, &request.cancel);
         return asked.map_err(|refusal| unopened(favorites_refusal(refusal)));
     }
     // Calendars are opened by address for the first time (#70): the page comes up for the same
@@ -1193,6 +1208,60 @@ fn graph_sending_with(mut request: GraphRequest, zone: &str, renew: Renew<'_>, r
     out
 }
 
+/// Keep an account's tasks in step with Microsoft To Do (#248): a token of its own for the lists
+/// (a sign-in from before they were asked for gets none: the answer says the owner is to be
+/// asked), what waits to go up told to the server, then the lists and tasks read whole. Nothing
+/// of a task is logged.
+fn tasks_job(job: mailcraft_ui_egui::task_sync::TasksJob) -> mailcraft_ui_egui::task_sync::TasksResult {
+    tasks_job_with(job, &mailcraft_net::oauth::refresh_graph_tasks)
+}
+
+/// [`tasks_job`], with how the token is had as `renew` (the tests' own, which asks nobody).
+fn tasks_job_with(
+    job: mailcraft_ui_egui::task_sync::TasksJob,
+    renew: &dyn Fn(&mailcraft_model::OAuth, &str) -> Result<mailcraft_net::oauth::GraphTokens, mailcraft_net::NetError>,
+) -> mailcraft_ui_egui::task_sync::TasksResult {
+    use mailcraft_model::remote_tasks::TaskResult;
+    use mailcraft_net::{NetError, graph};
+    let mut out = mailcraft_ui_egui::task_sync::TasksResult { account: job.account.id, ..Default::default() };
+    let access = match renew(&job.oauth, &job.refresh) {
+        Ok(got) => {
+            let access = got.tokens.access.clone();
+            out.tokens = Some(got.tokens);
+            access
+        }
+        Err(e) => {
+            out.consent_needed = e.is_consent_needed();
+            out.sign_in_refused = !out.consent_needed && e.is_refused_sign_in();
+            if !out.consent_needed && !out.sign_in_refused {
+                out.errors.push(format!("Couldn't sign in to Microsoft for the tasks: {e}"));
+            }
+            return out;
+        }
+    };
+    if !job.upload.ops.is_empty() {
+        let uploaded = graph::push_tasks(&access, &job.upload).for_account(&job.account);
+        out.denied = uploaded.outcomes.iter().any(|o| o.result == TaskResult::Denied);
+        let refused = uploaded.token_refused;
+        out.uploaded = Some(uploaded);
+        if refused {
+            out.sign_in_refused = true;
+            return out;
+        }
+    }
+    if out.denied {
+        return out;
+    }
+    match graph::tasks(&access) {
+        Ok(download) => out.download = Some(download.for_account(&job.account)),
+        // The token covers the permission and Graph still says no: the organisation keeps it.
+        Err(NetError::Forbidden(_)) => out.denied = true,
+        Err(e) if e.is_refused_sign_in() => out.sign_in_refused = true,
+        Err(e) => out.errors.push(format!("Couldn't bring the tasks down: {e}")),
+    }
+    out
+}
+
 /// File › Info › Check Calendar Connection: on the account's real server, and only because the
 /// owner asked for it and said yes to what it does. One appointment is made a year from today
 /// in the main calendar, read back, changed (once as an instant, once said in this computer's
@@ -1330,6 +1399,7 @@ fn services(
     let approval_ctx = ctx.clone();
     let fetch_ctx = ctx.clone();
     let search_ctx = ctx.clone();
+    let tasks_ctx = ctx.clone();
     let update_ctx = ctx.clone();
     let download_ctx = ctx.clone();
     let copy_ctx = ctx.clone();
@@ -1375,6 +1445,10 @@ fn services(
         // A Microsoft mailbox searched on its server, a page at a time, on the owner's click (R6.2).
         graph_search: Some(Box::new(move |job: mailcraft_ui_egui::server_search::GraphSearchJob| {
             background(&search_ctx, "server search", move || mailcraft_net::graph::search_messages(&job.access, &job.request))
+        })),
+        // The tasks of a Microsoft account, kept in step with Microsoft To Do (#248).
+        graph_tasks: Some(Box::new(move |job: mailcraft_ui_egui::task_sync::TasksJob| {
+            background(&tasks_ctx, "microsoft to do", move || tasks_job(job))
         })),
         lookup_mx: Some(Box::new(move |domain| {
             background(&mx_ctx, "mail exchangers", move || mailcraft_net::lookup_mx(&domain).map_err(|e| e.to_string()))
@@ -1433,6 +1507,10 @@ fn services(
             Box::new(wipe::Wipe { roots: wipe::Roots::of_this_program(), pictures: wipe_pictures })
                 as Box<dyn mailcraft_ui_egui::data_removal::DataWipe>
         }),
+        // File › Info › Open MailCraft's data folder (#460): the settings folder, and the opener
+        // for whichever folder the window shows (that one, or the open mailbox's own when it is
+        // kept elsewhere). Not for a run that keeps nothing.
+        data_folder: data_folder(prefs_enabled()),
         // Desktop alerts, through the system's notifications (`alerts`).
         alert: alerts::host(alert_ctx),
         clipboard: clipboard::board(),

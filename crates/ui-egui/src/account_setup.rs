@@ -30,6 +30,7 @@ use serde_json::{Map, Value, json};
 use crate::approval::SignInEnd;
 use crate::forms::kit::{Pass, body, changes, error, field_id, object, shown};
 use crate::i18n::fmt;
+use crate::secret_field::{self, Watch};
 use crate::theme::{Tokens, medium, paint_clipped, regular, semibold};
 use crate::{MailApp, icons};
 
@@ -421,6 +422,9 @@ pub struct AccountSetup {
     /// The window's context, once a frame has run: what the password field left in its memory
     /// is cleared through it.
     ctx: Option<egui::Context>,
+    /// The owner clicked the password's eye: it is shown until the next click, the next page, or
+    /// the dialog's end (#438).
+    reveal: bool,
 }
 
 impl Drop for AccountSetup {
@@ -500,6 +504,7 @@ impl AccountSetup {
             graph: false,
             newer: false,
             ctx: None,
+            reveal: false,
         }
     }
 
@@ -710,6 +715,8 @@ impl AccountSetup {
 
     fn go(&mut self, page: Page) {
         self.page = page;
+        // A password shown on one page is dots on the next.
+        self.reveal = false;
         self.error.clear();
         self.app_passwords = false;
         self.focus = true;
@@ -1159,6 +1166,8 @@ impl AccountSetup {
         match answer {
             Ok(()) => self.add_with_password(app),
             Err(e) => {
+                // The dialog says it once; the log keeps it for a problem report.
+                log::warn!("add account: the servers couldn't be checked: {e}");
                 let google = self.incoming.server().is_some_and(|s| is_google(&s.host));
                 self.refuse(e);
                 if google && self.error.starts_with("sign-in failed") {
@@ -1185,6 +1194,7 @@ impl AccountSetup {
     /// Blank the password, in the form and in what its field kept between frames.
     fn forget_password(&mut self) {
         self.password.wipe();
+        self.reveal = false;
         if let Some(ctx) = &self.ctx {
             forget_field(ctx);
         }
@@ -1361,7 +1371,7 @@ impl AccountSetup {
                 note(ui, tl!(&self.note), t.text);
             }
             if asks {
-                self.password_field(ui, pass, "");
+                self.password_field(ui, pass, app.secret_watch(), "");
                 note(ui, kept_where(app), t.text_dim);
             } else {
                 note(ui, tl!("This build can't connect to mail servers. The account can still be added."), t.text_dim);
@@ -1473,7 +1483,7 @@ impl AccountSetup {
             }
             field(ui, pass, "name", tl!("Your name"), &mut self.name, tl!("As the people you write to see it"), LINE);
             if asks {
-                self.password_field(ui, pass, tl!("Leave empty to keep the one in use"));
+                self.password_field(ui, pass, app.secret_watch(), tl!("Leave empty to keep the one in use"));
             }
             // (An account still on IMAP that signs in with Microsoft keeps them: it uses them.)
             if !self.graph {
@@ -1530,17 +1540,13 @@ impl AccountSetup {
         (close || entered(ui, pass)).then_some(Action::Back)
     }
 
-    /// The password, masked. It is never shown, copied or spoken.
-    fn password_field(&mut self, ui: &mut Ui, pass: &mut Pass, hint: &str) {
+    /// The password, masked. It is shown only while the owner has clicked its eye, and is never
+    /// copied or spoken (`secret_field`).
+    fn password_field(&mut self, ui: &mut Ui, pass: &mut Pass, watch: Watch, hint: &str) {
         caption(ui, tl!("Password"), &pass.t);
-        let edit = TextEdit::singleline(&mut self.password.0)
-            .id(password_id())
-            .password(true)
-            .desired_width(f32::INFINITY)
-            .margin(FIELD_MARGIN)
-            .char_limit(SECRET)
-            .hint_text(hint.to_owned());
-        let resp = ui.add(edit);
+        let resp = secret_field::field(ui, &mut self.password.0, &mut self.reveal, watch, FIELD_MARGIN, |edit| {
+            edit.id(password_id()).char_limit(SECRET).hint_text(hint.to_owned())
+        });
         pass.field(&resp);
     }
 
@@ -1810,6 +1816,8 @@ mod tests {
 
     /// What the wizard says about a sign-in on Microsoft's page, and the approval help (M4.4).
     mod help;
+    /// The password's eye (#438).
+    mod reveal;
 
     /// Wednesday 2026-10-14 16:00 UTC.
     const NOW: i64 = 1_791_993_600;
@@ -2496,6 +2504,7 @@ mod tests {
     /// (b) A provider that takes a password: the servers are tried before the account is added.
     #[test]
     fn a_password_account_is_tried_before_it_is_added() {
+        let logged = crate::graph_switch::tests::logged();
         let mut a = app(false);
         lookups(&mut a, Some(Ok(vec!["aspmx.l.google.com"])));
         let tried = checks(&mut a, Some(Err("imap.gmail.com refused the sign-in")));
@@ -2515,6 +2524,12 @@ mod tests {
         // Refused: back on the page with the reason and the servers in view, and no account.
         assert_eq!(page(&h), Some(Page::Password));
         assert!(says(&h, "refused the sign-in") && wizard(&h).is_some_and(|w| w.settings_open) && addresses(&h) == [""]);
+        // The log keeps why, for a problem report, and never the password.
+        {
+            let log = logged.lock().unwrap().join("\n");
+            assert!(log.contains("add account: the servers couldn't be checked: imap.gmail.com refused the sign-in"), "{log}");
+            assert!(!log.contains(TYPED), "the password reached the log");
+        }
         {
             let tried = tried.lock().unwrap();
             let (account, secret) = &tried[0];

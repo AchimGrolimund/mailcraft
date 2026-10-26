@@ -859,6 +859,22 @@ pub struct Mailbox {
     /// to be told, oldest first ([`crate::remote::EventChange`]).
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::sync::lenient_list")]
     pub event_changes: Vec<crate::remote::EventChange>,
+    /// To-dos deleted here that a Microsoft account's server (To Do) is yet to be told about,
+    /// oldest first ([`crate::TaskGone`]).
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::sync::lenient_list")]
+    pub task_gone: Vec<crate::TaskGone>,
+    /// The lists of a Microsoft account's To Do that are shared with other people (#461): what an
+    /// agent changes in them, they see.
+    #[serde(
+        skip_serializing_if = "BTreeMap::is_empty",
+        serialize_with = "crate::task::write_shared_lists",
+        deserialize_with = "crate::task::read_shared_lists"
+    )]
+    pub shared_task_lists: crate::SharedTaskLists,
+    /// What the owner said about the to-dos that exist only here (#248): until a yes, none goes
+    /// to a server.
+    #[serde(skip_serializing_if = "crate::LocalTasks::is_unasked")]
+    pub local_tasks: crate::LocalTasks,
     /// Changes to events that a server said it took and that no download has shown yet
     /// ([`crate::remote::EventCheck`]).
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::sync::lenient_list")]
@@ -909,6 +925,9 @@ impl Default for Mailbox {
             signatures: Vec::new(),
             pending: Vec::new(),
             event_changes: Vec::new(),
+            task_gone: Vec::new(),
+            shared_task_lists: BTreeMap::new(),
+            local_tasks: crate::LocalTasks::Unasked,
             event_checks: Vec::new(),
             favorites_from_server: Vec::new(),
             queued: Vec::new(),
@@ -1044,6 +1063,19 @@ impl Mailbox {
         self.pending.retain(|p| !going.contains(&p.account()));
         self.event_changes.retain(|change| !going.contains(&change.account));
         self.event_checks.retain(|check| !going.contains(&check.account));
+        self.task_gone.retain(|gone| !going.contains(&gone.account));
+        self.shared_task_lists.retain(|account, _| !going.contains(account));
+        // Its to-dos stay, as to-dos of this computer only.
+        for task in self.tasks.values_mut().filter(|t| going.contains(&t.origin.account)) {
+            let task = Arc::make_mut(task);
+            task.origin = crate::Origin::default();
+            task.list.clear();
+            task.synced = None;
+            task.local_only = false;
+        }
+        if matches!(self.local_tasks, crate::LocalTasks::SendTo(a) if going.contains(&a)) {
+            self.local_tasks = crate::LocalTasks::Unasked;
+        }
         self.queued.retain(|queued| !going.contains(&queued.account()));
         self.favorites_from_server.retain(|list| !going.contains(&list.account));
         self.tidy_listed_twice();
@@ -2139,11 +2171,26 @@ impl Mailbox {
         self.tasks.get(&id).map(Arc::as_ref)
     }
 
+    /// Whether the to-do is in a server's list that is shared with other people.
+    pub fn in_shared_task_list(&self, task: &Task) -> bool {
+        task.origin.is_remote() && self.shared_task_lists.get(&task.origin.account).is_some_and(|lists| lists.contains(task.list.as_str()))
+    }
+
     pub fn task_mut(&mut self, id: Id) -> Result<&mut Task, ModelError> {
         self.tasks.get_mut(&id).map(Arc::make_mut).ok_or(not_found("task", id))
     }
 
+    /// Delete a to-do. One that an account's server keeps is noted, so that the server is told.
     pub fn remove_task(&mut self, id: Id) -> Result<(), ModelError> {
+        let task = self.tasks.remove(&id).ok_or(not_found("task", id))?;
+        if task.origin.is_remote() && !task.origin.id.is_empty() && self.task_gone.len() < crate::task::MAX_TASK_GONE {
+            self.task_gone.push(crate::TaskGone { account: task.origin.account, id: task.origin.id.clone(), list: task.list.clone() });
+        }
+        Ok(())
+    }
+
+    /// Remove a to-do without telling any server: it is gone from there already.
+    pub fn remove_task_quietly(&mut self, id: Id) -> Result<(), ModelError> {
         self.tasks.remove(&id).map(|_| ()).ok_or(not_found("task", id))
     }
 

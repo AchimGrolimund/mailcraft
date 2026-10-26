@@ -2270,6 +2270,10 @@ fn hostile_params_never_panic() {
         json!({"start": "9999-12-31T23:59", "end": "0001-01-01", "date": "9999-12-31", "due": "0000-00-00", "from": "9999-01-01", "to": "0001-01-01", "occurrence": "x", "minutes": 1e300, "reminder": -1}),
         json!({"title": "t", "start": "2026-10-14T10:00", "recurrence": {"freq": "daily", "interval": 4294967295u32, "count": 4294967295u32, "byDay": ["xx", 5], "nth": 99, "until": "0001-01-01"}}),
         json!({"data": "!!!!", "name": "../../etc/passwd", "path": "\u{0}", "mime": "\r\n"}),
+        // The message list's keys (#426): pages of no rows, of more rows than there are, of nonsense.
+        json!({"extend": true, "rows": 18446744073709551615u64}),
+        json!({"extend": "yes", "rows": 1e300, "range": true}),
+        json!({"extend": true, "rows": 0, "copy": 65536}),
         json!({"result": {"account": 1, "folders": [{"id": 1, "remote": "\u{0}", "new": [{"uid": 1}, {"uid": 1}], "flags": [{"uid": 4294967295u32}], "removed": [0, 1]}], "sent": [0, 1, 2]}}),
         json!({"result": {
             "account": 1, "sent": [1, 2, 3], "filed": [1, 3, 18446744073709551615u64],
@@ -2291,6 +2295,13 @@ fn hostile_params_never_panic() {
         json!({"account": 2, "address": "x".repeat(100_000)}),
         json!({"id": 2, "address": "\u{0}@example.org", "email": "\u{202e}@example.org"}),
         json!({"account": 1, "download": {"account": 1, "calendar": "\u{0}", "from": 1e300, "events": [{"id": 5}, null], "contacts": {"id": "c"}}}),
+        json!({"account": 1, "download": {"account": 1, "complete": true, "lists": [{"id": "\u{0}"}, null, {"id": "L", "complete": true}], "tasks": [
+            {"id": "t\r\n", "list": "L", "title": "\u{0}"}, {"id": "t1", "list": "L", "title": "x", "due": {"year": 0, "month": 99, "day": 0}, "reminder": i64::MAX}, {}, null, {"id": "t1", "list": "L"},
+        ]}}),
+        json!({"account": 1, "result": {"account": 1, "outcomes": [
+            {"kind": "create", "task": 18446744073709551615u64, "result": "done", "id": "", "list": "L", "patch": {"title": null, "due": 5}},
+            {"kind": "update", "task": 0, "result": "gone"}, {"kind": "delete", "id": "\u{0}", "result": "refused"}, {"kind": "create", "task": 1, "result": "done", "id": "x", "list": "L", "patch": {"title": "t"}}, null, {},
+        ]}}),
         json!({"account": 1, "download": {
             "account": 1, "complete": true, "from": i64::MIN, "to": i64::MAX,
             "events": [

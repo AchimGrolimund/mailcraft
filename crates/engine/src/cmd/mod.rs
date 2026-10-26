@@ -40,6 +40,10 @@ mod jmap_down;
 pub mod jmap_mail;
 #[cfg(test)]
 mod jmap_sending_tests;
+#[cfg(test)]
+mod keyboard_selection_tests;
+#[cfg(test)]
+mod leave_compose_tests;
 pub mod mail;
 #[cfg(test)]
 mod newer_account_tests;
@@ -60,6 +64,9 @@ pub mod signature;
 mod signature_tests;
 pub mod sync_progress;
 pub mod tasks;
+pub mod tasks_remote;
+#[cfg(test)]
+mod tasks_remote_tests;
 pub mod view;
 #[cfg(test)]
 mod wipe_tests;
@@ -101,6 +108,7 @@ pub fn registry() -> Registry {
     v.extend(graph_switch::specs());
     v.extend(graph_send::specs());
     v.extend(remote::specs());
+    v.extend(tasks_remote::specs());
     v.extend(sync_progress::specs());
     v.extend(search_server::specs());
     Registry::new(v)
@@ -181,6 +189,7 @@ pub(crate) fn select_after_removal(s: &mut Session, before: &[Row], removed: &[I
     let rows = crate::list::rows(s);
     if let Some(row) = first.and_then(|i| rows.get(i).or_else(|| rows.last())) {
         s.sel.messages = vec![row.id];
+        s.keep_selected(&rows);
     }
 }
 
