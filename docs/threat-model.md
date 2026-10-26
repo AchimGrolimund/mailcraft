@@ -255,6 +255,40 @@ An `.eml`, `.mbox`, `.ics`, `.vcf` or `.mailcraft` file from somewhere else.
   0600 on Unix and compared in constant time (`apps/mailcraft/src/control_server.rs`,
   `crates/control-key`). Another user can't drive the app; another program running as the owner
   can read the key, which is the next item's problem.
+- **The hand-over between two starts** (#505). A second start on the mailbox file a MailCraft
+  started with doesn't open it again: the first start holds a lock beside it (`<mailbox>.lock`, let go of by the system however the
+  program ends) and listens on `127.0.0.1`, on a port the system picks, for a later start's one
+  line; the port and 32 random bytes from the operating system are in `<mailbox>.instance`,
+  created 0600 on Unix (elsewhere the owner's own settings folder) and removed on exit. A later
+  start (a second click, a `mailto:` link, a file opened from the file manager) connects only to
+  loopback, sends the key and what it was started with, and exits; a key is compared in constant
+  time, and a line without the right one changes nothing. What is handed over is hostile input:
+  one line of at most 1 MB, at most 256 things of at most 32 KB each, and each kept only when it
+  is a `mailto:` link (which the compose command reads as RFC 6068 says, taking only the
+  recipients, the subject and the body, without line breaks in a header) or the whole path of a
+  message, calendar, contact, mbox or `.mailcraft` file that is there and can be read, at most 32
+  message files at a time; anything else is dropped, and only how many is logged. A file is opened
+  once, without waiting (`O_NONBLOCK` on Unix), checked through that handle to be a regular file
+  and read from it (`mailcraft_engine::io::read_regular_file`), so a pipe or device swapped in
+  for it is refused rather than read or waited on; every open of a `.mailcraft` file
+  (`store::open`) goes the same way. Windows has no such flag: there a named pipe's path is
+  refused only once it is open. A message file is put into the local folder Imported, never a
+  server's folder, Drafts, the Outbox, Sent, Junk or Deleted Items, as a read, received message
+  that is never a draft (a file that says it is unsent too), selected and shown in the list, and
+  opens read-only in a window of its own. Opened again it is the copy already there: the same
+  Message-ID and, when that copy keeps the SHA-256 of the file it came from, the same SHA-256; a
+  copy without one by its Message-ID alone. The SHA-256 is kept in a header of MailCraft's own,
+  `X-MailCraft-Opened-File-SHA256`, which no message brings in (the MIME reader drops it, and
+  every import too) and which, like the meeting-answer note, is never written into a saved file,
+  an mbox, a server's copy or what is sent (`crates/mime/src/write.rs`). A calendar or
+  contact file is imported only when the owner answers the window's question (an agent names no
+  file to import). Another user can't reach the window: the key file
+  is not theirs to read. A start that finds the lock held but nobody answering says MailCraft is
+  already open and does not open the mailbox twice; a crashed run's lock is gone, and its stale
+  `.instance` is replaced. The sample mailbox and a run without preferences that names no
+  `--mailbox` take no lock and don't listen (`apps/mailcraft/src/single_instance.rs`). The lock covers the
+  mailbox a run started with only: a `.mailcraft` file opened later in the window (File › Open, a
+  drop, a hand-over) takes no lock of its own, so another window may have that one open.
 - **Agents on the same computer.** The agent gate ([MCP](mcp.md#agents-get-only-what-the-owner-allows))
   binds agents that reach MailCraft only through MCP. The control channel takes a request without
   the bridge's `agent` marking for the owner's own script, so an agent that can run a shell or read
@@ -376,6 +410,9 @@ settings files (`crates/engine/src/store.rs`); commands from the control channel
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-26 | minor | #505 (second review): the opened message is selected and shown; dedupe by Message-ID and kept SHA-256 together; the SHA-256 header dropped by the MIME reader and every import, and MailCraft's own notes never written out; `.mailcraft` files opened without waiting; Windows named pipes not covered |
+| 2026-10-26 | minor | #505 (review): a message file from the system goes to the local folder Imported, once, never as a draft; files named from outside are opened without waiting and checked through their handle; at most 32 message files a hand-over; what the lock covers |
+| 2026-10-26 | minor | #505: the hand-over between two starts (loopback, a key file for the owner alone, bounded and checked like anything from outside); a calendar or contact file from the system is imported only on the owner's word |
 | 2026-10-26 | minor | #459: where the account's own server gives no DMARC verdict, its `dkim=pass` whose `header.d` (or `header.i`) is the sender's domain, or the organisation's above it, vouches as a `dmarc=pass` does; a verdict it gave is never overruled; another domain's signature, a signer in a comment and SPF do not count; a clause cut off at 4,000 characters or left open is not read, and a header not read to its end, or with a DMARC verdict in another header of the same server's, takes no signature; `header.i` is read only where the clause names no `header.d`; the short public-suffix list is a limit for a signer's own `d=` |
 | 2026-10-26 | minor | #501: server certificates are checked by the operating system's verifier instead of a built-in Mozilla root set: Windows and macOS trust what the system trusts and may fetch a missing intermediate; Linux and FreeBSD use the system's certificate store |
 | 2026-10-26 | minor | #458: a `dmarc=pass` whose `header.from` is the organisation's domain (Gmail's way: `shop.example` for `news.shop.example`) vouches for the names under it; a bare suffix or a hosting platform's domain never does |
