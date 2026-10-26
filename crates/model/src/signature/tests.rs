@@ -109,6 +109,16 @@ fn an_html_signature_keeps_its_html_as_written_and_its_words_for_earlier_version
 }
 
 #[test]
+fn new_words_let_an_html_signature_go_and_the_same_words_keep_it() {
+    let mut sig = Signature::plain_text("Work", "Avery Quinn");
+    sig.set_html(Some("<b>Avery Quinn</b>".into())).unwrap();
+    sig.set_body(sig.body().clone()).unwrap();
+    assert_eq!(sig.html(), Some("<b>Avery Quinn</b>"));
+    sig.set_body(RichText::from_plain("Jo Bloggs")).unwrap();
+    assert!(sig.html().is_none() && sig.plain() == "Jo Bloggs");
+}
+
+#[test]
 fn an_html_signature_has_no_pictures_of_its_own_and_stays_in_its_cap() {
     let mut sig = Signature::plain_text("Work", "Avery Quinn");
     sig.add_picture("logo.png", png(10), None, None).unwrap();

@@ -388,10 +388,14 @@ impl Signature {
     }
 
     /// Replace the text. Pictures it no longer holds are let go; a picture run naming a picture
-    /// this signature doesn't have is left out.
+    /// this signature doesn't have is left out. New words make an HTML signature rich text again.
     pub fn set_body(&mut self, body: RichText) -> Result<(), ModelError> {
         if body.len() > MAX_TEXT {
             return Err(ModelError::Invalid(format!("a signature holds at most {MAX_TEXT} characters")));
+        }
+        // The HTML no longer says what the text does: sent beside it, the two would disagree.
+        if body != self.body {
+            self.html = None;
         }
         self.body = body;
         self.tidy();

@@ -371,15 +371,17 @@ fn html(s: &mut Session, v: &Value) -> CmdResult {
     // Changed whole or not at all.
     let sig = named(s, v)?;
     let mut changed = sig.clone();
-    changed.set_html(html).map_err(|e| fail(e.to_string()))?;
+    changed.set_html(html.clone()).map_err(|e| fail(e.to_string()))?;
     // What a message being written shows of it: its words and look as rich text, or for HTML
     // with no words (a logo alone) its pictures' descriptions.
-    let stand_in = changed.html().map(|h| {
+    let stand_in = html.as_deref().map(|h| {
         let rich = mailcraft_mime::rich::from_html(h);
         if rich.to_plain().trim().is_empty() { RichText::from_plain(mailcraft_html::to_text(h).trim()) } else { rich }
     });
     if let Some(text) = &stand_in {
+        // New words let the HTML go, so it is set again (checked above, while the pictures were there).
         changed.set_body(text.clone()).map_err(|e| fail(e.to_string()))?;
+        changed.set_html(html).map_err(|e| fail(e.to_string()))?;
     }
     *sig = changed;
     if let (Some(text), Some(e)) = (stand_in, s.signature_edit.as_mut().filter(|_| open)) {

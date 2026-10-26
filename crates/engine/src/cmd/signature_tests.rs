@@ -422,3 +422,33 @@ fn the_open_signature_becomes_html_and_is_saved() {
     run(&mut s, "signature.save", json!({}));
     assert_eq!(s.mailbox.signature("Standard").unwrap().html(), Some("<p><b>Avery Quinn</b></p>"));
 }
+
+#[test]
+fn new_words_for_an_html_signature_make_it_rich_text_and_the_message_says_them_alone() {
+    let mut s = session();
+    run(&mut s, "signature.set", json!({"name": "Generated", "text": "", "default": true}));
+    run(&mut s, "signature.html", json!({"name": "Generated", "html": GENERATED}));
+    // Through a command: the old table goes with the old words.
+    run(&mut s, "signature.set", json!({"name": "Generated", "text": "Jo Bloggs"}));
+    assert!(s.mailbox.signature("Generated").unwrap().html().is_none());
+    run(&mut s, "mail.new", json!({"to": "maya@lumen.example", "body": "Hello"}));
+    run(&mut s, "compose.formatHtml", json!({}));
+    let id = run(&mut s, "compose.send", json!({}))["id"].as_u64().unwrap();
+    let m = s.mailbox.message(id).unwrap();
+    let html = m.body.html.clone().unwrap();
+    assert!(html.contains("Jo Bloggs") && !html.contains("<table") && !html.contains("Avery Quinn"), "{html}");
+    assert!(m.body.text.contains("Jo Bloggs") && !m.body.text.contains("Avery Quinn"), "{:?}", m.body.text);
+    // Edited while open and saved: the same.
+    run(&mut s, "signature.html", json!({"name": "Generated", "html": GENERATED}));
+    run(&mut s, "signature.open", json!({"name": "Generated"}));
+    let end = s.signature_edit.as_ref().unwrap().body.text().len();
+    run(&mut s, "compose.select", json!({"from": end}));
+    run(&mut s, "compose.type", json!({"text": " PhD"}));
+    run(&mut s, "signature.save", json!({}));
+    let sig = s.mailbox.signature("Generated").unwrap();
+    assert!(sig.html().is_none() && sig.plain().contains("PhD"), "{:?}", sig.plain());
+    // Opened and saved unchanged, it stays HTML.
+    run(&mut s, "signature.html", json!({"name": "Generated", "html": GENERATED}));
+    run(&mut s, "signature.save", json!({}));
+    assert_eq!(s.mailbox.signature("Generated").unwrap().html(), Some(GENERATED));
+}
