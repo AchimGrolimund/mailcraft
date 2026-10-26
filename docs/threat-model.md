@@ -399,7 +399,9 @@ settings files (`crates/engine/src/store.rs`); commands from the control channel
 - **Builds not signed by Windows or macOS.** Releases carry MailCraft's own signature over their
   checksums, which the program checks before it installs an update, but the Windows and macOS
   builds aren't code-signed yet, so the systems warn before running them; check a first download
-  against the release's checksums.
+  against the release's checksums. For that reason a macOS copy doesn't install updates by itself
+  (#497): it says a new version is out and links to its page, until the builds are signed with a
+  Developer ID and notarized.
 - **Message-IDs are not identities.** A sender chooses a Message-ID, so after a server numbers an IMAP mailbox anew, a deletion or move that waits is made again only on the one arrival with that id that also has the same date, sender, subject and recipients; otherwise it is dropped and the owner told. A Graph forward's attachment is taken for the owner's only when its bytes match, and a saved draft is written whole before it is sent, so an edit made on the server meanwhile is not sent. A Microsoft server's Outbox is an ordinary folder: only mail queued on this computer is sent.
 - **The web build** runs in the browser's sandbox and inherits the browser's security; it has no
   connection to mail servers of its own. Links open in a new tab with `noopener,noreferrer`
@@ -410,6 +412,7 @@ settings files (`crates/engine/src/store.rs`); commands from the control channel
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-26 | patch | #497: a macOS copy doesn't install updates by itself until its builds are signed with a Developer ID and notarized |
 | 2026-10-26 | minor | #505 (second review): the opened message is selected and shown; dedupe by Message-ID and kept SHA-256 together; the SHA-256 header dropped by the MIME reader and every import, and MailCraft's own notes never written out; `.mailcraft` files opened without waiting; Windows named pipes not covered |
 | 2026-10-26 | minor | #505 (review): a message file from the system goes to the local folder Imported, once, never as a draft; files named from outside are opened without waiting and checked through their handle; at most 32 message files a hand-over; what the lock covers |
 | 2026-10-26 | minor | #505: the hand-over between two starts (loopback, a key file for the owner alone, bounded and checked like anything from outside); a calendar or contact file from the system is imported only on the owner's word |
