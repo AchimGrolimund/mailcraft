@@ -45,7 +45,11 @@ Writes any bytes into a message: crafted MIME, HTML, headers, attachments, pictu
   which must be present and the sender's domain or one above it (Gmail names the organisation's
   domain: `shop.example` for mail from `news.shop.example`; a bare suffix such as `co.uk`, or a
   hosting platform's domain, never stands for the names under it); a `dmarc=pass` inside a
-  comment, a quoted string or another method's clause is only text. A `compauth=pass` that names
+  comment, a quoted string or another method's clause is only text. Authentication results are
+  read as the receiving server wrote them, never decoded: encoded-words (RFC 2047) are decoded where
+  that RFC allows them (unstructured text, the names of addresses, Keywords, and the names of
+  attachments), never in a trace or authentication header
+  (`crates/mime/src/words.rs`, `has_words`). A `compauth=pass` that names
   no `header.from` is not enough. Where the server gave no DMARC verdict (no `dmarc` or
   `compauth` clause in that header, read to its end, nor in another `Authentication-Results`
   header with the same authserv-id, as a DMARC filter may write its own beside a DKIM filter's; a
@@ -459,6 +463,7 @@ settings files (`crates/engine/src/store.rs`); commands from the control channel
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-26 | patch | Authentication results, and every other trace or authentication header, are read as the receiving server wrote them: encoded-words are decoded only where RFC 2047 allows them (`Subject`, `Comments`, `Organization`, `Thread-Topic`, `Keywords`, the names of addresses and of attachments) |
 | 2026-10-26 | minor | #508: sender warnings (a failed check, a name that hides another address, a lookalike sender, a link that goes somewhere else, External), what they rest on and what they don't; vouching's reading of the server's verdict moved to `crates/model/src/auth_results.rs` |
 | 2026-10-26 | minor | #508: a failed check reads any sender's address and holds for the owner's own addresses, `compauth=pass` overrides it; Safe Links unwrapped, other link rewriters not compared; only exact `xn--` labels read; direction marks stripped, full-width `＠`, one-word names |
 | 2026-10-26 | minor | #508: what draws nothing and look-alike `@`/`.` read as seen in names, addresses and link texts; `p=none` failures are cautions; names from Sent Items and list members' names not compared; URL Defense links read, several Safe Links targets compared |
