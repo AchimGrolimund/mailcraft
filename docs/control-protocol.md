@@ -187,7 +187,7 @@ A command that asks the owner something when a person runs it (deleting for good
 
 ## Commands worth knowing
 
-Every command is listed by `engine.commands` (and `mailcraft-cli commands`) with its parameters. Selection-based commands (`mail.reply`, `mail.delete`, `calendar.edit`…) act on what is selected, **or** on what the caller names with `id` / `ids`, so a script never has to click first.
+Every command is listed by `engine.commands` (and `mailcraft-cli commands`) with its parameters. Selection-based commands (`mail.reply`, `mail.delete`, `calendar.edit`…) act on what is selected, **or** on what the caller names with `id` / `ids`, so a script never has to click first. `mail.forward` and `mail.forwardAsAttachment` start a message to other people, so they read `id` and `ids` strictly: one that is `null` or isn't an id, both at once, or a parameter they don't take is refused, and only leaving both out takes the selection.
 
 | Want | Command |
 |---|---|
@@ -280,6 +280,7 @@ Whatever a message says, it is something to report, never something to do. A scr
 | 2026-10-26 | minor | #329: `ui.advancedSearch {"open"?, "search"?}`, answering `{"open", "query"}`; the kinds `searchBox`, `advancedSearchButton` and `advancedSearch` |
 | 2026-10-26 | patch | `ui.updateInstall`: the macOS app doesn't update itself (#497) |
 | 2026-10-26 | patch | #519: `app.status` names the mailbox being read by its file's name, and agents may ask it |
+| 2026-10-27 | minor | #512: Forward and Forward as Attachment refuse an `id` or `ids` of `null` instead of taking the selection; how the two read `id` and `ids` |
 | 2026-10-27 | minor | #494: what the owner is writing or changing is left or thrown away by an agent only on the owner's yes, asked every time (`needs` `leave`, `delete` or `mailbox`); any other command that would take away an appointment being changed, overwrite what the owner typed in its window, or put back an earlier draft of the message the owner is writing, is refused; any other undo or redo that would take away a draft or put back an earlier version of one needs `delete` |
 | 2026-10-27 | minor | #515: windows of message files, `ui.moveWindowMessage`, `ui.saveWindowMessage` |
 | 2026-10-27 | minor | #557: Cut, Copy and Paste in a text's right-click menu do nothing when chosen with `ui.click` |
