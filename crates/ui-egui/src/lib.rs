@@ -1417,6 +1417,8 @@ pub struct MailApp {
     pub(crate) alerts: alerts::State,
     /// The mailbox the window starts with is still being read ([`opening`]).
     pub(crate) opening: Option<opening::Opening>,
+    /// What the window takes up once it shows its mailbox ([`opening::after`]).
+    pub(crate) later: opening::Later,
     /// Another mailbox being read in the background, to take the place of this one ([`opening`]).
     pub(crate) reading_ahead: Option<opening::ReadAhead>,
     /// `file.open` runs for a mailbox read in the background: it isn't read again.
@@ -1568,6 +1570,7 @@ impl MailApp {
             updates: Default::default(),
             alerts: Default::default(),
             opening: None,
+            later: Default::default(),
             reading_ahead: None,
             swapping: false,
         }
@@ -3595,6 +3598,7 @@ impl MailApp {
             opening::logic(self, ctx);
             return;
         }
+        opening::after(self, ctx);
         // Before anything can start or end a Send/Receive in this frame ([`alerts`]).
         alerts::tick(self, ctx);
         self.drain_control(ctx);
@@ -4144,7 +4148,10 @@ impl MailApp {
             if unsaved {
                 saver.submit(path, &self.session.mailbox, rev);
             }
-            if unsaved || saver.progress().is_some() {
+            // (A sweep of the content folder writes nothing of the mailbox: it isn't waited for,
+            // #586, and is left where it got to.)
+            let writing = saver.progress().is_some_and(|p| p.stage != mailcraft_engine::io::SaveStage::Sweeping);
+            if unsaved || writing {
                 self.closing_after_save = Some(rev);
                 self.quit_requested = false;
                 // Closing waits for the save now: an Open that waited for it too gives way.
