@@ -37,6 +37,7 @@ macro_rules! tln {
 }
 
 mod account_setup;
+mod advanced_search;
 pub mod agent_gate;
 pub mod alerts;
 pub mod approval;
@@ -49,6 +50,7 @@ pub mod compose;
 pub mod control;
 pub mod credits;
 pub mod data_removal;
+pub mod date_picker;
 pub mod dates;
 #[cfg(test)]
 mod dialog_scrim_tests;
@@ -60,6 +62,9 @@ pub mod favorites_sync;
 pub mod files;
 mod folder_properties;
 pub mod forms;
+#[cfg(test)]
+#[path = "forms_date_tests.rs"]
+mod forms_date_tests;
 pub mod graph_fetch;
 mod graph_switch;
 pub mod i18n;
@@ -724,6 +729,8 @@ pub struct UiState {
     pub alert_new_mail: bool,
     /// Show a desktop alert for each reminder as it falls due: on unless the owner turns it off.
     pub alert_reminders: bool,
+    /// The filters Advanced Search's Add filters puts in its panel (#329).
+    pub advanced_filters: advanced_search::Filters,
 }
 
 impl Default for UiState {
@@ -752,6 +759,7 @@ impl Default for UiState {
             remembered_keys: Vec::new(),
             confirmed_mailboxes: Vec::new(),
             dismissed_reminders: Vec::new(),
+            advanced_filters: Default::default(),
             download_pictures: false,
             picture_senders: Vec::new(),
             picture_domains: Vec::new(),
@@ -791,6 +799,12 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
     ("ui.language", "Interface Language", "File › Options", r#"{"language": "auto"|"en"|"fr"|"pseudo"}"#),
     ("ui.interfaceSize", "Interface Size", "File › Options", r#"{"value": 80-200}"#),
     ("ui.focusSearch", "Search", "Search", "{}"),
+    (
+        "ui.advancedSearch",
+        "Advanced Search",
+        "Search",
+        r#"{"open"?: bool (open it, or close it; left out: open it when closed, close it when open), "search"?: bool (true: search with what the open panel says, and close it)}"#,
+    ),
     (
         "ui.removeAllData",
         "Remove MailCraft's Data from This Computer",
@@ -1101,6 +1115,10 @@ pub struct MailApp {
     /// The search box's text while it is being typed.
     pub(crate) search_text: String,
     pub(crate) search_focus: bool,
+    /// Advanced Search, while its panel is open under the search box (#329).
+    pub(crate) advanced_search: Option<advanced_search::Panel>,
+    /// Whether the title bar had room for the search box when it was last drawn.
+    pub(crate) search_box_shown: bool,
     /// The Bcc line of the message being written is shown.
     pub(crate) compose_bcc: bool,
     /// The body of the message being written takes the keyboard back at its next frame (after a
@@ -1409,6 +1427,8 @@ impl MailApp {
             integrated_titlebar: false,
             search_text: String::new(),
             search_focus: false,
+            advanced_search: None,
+            search_box_shown: false,
             compose_bcc: false,
             body_focus_wanted: false,
             signatures_shown: false,
@@ -1937,6 +1957,7 @@ impl MailApp {
                 }
                 None => Err("`value` is a percentage from 80 to 200".into()),
             },
+            "ui.advancedSearch" => advanced_search::command(self, p),
             "ui.focusSearch" => {
                 self.search_focus = true;
                 self.ui.backstage = false;
@@ -4003,6 +4024,10 @@ impl MailApp {
         // not also the main window's where they are inside it.
         windows::show(self, &ctx);
         sync_panel::escape(self, &ctx);
+        // Advanced Search closes when what it was opened for has gone, and on Escape, before the
+        // window's Escape ends the search (#329).
+        advanced_search::follow(self);
+        advanced_search::escape(self, &ctx);
         // Shortcuts first, so the frame shows what the key did.
         keys::global_shortcuts(self, &ctx);
         if self.ui.backstage {

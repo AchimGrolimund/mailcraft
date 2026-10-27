@@ -136,6 +136,10 @@ mod pop_tests;
 #[cfg(test)]
 mod recurrence_tests;
 #[cfg(test)]
+mod search_advanced_tests;
+#[cfg(test)]
+mod search_dates_tests;
+#[cfg(test)]
 mod search_people_tests;
 #[cfg(test)]
 mod search_quotes_tests;

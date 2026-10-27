@@ -1127,6 +1127,12 @@ impl Session {
         self.local_now().date
     }
 
+    /// The search in view, made today with the owner's first day of the week (#329): what every
+    /// message is matched against (`received:today`, a date without a year).
+    pub(crate) fn search_query(&self) -> mailcraft_model::search::Query {
+        mailcraft_model::search::Query::parse(&self.view.search).on(self.today(), self.prefs.week_start)
+    }
+
     // ---- state ----
 
     /// Counts every change to the mailbox (caches key on it).
@@ -1304,6 +1310,7 @@ impl Session {
             }
             return rows;
         }
+        let day = self.today();
         let list_now = self.list_state();
         #[cfg(not(target_arch = "wasm32"))]
         self.words_in_step(!mailcraft_model::search::Query::parse(&self.view.search).is_empty());
@@ -1322,7 +1329,9 @@ impl Session {
                 hits
             }
         };
-        let key = key(self);
+        // A list searched across midnight may have matched `received:today` on either day: it is
+        // built again on the next call (#329).
+        let key = if self.today() == day { key(self) } else { String::new() };
         let (rows, kept) = crate::list::listing(self, &decided, &searched);
         // What it lists of the selection stays in it too: the rows don't change for that, as each
         // of those matches or is kept already.
@@ -1335,13 +1344,24 @@ impl Session {
     /// What the message list is built from, but for the content brought into memory or let go of.
     fn list_state(&self) -> String {
         format!(
-            "{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}",
             self.rev,
             self.today().to_days(),
+            // `received:"last week"` is other days for another first day of the week, and
+            // `received:today` other messages in another zone on the same date (#329).
+            self.prefs.week_start.index(),
+            self.zone_key(),
             self.words_finished(),
             self.prefs.show_groups,
             serde_json::to_string(&self.view).unwrap_or_default()
         )
+    }
+
+    /// The zone dates are searched in, for the keys searches are kept under (#329): its name, or
+    /// for this computer's zone when the system names none, its offset now.
+    pub(crate) fn zone_key(&self) -> String {
+        let zone = self.zone();
+        if zone.is_local() { format!("{:+}", self.offset_at(self.now())) } else { zone.id() }
     }
 
     /// The key the message list is kept under ([`Session::rows`]).
@@ -1383,7 +1403,7 @@ impl Session {
     fn search_words(&self) -> (std::collections::HashMap<Id, bool>, usize) {
         use std::cell::Cell;
         let mut decided = std::collections::HashMap::new();
-        let query = mailcraft_model::search::Query::parse(&self.view.search);
+        let query = self.search_query();
         let Some(words) = self.words.as_ref().filter(|_| !query.is_empty()) else { return (decided, 0) };
         let mut verify: Vec<Id> = Vec::new();
         {
@@ -1399,27 +1419,31 @@ impl Session {
                 }
                 let text_on_disk = crate::words::body_in_memory(m).is_none();
                 let unread_phrase = Cell::new(false);
-                let hit = query.matches_with(m, self.offset_at(m.date), |i| {
-                    let set = sets.get(i)?.as_ref()?;
-                    if !set.has(slot) {
-                        return Some(false);
-                    }
-                    // A whole address (#301): its words only narrow the messages down, and the
-                    // address itself is looked at on each.
-                    if query.is_address_term(i) {
-                        return None;
-                    }
-                    let (fields, w) = query.words_of(i)?;
-                    if w.len() <= 1 {
-                        return Some(true);
-                    }
-                    // A phrase: its words one after another, looked at on the message.
-                    if fields & mailcraft_model::words::BODY != 0 && text_on_disk {
-                        unread_phrase.set(true);
-                        return Some(true);
-                    }
-                    None
-                });
+                let hit = query.matches_with(
+                    m,
+                    |at| self.offset_at(at),
+                    |i| {
+                        let set = sets.get(i)?.as_ref()?;
+                        if !set.has(slot) {
+                            return Some(false);
+                        }
+                        // A whole address (#301): its words only narrow the messages down, and the
+                        // address itself is looked at on each.
+                        if query.is_address_term(i) {
+                            return None;
+                        }
+                        let (fields, w) = query.words_of(i)?;
+                        if w.len() <= 1 {
+                            return Some(true);
+                        }
+                        // A phrase: its words one after another, looked at on the message.
+                        if fields & mailcraft_model::words::BODY != 0 && text_on_disk {
+                            unread_phrase.set(true);
+                            return Some(true);
+                        }
+                        None
+                    },
+                );
                 // Said to be there before it was looked at: the whole query is looked at on
                 // the text as it is (a phrase that is there may make a `-` term fail).
                 if unread_phrase.get() {
@@ -1433,7 +1457,7 @@ impl Session {
         let mut unread = 0;
         for id in verify {
             let in_time = deadline.is_none_or(|d| std::time::Instant::now() < d);
-            let hit = in_time && self.loaded_message_where(id, |_| false).is_ok_and(|m| query.matches(&m, self.offset_at(m.date)));
+            let hit = in_time && self.loaded_message_where(id, |_| false).is_ok_and(|m| query.matches_in(&m, |at| self.offset_at(at)));
             unread += usize::from(!in_time);
             decided.insert(id, hit);
         }
@@ -1692,7 +1716,7 @@ impl Session {
                 let lean = if id == keep || self.sel.messages.contains(&id) { None } else { crate::store::evictable(&path, id, m) };
                 // A search under way has what it is looking for matched first: its body is
                 // about to be named only, and the list reads it after this.
-                let hit = lean.as_ref().and(self.search_pass.as_ref()).map(|(q, _)| q.matches(m, self.offset_at(m.date)));
+                let hit = lean.as_ref().and(self.search_pass.as_ref()).map(|(q, _)| q.matches_in(m, |at| self.offset_at(at)));
                 if let (Some(hit), Some((_, hits))) = (hit, &mut self.search_pass) {
                     hits.insert(id, hit);
                 }
@@ -1807,7 +1831,7 @@ impl Session {
     fn load_bodies_for_search(&mut self, decided: &std::collections::HashMap<Id, bool>) -> std::collections::HashMap<Id, bool> {
         self.unsearched = 0;
         self.search_pass = None;
-        let query = mailcraft_model::search::Query::parse(&self.view.search);
+        let query = self.search_query();
         if query.is_empty() || !query.reads_bodies() {
             return Default::default();
         }
