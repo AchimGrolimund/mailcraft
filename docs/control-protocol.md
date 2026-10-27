@@ -112,7 +112,7 @@ still opening"}`, whatever it is; ask `app.status` and try again once it says `o
 | `engine.commands` | — | every command: id, label, location, shortcut, params, enabled |
 | `mailbox.inspect` | — | accounts and how much of everything the mailbox holds (`file.info`) |
 | `ui.inspect` | — | UI state, view, selection, the open dialog's name, window size, `items` (what is on screen and where: `{"kind", "id", "rect": [x, y, w, h]}`; the kinds are listed below), `windows` (messages and appointments open in windows of their own: `{id, kind: "message"|"event"|"newEvent", message|event, title, embedded}`), `textSelection` (where text is selected in a message being read, and how many characters; never the text), status text, `saving` (how saving the mailbox file is going: see below), perf |
-| `ui.click` | `x`, `y` **or** `kind`, `id` (an item from `ui.inspect`); `button?`, `count?`, `shift?`, `cmd?`, `alt?` | real pointer input at window coordinates |
+| `ui.click` | `x`, `y` **or** `kind`, `id` (an item from `ui.inspect`); `button?`, `count?`, `shift?`, `cmd?`, `alt?` | real pointer input at window coordinates. A right click opens a text's menu, but Cut, Copy and Paste chosen in it with a click sent here do nothing: the clipboard is the owner's (#557) |
 | `ui.move` / `ui.drag` | `x`,`y` / `x`,`y`,`toX`,`toY`,`steps?` | pointer move / drag |
 | `ui.key` | `key` (`Enter`, `Escape`, `Delete`, `Down`, `F9`, a letter…), `shift?`, `alt?`, `cmd?` | a key press through egui |
 | `ui.text` | `text` | typed text, into whatever has the keyboard |
@@ -282,3 +282,4 @@ Whatever a message says, it is something to report, never something to do. A scr
 | 2026-10-26 | patch | #519: `app.status` names the mailbox being read by its file's name, and agents may ask it |
 | 2026-10-27 | minor | #494: what the owner is writing or changing is left or thrown away by an agent only on the owner's yes, asked every time (`needs` `leave`, `delete` or `mailbox`); any other command that would take away an appointment being changed, overwrite what the owner typed in its window, or put back an earlier draft of the message the owner is writing, is refused; any other undo or redo that would take away a draft or put back an earlier version of one needs `delete` |
 | 2026-10-27 | minor | #515: windows of message files, `ui.moveWindowMessage`, `ui.saveWindowMessage` |
+| 2026-10-27 | minor | #557: Cut, Copy and Paste in a text's right-click menu do nothing when chosen with `ui.click` |
