@@ -88,6 +88,7 @@ mod on_top_tests;
 mod open_shared;
 #[cfg(test)]
 mod open_shared_tests;
+pub mod opening;
 pub mod people_view;
 pub mod reading;
 mod reminders;
@@ -236,6 +237,13 @@ pub struct Services {
     /// import holds the window up (#420). The job carries the folder and a shared progress the
     /// window shows and cancels through. Without one (tests, scripts) the window does it in place.
     pub import_tree: Option<Box<dyn Fn(import_tree::TreeJob) -> Receiver<Result<mailcraft_engine::import_tree::Parsed, String>>>>,
+    /// Desktop: read a mailbox file on a background thread ahead of its taking the place of the
+    /// one open (File › Open, a mailbox file dropped or handed over; [`opening`]), counting what
+    /// it reads in the progress it is given and stopping when that is cancelled
+    /// (`mailcraft_engine::store::open_ahead`). Whether it could be read arrives through the
+    /// channel and the host wakes the UI; `file.open` then takes what was read. Absent in the
+    /// browser and the tests: `file.open` reads the file there and then.
+    pub read_ahead: Option<Box<dyn Fn(std::path::PathBuf, std::sync::Arc<mailcraft_engine::io::OpenProgress>) -> Receiver<Result<(), String>>>>,
     /// Desktop: download one picture a message refers to on the web, on a background thread,
     /// once the owner has asked for that message's pictures ([`reading::remote`]). The address
     /// is the message's own choice: the host checks where it leads before going there, takes
@@ -815,6 +823,12 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
     ),
     ("ui.cancelSync", "Cancel Send/Receive", "Send / Receive", "{}"),
     (
+        "ui.cancelOpen",
+        "Cancel Opening the Mailbox",
+        "Status bar",
+        "{} — stops reading the mailbox File › Open is opening in the background; the one open stays",
+    ),
+    (
         "ui.moreResultsOnServer",
         "More Results on the Server",
         "Search",
@@ -1360,6 +1374,12 @@ pub struct MailApp {
     pub(crate) updates: updates::Updates,
     /// The desktop alerts shown, and the mailbox as the last Send/Receive found it ([`alerts`]).
     pub(crate) alerts: alerts::State,
+    /// The mailbox the window starts with is still being read ([`opening`]).
+    pub(crate) opening: Option<opening::Opening>,
+    /// Another mailbox being read in the background, to take the place of this one ([`opening`]).
+    pub(crate) reading_ahead: Option<opening::ReadAhead>,
+    /// `file.open` runs for a mailbox read in the background: it isn't read again.
+    pub(crate) swapping: bool,
 }
 
 /// A Send/Receive of one account in flight, its pieces to come. A JMAP account's run takes the place
@@ -1504,6 +1524,9 @@ impl MailApp {
             free_busy: Default::default(),
             updates: Default::default(),
             alerts: Default::default(),
+            opening: None,
+            reading_ahead: None,
+            swapping: false,
         }
     }
 
@@ -1555,6 +1578,10 @@ impl MailApp {
 
     /// Whether a command exists and is enabled.
     pub fn enabled(&self, id: &str) -> bool {
+        // Nothing runs while the mailbox the window starts with is read.
+        if self.opening.is_some() {
+            return false;
+        }
         match self.session.registry.get(id) {
             Some(s) => (s.enabled)(&self.session).is_none(),
             None if id == "ui.sync" => {
@@ -1567,6 +1594,7 @@ impl MailApp {
             }
             None if id == "ui.cancelSignIn" => self.signing_in.is_some() || self.approving(),
             None if id == "ui.cancelSync" => self.sync_rx.is_some(),
+            None if id == "ui.cancelOpen" => self.reading_ahead.is_some(),
             None if id == "ui.moreResultsOnServer" => {
                 matches!(self.server_link(), server_search::Link::Ask | server_search::Link::NotConnected { retry: true })
             }
@@ -1580,6 +1608,9 @@ impl MailApp {
     /// input the user hasn't given yet opens its dialog; one that writes a file asks where (or, in
     /// the browser, downloads it); a failure shows in the status bar.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        if self.opening.is_some() {
+            return Err(opening::STILL_OPENING.into());
+        }
         // (Whether one occurrence or the series was meant when a recurring item was opened.)
         let params = dialogs::as_opened(self, id, params);
         // A message being written isn't let go of without a word (#442).
@@ -1621,12 +1652,15 @@ impl MailApp {
             self.dialog = Some(dialogs::Dialog::Confirm { command: id.to_string(), params, ask });
             return Ok(json!({"pending": "confirm"}));
         }
+        let opening_file = (id == "file.open").then(|| params.get("path").and_then(Value::as_str).map(str::to_string)).flatten();
         // Check for Updates pressed by the owner checks whether the daily check is on or not.
         // So are Restart to update and Go back, which are the owner's clicks alone.
         let r = match id {
             updates::CHECK => self.check_for_updates(true),
             updates::RESTART => self.restart_to_update(),
             updates::GO_BACK => self.go_back_a_version(),
+            // Another mailbox file is read in the background, and opens once it is.
+            "file.open" if opening::reads_ahead(self, &params) => opening::read_ahead(self, &params),
             _ => self.execute(id, params),
         };
         // Sent from a shared mailbox (#70): pressing Send is the owner asking for it to go.
@@ -1638,6 +1672,13 @@ impl MailApp {
         }
         if id.starts_with("calendar.") {
             self.ran = (self.ran.0.wrapping_add(1), id.to_string(), r.clone());
+        }
+        // A mailbox file the owner opened is a recent one once it is open, not while it is still
+        // being read or waits for a save; and File closes then.
+        if let (Some(path), Ok(v)) = (&opening_file, &r)
+            && v.get("pending").is_none()
+        {
+            files::remember_recent(self, path);
         }
         match &r {
             Err(e) => self.say_refused(id, e),
@@ -1677,6 +1718,14 @@ impl MailApp {
     /// Run a command for a script or an agent (control channel, MCP bridge): never asks first.
     /// UI-level commands (`ui.*`) are handled here, the rest by the engine.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        if self.opening.is_some() {
+            return Err(opening::STILL_OPENING.into());
+        }
+        // Whatever replaces the mailbox gives up one being read in the background, which would
+        // otherwise take the place of this one later.
+        if matches!(id, "file.open" | "file.new") {
+            opening::cancel_ahead(self);
+        }
         if let Some(r) = self.ui_command(id, &params) {
             return r;
         }
@@ -1995,6 +2044,12 @@ impl MailApp {
                 }
                 self.more_on_server();
                 Ok(json!({"pending": "serverSearch"}))
+            }
+            "ui.cancelOpen" => {
+                if !opening::cancel_ahead(self) {
+                    return Some(Err(tl!("No mailbox is being opened").to_string()));
+                }
+                Ok(json!({"cancelled": true}))
             }
             "ui.cancelSync" => {
                 if !self.syncing() {
@@ -3366,6 +3421,10 @@ impl MailApp {
     /// mailbox opens, a message, calendar or contact file is imported, anything else is attached
     /// to the message being written. A failure shows in the status bar.
     pub fn open_path(&mut self, path: &str) {
+        // Handed over while the mailbox opens: opened once it is.
+        if opening::queue(self, path) {
+            return;
+        }
         files::dropped_path(self, path);
     }
 
@@ -3374,6 +3433,10 @@ impl MailApp {
     /// (kept in the local folder Imported, once: `file.import`'s `opened`), a calendar or contact file is imported only
     /// once the owner says so, and a mailbox or a folder of mail as [`open_path`](Self::open_path).
     pub fn open_from_system(&mut self, what: &str) {
+        // Handed over while the mailbox opens: opened once it is.
+        if opening::queue(self, what) {
+            return;
+        }
         files::from_system(self, what);
     }
 
@@ -3479,6 +3542,11 @@ impl MailApp {
         if self.ctx.is_none() {
             self.ctx = Some(ctx.clone());
         }
+        // Waiting for the mailbox: nothing else happens.
+        if self.opening.is_some() {
+            opening::logic(self, ctx);
+            return;
+        }
         // Before anything can start or end a Send/Receive in this frame ([`alerts`]).
         alerts::tick(self, ctx);
         self.drain_control(ctx);
@@ -3544,6 +3612,7 @@ impl MailApp {
         self.tick_graph_switch();
         let _ = files::poll(self);
         files::drain_inbox(self);
+        opening::poll_ahead(self, ctx);
         files::ask_next(self);
         self.autosave_tick(ctx);
         self.draft_autosave_tick(ctx);
@@ -3650,7 +3719,8 @@ impl MailApp {
                 self.close_anyway = true;
             }
             // So does File › New or File › Open, as the command itself would have.
-            if let Some((id, _)) = self.after_save.take() {
+            if let Some((id, params)) = self.after_save.take() {
+                opening::forget_unopened(&id, &params);
                 let error = format!("the mailbox couldn't be saved first, so it stays open ({e})");
                 self.after_save_outcome = Some(json!({"command": id, "ok": false, "error": error}));
             }
@@ -3780,7 +3850,8 @@ impl MailApp {
                     return None;
                 }
                 // Asked again meanwhile: the newer request takes the place of the older.
-                if let Some((before, _)) = self.after_save.replace((id.to_string(), params.clone())) {
+                if let Some((before, waited)) = self.after_save.replace((id.to_string(), params.clone())) {
+                    opening::forget_unopened(&before, &waited);
                     self.after_save_outcome = Some(json!({"command": before, "ok": false, "error": format!("{id} was asked for instead")}));
                 } else {
                     self.after_save_outcome = None;
@@ -3796,7 +3867,10 @@ impl MailApp {
     /// moment the save is done and then close on it (#134). An agent that was answered
     /// `"pending": "save"` hears that it didn't happen, and why.
     fn drop_for_close(&mut self) {
-        if let Some((id, _)) = self.after_save.take() {
+        // Nor is a mailbox read in the background opened on the way out.
+        opening::cancel_ahead(self);
+        if let Some((id, params)) = self.after_save.take() {
+            opening::forget_unopened(&id, &params);
             self.after_save_outcome = Some(json!({"command": id, "ok": false, "error": "the window was closed instead"}));
         }
     }
@@ -3908,6 +3982,11 @@ impl MailApp {
             ctx.request_repaint();
             return;
         }
+        // Waiting for the mailbox: the opening screen and nothing else.
+        if self.opening.is_some() {
+            opening::show(self, ui);
+            return;
+        }
         let t = theme::Tokens::get(&ctx);
         self.hit.clear();
         // (Before the shortcuts take their keys.)
@@ -3974,6 +4053,10 @@ impl MailApp {
         // later one: held below by a question, the close the owner asks for next waits again for
         // whatever the saver is at by then.
         let (ready, anyway) = (std::mem::take(&mut self.close_ready), std::mem::take(&mut self.close_anyway));
+        // Still opening: nothing to wait for or write.
+        if self.opening.is_some() {
+            return true;
+        }
         if self.session.compose.as_ref().is_some_and(|c| c.dirty) {
             self.dialog = Some(dialogs::leaving("quit", json!({})));
             return false;
@@ -4019,7 +4102,8 @@ impl MailApp {
     /// `Err` says why the mailbox couldn't be saved.
     pub fn save_on_exit(&mut self) -> Result<(), String> {
         // Its data was removed from this computer: writing now would bring some of it back.
-        if self.data_removed {
+        // And a window that was still opening its mailbox has nothing to write.
+        if self.data_removed || self.opening.is_some() {
             return Ok(());
         }
         let unsaved = self.autosave && self.session.path.is_some() && (self.session.dirty || self.session.rev() != self.saved_rev);
