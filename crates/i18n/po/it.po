@@ -2931,6 +2931,11 @@ msgid "Edit Task"
 msgstr "Modifica attività"
 
 #. interface
+#: crates/ui-egui/src/compose.rs
+msgid "Edit signature as text"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/meeting_dialogs.rs
 #, fuzzy
 msgid "Either button writes to {name}: your answer, and the time you propose."
@@ -9964,6 +9969,11 @@ msgstr "L'accesso dell'account tramite cui è aperta questa cassetta postale con
 #. interface
 #: crates/ui-egui/src/shared_mailboxes.rs
 msgid "The sign-in to {address} waiting in your browser was stopped so the shared mailbox could be read. Send/Receive will ask you to sign in again."
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/compose.rs
+msgid "The signature is then sent as the simpler text shown here, not as it was designed"
 msgstr ""
 
 #. interface

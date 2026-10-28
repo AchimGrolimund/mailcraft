@@ -608,6 +608,13 @@ pub struct Compose {
     pub owner_changed: bool,
 }
 
+impl Compose {
+    /// Whether the signature in the message is still the one that went in.
+    pub fn signature_unedited(&self) -> bool {
+        self.signature.as_ref().is_some_and(|inserted| self.body.text().signature().as_ref() == Some(&inserted.text))
+    }
+}
+
 fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }

@@ -128,11 +128,6 @@ fn start_with(c: &mut Compose, sig: &Signature, at: usize) -> Result<(), CmdErro
     Ok(())
 }
 
-/// Whether the signature in the message is still the one that went in.
-fn signature_unedited(c: &Compose) -> bool {
-    c.signature.as_ref().is_some_and(|inserted| c.body.text().signature().as_ref() == Some(&inserted.text))
-}
-
 fn is_response(mode: ComposeMode) -> bool {
     matches!(mode, ComposeMode::Reply | ComposeMode::ReplyAll | ComposeMode::Forward)
 }
@@ -732,7 +727,7 @@ fn set(s: &mut Session, v: &Value) -> CmdResult {
     // edited the one in it.
     // ponytail: a message that started with no signature gets none; add one when owners ask.
     let swap = match (account, s.compose.as_ref()) {
-        (Some(a), Some(c)) if a != c.account && signature_unedited(c) => Some(chosen_signature(s, a, None, is_response(c.mode))),
+        (Some(a), Some(c)) if a != c.account && c.signature_unedited() => Some(chosen_signature(s, a, None, is_response(c.mode))),
         _ => None,
     };
     let c = compose_mut(s)?;
@@ -941,7 +936,7 @@ fn body_of(c: &Compose, message_id: &str) -> Body {
         BodyFormat::Html => {
             let cid = |p: &Picture| signature_cid(p, message_id);
             // An HTML signature goes out as the owner wrote it, cleaned, unless they edited it here.
-            let own = c.signature.as_ref().and_then(|i| i.html.as_deref()).filter(|_| signature_unedited(c));
+            let own = c.signature.as_ref().and_then(|i| i.html.as_deref()).filter(|_| c.signature_unedited());
             let html = [
                 before.as_ref().map(|t| to_html_with(t, &img)),
                 Some(own.map_or_else(|| mailcraft_mime::rich::signature_html(&sig, &cid), mailcraft_html::quotable)),
