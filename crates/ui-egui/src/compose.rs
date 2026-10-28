@@ -338,7 +338,7 @@ pub fn show(app: &mut MailApp, ui: &mut Ui) {
     // forward in HTML, as the reading pane shows it.
     egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("compose_body").show(ui, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 10, bottom: 16 }).show(ui, |ui| {
-            let below = c.quote || editor::html_signature(app, ui.ctx()).is_some();
+            let below = c.quote || editor::unedited_html_signature(app).is_some();
             let room = if below { 8.0 * 19.0 } else { (ui.available_height() - 26.0).max(8.0 * 19.0) };
             editor::show(app, ui, room, fresh && !focus_to);
             signature(app, ui);
@@ -359,10 +359,20 @@ pub fn show(app: &mut MailApp, ui: &mut Ui) {
 
 /// An HTML signature as it goes out, under the owner's text in place of its simpler copy
 /// ([`editor::html_signature`]): read-only, its pictures on the web not fetched, with a way to
-/// edit it as text instead.
+/// edit it as text instead, and back while that copy is unedited.
 fn signature(app: &mut MailApp, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
-    let Some(html) = editor::html_signature(app, &ctx).map(str::to_string) else { return };
+    let Some(html) = editor::unedited_html_signature(app).map(str::to_string) else { return };
+    if editor::signature_as_text(&ctx, &html) {
+        let back = ui
+            .link(tl!("Show signature as it is sent"))
+            .on_hover_text(tl!("Shows the signature as it was designed again, as long as its text is unchanged"));
+        app.hit.add("composeSignatureAsHtml", 0, back.rect);
+        if back.clicked() {
+            editor::set_signature_as_text(&ctx, &html, false);
+        }
+        return;
+    }
     let key = egui::Id::unique("mailcraft-compose-signature").with(&html);
     let message = match ctx.data(|d| d.get_temp::<std::sync::Arc<mailcraft_model::Message>>(key)) {
         Some(m) => m,
@@ -387,7 +397,7 @@ fn signature(app: &mut MailApp, ui: &mut Ui) {
         .on_hover_text(tl!("The signature is then sent as the simpler text shown here, not as it was designed"));
     app.hit.add("composeSignatureAsText", 0, edit.rect);
     if edit.clicked() {
-        editor::edit_signature_as_text(&ctx, &html);
+        editor::set_signature_as_text(&ctx, &html, true);
     }
 }
 

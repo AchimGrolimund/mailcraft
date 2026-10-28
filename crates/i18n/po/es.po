@@ -8571,6 +8571,11 @@ msgid "Show sender images from Gravatar, favicon.im and Google"
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src/compose.rs
+msgid "Show signature as it is sent"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/calendar_view.rs
 msgid "Show the Copy under Shared Calendars"
 msgstr ""
@@ -8633,6 +8638,11 @@ msgstr "Mostrar los números de semana en la vista Mes y en el calendario de nav
 #, fuzzy
 msgid "Shown as First Last when empty"
 msgstr "Si está vacío, se muestra como Nombre Apellidos"
+
+#. interface
+#: crates/ui-egui/src/compose.rs
+msgid "Shows the signature as it was designed again, as long as its text is unchanged"
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/data_removal.rs

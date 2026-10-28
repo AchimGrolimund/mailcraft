@@ -523,15 +523,20 @@ fn pictures(app: &MailApp, which: Which) -> Vec<Picture> {
 }
 
 /// The signature's own HTML while the message shows it as it goes out, under the text in place of
-/// its simpler copy ([`crate::compose`] draws it): an unedited HTML signature that ends an HTML
-/// message with text before it, unless the owner chose to edit it as text.
+/// its simpler copy ([`crate::compose`] draws it): an unedited HTML signature, unless the owner
+/// chose to edit it as text.
 pub(crate) fn html_signature<'a>(app: &'a MailApp, ctx: &egui::Context) -> Option<&'a str> {
+    unedited_html_signature(app).filter(|html| !signature_as_text(ctx, html))
+}
+
+/// The signature's own HTML while it is still what goes out: an unedited HTML signature that
+/// ends an HTML message with text before it, shown as it goes out or as its simpler copy.
+pub(crate) fn unedited_html_signature(app: &MailApp) -> Option<&str> {
     let c = app.session.compose.as_ref()?;
     let html = c.signature.as_ref()?.html.as_deref()?;
     let paragraphs = c.body.text().paragraphs();
     let ends = paragraphs.first().is_some_and(|p| !p.signature) && paragraphs.last().is_some_and(|p| p.signature);
-    let shown = c.format == mailcraft_engine::BodyFormat::Html && ends && !ctx.data(|d| d.get_temp(as_text_id(html)).unwrap_or(false));
-    (shown && c.signature_unedited()).then_some(html)
+    (c.format == mailcraft_engine::BodyFormat::Html && ends && c.signature_unedited()).then_some(html)
 }
 
 /// Where it is kept that the owner chose to edit the signature `html` as text.
@@ -539,9 +544,14 @@ fn as_text_id(html: &str) -> egui::Id {
     egui::Id::unique("mailcraft-signature-as-text").with(html)
 }
 
-/// The signature `html` is edited as text from now on: its simpler copy is shown in the message.
-pub(crate) fn edit_signature_as_text(ctx: &egui::Context, html: &str) {
-    ctx.data_mut(|d| d.insert_temp(as_text_id(html), true));
+/// Whether the owner chose to see the signature `html` as its simpler copy, to edit it as text.
+pub(crate) fn signature_as_text(ctx: &egui::Context, html: &str) -> bool {
+    ctx.data(|d| d.get_temp(as_text_id(html)).unwrap_or(false))
+}
+
+/// The signature `html` is shown as its simpler copy, to edit as text (`as_text`), or as it goes out.
+pub(crate) fn set_signature_as_text(ctx: &egui::Context, html: &str, as_text: bool) {
+    ctx.data_mut(|d| d.insert_temp(as_text_id(html), as_text));
 }
 
 /// The selection, the caret and whether the text is plain.

@@ -886,10 +886,18 @@ fn an_html_signature_is_shown_as_it_goes_out_until_edited_as_text() {
     let link = h.state().hit.rect("composeSignatureAsText", 0).unwrap();
     click(&mut h, link.center());
     assert!(h.state().hit.rect("composeSignature", 0).is_none());
+    // And back, while the copy is unedited.
+    let back = h.state().hit.rect("composeSignatureAsHtml", 0).unwrap();
+    click(&mut h, back.center());
+    assert!(h.state().hit.rect("composeSignature", 0).is_some());
+    let link = h.state().hit.rect("composeSignatureAsText", 0).unwrap();
+    click(&mut h, link.center());
     let body = h.state().hit.rect("composeBody", 0).unwrap();
     click(&mut h, body.min + egui::vec2(1.0, 8.0));
     key_with(&mut h, Modifiers::COMMAND, Key::End);
     type_in(&mut h, "!");
     assert!(plain(&h).ends_with("lumen.example!"), "{:?}", plain(&h));
     assert!(!unedited(&h));
+    // Edited, it is the copy that goes out: there is no way back to the HTML.
+    assert!(h.state().hit.rect("composeSignatureAsHtml", 0).is_none());
 }
