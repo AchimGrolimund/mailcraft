@@ -46,6 +46,10 @@ pub fn specs() -> Vec<CommandSpec> {
             .when(needs_compose),
         CommandSpec::new("compose.removeAttachment", "Remove Attachment", "Message › Include", remove_attachment).pure().params(r#"{"index": number}"#).when(needs_compose),
         CommandSpec::new("compose.signature", "Signature", "Message › Include", signature).pure().params(r#"{"name"?: string} (default: the account's signature)"#).when(needs_compose),
+        CommandSpec::new("compose.signatureAsText", "Edit Signature as Text", "Message › Include", signature_as_text)
+            .pure()
+            .params(r#"{"value": bool} (true: an HTML signature's simpler copy is shown and sent in place of the HTML; false: the HTML again, while that copy is unedited)"#)
+            .when(needs_compose),
         CommandSpec::new("compose.checkNames", "Check Names", "Message › Names", check_names).pure().key("Mod+K").when(needs_compose),
         CommandSpec::new("compose.suggest", "Suggest Recipients", "Message › Names", suggest_command)
             .pure()
@@ -115,6 +119,7 @@ fn put_signature(c: &mut Compose, sig: Option<&Signature>, at: usize) -> Result<
             pictures: sig.pictures().to_vec(),
             text,
             html: sig.html().map(str::to_string),
+            as_text: false,
         }),
         _ => None,
     };
@@ -807,6 +812,27 @@ fn signature(s: &mut Session, v: &Value) -> CmdResult {
     done()
 }
 
+/// Show and send an HTML signature as its simpler copy, or as the HTML again while that copy is
+/// unedited. Going back to the HTML takes the caret and the selection out of the copy, which is
+/// no longer shown, to the end of the owner's text before it.
+fn signature_as_text(s: &mut Session, v: &Value) -> CmdResult {
+    let value = p::bool(v, "value").ok_or_else(|| bad("`value` (bool) is required"))?;
+    let c = compose_mut(s)?;
+    let unedited = c.signature_unedited();
+    let inserted = c.signature.as_mut().filter(|i| i.html.is_some()).ok_or_else(|| fail("the message has no HTML signature"))?;
+    if !value && !unedited {
+        return Err(fail("the signature was edited as text: its copy is what goes out"));
+    }
+    inserted.as_text = value;
+    if !value && let Some(start) = c.body.text().signature_start() {
+        let end = start.saturating_sub(1);
+        let sel = c.body.selection();
+        c.body.select(sel.anchor.min(end), sel.head.min(end)).map_err(|e| fail(e.to_string()))?;
+    }
+    c.dirty = true;
+    done()
+}
+
 /// Replace names typed on the recipient lines with the contact they stand for, when exactly one
 /// contact matches. Answers the names nobody matched.
 fn check_names(s: &mut Session, _: &Value) -> CmdResult {
@@ -936,7 +962,7 @@ fn body_of(c: &Compose, message_id: &str) -> Body {
         BodyFormat::Html => {
             let cid = |p: &Picture| signature_cid(p, message_id);
             // An HTML signature goes out as the owner wrote it, cleaned, unless they edited it here.
-            let own = c.signature.as_ref().and_then(|i| i.html.as_deref()).filter(|_| c.signature_unedited());
+            let own = c.signature_html();
             let html = [
                 before.as_ref().map(|t| to_html_with(t, &img)),
                 Some(own.map_or_else(|| mailcraft_mime::rich::signature_html(&sig, &cid), mailcraft_html::quotable)),

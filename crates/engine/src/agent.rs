@@ -162,6 +162,7 @@ const SAFE: &[&str] = &[
     "insert.picture",
     "compose.removeAttachment",
     "compose.signature",
+    "compose.signatureAsText",
     "compose.checkNames",
     "compose.suggest",
     "compose.highImportance",

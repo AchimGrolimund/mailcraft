@@ -613,6 +613,13 @@ impl Compose {
     pub fn signature_unedited(&self) -> bool {
         self.signature.as_ref().is_some_and(|inserted| self.body.text().signature().as_ref() == Some(&inserted.text))
     }
+
+    /// The owner's own HTML of the signature, while that is what goes out: an HTML signature
+    /// that is unedited and not chosen to be edited as text.
+    pub fn signature_html(&self) -> Option<&str> {
+        let inserted = self.signature.as_ref().filter(|i| !i.as_text)?;
+        inserted.html.as_deref().filter(|_| self.signature_unedited())
+    }
 }
 
 fn is_zero_u32(n: &u32) -> bool {
@@ -632,6 +639,10 @@ pub struct InsertedSignature {
     /// The owner's own HTML, for an HTML signature: what goes out while the text is unedited.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub html: Option<String>,
+    /// The owner chose to edit an HTML signature as text: its simpler copy is shown in the
+    /// message and goes out in place of the HTML (`compose.signatureAsText`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub as_text: bool,
 }
 
 /// A signature open in File › Signatures (R4.5.3): edited as a message's body is, by the

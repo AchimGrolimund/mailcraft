@@ -2925,6 +2925,11 @@ msgid "Edit Signature"
 msgstr "Modifica firma"
 
 #. command label
+#: crates/engine/src/cmd/compose.rs
+msgid "Edit Signature as Text"
+msgstr ""
+
+#. command label
 #: crates/engine/src/cmd/tasks.rs
 #, fuzzy
 msgid "Edit Task"
@@ -12782,6 +12787,11 @@ msgid "the message can't hold that much text"
 msgstr "il messaggio non può contenere così tanto testo"
 
 #. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "the message has no HTML signature"
+msgstr ""
+
+#. what a command says
 #: crates/engine/src/cmd/compose.rs crates/engine/src/cmd/mail.rs crates/engine/src/session.rs
 #, fuzzy
 msgid "the message has no attachment {index}"
@@ -12886,6 +12896,11 @@ msgstr "la firma contiene modifiche: salvarla, oppure chiuderla con discard"
 #, fuzzy
 msgid "the signature is no longer there"
 msgstr "la firma non c'è più"
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "the signature was edited as text: its copy is what goes out"
+msgstr ""
 
 #. what a command says
 #: crates/engine/src/cmd/tasks.rs

@@ -2490,6 +2490,11 @@ msgid "Edit Signature"
 msgstr ""
 
 #. command label
+#: crates/engine/src/cmd/compose.rs
+msgid "Edit Signature as Text"
+msgstr ""
+
+#. command label
 #: crates/engine/src/cmd/tasks.rs
 msgid "Edit Task"
 msgstr ""
@@ -10945,6 +10950,11 @@ msgid "the message can't hold that much text"
 msgstr ""
 
 #. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "the message has no HTML signature"
+msgstr ""
+
+#. what a command says
 #: crates/engine/src/cmd/compose.rs crates/engine/src/cmd/mail.rs crates/engine/src/session.rs
 msgid "the message has no attachment {index}"
 msgstr ""
@@ -11032,6 +11042,11 @@ msgstr ""
 #. what a command says
 #: crates/engine/src/cmd/signature.rs
 msgid "the signature is no longer there"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "the signature was edited as text: its copy is what goes out"
 msgstr ""
 
 #. what a command says

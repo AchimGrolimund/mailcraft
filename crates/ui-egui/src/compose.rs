@@ -363,13 +363,13 @@ pub fn show(app: &mut MailApp, ui: &mut Ui) {
 fn signature(app: &mut MailApp, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
     let Some(html) = editor::unedited_html_signature(app).map(str::to_string) else { return };
-    if editor::signature_as_text(&ctx, &html) {
+    if editor::html_signature(app).is_none() {
         let back = ui
             .link(tl!("Show signature as it is sent"))
             .on_hover_text(tl!("Shows the signature as it was designed again, as long as its text is unchanged"));
         app.hit.add("composeSignatureAsHtml", 0, back.rect);
         if back.clicked() {
-            editor::set_signature_as_text(&ctx, &html, false);
+            let _ = app.run("compose.signatureAsText", json!({"value": false}));
         }
         return;
     }
@@ -397,7 +397,7 @@ fn signature(app: &mut MailApp, ui: &mut Ui) {
         .on_hover_text(tl!("The signature is then sent as the simpler text shown here, not as it was designed"));
     app.hit.add("composeSignatureAsText", 0, edit.rect);
     if edit.clicked() {
-        editor::set_signature_as_text(&ctx, &html, true);
+        let _ = app.run("compose.signatureAsText", json!({"value": true}));
     }
 }
 

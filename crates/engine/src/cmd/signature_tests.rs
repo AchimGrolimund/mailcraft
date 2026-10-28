@@ -391,6 +391,45 @@ fn an_html_signature_edited_in_the_message_goes_out_as_edited() {
     assert!(m.body.html.is_none() && m.body.text.contains("Avery Quinn") && !m.body.text.contains('<'), "{:?}", m.body.text);
 }
 
+/// Chosen to be edited as text, an HTML signature goes out as its simpler copy, though unedited;
+/// going back to the HTML takes the caret out of the copy, which is then no longer shown.
+#[test]
+fn an_html_signature_chosen_as_text_goes_out_as_text_and_back_leaves_the_caret_in_the_text() {
+    let mut s = session();
+    run(&mut s, "signature.set", json!({"name": "Generated", "text": "", "default": true}));
+    run(&mut s, "signature.html", json!({"name": "Generated", "html": GENERATED}));
+    run(&mut s, "mail.new", json!({"to": "maya@lumen.example", "body": "Hello"}));
+    run(&mut s, "compose.formatHtml", json!({}));
+    run(&mut s, "compose.signatureAsText", json!({"value": true}));
+    let c = s.compose.as_ref().unwrap();
+    assert!(c.signature_unedited() && c.signature_html().is_none());
+    // Back to the HTML, with the caret at the end of the text, in the copy.
+    let end = c.body.text().len();
+    let start = c.body.text().signature_start().unwrap();
+    run(&mut s, "compose.select", json!({"from": 2, "to": end}));
+    run(&mut s, "compose.signatureAsText", json!({"value": false}));
+    let c = s.compose.as_ref().unwrap();
+    assert_eq!((c.body.selection().anchor, c.body.selection().head), (2, start - 1));
+    assert!(c.signature_html().is_some());
+    run(&mut s, "compose.type", json!({"text": "!"}));
+    assert!(s.compose.as_ref().unwrap().signature_unedited());
+    // As text, it goes out as the copy.
+    run(&mut s, "compose.signatureAsText", json!({"value": true}));
+    let id = run(&mut s, "compose.send", json!({}))["id"].as_u64().unwrap();
+    let html = s.mailbox.message(id).unwrap().body.html.clone().unwrap();
+    assert!(html.contains("Avery Quinn") && !html.contains("padding-right:12px"), "{html}");
+    // Once the copy is edited, there is no way back to the HTML; without one, nothing to choose.
+    run(&mut s, "mail.new", json!({"to": "maya@lumen.example", "body": "Hello"}));
+    run(&mut s, "compose.signatureAsText", json!({"value": true}));
+    let end = s.compose.as_ref().unwrap().body.text().len();
+    run(&mut s, "compose.select", json!({"from": end}));
+    run(&mut s, "compose.type", json!({"text": " PhD"}));
+    assert!(s.run("compose.signatureAsText", &json!({"value": false})).is_err());
+    run(&mut s, "signature.set", json!({"name": "Plain", "text": "Avery", "default": true}));
+    run(&mut s, "mail.new", json!({"to": "maya@lumen.example"}));
+    assert!(s.run("compose.signatureAsText", &json!({"value": true})).is_err());
+}
+
 #[test]
 fn an_html_signature_is_rich_text_again_with_its_words_and_refuses_what_it_would_lose() {
     let mut s = session();
