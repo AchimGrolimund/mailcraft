@@ -526,8 +526,7 @@ fn pictures(app: &MailApp, which: Which) -> Vec<Picture> {
 /// its simpler copy ([`crate::compose`] draws it): an unedited HTML signature, unless the owner
 /// chose to edit it as text (`compose.signatureAsText`).
 pub(crate) fn html_signature(app: &MailApp) -> Option<&str> {
-    let as_text = app.session.compose.as_ref()?.signature.as_ref()?.as_text;
-    unedited_html_signature(app).filter(|_| !as_text)
+    app.session.compose.as_ref()?.signature_html_shown()
 }
 
 /// The signature's own HTML while it is still unedited: an HTML signature that ends an HTML

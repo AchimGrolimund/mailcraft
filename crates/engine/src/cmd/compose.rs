@@ -813,8 +813,7 @@ fn signature(s: &mut Session, v: &Value) -> CmdResult {
 }
 
 /// Show and send an HTML signature as its simpler copy, or as the HTML again while that copy is
-/// unedited. Going back to the HTML takes the caret and the selection out of the copy, which is
-/// no longer shown, to the end of the owner's text before it.
+/// unedited ([`Session::run`] then takes the caret out of the copy, which is no longer shown).
 fn signature_as_text(s: &mut Session, v: &Value) -> CmdResult {
     let value = p::bool(v, "value").ok_or_else(|| bad("`value` (bool) is required"))?;
     let c = compose_mut(s)?;
@@ -824,11 +823,6 @@ fn signature_as_text(s: &mut Session, v: &Value) -> CmdResult {
         return Err(fail("the signature was edited as text: its copy is what goes out"));
     }
     inserted.as_text = value;
-    if !value && let Some(start) = c.body.text().signature_start() {
-        let end = start.saturating_sub(1);
-        let sel = c.body.selection();
-        c.body.select(sel.anchor.min(end), sel.head.min(end)).map_err(|e| fail(e.to_string()))?;
-    }
     c.dirty = true;
     done()
 }
