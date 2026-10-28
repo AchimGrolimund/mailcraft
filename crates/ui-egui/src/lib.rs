@@ -41,6 +41,8 @@ mod advanced_search;
 pub mod agent_gate;
 #[cfg(test)]
 mod agent_leaves_tests;
+#[cfg(test)]
+mod agent_names_tests;
 pub mod alerts;
 pub mod approval;
 mod attachment_open;
@@ -1199,6 +1201,10 @@ pub struct MailApp {
     pub(crate) input_trail: std::collections::VecDeque<String>,
     /// The message list should scroll to the selected row (after a keyboard move).
     pub(crate) reveal_selection: bool,
+    /// The rows the message list was last drawn from, the selection then (its messages, and those
+    /// picked as their conversation) and what the rows drew selected: worked out again only when
+    /// one of them changes, not at every frame (#503).
+    pub(crate) drawn: Option<(std::sync::Arc<Vec<mailcraft_engine::list::Row>>, Vec<Id>, Vec<Id>, std::sync::Arc<mailcraft_engine::Drawn>)>,
     /// The rows of the message list that fit in it as last drawn: what Page Up and Page Down move
     /// by (#426).
     pub(crate) list_page_rows: usize,
@@ -1512,6 +1518,7 @@ impl MailApp {
             signature_note: None,
             input_trail: std::collections::VecDeque::new(),
             reveal_selection: false,
+            drawn: None,
             list_page_rows: 10,
             passwords: Default::default(),
             secrets_opening: 0,
@@ -1793,7 +1800,8 @@ impl MailApp {
                 }
             }
         }
-        if keys::MOVES_IN_LIST.contains(&id) {
+        // And closing a conversation, which may select its row (#503).
+        if keys::MOVES_IN_LIST.contains(&id) || id == "mail.collapseConversation" {
             self.reveal_selection = true;
         }
         // What was done to the text being written leaves the keyboard in it.
@@ -2778,6 +2786,13 @@ impl MailApp {
         let opening = self.session.openings();
         if opening != self.secrets_opening {
             self.secrets_opening = opening;
+            // A question about the mailbox that was open goes with it: it names messages and
+            // accounts by ids, which the other mailbox may have too (#503).
+            if matches!(self.dialog, Some(dialogs::Dialog::Confirm { .. })) {
+                self.dialog = None;
+            }
+            // An agent's too.
+            agent_gate::forget(self);
             self.passwords.clear();
             self.secret_cache.clear();
             self.secret_read = None;
