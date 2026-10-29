@@ -11,7 +11,8 @@
 //! - read [`HttpRequest::max_response_bytes`] before reading the body, and stop reading as soon as
 //!   the body passes it, reporting [`TransportError::BodyTooLarge`] (the crate refuses a longer
 //!   body anyway, but only after it has been read);
-//! - copy into the response the header fields named in [`HttpResponse::FIELDS_READ`].
+//! - copy the response's header fields into the response ([`HttpResponse::with_field`] keeps a
+//!   small, capped set: `WWW-Authenticate` and `Location` among them).
 
 use std::fmt;
 use std::future::Future;
@@ -105,20 +106,68 @@ pub fn check_endpoint(url: &str) -> Result<(), EndpointError> {
     if loopback { Ok(()) } else { Err(EndpointError::NotEncrypted) }
 }
 
-/// A request to send: always a `POST` of a `text/xml` body.
+/// The method of a request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Method {
+    /// `GET`
+    Get,
+    /// `POST`
+    Post,
+}
+
+impl Method {
+    /// The method's name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Post => "POST",
+        }
+    }
+}
+
+/// Most header fields a request or a response holds.
+pub const MAX_FIELDS: usize = 32;
+/// Longest header field name kept.
+const MAX_FIELD_NAME_LEN: usize = 64;
+
+/// A header field name: a token of the characters RFC 9110 allows, lower-cased; none when it is
+/// empty, too long or holds anything else.
+fn field_name(name: &str) -> Option<String> {
+    let token = |c: char| c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c);
+    (!name.is_empty() && name.len() <= MAX_FIELD_NAME_LEN && name.chars().all(token)).then(|| name.to_ascii_lowercase())
+}
+
+/// A request to send.
 #[derive(Clone, PartialEq, Eq)]
 pub struct HttpRequest {
+    method: Method,
     url: String,
-    authorization: Secret,
+    /// Names as given (a name that is no token is left out), values without control characters.
+    headers: Vec<(String, String)>,
     body: Vec<u8>,
     max_response: usize,
 }
 
 impl HttpRequest {
-    /// A `POST` of `body` to `url`, with `authorization` in its `Authorization` field.
-    pub fn soap(url: &str, authorization: &Secret, body: String) -> Result<Self, EndpointError> {
+    /// A request of `method` to `url` with the header `fields` (at most [`MAX_FIELDS`]; a name
+    /// that is no token is left out, and CR, LF, NUL and the other control characters are taken
+    /// out of a value, so that it can never end the field) and `body`.
+    pub fn new(method: Method, url: &str, fields: &[(&str, &str)], body: Vec<u8>) -> Result<Self, EndpointError> {
         check_endpoint(url)?;
-        Ok(Self { url: url.to_owned(), authorization: authorization.clone(), body: body.into_bytes(), max_response: RESPONSE_LIMIT })
+        let headers = fields
+            .iter()
+            .filter(|(name, _)| field_name(name).is_some())
+            .take(MAX_FIELDS)
+            .map(|(name, value)| ((*name).to_owned(), value.chars().filter(|c| !c.is_control()).collect()))
+            .collect();
+        Ok(Self { method, url: url.to_owned(), headers, body, max_response: RESPONSE_LIMIT })
+    }
+
+    /// A `POST` of the SOAP document `body` to `url`, with `authorization` in its `Authorization`
+    /// field.
+    pub fn soap(url: &str, authorization: &Secret, body: String) -> Result<Self, EndpointError> {
+        let fields = [("Authorization", authorization.expose()), ("Content-Type", "text/xml; charset=utf-8"), ("Accept", "text/xml")];
+        Self::new(Method::Post, url, &fields, body.into_bytes())
     }
 
     /// Lowers the largest response body accepted to `bytes` (it can only go down).
@@ -129,8 +178,8 @@ impl HttpRequest {
     }
 
     /// The method.
-    pub fn method(&self) -> &'static str {
-        "POST"
+    pub fn method(&self) -> Method {
+        self.method
     }
 
     /// The address.
@@ -138,9 +187,14 @@ impl HttpRequest {
         &self.url
     }
 
-    /// The header fields to send, `Authorization` included.
-    pub fn fields(&self) -> [(&'static str, &str); 3] {
-        [("Authorization", self.authorization.expose()), ("Content-Type", "text/xml; charset=utf-8"), ("Accept", "text/xml")]
+    /// The header fields to send, in order.
+    pub fn fields(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.headers.iter().map(|(name, value)| (name.as_str(), value.as_str()))
+    }
+
+    /// The value of the first header field called `name` (without regard to case).
+    pub fn field(&self, name: &str) -> Option<&str> {
+        self.fields().find(|(have, _)| have.eq_ignore_ascii_case(name)).map(|(_, value)| value)
     }
 
     /// The body.
@@ -157,7 +211,11 @@ impl HttpRequest {
 impl fmt::Debug for HttpRequest {
     /// The method and the body's length: no address, no credential, no content.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpRequest").field("body_len", &self.body.len()).field("max_response_bytes", &self.max_response).finish()
+        f.debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("body_len", &self.body.len())
+            .field("max_response_bytes", &self.max_response)
+            .finish()
     }
 }
 
@@ -165,37 +223,28 @@ impl fmt::Debug for HttpRequest {
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct HttpResponse {
     status: u16,
-    retry_after: Option<String>,
-    policy_reason: Option<String>,
+    /// Names in lower case, in the order they came; at most [`MAX_FIELDS`].
+    headers: Vec<(String, String)>,
     body: Vec<u8>,
 }
 
 impl HttpResponse {
-    /// The header fields the crate reads; others may be left out.
-    pub const FIELDS_READ: [&'static str; 2] = ["Retry-After", "X-EWS-Policy-Reason"];
-
     /// A response with a status code and a body.
     pub fn new(status: u16, body: Vec<u8>) -> Self {
         Self { status, body, ..Self::default() }
     }
 
-    /// Adds a header field; names are matched without regard to case and only those of
-    /// [`HttpResponse::FIELDS_READ`] are kept. A value longer than [`MAX_FIELD_VALUE_LEN`] is
-    /// dropped, and when a field comes twice the first value is kept.
+    /// Adds a header field. The set kept is small: at most [`MAX_FIELDS`] fields, a name that is
+    /// a token of at most 64 characters (lower-cased), a value of at most
+    /// [`MAX_FIELD_VALUE_LEN`] bytes without control characters; anything else is dropped. A
+    /// field that comes twice is kept twice (a server offers several `WWW-Authenticate`s).
     #[must_use]
     pub fn with_field(mut self, name: &str, value: &str) -> Self {
-        if value.len() > MAX_FIELD_VALUE_LEN {
-            return self;
-        }
-        let slot = if name.eq_ignore_ascii_case("retry-after") {
-            &mut self.retry_after
-        } else if name.eq_ignore_ascii_case("x-ews-policy-reason") {
-            &mut self.policy_reason
-        } else {
-            return self;
-        };
-        if slot.is_none() {
-            *slot = Some(value.trim_matches([' ', '\t']).to_owned());
+        let value = value.trim_matches([' ', '\t']);
+        if let Some(name) =
+            field_name(name).filter(|_| self.headers.len() < MAX_FIELDS && value.len() <= MAX_FIELD_VALUE_LEN && !value.chars().any(char::is_control))
+        {
+            self.headers.push((name, value.to_owned()));
         }
         self
     }
@@ -205,14 +254,25 @@ impl HttpResponse {
         self.status
     }
 
+    /// The value of the first field called `name` (without regard to case).
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers_named(name).next()
+    }
+
+    /// The values of every field called `name`, in the order they came.
+    pub fn headers_named<'r>(&'r self, name: &str) -> impl Iterator<Item = &'r str> {
+        let name = name.to_ascii_lowercase();
+        self.headers.iter().filter(move |(have, _)| *have == name).map(|(_, value)| value.as_str())
+    }
+
     /// The `Retry-After` field value.
     pub fn retry_after(&self) -> Option<&str> {
-        self.retry_after.as_deref()
+        self.header("retry-after")
     }
 
     /// The `X-EWS-Policy-Reason` field value: why an organisation does not allow the service.
     pub fn policy_reason(&self) -> Option<&str> {
-        self.policy_reason.as_deref()
+        self.header("x-ews-policy-reason")
     }
 
     /// The body.
@@ -224,7 +284,7 @@ impl HttpResponse {
 impl fmt::Debug for HttpResponse {
     /// Status and body length: the body may hold someone's mail.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpResponse").field("status", &self.status).field("body_len", &self.body.len()).finish()
+        f.debug_struct("HttpResponse").field("status", &self.status).field("fields", &self.headers.len()).field("body_len", &self.body.len()).finish()
     }
 }
 

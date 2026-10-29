@@ -226,7 +226,7 @@ fn the_request_is_a_soap_envelope_with_the_version_and_one_operation() {
     assert_eq!(body.children.len(), 1);
     assert!(body.children[0].is(soap::MESSAGES, "GetFolder"));
     let request = client().with_version(Version::Exchange2010Sp2).request(&get.element()).unwrap();
-    assert_eq!(request.method(), "POST");
+    assert_eq!(request.method(), Method::Post);
     assert!(String::from_utf8_lossy(request.body()).contains("Exchange2010_SP2"));
 }
 
@@ -235,7 +235,10 @@ fn nothing_written_can_break_out_of_its_place() {
     let nasty = "a\r\nX-Injected: 1\0</t:BaseShape><m:Evil/>\"'&";
     let element = Element::new("m:Op\r\n<x").attr("Na\nme", nasty).text(nasty).child(Element::new("t:Child").text(nasty));
     let text = element.write();
-    assert!(!text.contains(['\r', '\n', '\0']), "{text:?}");
+    // (A line feed in a text stays; a carriage return is a reference; an attribute has neither.)
+    assert!(!text.contains(['\r', '\0']), "{text:?}");
+    let attribute = text.split_once("Name=\"").and_then(|(_, rest)| rest.split_once('"')).map(|(value, _)| value).unwrap_or_default();
+    assert!(!attribute.is_empty() && !attribute.contains(['\r', '\n', '\0']), "{text:?}");
     assert!(!text.contains("<m:Evil/>") && !text.contains("<x"));
     // What is written reads back as the one element, holding the text as text.
     let tree = xml::parse(soap::envelope(Version::default(), &element).as_bytes()).unwrap();
@@ -337,4 +340,225 @@ fn the_stand_in_notes_and_refuses_anything_that_would_change_the_mailbox() {
     assert_eq!(status, 200);
     assert!(body.contains("ErrorAccessDenied"));
     assert_eq!(standin.state().writes, ["DeleteItem"]);
+}
+
+// ---- the reader's cost ----
+
+#[test]
+fn a_flood_of_elements_with_a_wide_namespace_costs_a_small_multiple_of_the_body() {
+    // 1.6 MB: a namespace of 2,000 characters and 399,000 empty elements. Held as the nodes
+    // would be (a copy of the namespace on each), this took 870 MB.
+    let flood = format!("<a xmlns=\"{}\">{}</a>", "n".repeat(2_000), "<b/>".repeat(399_000));
+    assert!(flood.len() > 1_500_000);
+    assert_eq!(xml::parse(flood.as_bytes()).unwrap_err(), xml::Malformed);
+    // The budget is a small multiple of the body, and has an end.
+    assert!(xml::budget(flood.len()) < 30 * 1024 * 1024);
+    assert_eq!(xml::budget(usize::MAX), 64 * 1024 * 1024);
+    // What fits holds the namespace once: the nodes point to the one copy.
+    let fits = format!("<a xmlns=\"{}\">{}</a>", "n".repeat(2_000), "<b>x</b>".repeat(3_000));
+    let tree = xml::parse(fits.as_bytes()).unwrap();
+    assert_eq!(tree.children.len(), 3_000);
+    assert!(tree.children.iter().all(|child| std::sync::Arc::ptr_eq(&child.namespace, &tree.namespace)));
+}
+
+#[test]
+fn a_flood_of_different_namespaces_is_paid_for_once_each() {
+    let flood: String = (0..400).map(|n| format!("<b xmlns=\"{n}{}\"/>", "u".repeat(1_900))).collect();
+    // Each is as big as its place in the body: no more, and the whole is within the budget.
+    assert!(xml::parse(format!("<a>{flood}</a>").as_bytes()).is_ok());
+    // A body that is nothing but elements is turned away long before 100,000 of them.
+    let thin = format!("<a>{}</a>", "<b/>".repeat(60_000));
+    assert!(xml::parse(thin.as_bytes()).is_err());
+}
+
+#[test]
+fn what_xml_forbids_never_reaches_the_tree() {
+    let tree = xml::parse("<a b=\"1&#2;2&#x1B;3\u{1}4\">x&#1;y&#x1B;z\u{1}w\u{FFFE}\u{FFFF}&#xFFFE;v\tu\n</a>".as_bytes()).unwrap();
+    assert_eq!(tree.text, "xyzwv\tu\n");
+    assert_eq!(tree.attribute("b"), Some("1234"));
+    // ... nor into what a caller reads from an answer.
+    let body = "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><m:GetFolderResponse xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\" xmlns:t=\"http://schemas.microsoft.com/exchange/services/2006/types\"><m:ResponseMessages>\
+        <m:GetFolderResponseMessage ResponseClass=\"Success\"><m:ResponseCode>NoError</m:ResponseCode><m:Folders><t:Folder><t:FolderId Id=\"AbC\"/><t:DisplayName>In&#1;bo&#x1B;x\u{2}</t:DisplayName></t:Folder></m:Folders></m:GetFolderResponseMessage>\
+        </m:ResponseMessages></m:GetFolderResponse></s:Body></s:Envelope>";
+    let reply = Reply::parse(body.as_bytes()).unwrap();
+    let got = GetFolder::new(&[DistinguishedFolder::Inbox]).answer(&reply).unwrap().remove(0).unwrap();
+    assert_eq!(got.display_name, "Inbox");
+}
+
+#[test]
+fn a_prefix_or_a_declaration_over_its_cap_is_no_document() {
+    let long = "p".repeat(65);
+    assert_eq!(xml::parse(format!("<{long}:a xmlns:{long}=\"u\"/>").as_bytes()).unwrap_err(), xml::Malformed);
+    assert_eq!(xml::parse(format!("<a xmlns:{long}=\"u\"/>").as_bytes()).unwrap_err(), xml::Malformed);
+    assert_eq!(xml::parse(format!("<a xmlns=\"{}\"/>", "u".repeat(2_049)).as_bytes()).unwrap_err(), xml::Malformed);
+    assert_eq!(xml::parse(b"<a xmlns:p=\"&bogus;\"/>").unwrap_err(), xml::Malformed);
+    let many: String = (0..65).map(|n| format!(" a{n}=\"1\"")).collect();
+    assert_eq!(xml::parse(format!("<a{many}/>").as_bytes()).unwrap_err(), xml::Malformed);
+    // At the caps, they are read; and a declaration after the twelfth attribute still counts.
+    let twelve: String = (0..13).map(|n| format!(" a{n}=\"1\"")).collect();
+    let tree = xml::parse(format!("<a{twelve} xmlns:p=\"{}\"><p:c/></a>", "u".repeat(2_048)).as_bytes()).unwrap();
+    assert_eq!(tree.attributes.len(), 12);
+    assert_eq!(tree.children[0].namespace.len(), 2_048);
+    assert!(xml::parse(format!("<{p}:a xmlns:{p}=\"u\"/>", p = "p".repeat(64)).as_bytes()).is_ok());
+}
+
+#[test]
+fn debug_output_shows_nothing_a_server_chose() {
+    let body = "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><m:GetFolderResponse xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\" xmlns:t=\"http://schemas.microsoft.com/exchange/services/2006/types\"><m:ResponseMessages>\
+        <m:GetFolderResponseMessage ResponseClass=\"Success\"><m:ResponseCode>NoError</m:ResponseCode><m:Folders><t:Folder><t:FolderId Id=\"SecretId\" ChangeKey=\"SecretKey\"/><t:DisplayName>Secret Name</t:DisplayName></t:Folder></m:Folders></m:GetFolderResponseMessage>\
+        </m:ResponseMessages></m:GetFolderResponse></s:Body></s:Envelope>";
+    let reply = Reply::parse(body.as_bytes()).unwrap();
+    let node = xml::parse(body.as_bytes()).unwrap();
+    let messages = reply.messages("GetFolder").unwrap();
+    let info = GetFolder::new(&[DistinguishedFolder::Inbox]).answer(&reply).unwrap().remove(0).unwrap();
+    let shown = format!("{reply:?} {node:?} {messages:?} {info:?} {:?}", HttpResponse::new(200, body.as_bytes().to_vec()));
+    assert!(!shown.contains("Secret") && !shown.contains("Folders"), "{shown}");
+}
+
+// ---- busy servers ----
+
+#[test]
+fn a_busy_fault_with_its_wait_in_the_types_namespace_is_read() {
+    let standin = StandIn::new();
+    {
+        let mut state = standin.state();
+        state.busy_fault = true;
+        state.busy.1 = 297_749;
+    }
+    assert_eq!(check(&standin), Err(Error::Busy { back_off_ms: 297_749 }));
+    assert_eq!(standin.state().requests[0].status, 500);
+    assert!(check(&standin).is_ok());
+    // Over the cap it is the cap.
+    {
+        let mut state = standin.state();
+        state.busy_fault = true;
+        state.busy.1 = 9_999_999;
+    }
+    assert_eq!(check(&standin), Err(Error::Busy { back_off_ms: error::MAX_BACK_OFF_MS }));
+}
+
+#[test]
+fn a_busy_server_inside_an_internal_server_error_is_busy() {
+    let standin = StandIn::new();
+    {
+        let mut state = standin.state();
+        state.busy = (1, 4_000);
+        state.busy_inner = true;
+    }
+    assert_eq!(check(&standin), Err(Error::Busy { back_off_ms: 4_000 }));
+    assert_eq!(standin.state().requests[0].code, "ErrorInternalServerError");
+    // Without the inner error it is the server's own error, and not a reason to wait.
+    let body =
+        reply_with("ErrorInternalServerError", "<m:MessageXml><t:Value xmlns:t=\"x\" Name=\"BackOffMilliseconds\">4000</t:Value></m:MessageXml>");
+    assert_eq!(parse_folder_error(&body), Error::Server(ResponseCode::InternalServerError));
+    // The same in a fault.
+    let fault = "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><s:Fault><faultcode>s:Server</faultcode><detail>\
+        <e:ResponseCode xmlns:e=\"http://schemas.microsoft.com/exchange/services/2006/errors\">ErrorInternalServerError</e:ResponseCode>\
+        <e:MessageXml xmlns:e=\"http://schemas.microsoft.com/exchange/services/2006/errors\"><e:Value Name=\"InnerErrorResponseCode\">ErrorServerBusy</e:Value><e:Value Name=\"BackOffMilliseconds\">2500</e:Value></e:MessageXml></detail></s:Fault></s:Body></s:Envelope>";
+    assert_eq!(Reply::parse(fault.as_bytes()).unwrap_err(), Error::Busy { back_off_ms: 2_500 });
+}
+
+#[test]
+fn a_wait_of_nothing_is_a_wait() {
+    let standin = StandIn::new();
+    standin.state().busy = (1, 0);
+    assert_eq!(check(&standin), Err(Error::Busy { back_off_ms: error::MIN_BACK_OFF_MS }));
+    let response = HttpResponse::new(503, vec![]).with_field("Retry-After", "0");
+    assert_eq!(Reply::judge(&response, 10).unwrap_err(), Error::Busy { back_off_ms: error::MIN_BACK_OFF_MS });
+    let body = reply_with("ErrorServerBusy", "<m:BackOffMilliseconds>0</m:BackOffMilliseconds>");
+    assert_eq!(parse_folder_error(&body), Error::Busy { back_off_ms: error::MIN_BACK_OFF_MS });
+}
+
+// ---- text and fields ----
+
+#[test]
+fn a_text_keeps_its_lines() {
+    let text = "first\r\nsecond\tindented\nthird\0\u{1}\u{FFFE}<&>";
+    let written = Element::new("t:Body").text(text).write();
+    assert_eq!(written, "<t:Body>first&#13;\nsecond\tindented\nthird&lt;&amp;&gt;</t:Body>");
+    assert!(!written.contains(['\r', '\0']));
+    let tree = xml::parse(soap::envelope(Version::default(), &Element::new("m:Op").text(text)).as_bytes()).unwrap();
+    let op = &tree.child_in(soap::SOAP, "Body").unwrap().children[0];
+    assert_eq!(op.text, "first\r\nsecond\tindented\nthird<&>");
+    // An attribute, or a header, keeps none of it.
+    assert_eq!(xml::escape("a\r\nb\tc\0"), "abc");
+}
+
+#[test]
+fn the_response_keeps_a_small_capped_set_of_fields() {
+    let response = HttpResponse::new(401, vec![])
+        .with_field("WWW-Authenticate", "Negotiate")
+        .with_field("www-authenticate", "NTLM")
+        .with_field("LOCATION", " https://mail.example.org/ews ")
+        .with_field("Set-Cookie", "a=b\r\nX: y")
+        .with_field("bad name", "x")
+        .with_field("X-Long", &"v".repeat(http::MAX_FIELD_VALUE_LEN + 1));
+    assert_eq!(response.headers_named("WWW-Authenticate").collect::<Vec<_>>(), ["Negotiate", "NTLM"]);
+    assert_eq!(response.header("location"), Some("https://mail.example.org/ews"));
+    assert_eq!((response.header("set-cookie"), response.header("bad name"), response.header("x-long")), (None, None, None));
+    let mut many = HttpResponse::new(200, vec![]);
+    for n in 0..100 {
+        many = many.with_field(&format!("x-{n}"), "1");
+    }
+    assert_eq!((0..100).filter(|n| many.header(&format!("x-{n}")).is_some()).count(), http::MAX_FIELDS);
+    assert_eq!(many.with_field(&"n".repeat(65), "1").header(&"n".repeat(65)), None);
+}
+
+#[test]
+fn a_request_can_be_any_get_or_post() {
+    let get = HttpRequest::new(
+        Method::Get,
+        "https://mail.example.org/autodiscover",
+        &[("Accept", "text/xml\r\nX-Injected: 1"), ("bad name", "x"), ("X-A\r\nB", "y")],
+        vec![],
+    )
+    .unwrap();
+    assert_eq!(get.method(), Method::Get);
+    assert_eq!(get.method().as_str(), "GET");
+    assert_eq!(get.fields().collect::<Vec<_>>(), [("Accept", "text/xmlX-Injected: 1")]);
+    assert_eq!(get.field("accept"), Some("text/xmlX-Injected: 1"));
+    assert!(HttpRequest::new(Method::Post, "http://mail.example.org/", &[], vec![]).is_err());
+    let soap = HttpRequest::soap(URL, &secret(), "<x/>".into()).unwrap();
+    assert_eq!((soap.method(), soap.field("content-type")), (Method::Post, Some("text/xml; charset=utf-8")));
+    assert_eq!(soap.field("authorization"), Some(AUTHORIZATION));
+}
+
+// ---- the stand-in, further ----
+
+#[test]
+fn the_stand_in_refuses_stray_content() {
+    let cases = [
+        (
+            "a child in a folder name",
+            GOOD.replace("<t:DistinguishedFolderId Id=\"inbox\"/>", "<t:DistinguishedFolderId Id=\"inbox\"><t:X/></t:DistinguishedFolderId>"),
+        ),
+        (
+            "text in a folder name",
+            GOOD.replace("<t:DistinguishedFolderId Id=\"inbox\"/>", "<t:DistinguishedFolderId Id=\"inbox\">more</t:DistinguishedFolderId>"),
+        ),
+        ("text between elements", GOOD.replace("<m:FolderIds>", "<m:FolderIds>stray")),
+        ("text in the operation", GOOD.replace("<m:GetFolder>", "<m:GetFolder>stray")),
+        ("an element in a shape's name", GOOD.replace("Default", "<t:X/>")),
+    ];
+    for (what, operation) in cases {
+        let (status, body) = raw(&StandIn::new(), &hand(&operation));
+        assert_eq!(status, 500, "{what}: {body}");
+    }
+    let (status, _) = raw(&StandIn::new(), &hand(GOOD).replace("<s:Body>", "stray<s:Body>"));
+    assert_eq!(status, 500);
+    let (status, _) = raw(&StandIn::new(), &hand(GOOD).replace("<s:Header>", "<s:Header stray=\"1\">"));
+    assert_eq!(status, 500);
+    let (status, _) = raw(&StandIn::new(), &hand(GOOD).replace("<s:Body>", "<s:Body Id=\"1\">"));
+    assert_eq!(status, 500);
+    let (status, _) = raw(
+        &StandIn::new(),
+        &hand(GOOD).replace(
+            "<t:RequestServerVersion Version=\"Exchange2013\"/>",
+            "<t:RequestServerVersion Version=\"Exchange2013\">x</t:RequestServerVersion>",
+        ),
+    );
+    assert_eq!(status, 500);
+    // White space between elements is no stray text.
+    let (status, body) = raw(&StandIn::new(), &hand(&GOOD.replace("><", ">\n  <")));
+    assert_eq!(status, 200, "{body}");
 }

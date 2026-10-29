@@ -78,7 +78,7 @@ impl std::fmt::Debug for FolderId {
 }
 
 /// What the server says of a folder (`BaseShape` of `Default`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct FolderInfo {
     /// The server's id.
     pub id: FolderId,
@@ -92,6 +92,17 @@ pub struct FolderInfo {
     pub unread_count: Option<u32>,
     /// How many folders lie in it, if the server says.
     pub child_folder_count: Option<u32>,
+}
+
+impl std::fmt::Debug for FolderInfo {
+    /// The counts: the id, the change key and the name are the server's and the owner's.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FolderInfo")
+            .field("total_count", &self.total_count)
+            .field("unread_count", &self.unread_count)
+            .field("child_folder_count", &self.child_folder_count)
+            .finish()
+    }
 }
 
 /// The request `GetFolder` for folders by their distinguished names.
@@ -136,7 +147,7 @@ impl GetFolder {
 /// (`Folder`, `CalendarFolder`, `ContactsFolder`, `SearchFolder`, `TasksFolder`).
 fn read_folder(message: &Node) -> Result<FolderInfo, Error> {
     let folders = message.child_in(crate::soap::MESSAGES, "Folders").ok_or(Error::Unexpected)?;
-    let folder = folders.children.iter().find(|child| child.namespace == TYPES).ok_or(Error::Unexpected)?;
+    let folder = folders.children.iter().find(|child| *child.namespace == *TYPES).ok_or(Error::Unexpected)?;
     let id_element = folder.child_in(TYPES, "FolderId").ok_or(Error::Unexpected)?;
     let id = id_element.attribute("Id").and_then(FolderId::new).ok_or(Error::Unexpected)?;
     let change_key = id_element.attribute("ChangeKey").filter(|key| FolderId::new(key).is_some()).map(str::to_owned);

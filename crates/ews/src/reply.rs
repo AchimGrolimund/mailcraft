@@ -7,24 +7,40 @@
 //! Everything else in an answer (an element this crate does not know, a header, a remark) is
 //! skipped.
 
-use crate::error::{DEFAULT_BACK_OFF_MS, Error, MAX_BACK_OFF_MS, PolicyReason, ResponseClass, ResponseCode};
+use std::fmt;
+
+use crate::error::{DEFAULT_BACK_OFF_MS, Error, MAX_BACK_OFF_MS, MIN_BACK_OFF_MS, PolicyReason, ResponseClass, ResponseCode};
 use crate::http::HttpResponse;
-use crate::soap::{ERRORS, MESSAGES, SOAP};
+use crate::soap::{MESSAGES, SOAP};
 use crate::xml::{self, Node};
 
 /// The body of a SOAP answer that was not a fault.
-#[derive(Debug)]
 pub struct Reply {
     body: Node,
 }
 
+impl fmt::Debug for Reply {
+    /// Nothing of the answer: it may hold someone's mail.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Reply(..)")
+    }
+}
+
 /// One response message of an operation's answer.
-#[derive(Debug)]
 pub struct Message<'n> {
     class: ResponseClass,
     code: ResponseCode,
+    /// The server says it is busy (`ErrorServerBusy`, or inside `ErrorInternalServerError`).
+    busy: bool,
     back_off_ms: Option<u32>,
     node: &'n Node,
+}
+
+impl fmt::Debug for Message<'_> {
+    /// The class and the code: the rest is the server's.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Message").field("class", &self.class).field("code", &self.code).finish()
+    }
 }
 
 impl Reply {
@@ -81,10 +97,10 @@ impl<'n> Message<'n> {
     fn read(node: &'n Node) -> Result<Self, Error> {
         let class = node.attribute("ResponseClass").and_then(ResponseClass::from_name).ok_or(Error::Unexpected)?;
         let code = node.child_in(MESSAGES, "ResponseCode").map(|code| ResponseCode::from_name(&code.text)).ok_or(Error::Unexpected)?;
-        // The wait is a child of the message, or a value of its `MessageXml`.
-        let back_off_ms =
-            node.child_in(MESSAGES, "BackOffMilliseconds").map(|wait| wait.text.as_str()).or_else(|| back_off_value(node)).map(back_off_ms);
-        Ok(Self { class, code, back_off_ms, node })
+        // (`MessageXml` and its values are told by their local names: a server puts them in the
+        // messages' namespace or the types'.)
+        let (busy, back_off_ms) = busy_of(&code, node.child("MessageXml"), node.child("BackOffMilliseconds").map(|wait| wait.text.as_str()));
+        Ok(Self { class, code, busy, back_off_ms, node })
     }
 
     /// How the server says it went.
@@ -107,58 +123,57 @@ impl<'n> Message<'n> {
         if self.class != ResponseClass::Error {
             return Ok(self.node);
         }
-        Err(match self.code {
-            ResponseCode::ServerBusy => Error::Busy { back_off_ms: self.back_off_ms.unwrap_or(DEFAULT_BACK_OFF_MS) },
-            ref code => Error::Server(code.clone()),
-        })
+        Err(if self.busy { Error::Busy { back_off_ms: self.back_off_ms.unwrap_or(DEFAULT_BACK_OFF_MS) } } else { Error::Server(self.code.clone()) })
     }
 }
 
-/// `Value Name="BackOffMilliseconds"` in a message's `MessageXml`.
-fn back_off_value(node: &Node) -> Option<&str> {
-    let values = node.child_in(MESSAGES, "MessageXml")?;
-    values
-        .children
-        .iter()
-        .find(|value| value.name == "Value" && value.attribute("Name") == Some("BackOffMilliseconds"))
-        .map(|value| value.text.as_str())
+/// The text of the `Value` called `name` inside a `MessageXml`.
+fn value_of<'a>(message_xml: &'a Node, name: &str) -> Option<&'a str> {
+    message_xml.children.iter().find(|value| value.name == "Value" && value.attribute("Name") == Some(name)).map(|value| value.text.trim())
 }
 
-/// A wait in milliseconds, as a server writes it: digits, capped; anything else is the default.
+/// Whether a message with this `code` and `MessageXml` says the server is busy, and the wait
+/// it asks for. Busy is `ErrorServerBusy`, and also `ErrorInternalServerError` whose inner
+/// error is `ErrorServerBusy` (Exchange's throttling says so in a 200 answer). The wait is a
+/// `BackOffMilliseconds` of its own or a `Value` of that name.
+fn busy_of(code: &ResponseCode, message_xml: Option<&Node>, direct: Option<&str>) -> (bool, Option<u32>) {
+    let inner = message_xml.and_then(|xml| value_of(xml, "InnerErrorResponseCode")).map(ResponseCode::from_name);
+    let busy = *code == ResponseCode::ServerBusy || (*code == ResponseCode::InternalServerError && inner == Some(ResponseCode::ServerBusy));
+    let wait = direct.or_else(|| message_xml.and_then(|xml| value_of(xml, "BackOffMilliseconds"))).map(back_off_ms);
+    (busy, wait)
+}
+
+/// A wait in milliseconds, as a server writes it: digits, at least [`MIN_BACK_OFF_MS`] and at
+/// most [`MAX_BACK_OFF_MS`]; anything else is the default.
 fn back_off_ms(text: &str) -> u32 {
     let text = text.trim();
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
         return DEFAULT_BACK_OFF_MS;
     }
     // (A number of any length: too many digits is simply the most.)
-    text.parse::<u64>().map_or(MAX_BACK_OFF_MS, |ms| u32::try_from(ms.min(u64::from(MAX_BACK_OFF_MS))).unwrap_or(MAX_BACK_OFF_MS))
+    let ms = text.parse::<u64>().unwrap_or(u64::MAX);
+    u32::try_from(ms.clamp(u64::from(MIN_BACK_OFF_MS), u64::from(MAX_BACK_OFF_MS))).unwrap_or(MAX_BACK_OFF_MS)
 }
 
-/// A `Retry-After` in seconds (a date is not read: the default), as milliseconds, capped.
+/// A `Retry-After` in seconds (a date is not read: the default), as milliseconds, within the
+/// same bounds.
 fn retry_after_ms(value: Option<&str>) -> u32 {
     let text = value.unwrap_or("").trim();
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
         return DEFAULT_BACK_OFF_MS;
     }
-    let seconds = text.parse::<u64>().unwrap_or(u64::MAX);
-    u32::try_from(seconds.saturating_mul(1000).min(u64::from(MAX_BACK_OFF_MS))).unwrap_or(MAX_BACK_OFF_MS)
+    let ms = text.parse::<u64>().unwrap_or(u64::MAX).saturating_mul(1000);
+    u32::try_from(ms.clamp(u64::from(MIN_BACK_OFF_MS), u64::from(MAX_BACK_OFF_MS))).unwrap_or(MAX_BACK_OFF_MS)
 }
 
 /// The error a `Fault` names: the response code of its `detail`, and for a busy server the wait.
+/// (`ResponseCode` and `MessageXml` are told by their local names, and `Value` too: the service
+/// writes `MessageXml` in the types' namespace as often as the errors'.)
 fn read_fault(fault: &Node) -> Error {
     let detail = fault.child("detail");
     let code = detail
-        .and_then(|detail| detail.child_in(ERRORS, "ResponseCode"))
-        .map(|code| ResponseCode::from_name(&code.text))
-        .unwrap_or_else(|| ResponseCode::Other(String::new()));
-    match code {
-        ResponseCode::ServerBusy => {
-            let wait = detail
-                .and_then(|detail| detail.child_in(ERRORS, "MessageXml"))
-                .and_then(|xml| xml.children.iter().find(|value| value.name == "Value" && value.attribute("Name") == Some("BackOffMilliseconds")))
-                .map_or(DEFAULT_BACK_OFF_MS, |value| back_off_ms(&value.text));
-            Error::Busy { back_off_ms: wait }
-        }
-        code => Error::Server(code),
-    }
+        .and_then(|detail| detail.child("ResponseCode"))
+        .map_or_else(|| ResponseCode::Other(String::new()), |code| ResponseCode::from_name(&code.text));
+    let (busy, wait) = busy_of(&code, detail.and_then(|detail| detail.child("MessageXml")), None);
+    if busy { Error::Busy { back_off_ms: wait.unwrap_or(DEFAULT_BACK_OFF_MS) } } else { Error::Server(code) }
 }

@@ -93,7 +93,10 @@ proptest! {
     fn nothing_written_holds_a_control_character_or_a_stray_tag(name in "\\PC{0,20}", value in "\\PC{0,60}", control in "[\\x00-\\x1f]{0,6}") {
         let nasty = format!("{control}{value}{control}");
         let text = Element::new(&format!("m:{name}")).attr(&name, &nasty).text(&nasty).child(Element::new("t:C").text(&nasty)).write();
-        prop_assert!(!text.chars().any(char::is_control));
+        // (Text keeps its tabs and line feeds; nothing else of the controls gets through.)
+        prop_assert!(!text.chars().any(|c| c.is_control() && c != '\t' && c != '\n'));
+        let attribute = Element::new("m:A").attr(&name, &nasty).write();
+        prop_assert!(!attribute.chars().any(char::is_control));
         // The only tags are the two it has: a value never opens another.
         prop_assert!(text.matches('<').count() <= 4);
         let secret = Secret::new(&nasty);

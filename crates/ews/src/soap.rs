@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The SOAP envelope of a request, and the elements it carries.
 //!
-//! Everything written here passes through [`crate::xml::escape`]: text and attribute values are
-//! XML-escaped and lose every control character (CR, LF and NUL among them), and a name keeps
-//! only the characters a qualified name is made of. Nothing a caller hands in can therefore end
-//! an element, open another, or break a line of the protocol.
+//! Everything written here is escaped: attribute values pass through [`crate::xml::escape`] and
+//! lose every control character (CR, LF and NUL among them); text passes through
+//! [`crate::xml::escape_text`], which keeps its tabs and line feeds (a body of text keeps its
+//! lines), writes a carriage return as a character reference and drops NUL and the other
+//! controls XML forbids; and a name keeps only the characters a qualified name is made of.
+//! Nothing a caller hands in can therefore end an element, open another, or break a line of the
+//! protocol.
 
-use crate::xml::escape;
+use crate::xml::{escape, escape_text};
 
 /// The SOAP 1.1 envelope's namespace.
 pub const SOAP: &str = "http://schemas.xmlsoap.org/soap/envelope/";
@@ -115,7 +118,7 @@ impl Element {
     /// With `text` inside it.
     #[must_use]
     pub fn text(mut self, text: &str) -> Self {
-        self.text = escape(text);
+        self.text = escape_text(text);
         self
     }
 

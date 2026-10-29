@@ -60,6 +60,6 @@ mod tests;
 pub use client::Client;
 pub use error::{Error, PolicyReason, ResponseClass, ResponseCode};
 pub use folder::{DistinguishedFolder, FolderId, FolderInfo, GetFolder};
-pub use http::{EndpointError, HttpExchange, HttpRequest, HttpResponse, Secret, TransportError};
+pub use http::{EndpointError, HttpExchange, HttpRequest, HttpResponse, Method, Secret, TransportError};
 pub use reply::{Message, Reply};
 pub use soap::{Element, Version};

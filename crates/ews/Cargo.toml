@@ -10,7 +10,6 @@ description = "MailCraft Exchange Web Services without sockets or browser APIs: 
 workspace = true
 
 [dependencies]
-log = { workspace = true }
 quick-xml = { workspace = true }
 
 [features]

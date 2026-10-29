@@ -13,6 +13,9 @@ use crate::http::{EndpointError, TransportError};
 /// The most a server may ask the client to wait, in milliseconds (five minutes); more is
 /// taken as this.
 pub const MAX_BACK_OFF_MS: u32 = 300_000;
+/// The shortest wait a busy server is given (one second): a server that says 0 is not to be
+/// asked again at once.
+pub const MIN_BACK_OFF_MS: u32 = 1_000;
 /// How long to wait when a server is busy and does not say for how long (one second).
 pub const DEFAULT_BACK_OFF_MS: u32 = 1_000;
 /// The longest response code kept.

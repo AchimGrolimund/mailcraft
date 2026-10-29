@@ -146,8 +146,12 @@ pub struct State {
     /// The next so many requests are told that the server is busy, asking for this many
     /// milliseconds (`BackOffMilliseconds`).
     pub busy: (u32, u64),
-    /// The next request is answered with a fault of `ErrorServerBusy` instead.
+    /// The next request is answered with a fault of `ErrorServerBusy` (its wait is `busy.1`)
+    /// instead.
     pub busy_fault: bool,
+    /// The next busy answer (`busy`) says it as Exchange's throttling does: a 200 answer whose
+    /// message is `ErrorInternalServerError` with an inner `ErrorServerBusy`.
+    pub busy_inner: bool,
     /// Every answer from now on is this instead of what it should be.
     pub hostile: Option<Hostile>,
     /// Every request so far, in order.
@@ -185,6 +189,7 @@ impl Default for State {
             blocked: None,
             busy: (0, 0),
             busy_fault: false,
+            busy_inner: false,
             hostile: None,
             requests: Vec::new(),
             writes: Vec::new(),
@@ -246,11 +251,12 @@ impl Check {
     /// The children of `node`, which are all of the namespace `space` and come in the order of
     /// `order` (each at most once): the child of each name, or none.
     fn children<'c>(node: &'c Node, space: &str, order: &[&str]) -> Result<Vec<Option<&'c Node>>, Refusal> {
+        Self::no_text(node)?;
         let mut found: Vec<Option<&'c Node>> = order.iter().map(|_| None).collect();
         let mut at = 0usize;
         for child in &node.children {
             match order.iter().position(|name| *name == child.name) {
-                Some(place) if place >= at && found.get(place).is_some_and(Option::is_none) && child.namespace == space => {
+                Some(place) if place >= at && found.get(place).is_some_and(Option::is_none) && *child.namespace == *space => {
                     if let Some(slot) = found.get_mut(place) {
                         *slot = Some(child);
                     }
@@ -260,6 +266,21 @@ impl Check {
             }
         }
         Ok(found)
+    }
+
+    /// Element-only content: nothing but white space between the elements.
+    fn no_text(node: &Node) -> Result<(), Refusal> {
+        if node.text.trim().is_empty() { Ok(()) } else { Err(invalid(format!("{} holds elements, not text", node.name))) }
+    }
+
+    /// An element with text at most.
+    fn no_children(node: &Node) -> Result<(), Refusal> {
+        if node.children.is_empty() { Ok(()) } else { Err(invalid(format!("{} holds text, not elements", node.name))) }
+    }
+
+    /// An element with nothing inside it.
+    fn empty(node: &Node) -> Result<(), Refusal> {
+        if node.children.is_empty() && node.text.trim().is_empty() { Ok(()) } else { Err(invalid(format!("{} holds nothing", node.name))) }
     }
 
     fn required<'c>(node: &Node, child: Option<&'c Node>, name: &str) -> Result<&'c Node, Refusal> {
@@ -279,6 +300,7 @@ impl State {
     /// The `FolderIds` of a request: the folder asked for, or none the mailbox has.
     fn folder_ids(&self, node: &Node) -> Result<Vec<Option<Folder>>, Refusal> {
         Check::is(node, MESSAGES, "FolderIds", &[])?;
+        Check::no_text(node)?;
         if node.children.is_empty() {
             return Err(invalid("FolderIds names at least one folder"));
         }
@@ -286,6 +308,7 @@ impl State {
         for one in &node.children {
             if one.is(TYPES, "DistinguishedFolderId") {
                 Check::is(one, TYPES, "DistinguishedFolderId", &["Id", "ChangeKey"])?;
+                Check::empty(one)?;
                 let id = Check::attribute(one, "Id")?;
                 if !DISTINGUISHED.contains(&id) {
                     return Err(invalid(format!("{id} is no distinguished folder")));
@@ -293,6 +316,7 @@ impl State {
                 out.push(self.folder(id, true).cloned());
             } else if one.is(TYPES, "FolderId") {
                 Check::is(one, TYPES, "FolderId", &["Id", "ChangeKey"])?;
+                Check::empty(one)?;
                 out.push(self.folder(Check::attribute(one, "Id")?, false).cloned());
             } else {
                 return Err(invalid(format!("FolderIds has no place for {}", one.name)));
@@ -307,27 +331,48 @@ impl State {
         Check::is(&root, SOAP, "Envelope", &[])?;
         let parts = Check::children(&root, SOAP, &["Header", "Body"])?;
         let header = Check::required(&root, parts.first().copied().flatten(), "Header")?;
+        Check::is(header, SOAP, "Header", &[])?;
+        Check::no_text(header)?;
         let version = header.child("RequestServerVersion").ok_or_else(|| invalid("a RequestServerVersion is needed"))?;
         Check::is(version, TYPES, "RequestServerVersion", &["Version"])?;
+        Check::empty(version)?;
         if !Version::NAMES.contains(&Check::attribute(version, "Version")?) {
             return Err(Refusal { code: "ErrorInvalidServerVersion", why: "no such version of the schema".into() });
         }
         let body = Check::required(&root, parts.get(1).copied().flatten(), "Body")?;
+        Check::is(body, SOAP, "Body", &[])?;
+        Check::no_text(body)?;
         let [operation] = body.children.as_slice() else { return Err(invalid("the body holds one operation")) };
         asked.operation = operation.name.clone();
-        if operation.namespace != MESSAGES {
+        if *operation.namespace != *MESSAGES {
             return Err(Refusal { code: "ErrorInvalidRequest", why: "the operation is not one of the service's".into() });
+        }
+        if self.busy_fault {
+            self.busy_fault = false;
+            // The fault of a busy server: `MessageXml` in the types' namespace.
+            let body = envelope(&format!(
+                "<s:Fault><faultcode xmlns:a=\"{TYPES}\">a:ErrorServerBusy</faultcode><faultstring>The server cannot service this request right now.</faultstring>\
+                 <detail><e:ResponseCode xmlns:e=\"{ERRORS}\">ErrorServerBusy</e:ResponseCode><e:Message xmlns:e=\"{ERRORS}\">Busy</e:Message>\
+                 <t:MessageXml xmlns:t=\"{TYPES}\"><t:Value Name=\"BackOffMilliseconds\">{}</t:Value></t:MessageXml></detail></s:Fault>",
+                self.busy.1
+            ));
+            return Ok((500, "ErrorServerBusy".into(), body));
         }
         if self.busy.0 > 0 {
             self.busy.0 = self.busy.0.saturating_sub(1);
             let name = operation.name.clone();
+            let (code, inner) = if self.busy_inner {
+                ("ErrorInternalServerError", "<t:Value Name=\"InnerErrorResponseCode\">ErrorServerBusy</t:Value>")
+            } else {
+                ("ErrorServerBusy", "")
+            };
             let message = format!(
                 "<m:{name}ResponseMessage ResponseClass=\"Error\"><m:MessageText>The server cannot service this request right now.</m:MessageText>\
-                 <m:ResponseCode>ErrorServerBusy</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>\
-                 <m:MessageXml><t:Value Name=\"BackOffMilliseconds\">{}</t:Value></m:MessageXml></m:{name}ResponseMessage>",
+                 <m:ResponseCode>{code}</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>\
+                 <m:MessageXml>{inner}<t:Value Name=\"BackOffMilliseconds\">{}</t:Value></m:MessageXml></m:{name}ResponseMessage>",
                 self.busy.1
             );
-            return Ok((200, "ErrorServerBusy".into(), response(&name, &message)));
+            return Ok((200, code.into(), response(&name, &message)));
         }
         match operation.name.as_str() {
             "GetFolder" => self.get_folder(operation),
@@ -348,6 +393,7 @@ impl State {
         let inside = Check::children(shape, TYPES, &["BaseShape", "AdditionalProperties"])?;
         let base = Check::required(shape, inside.first().copied().flatten(), "BaseShape")?;
         Check::is(base, TYPES, "BaseShape", &[])?;
+        Check::no_children(base)?;
         let base = base.text.trim();
         if !["IdOnly", "Default", "AllProperties"].contains(&base) {
             return Err(invalid("BaseShape is IdOnly, Default or AllProperties"));
@@ -391,7 +437,7 @@ impl State {
 
     fn respond(&mut self, request: &HttpRequest) -> HttpResponse {
         let mut asked = Asked { body: String::from_utf8_lossy(request.body()).into_owned(), ..Asked::default() };
-        let authorized = request.fields().iter().any(|(name, value)| *name == "Authorization" && *value == self.authorization);
+        let authorized = request.field("authorization") == Some(self.authorization.as_str());
         let response = if let Some(reason) = self.blocked.clone() {
             asked.status = 403;
             HttpResponse::new(403, Vec::new()).with_field("X-EWS-Policy-Reason", &reason)
