@@ -41,6 +41,9 @@ const MAX_ATTRIBUTE: usize = 2_048;
 const MAX_TAG_ATTRIBUTES: usize = 64;
 /// Longest text kept of one element (bytes): an id, a name, a property in base64.
 pub const MAX_TEXT: usize = 8_192;
+/// Longest text kept of a `MimeContent` (bytes): a whole message in base64, which the answer to
+/// `GetItem` carries in one element. (Charged at its real size, like any text.)
+pub const MAX_MIME_TEXT: usize = 16 * 1024 * 1024;
 /// What an element costs besides its name, attributes and text: the size of a node and the
 /// allocator's share of the block that holds it in its parent's `children`. (The vectors of a
 /// node are shrunk to fit when it is closed, so that a vector's spare room is no further cost.)
@@ -281,7 +284,8 @@ impl Walk {
     fn text(&mut self, text: &str) -> Result<(), Malformed> {
         let text = clean(text);
         let Some(open) = self.stack.last_mut() else { return Ok(()) };
-        if open.node.text.len().saturating_add(text.len()) > MAX_TEXT {
+        let cap = if open.node.name == "MimeContent" { MAX_MIME_TEXT } else { MAX_TEXT };
+        if open.node.text.len().saturating_add(text.len()) > cap {
             open.spoiled = true;
         } else if !open.spoiled {
             let before = heap(open.node.text.len());
@@ -322,6 +326,11 @@ impl Walk {
 /// The document in `body` (UTF-8, with or without a byte order mark) as a tree: its one element
 /// at the top.
 pub fn parse(body: &[u8]) -> Result<Node, Malformed> {
+    parse_with_cost(body).map(|(tree, _)| tree)
+}
+
+/// Like [`parse`], and what the tree cost against its [`budget`]: `(tree, cost)`.
+pub fn parse_with_cost(body: &[u8]) -> Result<(Node, usize), Malformed> {
     let body = body.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(body);
     let xml = std::str::from_utf8(body).map_err(|_| Malformed)?;
     let mut reader = Reader::from_str(xml);
@@ -350,7 +359,8 @@ pub fn parse(body: &[u8]) -> Result<Node, Malformed> {
     if !walk.stack.is_empty() {
         return Err(Malformed);
     }
-    walk.root.ok_or(Malformed)
+    let spent = walk.spent;
+    walk.root.map(|tree| (tree, spent)).ok_or(Malformed)
 }
 
 /// `text` as it is written inside an attribute (or anywhere a line of a protocol could end): the

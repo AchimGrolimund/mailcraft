@@ -668,3 +668,83 @@ fn small_strings_are_charged_what_the_allocator_charges() {
     let doc = format!("<a>{}</a>", "<b>x</b>".repeat(60_000));
     assert_eq!(xml::parse(doc.as_bytes()).unwrap_err(), xml::Malformed);
 }
+
+// ---- real answers fit ----
+
+const ENVELOPE_OPEN: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Header>\
+    <h:ServerVersionInfo MajorVersion=\"15\" MinorVersion=\"20\" MajorBuildNumber=\"7933\" MinorBuildNumber=\"10\" Version=\"V2018_01_08\" xmlns:h=\"http://schemas.microsoft.com/exchange/services/2006/types\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"/>\
+    </s:Header><s:Body>";
+const ENVELOPE_CLOSE: &str = "</s:Body></s:Envelope>";
+
+/// An id the way a server writes one: base64 of about `len` characters.
+fn id(kind: &str, n: usize, len: usize) -> String {
+    let seed = format!("{kind}{n:08}");
+    seed.chars().cycle().take(len).map(|c| if c.is_ascii_alphanumeric() { c } else { 'A' }).collect()
+}
+
+fn sync_item(n: usize) -> String {
+    format!(
+        "<t:Create><t:Message><t:ItemId Id=\"{}\" ChangeKey=\"{}\"/><t:ParentFolderId Id=\"{}\" ChangeKey=\"AQAAAA==\"/>\
+         <t:ItemClass>IPM.Note</t:ItemClass><t:Subject>Quarterly figures, part {n} &amp; what comes next</t:Subject>\
+         <t:DateTimeReceived>2026-10-2{}T09:{:02}:11Z</t:DateTimeReceived><t:Size>{}</t:Size><t:Importance>Normal</t:Importance>\
+         <t:IsRead>{}</t:IsRead><t:HasAttachments>false</t:HasAttachments><t:InternetMessageId>&lt;{}@mail.example.org&gt;</t:InternetMessageId>\
+         <t:From><t:Mailbox><t:Name>Sender Number {n}</t:Name><t:EmailAddress>sender{n}@example.org</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType></t:Mailbox></t:From>\
+         </t:Message></t:Create>",
+        id("item", n, 152),
+        id("key", n, 44),
+        id("folder", 1, 152),
+        n % 10,
+        n % 60,
+        4_000 + n,
+        n.is_multiple_of(2),
+        id("mid", n, 36)
+    )
+}
+
+#[test]
+fn a_realistic_sync_folder_items_answer_fits_with_room_to_spare() {
+    let items: String = (0..512).map(sync_item).collect();
+    let body = format!(
+        "{ENVELOPE_OPEN}<m:SyncFolderItemsResponse xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\" xmlns:t=\"http://schemas.microsoft.com/exchange/services/2006/types\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\
+         <m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass=\"Success\"><m:ResponseCode>NoError</m:ResponseCode>\
+         <m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>false</m:IncludesLastItemInRange><m:Changes>{items}</m:Changes>\
+         </m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>{ENVELOPE_CLOSE}",
+        id("state", 1, 800)
+    );
+    let (tree, cost) = xml::parse_with_cost(body.as_bytes()).unwrap();
+    let budget = xml::budget(body.len());
+    // At most half of the budget, so that a longer name or a few more fields do not tip it.
+    assert!(cost * 2 <= budget, "{cost} of {budget} for {} bytes", body.len());
+    let reply = Reply::parse(body.as_bytes()).unwrap();
+    let messages = reply.messages("SyncFolderItems").unwrap();
+    let changes = messages[0].ok().unwrap().child_in(soap::MESSAGES, "Changes").unwrap();
+    assert_eq!(changes.children.len(), 512);
+    let first = changes.children[0].child_in(soap::TYPES, "Message").unwrap();
+    assert_eq!(first.child_in(soap::TYPES, "ItemId").unwrap().attribute("Id").map(str::len), Some(152));
+    assert_eq!(first.child_in(soap::TYPES, "From").unwrap().child_in(soap::TYPES, "Mailbox").unwrap().text_of("EmailAddress"), "sender0@example.org");
+    assert!(tree.is(soap::SOAP, "Envelope"));
+}
+
+#[test]
+fn a_get_item_answer_with_ten_megabytes_of_mime_fits() {
+    let mime = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5".repeat(10 * 1024 * 1024 / 48);
+    let body = format!(
+        "{ENVELOPE_OPEN}<m:GetItemResponse xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\" xmlns:t=\"http://schemas.microsoft.com/exchange/services/2006/types\">\
+         <m:ResponseMessages><m:GetItemResponseMessage ResponseClass=\"Success\"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:Message>\
+         <t:MimeContent CharacterSet=\"UTF-8\">{mime}</t:MimeContent><t:ItemId Id=\"{}\" ChangeKey=\"{}\"/></t:Message></m:Items>\
+         </m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse>{ENVELOPE_CLOSE}",
+        id("item", 1, 152),
+        id("key", 1, 44)
+    );
+    assert!(body.len() > 10 * 1024 * 1024 && body.len() < http::RESPONSE_LIMIT);
+    let (tree, cost) = xml::parse_with_cost(body.as_bytes()).unwrap();
+    assert!(cost * 2 <= xml::budget(body.len()), "{cost} of {}", xml::budget(body.len()));
+    let message = tree.find(&["Body", "GetItemResponse", "ResponseMessages", "GetItemResponseMessage", "Items", "Message"]).unwrap();
+    assert_eq!(message.child("MimeContent").unwrap().text.len(), mime.len());
+    // Another element's text is still capped.
+    let other = format!("<a><b>{}</b></a>", "x".repeat(xml::MAX_TEXT + 1));
+    assert_eq!(xml::parse(other.as_bytes()).unwrap().children[0].text, "");
+    // ... and the room for a message has an end.
+    let huge = format!("<a><MimeContent>{}</MimeContent></a>", "x".repeat(xml::MAX_MIME_TEXT + 1));
+    assert_eq!(xml::parse(huge.as_bytes()).unwrap().children[0].text, "");
+}
