@@ -492,7 +492,7 @@ impl State {
         if !["Shallow", "SoftDeleted", "Associated"].contains(&Check::attribute(operation, "Traversal")?) {
             return Err(invalid("Traversal is Shallow, SoftDeleted or Associated"));
         }
-        let parts = Check::children(operation, MESSAGES, &["ItemShape", "IndexedPageItemView", "Restriction", "ParentFolderIds"])?;
+        let parts = Check::children(operation, MESSAGES, &["ItemShape", "IndexedPageItemView", "Restriction", "SortOrder", "ParentFolderIds"])?;
         Check::required(operation, parts.first().copied().flatten(), "ItemShape")?;
         let restriction = Check::required(operation, parts.get(2).copied().flatten(), "Restriction")?;
         let equal = restriction.child_in(TYPES, "IsEqualTo").ok_or_else(|| invalid("this stand-in restricts by IsEqualTo"))?;
@@ -502,14 +502,14 @@ impl State {
             .and_then(|c| c.attribute("Value"))
             .ok_or_else(|| invalid("IsEqualTo needs a Constant"))?
             .to_owned();
-        let parents = Check::required(operation, parts.get(3).copied().flatten(), "ParentFolderIds")?;
+        let parents = Check::required(operation, parts.get(4).copied().flatten(), "ParentFolderIds")?;
+        let newest_first = parts.get(3).copied().flatten().is_some();
         let Some(folder) = self.folder_of(parents)? else { return no("FindItem", "ErrorFolderNotFound") };
-        let found: String = self
-            .items
-            .iter()
-            .filter(|i| i.folder == folder.id && !value.is_empty() && i.marker == value)
-            .map(|i| format!("<t:Message>{}</t:Message>", item_id_xml(i)))
-            .collect();
+        let mut matching: Vec<_> = self.items.iter().filter(|i| i.folder == folder.id && !value.is_empty() && i.marker == value).collect();
+        if newest_first {
+            matching.reverse();
+        }
+        let found: String = matching.into_iter().map(|i| format!("<t:Message>{}</t:Message>", item_id_xml(i))).collect();
         yes("FindItem", &format!("<m:RootFolder TotalItemsInView=\"1\" IncludesLastItemInRange=\"true\"><t:Items>{found}</t:Items></m:RootFolder>"))
     }
 

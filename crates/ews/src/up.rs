@@ -12,7 +12,18 @@
 //!
 //! **A send is never made twice.** A message whose send was lost is `Held { lost: true }`: it may
 //! have gone, and the owner looks in Sent Items before sending it again. A draft whose make was
-//! lost is found by its marker next run, never made a second time.
+//! lost is found by its marker next run, never made a second time. Any word of the server that
+//! may follow its having sent the message (an internal error, a timeout, a code not known here,
+//! a fault, a 5xx or an answer that can't be read) is held as "may have been sent", never as "was
+//! not sent"; only the codes in [`NOT_SENT`], which turn a send away before it is done, are.
+//!
+//! **The crash window.** The window takes in what became of a send when the run's piece with
+//! the answer reaches it (`apply_ews_mail`), and the piece is emitted as soon as the sends of the
+//! run are done. A crash or a power cut after the server sent a message and before that piece was
+//! taken in leaves the message in the Outbox as it was, and the next run sends it again: the
+//! one way a message can go twice. The window is as short as the time between the answer and the
+//! hand-over of the piece, and nothing here can close it without the server's help (a draft's
+//! copy in Sent Items is what the owner would look for).
 //!
 //! **What a server lacks** (E7) is left as it is and said once a run, without an id: a server
 //! that has no follow-up flag keeps the flags here.
@@ -263,7 +274,7 @@ impl<E: HttpExchange> Run<'_, E> {
         let mut adopted = false;
         if id.is_empty() {
             // A make whose answer was lost is found by its marker.
-            let find = FindDraft::new(None, &up.marker);
+            let find = FindDraft::new(None, &up.marker).knowing(&up.change_key);
             match self.ask(&find.element(), &|reply| find.answer(reply)).await {
                 Ok(Some(found)) => {
                     (id, key) = (found.id, found.change_key);
@@ -517,10 +528,26 @@ impl<E: HttpExchange> Run<'_, E> {
     }
 }
 
+/// The codes that say a send was turned away before anything was done with it. Any other (an
+/// internal error, a timeout, a code not known here) may follow the server having sent it.
+const NOT_SENT: [&str; 10] = [
+    "ErrorSendAsDenied",
+    "ErrorAccessDenied",
+    "ErrorQuotaExceeded",
+    "ErrorMessageSizeExceeded",
+    "ErrorInvalidRecipients",
+    "ErrorMessageDispositionRequired",
+    "ErrorRecipientNotFound",
+    "ErrorItemNotFound",
+    "ErrorSchemaValidation",
+    "ErrorInvalidRequest",
+];
+
 fn plain_or_lost(error: &Asked) -> SendOutcome {
     match error {
-        Asked::Code(code) => SendOutcome::Held { lost: false, why: plain(code) },
-        // (An answer that is none the service gives, or none at all: it may have gone.)
+        Asked::Code(code) if NOT_SENT.contains(&code.to_string().as_str()) => SendOutcome::Held { lost: false, why: plain(code) },
+        // (An answer that is none the service gives, a fault that may follow processing, or none
+        // at all: it may have gone, and it is held as "may have been sent", never as "wasn't".)
         _ => SendOutcome::Held { lost: true, why: String::new() },
     }
 }

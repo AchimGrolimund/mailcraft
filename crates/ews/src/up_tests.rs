@@ -500,3 +500,142 @@ fn an_answer_that_changes_nothing_is_not_in_the_piece() {
     assert!(result.changes.is_empty());
     let _ = SyncedAttachment::default();
 }
+
+/// Lets the stand-in do what a request asks, then hands the program another answer in its place:
+/// the server has acted, and what comes back is not what it said.
+struct Replacing<'a> {
+    inner: &'a StandIn,
+    operation: &'static str,
+    answer: HttpResponse,
+}
+
+impl HttpExchange for Replacing<'_> {
+    fn exchange(&self, request: &HttpRequest) -> impl Future<Output = Result<HttpResponse, TransportError>> {
+        let done = block_on(self.inner.exchange(request)).unwrap();
+        let body = String::from_utf8_lossy(request.body()).into_owned();
+        let hit = body.contains(&format!("<m:{} ", self.operation)) || body.contains(&format!("<m:{}>", self.operation));
+        std::future::ready(if hit && !request.is_repeatable() { Ok(self.answer.clone()) } else { done })
+    }
+}
+
+fn fault_answer(operation: &str, code: &str) -> HttpResponse {
+    let xml = format!(
+        "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
+         <m:{operation}Response xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\" xmlns:t=\"http://schemas.microsoft.com/exchange/services/2006/types\">\
+         <m:ResponseMessages><m:{operation}ResponseMessage ResponseClass=\"Error\"><m:MessageText>x</m:MessageText><m:ResponseCode>{code}</m:ResponseCode>\
+         <m:DescriptiveLinkKey>0</m:DescriptiveLinkKey></m:{operation}ResponseMessage></m:ResponseMessages></m:{operation}Response></s:Body></s:Envelope>"
+    );
+    HttpResponse::new(200, xml.into_bytes())
+}
+
+#[test]
+fn a_word_that_may_follow_the_send_holds_it_as_maybe_sent_and_only_a_refusal_before_it_does_not() {
+    let sends = || {
+        [
+            ("CreateItem", SendUp { message: 3, draft: None, mime: Some(message("zoe@example.org", "")) }),
+            ("SendItem", SendUp { message: 5, draft: Some(draft("mark-6", "Hello")), mime: None }),
+        ]
+    };
+    let may_have_gone = |answer: HttpResponse| {
+        for (operation, send) in sends() {
+            let standin = StandIn::new();
+            let replacing = Replacing { inner: &standin, operation, answer: answer.clone() };
+            let (pieces, _) = run_with(&replacing, &EwsMailRequest { sends: vec![send], ..base() });
+            let held: Vec<_> = pieces.iter().flat_map(|p| &p.sent).collect();
+            assert_eq!(held.len(), 1, "{operation}");
+            assert_eq!(held[0].outcome, SendOutcome::Held { lost: true, why: String::new() }, "{operation}");
+            assert_eq!(standin.state().outgoing.len(), 1, "{operation}: sent once");
+        }
+    };
+    // A 5xx, a 500 fault, an answer that is no SOAP, and the codes that may follow processing.
+    may_have_gone(HttpResponse::new(500, Vec::new()));
+    may_have_gone(HttpResponse::new(502, b"<html>bad gateway</html>".to_vec()));
+    may_have_gone(HttpResponse::new(200, b"not xml at all".to_vec()));
+    may_have_gone(HttpResponse::new(200, Vec::new()));
+    for code in ["ErrorInternalServerError", "ErrorTimeoutExpired", "ErrorMailboxStoreUnavailable", "ErrorSomethingNobodyKnows"] {
+        for (operation, send) in sends() {
+            let standin = StandIn::new();
+            let replacing = Replacing { inner: &standin, operation, answer: fault_answer(if operation == "CreateItem" { "CreateItem" } else { "SendItem" }, code) };
+            let (pieces, _) = run_with(&replacing, &EwsMailRequest { sends: vec![send], ..base() });
+            let held: Vec<_> = pieces.iter().flat_map(|p| &p.sent).collect();
+            assert_eq!(held[0].outcome, SendOutcome::Held { lost: true, why: String::new() }, "{operation} {code}");
+        }
+    }
+    // A refusal before anything was done is a plain "wasn't sent".
+    for (operation, send) in sends() {
+        let standin = StandIn::new();
+        let replacing = Replacing { inner: &standin, operation, answer: fault_answer(operation, "ErrorInvalidRecipients") };
+        let (pieces, _) = run_with(&replacing, &EwsMailRequest { sends: vec![send], ..base() });
+        let held: Vec<_> = pieces.iter().flat_map(|p| &p.sent).collect();
+        assert!(matches!(&held[0].outcome, SendOutcome::Held { lost: false, why } if !why.is_empty()), "{operation}: {:?}", held[0].outcome);
+    }
+}
+
+#[test]
+fn a_bare_503_to_a_send_is_lost_and_only_a_soap_busy_is_waited_out() {
+    let (operation, send) = ("CreateItem", SendUp { message: 3, draft: None, mime: Some(message("zoe@example.org", "")) });
+    let standin = StandIn::new();
+    let replacing = Replacing { inner: &standin, operation, answer: HttpResponse::new(503, Vec::new()) };
+    let (pieces, waits) = run_with(&replacing, &EwsMailRequest { sends: vec![send.clone()], ..base() });
+    let held: Vec<_> = pieces.iter().flat_map(|p| &p.sent).collect();
+    assert_eq!(held[0].outcome, SendOutcome::Held { lost: true, why: String::new() });
+    assert!(waits.is_empty(), "a bare 503 is not waited out and asked again");
+    assert_eq!(standin.state().outgoing.len(), 1);
+    // A SOAP ErrorServerBusy comes before anything is done: waited out, asked again, sent once.
+    let standin = StandIn::new();
+    standin.state().busy = (1, 1000);
+    let (pieces, waits) = run_with(&standin, &EwsMailRequest { sends: vec![send], ..base() });
+    assert_eq!(waits, [1000]);
+    assert!(pieces.iter().flat_map(|p| &p.sent).any(|d| d.outcome == SendOutcome::Sent));
+    assert_eq!(standin.state().outgoing.len(), 1);
+}
+
+#[test]
+fn a_line_break_or_nul_in_a_subject_name_category_or_folder_name_never_reaches_the_xml() {
+    use crate::changes::{CreateFolder, ItemUpdate, RenameFolder, UpdateItem};
+    use crate::compose::{CreateDraft, DraftContent};
+    let nasty = "Hi\r\nBcc: evil@example.org\0there";
+    let clean = "HiBcc: evil@example.org" .to_owned() + "there";
+    let who = Address::new(nasty, "zoe@example.org\r\nX: y");
+    let update = ItemUpdate {
+        subject: Some(nasty.into()),
+        categories: Some(vec![nasty.into()]),
+        to: Some(vec![who.clone()]),
+        ..ItemUpdate::default()
+    };
+    let xml = UpdateItem::marks("ID1", update).element().write();
+    let draft = DraftContent {
+        subject: nasty.into(),
+        to: vec![who],
+        attachments: vec![AttachmentUp { name: nasty.into(), content_id: nasty.into(), ..Default::default() }],
+        marker: nasty.into(),
+        ..Default::default()
+    };
+    let drafted = CreateDraft::new(None, draft).element().write();
+    let folders = [CreateFolder::new("P1", nasty).element().write(), RenameFolder::new("F1", nasty).element().write()];
+    for xml in [xml, drafted].iter().chain(folders.iter()) {
+        assert!(!xml.contains(['\r', '\n', '\0']) && !xml.contains("&#13;") && !xml.contains("&#10;"), "{xml}");
+        assert!(xml.contains(&clean) || xml.contains("zoe@example.org"), "{xml}");
+    }
+}
+
+#[test]
+fn two_drafts_with_one_marker_go_on_with_the_newest_and_a_third_is_never_made() {
+    let standin = StandIn::new();
+    let first = run(&standin, &EwsMailRequest { drafts: vec![draft("mark-8", "Hello")], ..base() });
+    let older = first.drafts[0].id.clone();
+    let newer = {
+        let mut state = standin.state();
+        let mut copy = state.item(&older).unwrap().clone();
+        copy.id = state.next_id("item");
+        let id = copy.id.clone();
+        state.items.push(copy);
+        id
+    };
+    assert_eq!(standin.state().items.iter().filter(|i| i.draft).count(), 2);
+    let result = run(&standin, &EwsMailRequest { drafts: vec![draft("mark-8", "Hello again")], ..base() });
+    assert_eq!(result.drafts[0].id, newer, "the newest is the one gone on with");
+    assert_eq!(standin.state().items.iter().filter(|i| i.draft).count(), 2, "no third");
+    assert_eq!(standin.state().item(&newer).unwrap().subject, "Hello again");
+    assert_eq!(standin.state().item(&older).unwrap().subject, "Hello");
+}

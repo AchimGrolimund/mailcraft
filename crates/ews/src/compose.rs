@@ -14,7 +14,7 @@ use mailcraft_model::sync::AttachmentUp;
 use mailcraft_model::{Address, Importance, Message};
 
 use crate::basic::base64;
-use crate::changes::{Saved, id_element, recipients};
+use crate::changes::{Saved, id_element, line, recipients};
 use crate::error::Error;
 use crate::folder::valid_id;
 use crate::reply::Reply;
@@ -61,12 +61,12 @@ fn marker_uri() -> Element {
 }
 
 fn file_attachment(a: &AttachmentUp) -> Element {
-    let mut f = Element::new("t:FileAttachment").child(Element::new("t:Name").text(&a.name));
+    let mut f = Element::new("t:FileAttachment").child(Element::new("t:Name").text(&line(&a.name)));
     if !a.mime.is_empty() {
         f = f.child(Element::new("t:ContentType").text(&a.mime));
     }
     if !a.content_id.is_empty() {
-        f = f.child(Element::new("t:ContentId").text(&a.content_id));
+        f = f.child(Element::new("t:ContentId").text(&line(&a.content_id)));
     }
     f.child(Element::new("t:IsInline").text(if a.inline { "true" } else { "false" })).child(Element::new("t:Content").text(&base64(&a.data)))
 }
@@ -121,7 +121,7 @@ impl CreateDraft {
     pub fn element(&self) -> Element {
         let c = &self.content;
         let mut message = Element::new("t:Message")
-            .child(Element::new("t:Subject").text(&c.subject))
+            .child(Element::new("t:Subject").text(&line(&c.subject)))
             .child(Element::new("t:Body").attr("BodyType", if c.body.0 { "HTML" } else { "Text" }).text(&c.body.1));
         if !c.attachments.is_empty() {
             message = message.child(c.attachments.iter().fold(Element::new("t:Attachments"), |list, a| list.child(file_attachment(a))));
@@ -133,7 +133,7 @@ impl CreateDraft {
         };
         message = message.child(Element::new("t:Importance").text(importance));
         if !c.marker.is_empty() {
-            message = message.child(Element::new("t:ExtendedProperty").child(marker_uri()).child(Element::new("t:Value").text(&c.marker)));
+            message = message.child(Element::new("t:ExtendedProperty").child(marker_uri()).child(Element::new("t:Value").text(&line(&c.marker))));
         }
         for (name, list) in [("t:ToRecipients", &c.to), ("t:CcRecipients", &c.cc), ("t:BccRecipients", &c.bcc)] {
             if list.iter().any(|a| !a.email.trim().is_empty()) {
@@ -168,6 +168,8 @@ fn saved_of(reply: &Reply, operation: &str) -> Result<Saved, Error> {
 pub struct FindDraft {
     folder: Option<String>,
     marker: String,
+    /// The change key last known of the draft ("" when none was).
+    known: String,
 }
 
 impl std::fmt::Debug for FindDraft {
@@ -179,7 +181,14 @@ impl std::fmt::Debug for FindDraft {
 impl FindDraft {
     /// Looks in `drafts` (its server id; none: the Drafts folder by its name) for `marker`.
     pub fn new(drafts: Option<&str>, marker: &str) -> Self {
-        Self { folder: drafts.map(str::to_owned), marker: marker.to_owned() }
+        Self { folder: drafts.map(str::to_owned), marker: marker.to_owned(), known: String::new() }
+    }
+
+    /// Of several drafts with the marker, the one with this change key is the one (else the newest).
+    #[must_use]
+    pub fn knowing(mut self, change_key: &str) -> Self {
+        self.known = change_key.to_owned();
+        self
     }
 
     /// The operation: `ItemShape`, `IndexedPageItemView`, `Restriction`, `ParentFolderIds`.
@@ -194,12 +203,18 @@ impl FindDraft {
         Element::new("m:FindItem")
             .attr("Traversal", "Shallow")
             .child(Element::new("m:ItemShape").child(Element::new("t:BaseShape").text("IdOnly")))
-            .child(Element::new("m:IndexedPageItemView").attr("MaxEntriesReturned", "2").attr("Offset", "0").attr("BasePoint", "Beginning"))
+            .child(Element::new("m:IndexedPageItemView").attr("MaxEntriesReturned", "10").attr("Offset", "0").attr("BasePoint", "Beginning"))
             .child(Element::new("m:Restriction").child(equal))
+            // (Newest first: the one to go on with when a make left two.)
+            .child(Element::new("m:SortOrder").child(
+                Element::new("t:FieldOrder").attr("Order", "Descending").child(Element::new("t:FieldURI").attr("FieldURI", "item:DateTimeCreated")),
+            ))
             .child(Element::new("m:ParentFolderIds").child(parent))
     }
 
-    /// The draft found, when there is exactly one.
+    /// The draft found: the only one; of several (a make whose answer was lost and then made
+    /// again by an older program), the one whose change key was last known, else the newest. A
+    /// third is never made.
     pub fn answer(&self, reply: &Reply) -> Result<Option<Saved>, Error> {
         let messages = reply.messages("FindItem")?;
         let [message] = messages.as_slice() else { return Err(Error::Unexpected) };
@@ -216,11 +231,7 @@ impl FindDraft {
                 Some(Saved { id: take("Id")?, change_key: take("ChangeKey").unwrap_or_default() })
             })
             .collect();
-        // (Two with one marker is not a draft anyone can tell from the other: made again.)
-        Ok(match found.as_slice() {
-            [one] => Some(one.clone()),
-            _ => None,
-        })
+        Ok(found.iter().find(|f| !self.known.is_empty() && f.change_key == self.known).or(found.first()).cloned())
     }
 }
 
