@@ -127,6 +127,11 @@ impl Method {
 
 /// Most header fields a request or a response holds.
 pub const MAX_FIELDS: usize = 32;
+/// The fields of a response that are read whatever else came: how long to wait, why the
+/// organisation says no, how to sign in, and where a redirect goes.
+pub const READ_FIELDS: [&str; 4] = ["retry-after", "x-ews-policy-reason", "www-authenticate", "location"];
+/// Most of those a response holds.
+pub const MAX_READ_FIELDS: usize = 16;
 /// Longest header field name kept.
 const MAX_FIELD_NAME_LEN: usize = 64;
 
@@ -223,7 +228,8 @@ impl fmt::Debug for HttpRequest {
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct HttpResponse {
     status: u16,
-    /// Names in lower case, in the order they came; at most [`MAX_FIELDS`].
+    /// Names in lower case, in the order they came; at most [`MAX_FIELDS`] besides the ones in
+    /// [`READ_FIELDS`].
     headers: Vec<(String, String)>,
     body: Vec<u8>,
 }
@@ -236,15 +242,23 @@ impl HttpResponse {
 
     /// Adds a header field. The set kept is small: at most [`MAX_FIELDS`] fields, a name that is
     /// a token of at most 64 characters (lower-cased), a value of at most
-    /// [`MAX_FIELD_VALUE_LEN`] bytes without control characters; anything else is dropped. A
-    /// field that comes twice is kept twice (a server offers several `WWW-Authenticate`s).
+    /// [`MAX_FIELD_VALUE_LEN`] bytes (a control character in it, a tab apart, is read as a
+    /// space); anything else is dropped. A field that comes twice is kept twice (a server offers
+    /// several `WWW-Authenticate`s). The fields the crate and its callers read ([`READ_FIELDS`])
+    /// are kept whatever came before them, up to [`MAX_READ_FIELDS`] of them: a server that sends
+    /// thirty-two others first has not hidden its policy reason or its back-off.
     #[must_use]
     pub fn with_field(mut self, name: &str, value: &str) -> Self {
         let value = value.trim_matches([' ', '\t']);
-        if let Some(name) =
-            field_name(name).filter(|_| self.headers.len() < MAX_FIELDS && value.len() <= MAX_FIELD_VALUE_LEN && !value.chars().any(char::is_control))
-        {
-            self.headers.push((name, value.to_owned()));
+        if value.len() > MAX_FIELD_VALUE_LEN {
+            return self;
+        }
+        let Some(name) = field_name(name) else { return self };
+        let read = READ_FIELDS.contains(&name.as_str());
+        let held = self.headers.iter().filter(|(have, _)| READ_FIELDS.contains(&have.as_str()) == read).count();
+        if held < if read { MAX_READ_FIELDS } else { MAX_FIELDS } {
+            let value = value.chars().map(|c| if c.is_control() && c != '\t' { ' ' } else { c }).collect();
+            self.headers.push((name, value));
         }
         self
     }

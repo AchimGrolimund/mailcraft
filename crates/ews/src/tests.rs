@@ -491,11 +491,15 @@ fn the_response_keeps_a_small_capped_set_of_fields() {
         .with_field("www-authenticate", "NTLM")
         .with_field("LOCATION", " https://mail.example.org/ews ")
         .with_field("Set-Cookie", "a=b\r\nX: y")
+        .with_field("X-Tabbed", "one\ttwo")
         .with_field("bad name", "x")
         .with_field("X-Long", &"v".repeat(http::MAX_FIELD_VALUE_LEN + 1));
     assert_eq!(response.headers_named("WWW-Authenticate").collect::<Vec<_>>(), ["Negotiate", "NTLM"]);
     assert_eq!(response.header("location"), Some("https://mail.example.org/ews"));
-    assert_eq!((response.header("set-cookie"), response.header("bad name"), response.header("x-long")), (None, None, None));
+    assert_eq!((response.header("bad name"), response.header("x-long")), (None, None));
+    // A control character is a space (a tab stays); the value is not lost.
+    assert_eq!(response.header("set-cookie"), Some("a=b  X: y"));
+    assert_eq!(response.header("x-tabbed"), Some("one\ttwo"));
     let mut many = HttpResponse::new(200, vec![]);
     for n in 0..100 {
         many = many.with_field(&format!("x-{n}"), "1");
@@ -538,7 +542,7 @@ fn the_stand_in_refuses_stray_content() {
         ),
         ("text between elements", GOOD.replace("<m:FolderIds>", "<m:FolderIds>stray")),
         ("text in the operation", GOOD.replace("<m:GetFolder>", "<m:GetFolder>stray")),
-        ("an element in a shape's name", GOOD.replace("Default", "<t:X/>")),
+        ("an element beside a shape's name", GOOD.replace("Default", "Default<t:X/>")),
     ];
     for (what, operation) in cases {
         let (status, body) = raw(&StandIn::new(), &hand(&operation));
@@ -561,4 +565,85 @@ fn the_stand_in_refuses_stray_content() {
     // White space between elements is no stray text.
     let (status, body) = raw(&StandIn::new(), &hand(&GOOD.replace("><", ">\n  <")));
     assert_eq!(status, 200, "{body}");
+}
+
+// ---- the second review ----
+
+/// Whether every vector in the tree holds exactly what it has in it.
+fn tight(node: &xml::Node) -> bool {
+    node.children.capacity() == node.children.len()
+        && node.namespaces.capacity() == node.namespaces.len()
+        && node.attributes.capacity() == node.attributes.len()
+        && node.text.capacity() == node.text.len()
+        && node.children.iter().all(tight)
+}
+
+#[test]
+fn deep_chains_cost_what_they_hold() {
+    // 2,560 chains, each 39 elements deep: 0.7 MB. A node's `children` has room for four before
+    // it holds one, and the 99,840 nodes took 37 MB more than their sizes: 55 times the body.
+    let chain = format!("<c>{}{}</c>", "<d>".repeat(38), "</d>".repeat(38));
+    let doc = format!("<a>{}</a>", chain.repeat(2_560));
+    assert!(doc.len() < 800_000);
+    assert_eq!(xml::parse(doc.as_bytes()).unwrap_err(), xml::Malformed);
+    // A node costs its size, and the budget is a multiple of the body.
+    assert!(xml::budget(doc.len()) < 16 * doc.len() + 300_000);
+    // What fits has no room to spare in any of its vectors.
+    let fits = format!("<a xmlns:p=\"u\" b=\"1\">{}</a>", "<p:c e=\"1\">text<d/><d/><d/></p:c>".repeat(200));
+    let tree = xml::parse(fits.as_bytes()).unwrap();
+    assert_eq!(tree.children.len(), 200);
+    assert!(tight(&tree));
+}
+
+#[test]
+fn a_namespace_declared_again_is_still_one_copy() {
+    let tree = xml::parse(b"<a><b xmlns=\"urn:same\"><c/></b><d xmlns=\"urn:same\"><e xmlns:p=\"urn:same\"/></d></a>").unwrap();
+    let (b, d) = (&tree.children[0], &tree.children[1]);
+    assert!(std::sync::Arc::ptr_eq(&b.namespace, &d.namespace));
+    assert!(std::sync::Arc::ptr_eq(&b.namespaces[0].1, &d.namespaces[0].1));
+    assert!(std::sync::Arc::ptr_eq(&b.children[0].namespace, &d.children[0].namespaces[0].1));
+}
+
+#[test]
+fn a_prefix_over_its_cap_is_no_document_even_undeclared() {
+    assert_eq!(xml::parse(format!("<{}:a/>", "p".repeat(65)).as_bytes()).unwrap_err(), xml::Malformed);
+    assert!(xml::parse(format!("<{}:a/>", "p".repeat(64)).as_bytes()).is_ok());
+}
+
+#[test]
+fn the_fields_that_are_read_are_kept_whatever_came_first() {
+    let mut response = HttpResponse::new(403, vec![]);
+    for n in 0..40 {
+        response = response.with_field(&format!("X-Noise-{n}"), "1");
+    }
+    let response = response
+        .with_field("X-EWS-Policy-Reason", DISABLED)
+        .with_field("Retry-After", "7")
+        .with_field("WWW-Authenticate", "NTLM")
+        .with_field("Location", "https://mail.example.org/ews");
+    assert_eq!(response.policy_reason(), Some(DISABLED));
+    assert_eq!(
+        (response.retry_after(), response.header("www-authenticate"), response.header("location")),
+        (Some("7"), Some("NTLM"), Some("https://mail.example.org/ews"))
+    );
+    // ... so a 403 is a block and a 503 is the wait the server named.
+    assert_eq!(Reply::judge(&response, 10).unwrap_err(), Error::Blocked(PolicyReason::Disabled));
+    let mut busy = HttpResponse::new(503, vec![]);
+    for n in 0..40 {
+        busy = busy.with_field(&format!("X-Noise-{n}"), "1");
+    }
+    assert_eq!(Reply::judge(&busy.with_field("Retry-After", "7"), 10).unwrap_err(), Error::Busy { back_off_ms: 7_000 });
+    // Those have a cap of their own, too.
+    let mut flood = HttpResponse::new(401, vec![]);
+    for _ in 0..100 {
+        flood = flood.with_field("WWW-Authenticate", "Basic");
+    }
+    assert_eq!(flood.headers_named("www-authenticate").count(), http::MAX_READ_FIELDS);
+}
+
+#[test]
+fn an_element_shows_no_text_in_debug_output() {
+    let element = Element::new("t:Body").attr("Id", "SecretId").text("Secret mail").child(Element::new("t:C").text("Secret too"));
+    let shown = format!("{element:?}");
+    assert!(!shown.contains("Secret"), "{shown}");
 }

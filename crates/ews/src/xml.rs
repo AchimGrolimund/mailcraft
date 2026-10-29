@@ -41,9 +41,10 @@ const MAX_ATTRIBUTE: usize = 2_048;
 const MAX_TAG_ATTRIBUTES: usize = 64;
 /// Longest text kept of one element (bytes): an id, a name, a property in base64.
 pub const MAX_TEXT: usize = 8_192;
-/// What an element costs besides its name, attributes and text (the size of a node and its
-/// allocations, rounded up).
-const NODE_COST: usize = 200;
+/// What an element costs besides its name, attributes and text: the size of a node and the
+/// allocator's share of the block that holds it in its parent's `children`. (The vectors of a
+/// node are shrunk to fit when it is closed, so that a vector's spare room is no further cost.)
+const NODE_COST: usize = std::mem::size_of::<Node>() + 48;
 /// What the whole tree may cost, whatever the body weighs (bytes).
 const MAX_BUDGET: usize = 64 * 1024 * 1024;
 
@@ -259,6 +260,11 @@ impl Walk {
         if done.spoiled {
             done.node.text.clear();
         }
+        // (The room a vector grew by is not kept: a node is what it holds.)
+        done.node.children.shrink_to_fit();
+        done.node.namespaces.shrink_to_fit();
+        done.node.attributes.shrink_to_fit();
+        done.node.text.shrink_to_fit();
         match self.stack.last_mut() {
             Some(parent) => parent.node.children.push(done.node),
             None => self.root = Some(done.node),

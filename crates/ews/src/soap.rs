@@ -94,12 +94,23 @@ fn clean_name(name: &str) -> String {
 
 /// One element of a request: a name (with its prefix, `m:GetFolder`), attributes, and text and
 /// children.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Element {
     name: String,
     attributes: Vec<(String, String)>,
     text: String,
     children: Vec<Element>,
+}
+
+impl std::fmt::Debug for Element {
+    /// The name and how much is inside: the text and the attributes may be somebody's mail.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Element")
+            .field("name", &self.name)
+            .field("attributes", &self.attributes.len())
+            .field("children", &self.children.len())
+            .finish()
+    }
 }
 
 impl Element {
