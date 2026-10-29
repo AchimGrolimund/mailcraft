@@ -79,6 +79,7 @@ pub fn send_done(mb: &mut Mailbox, account: Id, done: &SendDone, lang: mailcraft
         changed |= super::graph_drafts::draft_done(mb, account, draft, lang, said);
     }
     let Some(m) = mb.message(done.message).filter(|m| m.account == account) else { return changed };
+    let server = if mb.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Exchange) { "the server" } else { "Microsoft" };
     let subject: String = m.subject.chars().filter(|c| !c.is_control()).take(60).collect();
     let subject = if subject.trim().is_empty() { lang.t("(no subject)").to_string() } else { subject };
     let couldnt = |why: &str| {
@@ -106,7 +107,7 @@ pub fn send_done(mb: &mut Mailbox, account: Id, done: &SendDone, lang: mailcraft
         }
         SendOutcome::Held { lost, why } => {
             let held = if *lost {
-                "It may have been sent: the answer from Microsoft was lost. Look in Sent Items before you send it again.".to_string()
+                format!("It may have been sent: the answer from {server} was lost. Look in Sent Items before you send it again.")
             } else {
                 format!("It wasn't sent: {why}. Change it, or send it again.")
             };

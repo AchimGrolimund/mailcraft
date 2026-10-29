@@ -728,9 +728,10 @@ pub fn unpushed(s: &Session, account: Id) -> usize {
     if s.mailbox.account(account).is_some_and(|a| a.kind == AccountKind::Microsoft) {
         return super::graph_mail::unpushed(s, account);
     }
-    // (Nothing of an Exchange server account goes up yet, #252.)
+    // An Exchange server account's changes are counted as a Microsoft account's (#252): folders,
+    // messages, drafts. (Nothing is counted while the switch is off: nothing would go.)
     if s.mailbox.account(account).is_some_and(|a| a.kind == AccountKind::Exchange) {
-        return 0;
+        return if s.ews { super::graph_mail::unpushed(s, account) } else { 0 };
     }
     remote_ops(s, account, 0).1 + place_ops(s, account, 0).1
 }

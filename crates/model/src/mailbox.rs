@@ -1962,6 +1962,12 @@ impl Mailbox {
         self.folder(folder).is_some_and(|f| f.kind == FolderKind::Outbox && self.account(f.account).is_some_and(|a| a.kind == AccountKind::Imap))
     }
 
+    /// Whether a draft saved in `account` is kept on its server, field by field, with MailCraft's
+    /// marker: a Microsoft account's, and an Exchange server account's (#252).
+    pub fn keeps_drafts_on_server(&self, account: Id) -> bool {
+        self.account(account).is_some_and(|a| matches!(a.kind, AccountKind::Microsoft | AccountKind::Exchange))
+    }
+
     /// Whether `account` is kept in step through Microsoft Graph.
     pub fn is_graph(&self, account: Id) -> bool {
         self.account(account).is_some_and(|a| a.kind == AccountKind::Microsoft)

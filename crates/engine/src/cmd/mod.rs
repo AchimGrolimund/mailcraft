@@ -17,6 +17,7 @@ pub mod compose;
 mod compose_trust_tests;
 pub mod edit;
 mod ews_down;
+mod ews_up;
 pub mod ews_mail;
 #[cfg(test)]
 mod favorites_tests;

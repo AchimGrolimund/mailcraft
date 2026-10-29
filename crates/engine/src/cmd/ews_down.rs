@@ -115,15 +115,10 @@ fn bounded_deltas(deltas: &mut EwsFolderDeltas) -> bool {
 }
 
 /// A piece of a run held to its sizes, as the module documentation says. What became of changes,
-/// drafts, mail sent and mail placed is taken out: none of it goes up yet, so it answers nothing
-/// that was asked. A piece is the end of a run that went well (`whole`) only if it is the last,
+/// drafts and mail sent is held to sizes ([`super::ews_up::bounded_up`]); mail placed is taken out. A piece is the end of a run that went well (`whole`) only if it is the last,
 /// came whole, and tells of no trouble.
 pub(crate) fn bounded(mut result: EwsMailResult) -> EwsMailResult {
-    result.changes.clear();
-    result.messages.clear();
-    result.drafts.clear();
-    result.sent.clear();
-    result.placed.clear();
+    super::ews_up::bounded_up(&mut result);
     let mut cut = false;
     // The folders whose pages came cut: where they go on from is not kept, so that the next run
     // reads them again from where it was.

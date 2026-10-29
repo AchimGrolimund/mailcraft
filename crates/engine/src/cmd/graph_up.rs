@@ -315,8 +315,13 @@ pub fn message_done(mb: &mut Mailbox, account: Id, done: &MessageChangeDone, ref
             let Some(m) = mine(mb, account, *message, id) else { return false };
             let Some(server) = m.server.as_mut() else { return false };
             match &done.outcome {
-                MessageOutcome::Done { folder, .. } => {
+                MessageOutcome::Done { folder, id: now, .. } => {
                     server.folder = if folder.is_empty() { to.clone() } else { folder.clone() };
+                    // An Exchange server gives a moved message an id of its own in its new folder
+                    // (a Microsoft account's ids stay: it says none).
+                    if !now.is_empty() {
+                        server.id = now.clone();
+                    }
                 }
                 MessageOutcome::Gone => {
                     server.gone = true;
