@@ -7,15 +7,24 @@
 //! It is the system's own verifier ([`crate::tls`], `rustls-platform-verifier`) with one extra
 //! way in, and the extra way is narrow:
 //!
-//! - It opens only when the system said the issuer is unknown (or, on a system that doesn't say
-//!   why, that the chain is not trusted): never for a certificate that is expired, not yet valid,
-//!   revoked, for another name or badly signed. The dates and the name are checked here again,
-//!   whatever error the system gave, so that no system's wording can let an expired or wrong-host
-//!   certificate through.
+//! - It opens only for two errors of the system's verifier: `UnknownIssuer` and `Other`. What
+//!   the verifier says varies by system. On Linux and FreeBSD (webpki over the system's store) a
+//!   chain with no trusted root is exactly `UnknownIssuer`, and a certificate not made for
+//!   servers (`InvalidPurpose`) arrives as an `Other` whose text says "invalid extensions"; that
+//!   one is final here. On macOS most trust errors arrive as `Other`, and on Windows an
+//!   untrusted root, a bad chain signature and revocation that could not be looked up do too;
+//!   those cannot be told apart from an unknown issuer there, so for them the owner's choice of
+//!   exactly this certificate is the authority (the chain above the certificate is not what is
+//!   trusted: the certificate is). A bad signature, a revocation, a purpose and protocol errors
+//!   that the verifier names as such stay final.
+//! - Whatever error the system gave, the dates and the name are checked here again, from the
+//!   certificate itself. On macOS and Windows that re-check is the only thing that keeps an
+//!   expired, not-yet-valid or wrong-name certificate from being accepted by its fingerprint.
 //! - It compares the fingerprint of the end-entity certificate, the one the server shows first,
-//!   with the one the owner chose (all 32 bytes; a fingerprint is public, so no care over timing). The server must still prove
-//!   it holds the certificate's key: the handshake signature is checked by the system's
-//!   algorithms, as for any certificate.
+//!   with the one the owner chose (all 32 bytes; a fingerprint is public, so no care over
+//!   timing). The server must still prove it holds the certificate's key: the handshake
+//!   signature is checked by the system's algorithms, as for any certificate (a test presents
+//!   the pinned certificate and signs with another key).
 //! - It is never a switch that turns checking off. No fingerprint set means the system alone
 //!   decides, and the verifier then only notes what it saw.
 //!
@@ -63,7 +72,7 @@ impl Pinned {
     }
 
     /// What to do with a certificate the system refused with `error`.
-    fn refused(
+    pub(crate) fn refused(
         &self,
         error: Error,
         end_entity: &CertificateDer<'_>,
@@ -80,6 +89,9 @@ impl Pinned {
             Error::InvalidCertificate(CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. }) => {
                 Some(CertificateFault::WrongName)
             }
+            // A certificate not made for servers (webpki's purpose error, as the platform verifier
+            // words it on Linux and FreeBSD) is not one a fingerprint changes.
+            Error::InvalidCertificate(CertificateError::Other(other)) if other.to_string().contains("invalid extensions") => return Err(error),
             // The system does not trust the chain: the one thing a fingerprint may change.
             Error::InvalidCertificate(CertificateError::UnknownIssuer | CertificateError::Other(_)) => None,
             // Anything else (a bad signature, a revocation, a purpose, a protocol error) is final.
@@ -149,3 +161,7 @@ impl ServerCertVerifier for Pinned {
         self.system.supported_verify_schemes()
     }
 }
+
+#[cfg(test)]
+#[path = "pinned_tests.rs"]
+mod pinned_tests;

@@ -183,3 +183,4 @@ this code base.
 | 2026-10-29 | patch | #599 review: gap 6: `@media` follows the body's exact width, not a class; a sender's dark palette needs a dark rule that gives colours to something shown |
 | 2026-10-29 | minor | #252: gap 5: Exchange server accounts, first step: the kind of account and its settings, behind `MAILCRAFT_EWS=1`; nothing connects yet |
 | 2026-10-29 | minor | #252 E3: gap 5: Autodiscover, Basic sign-in and certificate trust by fingerprint are built and tested; nothing drives them yet |
+| 2026-10-29 | patch | #252 E3 review: gap 5: Autodiscover sends the sign-in only in answer to a Basic challenge; Microsoft's own mail is never asked |

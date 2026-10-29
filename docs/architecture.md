@@ -286,3 +286,4 @@ a made-up mailbox of 64,000 messages (ignored by `cargo test`).
 | 2026-10-29 | minor | #252: Exchange server accounts, first step: `AccountKind::Exchange`, `Account::ews`, the request and result shapes, three registered commands, the `MAILCRAFT_EWS` switch in the data flow |
 | 2026-10-29 | minor | #252 E8: `ews`, L3: Exchange Web Services requests and answers without I/O, a hostile XML reader and a strict stand-in; 18 crates |
 | 2026-10-29 | minor | #252 E3: `ews` finds a server by Autodiscover (state machine, no I/O) and builds Basic credentials; `net` looks up the Autodiscover SRV record and makes one HTTPS exchange that trusts the system's certificates or one chosen by fingerprint (never an expired or wrong-name one); nothing drives them yet |
+| 2026-10-29 | patch | #252 E3 review: `ews` depends on `model` (L1) for the providers table; Autodiscover asks for the sign-in only on a challenge |
