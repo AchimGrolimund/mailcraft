@@ -1062,6 +1062,14 @@ fn send(s: &mut Session, _: &Value) -> CmdResult {
             not_sending_yet = mailcraft_i18n::Arg::words(NOT_SENDING_YET)
         ));
     }
+    // An Exchange server account sends nothing while its switch is off (#252), and the message
+    // would wait in its Outbox for a run that never comes.
+    if account.kind.needs_switch() && !s.ews {
+        return Err(failed!(
+            "{switched_off}: send this message from another account, or save it as a draft",
+            switched_off = mailcraft_i18n::Arg::words(super::ews_mail::SWITCHED_OFF)
+        ));
+    }
     // An account that sends its mail queues the message for the next Send/Receive; a local one
     // has nowhere to send it, so it is filed as sent (and delivered to local accounts it names).
     let queued = account.kind.sends_mail();

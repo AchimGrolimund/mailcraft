@@ -1054,6 +1054,11 @@ msgid "Apply Send/Receive"
 msgstr "Verzenden/ontvangen toepassen"
 
 #. command label
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "Apply Send/Receive with Exchange Web Services"
+msgstr ""
+
+#. command label
 #: crates/engine/src/cmd/jmap_mail.rs
 #, fuzzy
 msgid "Apply Send/Receive with JMAP"
@@ -2824,6 +2829,11 @@ msgid "Double-click to open {name}; right-click to save it"
 msgstr "Dubbelklik om {name} te openen; klik met de rechtermuisknop om het op te slaan"
 
 #. command label
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "Download Exchange Messages in Full"
+msgstr ""
+
+#. command label
 #: crates/engine/src/cmd/jmap_mail.rs
 #, fuzzy
 msgid "Download JMAP Messages in Full"
@@ -3230,6 +3240,31 @@ msgstr "Alles in „{folder}” wordt definitief verwijderd."
 #, fuzzy
 msgid "Everything the interface does is a command: {commands} of them, covering {percent}% of the feature catalog. The command line, the control channel and the MCP server run the same commands."
 msgstr "Alles wat de interface doet, is een opdracht: {commands} opdrachten, die {percent}% van de functiecatalogus dekken. De opdrachtregel, het besturingskanaal en de MCP-server voeren dezelfde opdrachten uit."
+
+#. what a command says
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "Exchange server accounts are being tested: start MailCraft with MAILCRAFT_EWS=1 to try them"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "Exchange server accounts can't be sent and received yet: that part is not built"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/backstage.rs
+msgid "Exchange server {host} · not kept in step yet: this part is not built"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/backstage.rs
+msgid "Exchange server {host} · not kept in step: Exchange server accounts are switched off (start MailCraft with MAILCRAFT_EWS=1 to try them)"
+msgstr ""
+
+#. interface
+#: crates/ui-egui/src/backstage.rs
+msgid "Exchange server · no usable server address"
+msgstr ""
 
 #. command label
 #: crates/engine/src/cmd/mail.rs
@@ -8422,7 +8457,7 @@ msgid "Send & Receive"
 msgstr "Verzenden & ontvangen"
 
 #. ribbon location
-#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/calendar_settings.rs crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/graph_send.rs crates/engine/src/cmd/jmap_mail.rs crates/engine/src/cmd/remote.rs crates/engine/src/cmd/sync_progress.rs crates/engine/src/cmd/tasks_remote.rs crates/ui-egui/src/lib.rs
+#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/calendar_settings.rs crates/engine/src/cmd/ews_mail.rs crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/graph_send.rs crates/engine/src/cmd/jmap_mail.rs crates/engine/src/cmd/remote.rs crates/engine/src/cmd/sync_progress.rs crates/engine/src/cmd/tasks_remote.rs crates/ui-egui/src/lib.rs
 #, fuzzy
 msgid "Send / Receive"
 msgstr "Verzenden/ontvangen"
@@ -8606,6 +8641,11 @@ msgstr "Verzenden/ontvangen meldt aan bij Microsoft; daarna kan de server worden
 #, fuzzy
 msgid "Send/Receive stopped unexpectedly"
 msgstr "Verzenden/ontvangen is onverwacht gestopt"
+
+#. command label
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "Send/Receive with Exchange Web Services"
+msgstr ""
 
 #. command label
 #: crates/engine/src/cmd/jmap_mail.rs
@@ -12502,6 +12542,11 @@ msgid "add at least one recipient"
 msgstr "voeg minstens één ontvanger toe"
 
 #. what a command says
+#: crates/engine/src/cmd/account.rs
+msgid "an Exchange server account's server and address can't be changed once its mail is here: remove it and add the other one"
+msgstr ""
+
+#. what a command says
 #: crates/model/src/signature.rs
 #, fuzzy
 msgid "an HTML signature shows pictures from their web address only: remove this signature's pictures first"
@@ -12518,6 +12563,11 @@ msgstr "een HTML-handtekening toont afbeeldingen vanaf hun webadres: schakel ove
 #, fuzzy
 msgid "an account becomes a JMAP account, or stops being one, only by being removed and added again"
 msgstr "een account wordt een JMAP-account, of houdt op dat te zijn, alleen door het te verwijderen en opnieuw toe te voegen"
+
+#. what a command says
+#: crates/engine/src/cmd/account.rs
+msgid "an account becomes an Exchange server account, or stops being one, only by being removed and added again"
+msgstr ""
 
 #. what a command says
 #: crates/engine/src/cmd/calendar.rs
@@ -12863,6 +12913,11 @@ msgstr "nooit"
 msgid "no Microsoft account is kept in step by IMAP"
 msgstr "geen Microsoft-account wordt via IMAP bijgehouden"
 
+#. what a command says, why a command can't run
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "no account is an Exchange server account"
+msgstr ""
+
 #. what a command says
 #: crates/engine/src/cmd/account.rs
 #, fuzzy
@@ -12888,7 +12943,7 @@ msgid "no account is kept in step through Microsoft Graph"
 msgstr "geen account wordt via Microsoft Graph bijgehouden"
 
 #. what a command says
-#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/calendar_opened.rs crates/engine/src/cmd/calendar_settings.rs crates/engine/src/cmd/compose.rs crates/engine/src/cmd/folder.rs crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/graph_send.rs crates/engine/src/cmd/graph_switch.rs crates/engine/src/cmd/jmap_mail.rs crates/engine/src/cmd/offline.rs crates/engine/src/cmd/remote.rs crates/engine/src/cmd/search_server.rs crates/engine/src/cmd/shared.rs crates/engine/src/cmd/signature.rs
+#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/calendar_opened.rs crates/engine/src/cmd/calendar_settings.rs crates/engine/src/cmd/compose.rs crates/engine/src/cmd/ews_mail.rs crates/engine/src/cmd/folder.rs crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/graph_send.rs crates/engine/src/cmd/graph_switch.rs crates/engine/src/cmd/jmap_mail.rs crates/engine/src/cmd/offline.rs crates/engine/src/cmd/remote.rs crates/engine/src/cmd/search_server.rs crates/engine/src/cmd/shared.rs crates/engine/src/cmd/signature.rs
 #, fuzzy
 msgid "no account with id {id}"
 msgstr "geen account met id {id}"
@@ -13408,6 +13463,11 @@ msgstr "de bovenliggende map hoort bij een ander account"
 #, fuzzy
 msgid "the proposed end is not after the proposed start"
 msgstr "het voorgestelde einde ligt niet na het voorgestelde begin"
+
+#. what a command says
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "the result is for another account"
+msgstr ""
 
 #. what a command says
 #: crates/engine/src/cmd/mail.rs
@@ -14086,6 +14146,11 @@ msgid "{name} has declined this meeting."
 msgstr "{name} heeft deze vergadering geweigerd."
 
 #. what a command says
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "{name} has no Exchange server address that can be used"
+msgstr ""
+
+#. what a command says
 #: crates/engine/src/cmd/jmap_mail.rs
 #, fuzzy
 msgid "{name} has no JMAP server address that can be used"
@@ -14174,6 +14239,11 @@ msgstr "{name} is geen gedeeld postvak"
 #, fuzzy
 msgid "{name} isn't a shared mailbox: remove it with account.remove"
 msgstr "{name} is geen gedeeld postvak: verwijder het met account.remove"
+
+#. what a command says
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "{name} isn't an Exchange server account"
+msgstr ""
 
 #. what a command says
 #: crates/engine/src/cmd/graph_mail.rs
@@ -14870,6 +14940,11 @@ msgstr[1] "{sent} berichten verzonden"
 #, fuzzy
 msgid "{service} account"
 msgstr "{service}-account"
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "{switched_off}: send this message from another account, or save it as a draft"
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/reminders.rs
