@@ -117,6 +117,10 @@ pub fn send(request: &Request<'_>) -> Result<Response, NetError> {
 /// another request, [`Connection::is_open`] is false, [`Connection::send`] says the connection is
 /// closed ([`is_closed`]), and the host makes a new one (and signs in again). A server may also
 /// close an idle connection: the next request then fails the same way.
+///
+/// **Retrying.** A host that reconnects after a failure must retry only a request that is the same
+/// however often it is made, or one for which nothing was written. A request whose answer was lost
+/// after it went out (`CreateItem`, `SendItem`) may have happened: it is never sent again here.
 pub struct Connection {
     stream: crate::transport::Stream<'static>,
     url: Url,

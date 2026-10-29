@@ -376,10 +376,10 @@ impl Challenge {
         Ok(Challenge { flags, server_challenge, pairs, has_target_info })
     }
 
-    /// The server's own time (`MsvAvTimestamp`), when it sent it.
+    /// The server's own time (`MsvAvTimestamp`), when it sent it: the first such pair that is
+    /// well formed (eight bytes). A malformed one is passed over, as if it were not there.
     fn timestamp(&self) -> Option<[u8; 8]> {
-        let (_, value) = self.pairs.iter().find(|(id, _)| *id == AV_TIMESTAMP)?;
-        <[u8; 8]>::try_from(value.as_slice()).ok()
+        self.pairs.iter().filter(|(id, _)| *id == AV_TIMESTAMP).find_map(|(_, value)| <[u8; 8]>::try_from(value.as_slice()).ok())
     }
 
     /// The target information that goes back, end marker included (empty when the server sent
@@ -465,7 +465,19 @@ fn channel_bindings(end_point_hash: Option<&[u8]>) -> [u8; 16] {
 fn ntowf_v2(password: &str, user: &str, domain: &str) -> Result<[u8; 16], NtlmError> {
     let mut hash = [0u8; 16];
     hash.copy_from_slice(&Md4::digest(utf16(password)));
-    let name = utf16(&format!("{}{domain}", user.to_uppercase()));
+    // Windows upper-cases one character to one character: a character whose full Unicode
+    // upper case is several (the German sharp s becomes "SS" in Rust) is kept as it is.
+    let upper: String = user
+        .chars()
+        .map(|c| {
+            let mut mapped = c.to_uppercase();
+            match (mapped.next(), mapped.next()) {
+                (Some(one), None) => one,
+                _ => c,
+            }
+        })
+        .collect();
+    let name = utf16(&format!("{upper}{domain}"));
     hmac_md5(&hash, &[&name])
 }
 

@@ -249,3 +249,28 @@ fn a_tls_connection_is_held_trusted_by_fingerprint_and_names_its_certificates_ha
     // The refused attempt connected too, so two connections in all; the two requests shared one.
     assert_eq!(accepted.load(Ordering::SeqCst), 2);
 }
+
+#[test]
+fn a_challenge_header_of_any_realistic_length_arrives_whole() {
+    // A minimal NTLM challenge is about 300 characters; one with the most target information
+    // read (16 KiB) is about 22,000. Neither is cut or tidied on the way.
+    for len in [320usize, 22_000] {
+        let token: String = "TlRMTVNTUAAC".chars().cycle().take(len).collect();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let header = format!("NTLM {token}");
+        let sent = header.clone();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = read_request(&mut stream);
+                let reply =
+                    format!("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Negotiate\r\nWWW-Authenticate: {sent}\r\nContent-Length: 0\r\n\r\n");
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/");
+        let mut connection = Connection::open(&url, "").unwrap();
+        let answer = ask(&mut connection, &url, Some("NTLM T1")).unwrap();
+        assert_eq!(answer.challenges, vec!["Negotiate".to_string(), header]);
+    }
+}

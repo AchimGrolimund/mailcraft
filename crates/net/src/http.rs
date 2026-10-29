@@ -26,7 +26,7 @@ pub(crate) const MAX_BODY: usize = 64 * 1024;
 /// own limit is 150 MB). Each caller asks for no more than its own answers need (#175).
 pub(crate) const MAX_LARGE_BODY: usize = 160 * 1024 * 1024;
 /// Most bytes the answer's status line and headers may take, and most lines.
-const MAX_HEAD: usize = 16 * 1024;
+const MAX_HEAD: usize = 48 * 1024;
 const MAX_HEAD_LINES: usize = 200;
 /// Longest address spoken to, and the longest that is followed when a server names the address
 /// of what comes next ([`Url::parse_within`]).
@@ -167,9 +167,13 @@ pub(crate) struct Reply {
     pub(crate) policy_reason: Option<String>,
 }
 
-/// Most `WWW-Authenticate` headers kept of one answer, and the longest.
+/// Most `WWW-Authenticate` headers kept of one answer, and the longest. An NTLM challenge (#252)
+/// is Base64 of up to 16 KiB of target information (about 22,000 characters) and is never cut
+/// or tidied; the whole head is bounded by [`MAX_HEAD`] in any case.
 const MAX_CHALLENGES: usize = 16;
-const MAX_CHALLENGE: usize = 1_024;
+const MAX_CHALLENGE: usize = 24 * 1024;
+/// The longest `X-EWS-Policy-Reason` kept.
+const MAX_REASON: usize = 1_024;
 
 /// `text` as one piece of a URL or a form: everything but letters, digits and `-._~` as `%XX`.
 pub(crate) fn encode(text: &str) -> String {
@@ -738,10 +742,10 @@ fn read_head<R: Read>(reader: &mut Reader<'_, R>) -> Result<Head, NetError> {
             head.location = Some(value.to_string());
         } else if name.eq_ignore_ascii_case("www-authenticate") {
             if head.challenges.len() < MAX_CHALLENGES {
-                head.challenges.push(tidy(value).chars().take(MAX_CHALLENGE).collect());
+                head.challenges.push(value.trim().chars().filter(|c| !c.is_control()).take(MAX_CHALLENGE).collect());
             }
         } else if name.eq_ignore_ascii_case("x-ews-policy-reason") {
-            head.policy_reason = Some(tidy(value).chars().take(MAX_CHALLENGE).collect());
+            head.policy_reason = Some(tidy(value).chars().take(MAX_REASON).collect());
         } else if name.eq_ignore_ascii_case("content-range") {
             head.content_range = Some(value.to_string());
         }

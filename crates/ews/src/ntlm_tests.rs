@@ -418,3 +418,60 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn the_channel_binding_hash_is_pinned_by_an_independent_vector() {
+    // MD5(Z(16) ‖ 35 00 00 00 ‖ "tls-server-end-point:" ‖ 09 × 32), computed with Python's hashlib.
+    assert_eq!(channel_bindings(Some(&[9; 32])).to_vec(), hex("b477d84bb5e1a11ab950338f6386aea0"));
+    assert_eq!(channel_bindings(None), [0; 16]);
+}
+
+#[test]
+fn a_pair_that_runs_past_the_target_information_is_refused() {
+    // The target information's own length is consistent (it ends where the message ends), but the
+    // pair inside says it is longer than what is left.
+    let mut raw = challenge_with(0xe28a_8233, &[(1, utf16("MAIL"))]);
+    raw[58..60].copy_from_slice(&200u16.to_le_bytes());
+    assert_eq!(Challenge::parse(&raw).err(), Some(NtlmError::BadChallenge));
+}
+
+#[test]
+fn the_user_name_is_upper_cased_one_character_to_one() {
+    // "\u{df}" has the full upper case "SS", which Windows does not use: it stays.
+    let kept = ntowf_v2("pw", "ma\u{df}", "D").unwrap();
+    let mut same = [0u8; 16];
+    same.copy_from_slice(&Md4::digest(utf16("pw")));
+    assert_eq!(kept, hmac_md5(&same, &[&utf16("MA\u{df}D")]).unwrap());
+    assert_ne!(kept, hmac_md5(&same, &[&utf16("MASSD")]).unwrap());
+    assert_eq!(ntowf_v2("pw", "ada", "D").unwrap(), hmac_md5(&same, &[&utf16("ADAD")]).unwrap());
+}
+
+#[test]
+fn only_a_well_formed_timestamp_is_taken() {
+    let raw = challenge_with(0xe28a_8233, &[(AV_TIMESTAMP, vec![1, 2, 3]), (AV_TIMESTAMP, vec![9; 8])]);
+    assert_eq!(Challenge::parse(&raw).unwrap().timestamp(), Some([9; 8]));
+    let bad = challenge_with(0xe28a_8233, &[(AV_TIMESTAMP, vec![1, 2, 3])]);
+    assert_eq!(Challenge::parse(&bad).unwrap().timestamp(), None);
+}
+
+#[test]
+fn a_realistic_challenge_of_hundreds_of_characters_signs_in() {
+    let challenge = challenge_with(
+        0xe28a_8233,
+        &[
+            (2, utf16("EXAMPLE")),
+            (1, utf16("MAIL01")),
+            (4, utf16("example.org")),
+            (3, utf16("mail01.corp.example.org")),
+            (6, 0u32.to_le_bytes().to_vec()),
+            (5, utf16("corp.example.org")),
+            (AV_TIMESTAMP, vec![1; 8]),
+        ],
+    );
+    let header = format!("NTLM {}", base64(&challenge));
+    assert!(header.len() > 300, "{}", header.len());
+    let credentials = Credentials::new("EXAMPLE\\ada", "pw").unwrap();
+    let context = Context { client_challenge: [3; 8], unix_seconds: 1, host: "mail.example.org", channel_binding: Some(&[1; 32]) };
+    let third = sign_in(&credentials, &context, |_: &Secret| -> Result<Leg, ()> { Ok(Leg { status: 401, challenges: vec![header.clone()] }) });
+    assert!(third.is_ok());
+}
