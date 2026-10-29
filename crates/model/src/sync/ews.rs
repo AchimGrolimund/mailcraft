@@ -34,9 +34,12 @@
 //! folders), not as a complete listing: [`EwsFolderDeltas`], keyed by the folders' opaque ids.
 //!
 //! **Server ids.** An Exchange item is named by an `Id` and a `ChangeKey`, and the change key
-//! changes with the item. Here both are one opaque string (`id` of [`ServerMessage`](super::ServerMessage)
-//! and of [`GraphFolder`]), whose encoding only `mailcraft-ews` knows; nothing else looks inside
-//! it or relies on its shape. It is at most [`MAX_EWS_ID`] bytes, with no control character.
+//! changes with every edit. A message is matched by its `Id` alone (`id` of
+//! [`ServerMessage`](super::ServerMessage)), so that an edit made elsewhere is the same message; the
+//! change key is kept apart (`change_key` of the same, where a later step's changes up read it).
+//! A folder's `id` ([`GraphFolder`]) is its `Id`. Both are opaque: only `mailcraft-ews` knows what
+//! they are made of, and nothing else relies on their shape. Each is at most [`MAX_EWS_ID`]
+//! bytes, with no control character.
 //!
 //! No type shows the server's address, the user name, the account's address, a sync state or a
 //! message in debug output: counts only. The password that opens the server is handed to the host
@@ -332,6 +335,29 @@ fn state_ok(state: &str) -> bool {
     state.len() <= MAX_EWS_STATE && !state.chars().any(char::is_control)
 }
 
+/// Longest subject, `Message-ID`, preview, name and address, in bytes, and the most people in a
+/// list and categories, that are taken in at all (they are cut to what is shown after that): a
+/// server's answer is held to what any real message has, generously.
+const MAX_TEXT: usize = 16 * 1024;
+const MAX_PEOPLE: usize = 1_000;
+const MAX_CATEGORIES: usize = 200;
+
+/// Whether a message of a page is within the sizes of its text: the subject, the preview, the
+/// `Message-ID`, the names and addresses, the categories and the change key.
+fn message_content_ok(m: &GraphMessage) -> bool {
+    let person = |a: &crate::Address| a.name.len() <= MAX_TEXT && a.email.len() <= MAX_TEXT;
+    m.subject.len() <= MAX_TEXT
+        && m.preview.len() <= MAX_TEXT
+        && m.message_id.len() <= MAX_TEXT
+        && m.server.change_key.len() <= MAX_EWS_ID
+        && m.server.categories.len() <= MAX_CATEGORIES
+        && m.server.categories.iter().all(|c| c.len() <= MAX_TEXT)
+        && person(&m.from)
+        && m.to.len() <= MAX_PEOPLE
+        && m.cc.len() <= MAX_PEOPLE
+        && m.to.iter().chain(&m.cc).all(person)
+}
+
 impl EwsMailResult {
     /// Whether this piece of an answer is within what is taken in, or why not. An answer comes
     /// from a host and may say anything: every list, string and id is held to a size here, before
@@ -363,6 +389,9 @@ impl EwsMailResult {
         if crate::EwsServer::check_fingerprint(&self.untrusted).is_err() {
             return Err("has a certificate fingerprint that can't be one");
         }
+        if self.states.iter().map(|s| s.state.len()).fold(0usize, usize::saturating_add) > MAX_EWS_STATE_BYTES {
+            return Err(TOO_MANY);
+        }
         for state in &self.states {
             if !id_ok(&state.folder) {
                 return Err(ODD_ID);
@@ -385,6 +414,9 @@ impl EwsMailResult {
                 return Err(TOO_MANY);
             }
             let message_odd = |m: &GraphMessage| !id_ok(&m.server.id) || (!m.server.folder.is_empty() && !id_ok(&m.server.folder));
+            if page.messages.iter().any(|m| !message_content_ok(m)) {
+                return Err("has a message whose text is longer than is taken in");
+            }
             if !id_ok(&page.folder)
                 || page.messages.iter().any(message_odd)
                 || !page.removed.iter().all(|id| id_ok(id))

@@ -712,7 +712,8 @@ fn update(mb: &mut Mailbox, id: Id, there: &GraphFolder, name: &str, parent_here
         caught_up: last.caught_up,
         round_ended: last.round_ended,
         counts: last.counts,
-        sync_state: String::new(),
+        // (An Exchange server account's folder goes on from its sync state; the other kinds have none.)
+        sync_state: last.sync_state,
     });
     *f != before
 }

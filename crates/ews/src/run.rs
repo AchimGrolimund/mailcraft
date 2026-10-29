@@ -271,7 +271,8 @@ pub async fn sync_mail<E: HttpExchange>(
     emit(EwsMailResult {
         errors: out.errors.clone(),
         busy_for: out.busy_for,
-        whole: out.clean(),
+        // (Only a run of every folder is the end of a read that may take away what the server lacks.)
+        whole: out.clean() && !request.inbox_pass && request.scope == EwsScope::All,
         stopped: out.stopped,
         auth_refused: out.auth_refused,
         ..base(request)
