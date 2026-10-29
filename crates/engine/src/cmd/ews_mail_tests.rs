@@ -236,7 +236,7 @@ fn a_piece_that_is_too_large_is_refused_and_one_that_is_odd_is_cut_and_removes_n
     for odd in [
         GraphMessage { subject: "x".repeat(20_000), ..mail("B1", "s", 1) },
         GraphMessage { preview: "x".repeat(20_000), ..mail("B1", "s", 1) },
-        GraphMessage { from: Address::new(&"x".repeat(20_000), "a@example.org"), ..mail("B1", "s", 1) },
+        GraphMessage { from: Address::new("x".repeat(20_000), "a@example.org"), ..mail("B1", "s", 1) },
         GraphMessage { to: vec![Address::new("x", "a@example.org"); 2_000], ..mail("B1", "s", 1) },
         GraphMessage { message_id: "x".repeat(20_000), ..mail("B1", "s", 1) },
     ] {

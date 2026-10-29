@@ -1012,6 +1012,11 @@ msgid "Apply Downloaded Contacts"
 msgstr "Gedownloade contactpersonen toepassen"
 
 #. command label
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "Apply Downloaded Exchange Messages"
+msgstr ""
+
+#. command label
 #: crates/engine/src/cmd/remote.rs
 #, fuzzy
 msgid "Apply Downloaded Favorites"
@@ -3244,11 +3249,6 @@ msgstr "Alles wat de interface doet, is een opdracht: {commands} opdrachten, die
 #. what a command says
 #: crates/engine/src/cmd/ews_mail.rs
 msgid "Exchange server accounts are being tested: start MailCraft with MAILCRAFT_EWS=1 to try them"
-msgstr ""
-
-#. what a command says
-#: crates/engine/src/cmd/ews_mail.rs
-msgid "Exchange server accounts can't be sent and received yet: that part is not built"
 msgstr ""
 
 #. interface
@@ -8631,7 +8631,7 @@ msgid "Send/Receive signs in to Microsoft; then the server can be searched."
 msgstr "Verzenden/ontvangen meldt aan bij Microsoft; daarna kan de server worden doorzocht."
 
 #. interface
-#: crates/ui-egui/src/jmap_mail.rs crates/ui-egui/src/lib.rs
+#: crates/ui-egui/src/ews_mail.rs crates/ui-egui/src/jmap_mail.rs crates/ui-egui/src/lib.rs
 #, fuzzy
 msgid "Send/Receive stopped unexpectedly"
 msgstr "Verzenden/ontvangen is onverwacht gestopt"
@@ -8660,7 +8660,7 @@ msgid "Sending"
 msgstr "Bezig met verzenden"
 
 #. interface
-#: crates/ui-egui/src/chrome.rs crates/ui-egui/src/inbox_pass.rs crates/ui-egui/src/jmap_mail.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/shared_mailboxes.rs
+#: crates/ui-egui/src/chrome.rs crates/ui-egui/src/ews_mail.rs crates/ui-egui/src/inbox_pass.rs crates/ui-egui/src/jmap_mail.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/shared_mailboxes.rs
 #, fuzzy
 msgid "Sending and receiving…"
 msgstr "Bezig met verzenden en ontvangen…"
@@ -9448,7 +9448,7 @@ msgid "Stopped ({line})"
 msgstr "Gestopt ({line})"
 
 #. what a command says
-#: crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/jmap_mail.rs
+#: crates/engine/src/cmd/ews_mail.rs crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/jmap_mail.rs
 #, fuzzy
 msgid "Stopped; carries on from here next time"
 msgstr "Gestopt; gaat de volgende keer vanaf hier verder"
@@ -10030,6 +10030,11 @@ msgid "The categories couldn't be taken in: {error}"
 msgstr "De categorieën konden niet worden opgehaald: {error}"
 
 #. what a command says
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "The certificate of the server of {name} needs your say"
+msgstr ""
+
+#. what a command says
 #: crates/engine/src/cmd/category.rs
 #, fuzzy
 msgid "The colour is set in Outlook"
@@ -10372,7 +10377,7 @@ msgid "The server turned down the sign-in for this account. Use Send/Receive to 
 msgstr "De server heeft de aanmelding voor dit account geweigerd. Gebruik Verzenden/ontvangen om opnieuw aan te melden."
 
 #. what a command says
-#: crates/engine/src/cmd/jmap_mail.rs
+#: crates/engine/src/cmd/ews_mail.rs crates/engine/src/cmd/jmap_mail.rs
 #, fuzzy
 msgid "The server turned down the sign-in for {name}: sign in again"
 msgstr "De server heeft de aanmelding voor {name} geweigerd: meld u opnieuw aan"
@@ -10696,7 +10701,7 @@ msgid "This build can't connect to Microsoft"
 msgstr "Deze build kan geen verbinding maken met Microsoft"
 
 #. interface
-#: crates/ui-egui/src/jmap_mail.rs crates/ui-egui/src/lib.rs
+#: crates/ui-egui/src/ews_mail.rs crates/ui-egui/src/jmap_mail.rs crates/ui-egui/src/lib.rs
 #, fuzzy
 msgid "This build can't connect to mail servers"
 msgstr "Deze build kan geen verbinding maken met e-mailservers"
@@ -11628,7 +11633,7 @@ msgid "Up to 50 MB"
 msgstr "Tot 50 MB"
 
 #. what a command says
-#: crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/jmap_mail.rs crates/model/src/sync.rs
+#: crates/engine/src/cmd/ews_mail.rs crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/jmap_mail.rs crates/model/src/sync.rs
 #, fuzzy
 msgid "Up to date"
 msgstr "Actueel"
@@ -12536,6 +12541,11 @@ msgid "add at least one recipient"
 msgstr "voeg minstens één ontvanger toe"
 
 #. what a command says
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "an Exchange server account is sent and received through Exchange Web Services, not as an IMAP account is"
+msgstr ""
+
+#. what a command says
 #: crates/engine/src/cmd/account.rs
 msgid "an Exchange server account's server, address and user name can't be changed once its mail is here: remove it and add the other one"
 msgstr ""
@@ -13003,7 +13013,7 @@ msgid "no message with id {id}"
 msgstr "geen bericht met id {id}"
 
 #. what a command says
-#: crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/jmap_mail.rs
+#: crates/engine/src/cmd/ews_mail.rs crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/jmap_mail.rs
 #, fuzzy
 msgid "no message with id {id} in {name}"
 msgstr "geen bericht met id {id} in {name}"
@@ -13309,6 +13319,11 @@ msgid "that was only looked at, not read in full"
 msgstr "dat is alleen bekeken, niet volledig gelezen"
 
 #. what a command says
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "the Inbox of this account hasn't been read yet"
+msgstr ""
+
+#. what a command says
 #: crates/engine/src/cmd/calendar/invitation.rs crates/engine/src/cmd/calendar_opened.rs crates/engine/src/cmd/compose.rs
 #, fuzzy
 msgid "the account is gone"
@@ -13457,11 +13472,6 @@ msgstr "de bovenliggende map hoort bij een ander account"
 #, fuzzy
 msgid "the proposed end is not after the proposed start"
 msgstr "het voorgestelde einde ligt niet na het voorgestelde begin"
-
-#. what a command says
-#: crates/engine/src/cmd/ews_mail.rs
-msgid "the result is for another account"
-msgstr ""
 
 #. what a command says
 #: crates/engine/src/cmd/ews_mail.rs
@@ -13655,13 +13665,13 @@ msgid "these settings are for another account, not for {who}"
 msgstr "deze instellingen zijn voor een ander account, niet voor {who}"
 
 #. what a command says
-#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/jmap_mail.rs
+#: crates/engine/src/cmd/account.rs crates/engine/src/cmd/ews_mail.rs crates/engine/src/cmd/graph_mail.rs crates/engine/src/cmd/jmap_mail.rs
 #, fuzzy
 msgid "this Send/Receive was for another account, not for {name}"
 msgstr "deze Verzenden/ontvangen was voor een ander account, niet voor {name}"
 
 #. what a command says
-#: crates/engine/src/cmd/jmap_mail.rs
+#: crates/engine/src/cmd/ews_mail.rs crates/engine/src/cmd/jmap_mail.rs
 #, fuzzy
 msgid "this Send/Receive was for the server {name} named before"
 msgstr "deze Verzenden/ontvangen was voor de eerder genoemde server {name}"
