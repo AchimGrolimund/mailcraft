@@ -405,15 +405,153 @@ fn the_commands_take_a_result_by_json_and_leave_no_server_id_in_their_errors() {
 }
 
 #[test]
-fn zz_review_refused_second_page_then_clean_end_sweeps() {
+fn a_refused_page_keeps_the_end_of_its_run_from_sweeping() {
     let (mut s, account) = session();
     list(&mut s, account);
     read(&mut s, account, page("F1", vec![mail("A1", "Kickoff", 1_000), mail("A2", "Budget", 2_000)], true, true), "S-1");
+    // A run begins (asked for as a host does), and the folder is read afresh: its first page is taken.
+    s.run("sync.ewsRequest", &json!({"account": account})).unwrap();
     let first = EwsMessagePage { state: "S-2".into(), ..page("F1", vec![mail("A1", "Kickoff", 1_000)], true, false) };
     apply_ews_mail(&mut s, EwsMailResult { pages: vec![first], ..piece(account) }).unwrap();
+    // Its second page is refused...
     let second = EwsMessagePage { from: "S-2".into(), state: "S-3".into(), ..page("F1", vec![mail("A\u{2}", "Odd", 1)], false, true) };
     assert!(apply_ews_mail(&mut s, EwsMailResult { pages: vec![second], ..piece(account) }).is_err());
+    // ...and the run's last piece, a clean one on its own, sweeps nothing: A2 was never listed.
     end(&mut s, account, true);
     assert_eq!(state_of(&s, account, "F1"), "S-2");
     assert!(here(&s, account, "A2").is_some(), "A2 is swept although its page was refused");
+    // The next run is not held against it: it begins with its own slate.
+    s.run("sync.ewsRequest", &json!({"account": account})).unwrap();
+    read(&mut s, account, page("F1", vec![mail("A1", "Kickoff", 1_000)], true, true), "S-4");
+    end(&mut s, account, true);
+    assert!(here(&s, account, "A2").is_none(), "a run that went well sweeps");
+}
+
+#[test]
+fn a_page_left_out_or_cut_or_a_blocked_folder_each_keep_the_end_of_their_run_from_sweeping() {
+    let sweeps = |spoil: &dyn Fn(&mut Session, Id)| {
+        let (mut s, account) = session();
+        list(&mut s, account);
+        read(&mut s, account, page("F1", vec![mail("A1", "Kickoff", 1_000), mail("A2", "Budget", 2_000)], true, true), "S-1");
+        s.run("sync.ewsRequest", &json!({"account": account})).unwrap();
+        let first = EwsMessagePage { state: "S-2".into(), ..page("F1", vec![mail("A1", "Kickoff", 1_000)], true, true) };
+        apply_ews_mail(&mut s, EwsMailResult { pages: vec![first], ..piece(account) }).unwrap();
+        spoil(&mut s, account);
+        end(&mut s, account, true);
+        here(&s, account, "A2").is_none()
+    };
+    assert!(sweeps(&|_, _| {}), "nothing spoiled: the end sweeps");
+    // A page that doesn't follow the folder's state is left out.
+    assert!(!sweeps(&|s, account| {
+        let lost = EwsMessagePage { from: "S-9".into(), state: "S-10".into(), ..page("F1", vec![mail("A3", "Lost", 3_000)], false, true) };
+        apply_ews_mail(s, EwsMailResult { pages: vec![lost], ..piece(account) }).unwrap();
+    }));
+    // A piece that came cut.
+    assert!(!sweeps(&|s, account| {
+        // (A folder with no name to show is passed over, and the piece is a cut one.)
+        let deltas = EwsFolderDeltas { changed: vec![folder("F8", "", "", FolderKind::Custom)], ..Default::default() };
+        apply_ews_mail(s, EwsMailResult { folders: Some(deltas), ..piece(account) }).unwrap();
+    }));
+    // A folder blocked.
+    assert!(!sweeps(&|s, account| {
+        apply_ews_mail(s, EwsMailResult { blocked: vec!["F1".into()], ..piece(account) }).unwrap();
+    }));
+}
+
+#[test]
+fn a_blocked_folder_is_named_as_the_owner_knows_it_and_nothing_else_is_said_of_it() {
+    let (mut s, account) = session();
+    list(&mut s, account);
+    let said = apply_ews_mail(
+        &mut s,
+        EwsMailResult { blocked: vec!["F1".into(), "F3".into(), "NOT-HERE".into()], whole: false, partial: false, ..piece(account) },
+    )
+    .unwrap();
+    assert_eq!(said["unreadableFolders"], json!(["Inbox", "Apollo"]));
+    let errors: Vec<&str> = said["errors"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert_eq!(errors, ["Inbox couldn't be read from the server", "Apollo couldn't be read from the server"]);
+    // A folder this mailbox hasn't got is not named (and no id is told).
+    assert!(!said.to_string().contains("NOT-HERE") && !said.to_string().contains("\"F1\""));
+    // None blocked: none named.
+    let said = end(&mut s, account, true);
+    assert_eq!(said["unreadableFolders"], json!([]));
+}
+
+/// An Exchange account with the folders X0..Xn, each at a state of the sizes given, and the folder
+/// list at `hierarchy`.
+fn kept(sizes: &[usize], hierarchy: &str) -> (Session, Id) {
+    let (mut s, account) = session();
+    let many: Vec<GraphFolder> = (0..sizes.len()).map(|n| folder(&format!("X{n}"), "", &format!("Box {n}"), FolderKind::Custom)).collect();
+    let deltas = EwsFolderDeltas { changed: many, afresh: true, ..Default::default() };
+    apply_ews_mail(&mut s, EwsMailResult { folders: Some(deltas), hierarchy: hierarchy.into(), ..piece(account) }).unwrap();
+    for (n, size) in sizes.iter().enumerate() {
+        let id = s.mailbox.folder_by_server(account, &format!("X{n}")).unwrap();
+        if let Some(server) = s.mailbox.folder_mut(id).unwrap().server.as_mut() {
+            server.sync_state = "s".repeat(*size);
+        }
+    }
+    (s, account)
+}
+
+#[test]
+fn an_account_keeps_exactly_the_most_sync_state_and_not_a_byte_more() {
+    let one = mailcraft_model::sync::MAX_EWS_STATE;
+    let cap = mailcraft_model::sync::MAX_EWS_STATE_BYTES;
+    assert_eq!(cap, 32 * one);
+    // 32 MiB exactly (32 folders at 1 MiB): a piece is taken in; 32 MiB and a byte (a 33rd folder
+    // with a state of one byte): it is refused.
+    let (mut s, account) = kept(&[one; 32], "");
+    assert!(apply_ews_mail(&mut s, EwsMailResult { whole: false, ..piece(account) }).is_ok());
+    let mut sizes = vec![one; 32];
+    sizes.push(1);
+    let (mut s, account) = kept(&sizes, "");
+    let before = s.mailbox.clone();
+    assert!(apply_ews_mail(&mut s, EwsMailResult { ..piece(account) }).unwrap_err().to_string().contains("more sync state"));
+    assert!(s.mailbox == before);
+}
+
+#[test]
+fn the_new_states_of_a_result_are_counted_with_the_ones_kept() {
+    let one = mailcraft_model::sync::MAX_EWS_STATE;
+    // 31 folders at 1 MiB, one at 1 MiB less 10 bytes: 10 bytes under the most.
+    let mut sizes = vec![one; 31];
+    sizes.push(one - 10);
+    let move_last = |s: &mut Session, account: Id, to: usize| {
+        let from = state_of(s, account, "X31");
+        let page = EwsMessagePage { folder: "X31".into(), from, state: "t".repeat(to), last: true, ..Default::default() };
+        apply_ews_mail(s, EwsMailResult { pages: vec![page], ..piece(account) })
+    };
+    // The folder's own state is replaced, not added to: 10 more bytes reaches the most exactly...
+    let (mut s, account) = kept(&sizes, "");
+    assert!(move_last(&mut s, account, one).is_ok());
+    assert_eq!(state_of(&s, account, "X31").len(), one);
+    // ...and one byte over the most is refused (31 folders at 1 MiB, one at 1 MiB - 10, one at 10
+    // bytes: exactly the most; the last goes on to a state of 11).
+    let mut sizes = vec![one; 31];
+    sizes.extend([one - 10, 10]);
+    let (mut s, account) = kept(&sizes, "");
+    let page = EwsMessagePage { folder: "X32".into(), from: "s".repeat(10), state: "t".repeat(11), last: true, ..Default::default() };
+    let before = s.mailbox.clone();
+    let why = apply_ews_mail(&mut s, EwsMailResult { pages: vec![page], ..piece(account) }).unwrap_err();
+    assert!(why.to_string().contains("more sync state") && s.mailbox == before, "{why}");
+    // The same with 10 bytes: exactly the most, taken in.
+    let page = EwsMessagePage { folder: "X32".into(), from: "s".repeat(10), state: "t".repeat(10), last: true, ..Default::default() };
+    assert!(apply_ews_mail(&mut s, EwsMailResult { pages: vec![page], ..piece(account) }).is_ok());
+}
+
+#[test]
+fn the_folder_lists_state_is_counted_too() {
+    let one = mailcraft_model::sync::MAX_EWS_STATE;
+    // 31 folders at 1 MiB and one at 1 MiB - 1, and a folder list at "H" (a byte): the most exactly.
+    let mut sizes = vec![one; 31];
+    sizes.push(one - 1);
+    let (mut s, account) = kept(&sizes, "H");
+    assert!(apply_ews_mail(&mut s, EwsMailResult { ..piece(account) }).is_ok(), "exactly the most");
+    // A new folder list state of the same size is taken in; a byte longer is not.
+    let (mut s, account) = kept(&sizes, "H");
+    assert!(apply_ews_mail(&mut s, EwsMailResult { hierarchy: "J".into(), folders: Some(Default::default()), ..piece(account) }).is_ok());
+    assert_eq!(s.mailbox.account(account).unwrap().ews.as_ref().unwrap().hierarchy, "J");
+    let before = s.mailbox.clone();
+    let why = apply_ews_mail(&mut s, EwsMailResult { hierarchy: "JK".into(), folders: Some(Default::default()), ..piece(account) }).unwrap_err();
+    assert!(why.to_string().contains("more sync state") && s.mailbox == before, "{why}");
 }

@@ -63,6 +63,8 @@ enum Asked {
     Code(ResponseCode),
     /// The answer wasn't one that could be read.
     Bad,
+    /// A page of a folder holds a change that can't be taken in: the folder stays where it was.
+    Unreadable,
 }
 
 /// What ends a run.
@@ -85,6 +87,8 @@ struct Outcome {
     busy_for: Option<u32>,
     /// A folder or the folder list was left unread.
     incomplete: bool,
+    /// The folders (their server ids) whose pages hold a change that can't be taken in.
+    blocked: Vec<String>,
 }
 
 impl Outcome {
@@ -155,6 +159,7 @@ impl<E: HttpExchange> Run<'_, E> {
                 Error::Transport(TransportError::Tls) => return Err(Asked::Stop(Stop::Tls)),
                 Error::Transport(_) => return Err(Asked::Stop(Stop::Unreachable)),
                 Error::Server(code) => return Err(Asked::Code(code)),
+                Error::Unreadable => return Err(Asked::Unreadable),
                 _ => return Err(Asked::Bad),
             }
         }
@@ -260,11 +265,15 @@ pub async fn sync_mail<E: HttpExchange>(
     if let Err(stop) = run.all(request, &mut out, emit).await {
         match stop {
             Asked::Stop(why) => out.stop(why),
-            Asked::Code(_) | Asked::Bad => {
+            Asked::Code(_) | Asked::Bad | Asked::Unreadable => {
                 out.incomplete = true;
                 out.line("The server's answer couldn't be used");
             }
         }
+    }
+    if !out.blocked.is_empty() {
+        // (Once a run, and no id: the engine names the folders by what the owner calls them.)
+        log::warn!("ews mail: {} folders hold a change that can't be taken in; they are left where they were", out.blocked.len());
     }
     log::debug!("ews mail: the run is over (clean: {}, stopped: {}, busy: {})", out.clean(), out.stopped, out.busy_for.is_some());
     emit(EwsMailResult {
@@ -274,6 +283,7 @@ pub async fn sync_mail<E: HttpExchange>(
         whole: out.clean() && !request.inbox_pass && request.scope == EwsScope::All,
         stopped: out.stopped,
         auth_refused: out.auth_refused,
+        blocked: out.blocked,
         ..base(request)
     });
 }
@@ -329,6 +339,14 @@ impl<E: HttpExchange> Run<'_, E> {
                 // (A folder the server doesn't have: the folder list takes it away.)
                 Ok(false) => {}
                 Err(Asked::Stop(stop)) => return Err(Asked::Stop(stop)),
+                // A folder that is blocked is not a server that is failing: the other folders go on,
+                // and it doesn't count towards the folders in a row (the engine says which it was).
+                Err(Asked::Unreadable) => {
+                    out.incomplete = true;
+                    if out.blocked.len() < MAX_FOLDERS {
+                        out.blocked.push(folder.clone());
+                    }
+                }
                 Err(_) => {
                     out.incomplete = true;
                     out.line("Some folders couldn't be read from the server");
@@ -427,7 +445,7 @@ pub async fn fetch_messages<E: HttpExchange>(
         match run.ask(&op.element(), &|reply| op.answer(reply)).await {
             Ok(mime) => out.fetched.push(GraphFetched { id: id.clone(), mime }),
             Err(Asked::Code(ResponseCode::ItemNotFound)) => out.missing.push(id.clone()),
-            Err(Asked::Code(_) | Asked::Bad) => out.failed.push(id.clone()),
+            Err(Asked::Code(_) | Asked::Bad | Asked::Unreadable) => out.failed.push(id.clone()),
             Err(Asked::Stop(stop)) => {
                 if let Stop::Busy(seconds) = stop {
                     out.busy_for = Some(seconds.max(1));

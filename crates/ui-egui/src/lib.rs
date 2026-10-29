@@ -1223,6 +1223,9 @@ pub struct MailApp {
     pub(crate) list_page_rows: usize,
     /// Passwords typed this session, per account. Never saved.
     passwords: std::collections::HashMap<Id, String>,
+    /// The folders of an Exchange server account the last run could not read (named as the owner
+    /// knows them; no id), for File › Info. Not saved.
+    pub(crate) ews_unreadable: std::collections::HashMap<Id, Vec<String>>,
     /// [`mailcraft_engine::Session::openings`] when the secrets in memory were last checked
     /// against the mailbox they belong to.
     secrets_opening: u64,
@@ -1540,6 +1543,7 @@ impl MailApp {
             drawn: None,
             list_page_rows: 10,
             passwords: Default::default(),
+            ews_unreadable: Default::default(),
             secrets_opening: 0,
             secret_cache: Default::default(),
             secret_read: None,

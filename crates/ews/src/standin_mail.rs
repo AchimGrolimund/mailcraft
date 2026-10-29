@@ -123,7 +123,8 @@ impl State {
     /// its id.
     pub fn deliver(&mut self, folder: &str, subject: &str, read: bool) -> String {
         let id = self.next_id("item");
-        let folder_id = self.folder_id(folder).unwrap_or_default();
+        // (A distinguished name, or the id of a folder made with `add_folder`.)
+        let folder_id = self.folder_id(folder).or_else(|| self.folders.iter().find(|f| f.id == folder).map(|f| f.id.clone())).unwrap_or_default();
         self.rev = self.rev.saturating_add(1);
         let n = self.issued;
         let when = format!("2026-10-14T{:02}:{:02}:00Z", 6 + (n / 60) % 12, n % 60);
@@ -249,7 +250,7 @@ impl State {
     }
 }
 
-fn ok_message(operation: &str, inner: &str) -> String {
+pub(crate) fn ok_message(operation: &str, inner: &str) -> String {
     format!("<m:{operation}ResponseMessage ResponseClass=\"Success\"><m:ResponseCode>NoError</m:ResponseCode>{inner}</m:{operation}ResponseMessage>")
 }
 
@@ -273,7 +274,7 @@ fn people(name: &str, list: &[(String, String)]) -> String {
 impl State {
     /// The `t:Message` of an item as the shape asks for it.
     fn message_xml(&self, item: &Item, shape: &str, extra: &[String]) -> String {
-        let hostile = self.hostile == Some(Hostile::BadItems);
+        let hostile = self.hostile == Some(Hostile::BadItems) && (self.bad_items_in.is_empty() || self.bad_items_in == item.folder);
         let long = "x".repeat(2_000);
         let id = if hostile { long.as_str() } else { item.id.as_str() };
         let mut xml = format!("<t:Message><t:ItemId Id=\"{}\" ChangeKey=\"{}\"/>", escape(id), escape(&item.change_key));

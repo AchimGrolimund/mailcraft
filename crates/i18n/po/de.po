@@ -13009,6 +13009,11 @@ msgstr "das vorgeschlagene Ende liegt nicht nach dem vorgeschlagenen Beginn"
 
 #. what a command says
 #: crates/engine/src/cmd/ews_mail.rs
+msgid "the result would make this account keep more sync state than is taken in"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/ews_mail.rs
 msgid "the result {why}"
 msgstr ""
 
@@ -13553,6 +13558,11 @@ msgid "{folder} and its subfolders"
 msgstr ""
 
 #. what a command says
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "{folder} couldn't be read from the server"
+msgstr ""
+
+#. what a command says
 #: crates/model/src/sync/progress.rs
 #, fuzzy
 msgid "{folder}: {done} of {total}"
@@ -13599,6 +13609,11 @@ msgstr "{language} (Vorschau)"
 #, fuzzy
 msgid "{large} large messages download when opened"
 msgstr "{large} große Nachrichten werden beim Öffnen heruntergeladen"
+
+#. interface
+#: crates/ui-egui/src/backstage.rs
+msgid "{line} · couldn't be read in the last run: {folders}"
+msgstr ""
 
 #. date and time
 #: crates/i18n/src/date.rs

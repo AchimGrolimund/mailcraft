@@ -23,6 +23,8 @@ use crate::xml::{MAX_MIME_TEXT, Node};
 
 /// Most changes one page asks for (the schema's own limit is 512).
 pub const MAX_CHANGES: u32 = 512;
+/// The most changes one page holds that are taken in: what the model takes in of a page.
+const MAX_PAGE: usize = mailcraft_model::sync::MAX_EWS_PAGE_MESSAGES;
 /// Longest subject, `Message-ID`, preview and name kept, in characters; the most people a
 /// message names in one list.
 const MAX_SUBJECT: usize = 998;
@@ -117,11 +119,17 @@ impl SyncFolderItems {
     /// `InvalidSyncState`.
     ///
     /// **A page is whole or it is an error.** The answer's new state says "everything up to here
-    /// has been taken in", so a page that left a change out would lose it for good: an answer with
-    /// more changes than were asked for (a server that ignores `MaxChangesReturned`), and one with a
-    /// change that can't be read (an item with no id, or an id that can't be one), is
-    /// [`Error::Unexpected`], with nothing of it handed on and no state taken from it. The folder
-    /// stays where it was, and is read again next time.
+    /// has been taken in", so a change that was left out would be lost for good. Every change is
+    /// taken in, however many the server gave (the size of the answer and its nodes are held
+    /// already, as the answer is parsed, and a server that ignores `MaxChangesReturned` has said its
+    /// state covers them all); one that can't be taken in makes the page [`Error::Unreadable`], with
+    /// nothing of it handed on and no state taken from it, so the folder stays where it was and is
+    /// read again next time. Only a change with no usable id (a `Delete`, a `ReadFlagChange`, an
+    /// item) or no item (a `Create` or an `Update` with nothing in it) can't be taken in: whatever
+    /// else an item lacks (its read state, importance, categories, preview, times) is read as
+    /// nothing said, as a message without it. A `ReadFlagChange` that doesn't say which state it
+    /// is carries nothing to lose, and is passed over. A kind of change this program doesn't know
+    /// is passed over too (E7).
     pub fn answer(&self, reply: &Reply) -> Result<ItemsPage, Error> {
         let messages = reply.messages("SyncFolderItems")?;
         let [message] = messages.as_slice() else { return Err(Error::Unexpected) };
@@ -130,28 +138,25 @@ impl SyncFolderItems {
         let last = node.child_in(MESSAGES, "IncludesLastItemInRange").is_none_or(|n| n.text.trim() != "false");
         let mut page = ItemsPage { state, last, ..ItemsPage::default() };
         let Some(changes) = node.child_in(MESSAGES, "Changes") else { return Ok(page) };
-        let mut counted = 0usize;
+        // (What the model takes in of one page: more than that is a page that can't be taken in.)
+        if changes.children.len() > MAX_PAGE {
+            return Err(Error::Unreadable);
+        }
         for change in changes.children.iter().filter(|c| *c.namespace == *TYPES) {
-            let kind = change.name.as_str();
-            // (Only the four kinds of change count; anything else the schema may add is not one.)
-            if !matches!(kind, "Create" | "Update" | "Delete" | "ReadFlagChange") {
-                continue;
-            }
-            counted = counted.saturating_add(1);
-            if counted > usize::try_from(self.max).unwrap_or(usize::MAX) {
-                return Err(Error::Unexpected);
-            }
             let id = || change.child_in(TYPES, "ItemId").and_then(|id| id.attribute("Id")).filter(|id| valid_id(id));
-            match kind {
+            match change.name.as_str() {
                 "Create" | "Update" => {
-                    page.messages.push(change.children.iter().find(|c| *c.namespace == *TYPES).and_then(read_item).ok_or(Error::Unexpected)?)
+                    let item = change.children.iter().find(|c| *c.namespace == *TYPES).and_then(read_item);
+                    page.messages.push(item.ok_or(Error::Unreadable)?);
                 }
-                "Delete" => page.removed.push(id().ok_or(Error::Unexpected)?.to_owned()),
-                _ => {
-                    let read = change.child_in(TYPES, "IsRead").map(|n| n.text.trim().eq_ignore_ascii_case("true"));
-                    let (id, read) = id().zip(read).ok_or(Error::Unexpected)?;
-                    page.read.push(ReadState { id: id.to_owned(), read });
+                "Delete" => page.removed.push(id().ok_or(Error::Unreadable)?.to_owned()),
+                "ReadFlagChange" => {
+                    let id = id().ok_or(Error::Unreadable)?;
+                    if let Some(read) = change.child_in(TYPES, "IsRead").map(|n| n.text.trim().eq_ignore_ascii_case("true")) {
+                        page.read.push(ReadState { id: id.to_owned(), read });
+                    }
                 }
+                _ => {}
             }
         }
         Ok(page)

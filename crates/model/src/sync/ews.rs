@@ -298,6 +298,10 @@ pub struct EwsMailResult {
     /// The pages of messages read, in the order they came: each is taken in by itself.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<EwsMessagePage>,
+    /// The folders (server ids) whose pages hold a change that can't be taken in: each stays where
+    /// it was, is read again next time, and blocks the end of the run that would sweep.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blocked: Vec<String>,
     /// Problems worth telling the owner; empty when all went well.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
@@ -385,6 +389,9 @@ impl EwsMailResult {
         {
             return Err(TOO_MANY);
         }
+        if self.blocked.len() > MAX_LISTED_FOLDERS || !self.blocked.iter().all(|id| id_ok(id)) {
+            return Err(ODD_ID);
+        }
         if !state_ok(&self.hierarchy) {
             return Err("has a folder state that can't be one");
         }
@@ -453,6 +460,7 @@ impl EwsMailResult {
             self.hierarchy = piece.hierarchy;
         }
         self.pages.extend(piece.pages);
+        self.blocked.extend(piece.blocked);
         self.errors.extend(piece.errors);
         self.busy_for = piece.busy_for.or(self.busy_for);
         (self.partial, self.whole, self.stopped) = (piece.partial, piece.whole, piece.stopped);
@@ -533,6 +541,7 @@ impl std::fmt::Debug for EwsMailResult {
             .field("placed", &self.placed.len())
             .field("folders", &self.folders.as_ref().map(|folders| (folders.changed.len(), folders.deleted.len(), folders.afresh)))
             .field("pages", &self.pages.len())
+            .field("blocked", &self.blocked.len())
             .field("messages", &messages)
             .field("errors", &self.errors.len())
             .field("busy_for", &self.busy_for)

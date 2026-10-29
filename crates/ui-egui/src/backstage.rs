@@ -158,7 +158,14 @@ pub(crate) fn ews_line(app: &MailApp, a: &mailcraft_model::Account) -> String {
     let host = a.ews.as_ref().and_then(mailcraft_model::EwsServer::host);
     let Some(host) = host else { return tl!("Exchange server · no usable server address").to_string() };
     if app.session.ews {
-        crate::i18n::fmt(tl!("Exchange server {host} · not kept in step yet: this part is not built"), &[("host", host)])
+        let line = crate::i18n::fmt(tl!("Exchange server {host} · not kept in step yet: this part is not built"), &[("host", host)]);
+        // The folders the last run couldn't read, as the owner knows them.
+        match app.ews_unreadable.get(&a.id).filter(|folders| !folders.is_empty()) {
+            Some(folders) => {
+                crate::i18n::fmt(tl!("{line} · couldn't be read in the last run: {folders}"), &[("line", &line), ("folders", &folders.join(", "))])
+            }
+            None => line,
+        }
     } else {
         crate::i18n::fmt(
             tl!(

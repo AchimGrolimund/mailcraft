@@ -186,4 +186,5 @@ this code base.
 | 2026-10-29 | minor | #252 E3: gap 5: Autodiscover, Basic sign-in and certificate trust by fingerprint are built and tested; nothing drives them yet |
 | 2026-10-29 | minor | #252 E4: gap 5: an Exchange server account's mail comes down (folders, headers, whole messages), behind `MAILCRAFT_EWS=1`; nothing goes up yet |
 | 2026-10-29 | patch | #252 E4 review: gap 5: an Exchange run never moves a folder past a change it could not take in; a password is for one address, server and user name |
+| 2026-10-29 | patch | #252 E4 second review: gap 5: an Exchange folder that holds a change that can not be taken in is named (as the owner knows it) in Send/Receive and File › Info, and blocks only itself |
 | 2026-10-29 | patch | #252 E3 review: gap 5: Autodiscover sends the sign-in only in answer to a Basic challenge; Microsoft's own mail is never asked |

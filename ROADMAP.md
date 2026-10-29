@@ -526,4 +526,5 @@ follows:
 | 2026-10-29 | #252 E3: Autodiscover, Basic sign-in and certificate trust by fingerprint (progress log) |
 | 2026-10-29 | #252 E4: mail down from an Exchange server account (progress log) |
 | 2026-10-29 | #252 E4 review: Exchange sync states are bound to their pages and a state is kept only after the page it followed (progress log) |
+| 2026-10-29 | #252 E4 second review: a blocked Exchange folder is named and blocks only itself; a lost page keeps the end of its run from sweeping (progress log) |
 | 2026-10-29 | #252 E3 review: the sign-in goes only in answer to a Basic challenge; Microsoft's consumer mail is refused up front (progress log) |
