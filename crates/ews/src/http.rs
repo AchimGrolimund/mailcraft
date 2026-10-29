@@ -130,8 +130,11 @@ pub const MAX_FIELDS: usize = 32;
 /// The fields of a response that are read whatever else came: how long to wait, why the
 /// organisation says no, how to sign in, and where a redirect goes.
 pub const READ_FIELDS: [&str; 4] = ["retry-after", "x-ews-policy-reason", "www-authenticate", "location"];
-/// Most of those a response holds.
-pub const MAX_READ_FIELDS: usize = 16;
+/// Most of one of those a response holds: a server offers several ways to sign in, and one
+/// of the others twice at most. (Each has a cap of its own, so that none pushes out another.)
+pub fn read_field_cap(name: &str) -> usize {
+    if name == "www-authenticate" { 16 } else { 2 }
+}
 /// Longest header field name kept.
 const MAX_FIELD_NAME_LEN: usize = 64;
 
@@ -245,7 +248,7 @@ impl HttpResponse {
     /// [`MAX_FIELD_VALUE_LEN`] bytes (a control character in it, a tab apart, is read as a
     /// space); anything else is dropped. A field that comes twice is kept twice (a server offers
     /// several `WWW-Authenticate`s). The fields the crate and its callers read ([`READ_FIELDS`])
-    /// are kept whatever came before them, up to [`MAX_READ_FIELDS`] of them: a server that sends
+    /// are kept whatever came before them, up to [`read_field_cap`] of each: a server that sends
     /// thirty-two others first has not hidden its policy reason or its back-off.
     #[must_use]
     pub fn with_field(mut self, name: &str, value: &str) -> Self {
@@ -255,8 +258,12 @@ impl HttpResponse {
         }
         let Some(name) = field_name(name) else { return self };
         let read = READ_FIELDS.contains(&name.as_str());
-        let held = self.headers.iter().filter(|(have, _)| READ_FIELDS.contains(&have.as_str()) == read).count();
-        if held < if read { MAX_READ_FIELDS } else { MAX_FIELDS } {
+        let held = if read {
+            self.headers.iter().filter(|(have, _)| *have == name).count()
+        } else {
+            self.headers.iter().filter(|(have, _)| !READ_FIELDS.contains(&have.as_str())).count()
+        };
+        if held < if read { read_field_cap(&name) } else { MAX_FIELDS } {
             let value = value.chars().map(|c| if c.is_control() && c != '\t' { ' ' } else { c }).collect();
             self.headers.push((name, value));
         }

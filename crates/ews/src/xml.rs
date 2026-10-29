@@ -151,6 +151,12 @@ struct Open {
     spoiled: bool,
 }
 
+/// What a string of `len` bytes costs on the heap: a small block is not smaller than the
+/// allocator's least (32 bytes), and nothing costs nothing but the empty string.
+fn heap(len: usize) -> usize {
+    if len == 0 { 0 } else { len.max(32) }
+}
+
 fn name_of(local: &str) -> String {
     if local.len() <= MAX_NAME { local.to_string() } else { String::new() }
 }
@@ -177,7 +183,7 @@ impl Walk {
         if let Some(have) = self.spaces.get(uri) {
             return Ok(Arc::clone(have));
         }
-        self.charge(uri.len())?;
+        self.charge(heap(uri.len()))?;
         let new: Arc<str> = Arc::from(uri);
         self.spaces.insert(Arc::clone(&new));
         Ok(new)
@@ -193,7 +199,7 @@ impl Walk {
             None => String::new(),
         };
         let mut node = Node { name: name_of(AsRef::<str>::as_ref(&start.local_name())), prefix, ..Default::default() };
-        self.charge(NODE_COST.saturating_add(node.name.len()).saturating_add(node.prefix.len()))?;
+        self.charge(NODE_COST.saturating_add(heap(node.name.len())).saturating_add(heap(node.prefix.len())))?;
         for (seen, attribute) in start.attributes().enumerate() {
             if seen >= MAX_TAG_ATTRIBUTES {
                 return Err(Malformed);
@@ -216,7 +222,7 @@ impl Walk {
                 if value.len() > MAX_ATTRIBUTE || declared.len() > MAX_NAME {
                     return Err(Malformed);
                 }
-                self.charge(declared.len().saturating_add(16))?;
+                self.charge(heap(declared.len()).saturating_add(16))?;
                 let uri = self.space(&clean(&value))?;
                 node.namespaces.push((declared, uri));
                 continue;
@@ -231,7 +237,7 @@ impl Walk {
                 continue;
             }
             let value = clean(&value).into_owned();
-            self.charge(name.len().saturating_add(value.len()).saturating_add(48))?;
+            self.charge(heap(name.len()).saturating_add(heap(value.len())).saturating_add(48))?;
             node.attributes.push((name, value));
         }
         Ok(Open { node, spoiled: false })
@@ -278,8 +284,10 @@ impl Walk {
         if open.node.text.len().saturating_add(text.len()) > MAX_TEXT {
             open.spoiled = true;
         } else if !open.spoiled {
+            let before = heap(open.node.text.len());
             open.node.text.push_str(&text);
-            self.charge(text.len())?;
+            let more = heap(open.node.text.len()).saturating_sub(before);
+            self.charge(more)?;
         }
         Ok(())
     }

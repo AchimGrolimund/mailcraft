@@ -355,9 +355,9 @@ fn a_flood_of_elements_with_a_wide_namespace_costs_a_small_multiple_of_the_body(
     assert!(xml::budget(flood.len()) < 30 * 1024 * 1024);
     assert_eq!(xml::budget(usize::MAX), 64 * 1024 * 1024);
     // What fits holds the namespace once: the nodes point to the one copy.
-    let fits = format!("<a xmlns=\"{}\">{}</a>", "n".repeat(2_000), "<b>x</b>".repeat(3_000));
+    let fits = format!("<a xmlns=\"{}\">{}</a>", "n".repeat(2_000), "<b>x</b>".repeat(1_000));
     let tree = xml::parse(fits.as_bytes()).unwrap();
-    assert_eq!(tree.children.len(), 3_000);
+    assert_eq!(tree.children.len(), 1_000);
     assert!(tree.children.iter().all(|child| std::sync::Arc::ptr_eq(&child.namespace, &tree.namespace)));
 }
 
@@ -638,7 +638,11 @@ fn the_fields_that_are_read_are_kept_whatever_came_first() {
     for _ in 0..100 {
         flood = flood.with_field("WWW-Authenticate", "Basic");
     }
-    assert_eq!(flood.headers_named("www-authenticate").count(), http::MAX_READ_FIELDS);
+    assert_eq!(flood.headers_named("www-authenticate").count(), http::read_field_cap("www-authenticate"));
+    // ... and one cannot push out another.
+    let flood = flood.with_field("Retry-After", "7").with_field("Retry-After", "8").with_field("Retry-After", "9");
+    assert_eq!(flood.headers_named("retry-after").collect::<Vec<_>>(), ["7", "8"]);
+    assert_eq!(flood.headers_named("www-authenticate").count(), 16);
 }
 
 #[test]
@@ -646,4 +650,21 @@ fn an_element_shows_no_text_in_debug_output() {
     let element = Element::new("t:Body").attr("Id", "SecretId").text("Secret mail").child(Element::new("t:C").text("Secret too"));
     let shown = format!("{element:?}");
     assert!(!shown.contains("Secret"), "{shown}");
+}
+
+#[test]
+fn small_strings_are_charged_what_the_allocator_charges() {
+    // 82,952 elements with twelve one-byte attributes each: 6.3 MB. Each string is a block of at
+    // least 32 bytes, which a charge of one byte did not see: it peaked at 134 MB.
+    let element = format!("<b{}/>", (0..12).map(|n| format!(" {}=\"1\"", (b'a' + n) as char)).collect::<String>());
+    let doc = format!("<a>{}</a>", element.repeat(82_952));
+    assert!(doc.len() < 7_000_000);
+    assert_eq!(xml::parse(doc.as_bytes()).unwrap_err(), xml::Malformed);
+    // A few of them are a document (the budget is 16 times the body, and has to cover every
+    // block the tree holds).
+    let doc = format!("<a>{}</a>", element.repeat(500));
+    assert!(xml::parse(doc.as_bytes()).is_ok());
+    // Text is charged the same way: a flood of one-character texts.
+    let doc = format!("<a>{}</a>", "<b>x</b>".repeat(60_000));
+    assert_eq!(xml::parse(doc.as_bytes()).unwrap_err(), xml::Malformed);
 }
