@@ -256,32 +256,102 @@ fn a_hostile_server_ends_a_run_with_a_line_and_never_a_panic() {
 }
 
 #[test]
-fn a_server_that_ignores_the_page_size_gives_no_page_and_no_state() {
+fn a_server_that_ignores_the_page_size_is_believed_when_every_change_is_readable() {
     let standin = StandIn::new();
     for n in 0..700 {
         standin.state().deliver("inbox", &format!("Mail {n}"), false);
     }
     standin.state().ignores_max = true;
     let (pieces, _) = run(&standin, &EwsMailRequest { inbox_pass: true, list_folders: false, ..request() });
-    // (Taking the first of 700 and keeping the state past all of them would lose the rest.)
-    assert!(subjects(&pieces).is_empty() && pieces.iter().all(|p| p.pages.is_empty()), "{pieces:?}");
-    assert!(!last(&pieces).whole && !last(&pieces).errors.is_empty());
-    // A server that keeps to the size is read to its end.
-    standin.state().ignores_max = false;
-    let (pieces, _) = run(&standin, &EwsMailRequest { inbox_pass: true, list_folders: false, ..request() });
+    // All 700 in one page, with the state that covers them: nothing is lost.
     assert_eq!(subjects(&pieces).len(), 700);
+    let pages: Vec<_> = pieces.iter().flat_map(|p| &p.pages).collect();
+    assert_eq!(pages.len(), 1);
+    assert!(pages[0].last && !pages[0].state.is_empty());
+    assert!(last(&pieces).blocked.is_empty());
+    // A page larger than the model takes in is no page (the folder is named, not cut).
+    let standin = StandIn::new();
+    for n in 0..2_100 {
+        standin.state().deliver("inbox", &format!("Mail {n}"), false);
+    }
+    standin.state().ignores_max = true;
+    let (pieces, _) = run(&standin, &EwsMailRequest { inbox_pass: true, list_folders: false, ..request() });
+    assert!(subjects(&pieces).is_empty() && last(&pieces).blocked.len() == 1 && !last(&pieces).whole);
 }
 
 #[test]
-fn a_page_with_a_change_that_cannot_be_read_gives_no_message_and_no_state() {
+fn a_page_with_a_change_that_cannot_be_read_gives_no_message_and_no_state_and_names_the_folder() {
     let standin = StandIn::new();
     standin.state().deliver("inbox", "Kickoff", false);
+    let inbox = standin.state().folder_id("inbox").unwrap();
     standin.state().hostile = Some(Hostile::BadItems);
     let (pieces, _) = run(&standin, &EwsMailRequest { inbox_pass: true, list_folders: false, ..request() });
     assert!(subjects(&pieces).is_empty(), "an id that isn't one is no message");
     // Nothing of the page, and so no state past it: the folder is read again from where it was.
     assert!(pieces.iter().all(|p| p.pages.is_empty()), "{pieces:?}");
-    assert!(!last(&pieces).whole && !last(&pieces).errors.is_empty());
+    // The run says which folder (by its server id; the engine says it as the owner knows it), and
+    // is not the end of a run that went well.
+    assert_eq!(last(&pieces).blocked, vec![inbox]);
+    assert!(!last(&pieces).whole);
+}
+
+#[test]
+fn a_blocked_folder_leaves_the_others_to_be_read_and_is_no_server_failing() {
+    let standin = StandIn::new();
+    let (bad, ids) = {
+        let mut s = standin.state();
+        let ids: Vec<String> = (0..4).map(|n| s.add_folder(&format!("Box {n}"))).collect();
+        s.deliver("inbox", "Kickoff", false);
+        for (n, id) in ids.iter().enumerate() {
+            s.deliver(id, &format!("In box {n}"), false);
+        }
+        (ids[1].clone(), ids)
+    };
+    standin.state().hostile = Some(Hostile::BadItems);
+    standin.state().bad_items_in = bad.clone();
+    let (pieces, _) = run(&standin, &request());
+    // The others were read: the Inbox and three of the four boxes.
+    let mut seen = subjects(&pieces);
+    seen.sort();
+    assert_eq!(seen, ["In box 0", "In box 2", "In box 3", "Kickoff"]);
+    assert_eq!(last(&pieces).blocked, vec![bad.clone()]);
+    // Only because of that folder: no line of trouble, but the run is not a whole one.
+    assert!(last(&pieces).errors.is_empty() && !last(&pieces).whole);
+    // Every folder blocked (more than the folders in a row that end a run for a failing server):
+    // each is named, and none ends the run.
+    standin.state().bad_items_in = String::new();
+    let (pieces, _) = run(&standin, &request());
+    let mut blocked = last(&pieces).blocked.clone();
+    blocked.sort();
+    let mut expect = ids;
+    expect.push(standin.state().folder_id("inbox").unwrap());
+    expect.sort();
+    assert_eq!(blocked, expect);
+}
+
+#[test]
+fn folders_that_are_blocked_do_not_count_towards_the_folders_in_a_row_that_end_a_run() {
+    let standin = StandIn::new();
+    let (blocked, last_box) = {
+        let mut s = standin.state();
+        let ids: Vec<String> = (0..4).map(|n| s.add_folder(&format!("Box {n}"))).collect();
+        s.deliver("inbox", "Kickoff", false);
+        for (n, id) in ids.iter().enumerate() {
+            s.deliver(id, &format!("In box {n}"), false);
+        }
+        // Three folders and the Inbox are blocked (more than the folders in a row that end a run).
+        let mut blocked = vec![s.folder_id("inbox").unwrap()];
+        blocked.extend(ids[..3].iter().cloned());
+        (blocked, ids[3].clone())
+    };
+    assert!(blocked.len() > 3);
+    standin.state().hostile = Some(Hostile::BadItems);
+    standin.state().bad_items_in = blocked.join(",");
+    let (pieces, _) = run(&standin, &request());
+    // The folder after them is read all the same, and the run is no failing server.
+    assert_eq!(subjects(&pieces), ["In box 3"], "{last_box}");
+    assert_eq!(last(&pieces).blocked.len(), 4);
+    assert!(last(&pieces).errors.is_empty());
 }
 
 #[test]

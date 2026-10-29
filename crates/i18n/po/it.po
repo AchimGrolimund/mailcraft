@@ -13574,6 +13574,11 @@ msgid "{folder} and its subfolders"
 msgstr ""
 
 #. what a command says
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "{folder} couldn't be read from the server"
+msgstr ""
+
+#. what a command says
 #: crates/model/src/sync/progress.rs
 #, fuzzy
 msgid "{folder}: {done} of {total}"
@@ -13620,6 +13625,11 @@ msgstr "{language} (anteprima)"
 #, fuzzy
 msgid "{large} large messages download when opened"
 msgstr "{large} messaggi di grandi dimensioni vengono scaricati all'apertura"
+
+#. interface
+#: crates/ui-egui/src/backstage.rs
+msgid "{line} · couldn't be read in the last run: {folders}"
+msgstr ""
 
 #. date and time
 #: crates/i18n/src/date.rs

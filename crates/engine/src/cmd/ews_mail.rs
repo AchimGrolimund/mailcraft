@@ -59,6 +59,8 @@ pub const SENDING_NOT_BUILT: &str = "Exchange server accounts can't send mail ye
 /// on, mail is queued in an Exchange server account's Outbox; with it off, nothing is.
 const SENDING_BUILT: bool = true;
 /// What a piece is refused with when the account would keep more sync state than is taken in.
+/// Most folders a run names as unreadable in its lines (the rest are counted in the log).
+const MAX_BLOCKED_SHOWN: usize = 8;
 const STATES_TOO_LARGE: &str = "the result would make this account keep more sync state than is taken in";
 
 /// Whether a message may be queued in the Outbox of an account of this kind, to be sent by the
@@ -217,6 +219,10 @@ fn request(s: &mut Session, v: &Value) -> CmdResult {
         ews_mail_request(s, account, p::bool(v, "light").unwrap_or(false))?
     };
     request.background = p::bool(v, "background").unwrap_or(false);
+    // A run begins: nothing lost in an earlier one is held against it.
+    if !request.inbox_pass {
+        s.ews_run_cut.remove(&account);
+    }
     serde_json::to_value(request).map_err(|e| fail(e.to_string()))
 }
 
@@ -309,13 +315,23 @@ fn receiving(mb: &Mailbox, account: Id, email: &str, url: &str) -> Result<String
 /// `busyFor`, `summary`), `authRefused` when the server turned the password down and `untrusted`
 /// (the certificate's fingerprint) when the run stopped at a certificate the owner is to be asked about.
 pub fn apply_ews_mail(s: &mut Session, result: EwsMailResult) -> CmdResult {
+    let account = result.account;
+    let taken = take_in(s, result);
+    // A piece that was refused is a piece lost: the end of its run removes nothing.
+    if taken.is_err() && s.ews {
+        s.ews_run_cut.insert(account);
+    }
+    taken
+}
+
+fn take_in(s: &mut Session, result: EwsMailResult) -> CmdResult {
     if !s.ews {
         return Err(fail(SWITCHED_OFF));
     }
     result.check().map_err(|why| failed!("the result {why}", why = mailcraft_i18n::Arg::words(why)))?;
     let account = result.account;
     let name = receiving(&s.mailbox, account, &result.email, &result.url)?;
-    let result = ews_down::bounded(result);
+    let (result, cut) = ews_down::bounded(result);
     if ews_down::state_bytes_after(&s.mailbox, account, &result) > MAX_EWS_STATE_BYTES {
         // (The sync states kept for one account are held to a total, as one is held to a size: a
         // piece that would go over is refused whole, and what it was for is read again.)
@@ -388,7 +404,15 @@ pub fn apply_ews_mail(s: &mut Session, result: EwsMailResult) -> CmdResult {
     }
     // The run's end: what its fresh reads left out goes, when every folder was read and it went
     // well (the host says `whole` of such a run only).
-    if result.whole && !result.partial && left_out == 0 {
+    // A page lost anywhere in the run, not in this piece alone, keeps the end from sweeping.
+    if cut || left_out > 0 || !result.blocked.is_empty() {
+        s.ews_run_cut.insert(account);
+    }
+    let run_cut = s.ews_run_cut.contains(&account);
+    if !result.partial {
+        s.ews_run_cut.remove(&account);
+    }
+    if result.whole && !result.partial && !run_cut {
         graph_down::sweep(&mut s.mailbox, account, &mut down);
     }
     if taken != Taken::default() || down != Down::default() || !result.pages.is_empty() {
@@ -405,6 +429,17 @@ pub fn apply_ews_mail(s: &mut Session, result: EwsMailResult) -> CmdResult {
     }
     if !result.untrusted.is_empty() {
         errors.insert(0, mailcraft_i18n::fmt(lang.t("The certificate of the server of {name} needs your say"), &[("name", &name)]));
+    }
+    // The folders that hold a change that can't be taken in stay where they were, and are named as
+    // the owner knows them (no id, no state): one line each, up to a few.
+    let blocked: Vec<String> = result
+        .blocked
+        .iter()
+        .filter_map(|id| s.mailbox.folder_by_server(account, id).and_then(|f| s.mailbox.folder(f)).map(|f| sync_progress::shown(&f.name)))
+        .take(MAX_BLOCKED_SHOWN)
+        .collect();
+    for folder in &blocked {
+        errors.push(mailcraft_i18n::fmt(lang.t("{folder} couldn't be read from the server"), &[("folder", folder)]));
     }
     // Send/Receive Progress: where the run is, what it brought, what went wrong.
     let step = match (&result.progress, &result.folders) {
@@ -456,6 +491,7 @@ pub fn apply_ews_mail(s: &mut Session, result: EwsMailResult) -> CmdResult {
         "busyFor": result.busy_for,
         "authRefused": result.auth_refused,
         "untrusted": result.untrusted,
+        "unreadableFolders": blocked,
         "stopped": result.stopped,
         "new": down.new,
         "changed": down.changed,

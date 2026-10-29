@@ -114,10 +114,10 @@ fn bounded_deltas(deltas: &mut EwsFolderDeltas) -> bool {
     whole
 }
 
-/// A piece of a run held to its sizes, as the module documentation says. What became of changes,
+/// A piece of a run held to its sizes, as the module documentation says, and whether it had to be cut. What became of changes,
 /// drafts and mail sent is held to sizes ([`super::ews_up::bounded_up`]); mail placed is taken out. A piece is the end of a run that went well (`whole`) only if it is the last,
 /// came whole, and tells of no trouble.
-pub(crate) fn bounded(mut result: EwsMailResult) -> EwsMailResult {
+pub(crate) fn bounded(mut result: EwsMailResult) -> (EwsMailResult, bool) {
     super::ews_up::bounded_up(&mut result);
     let mut cut = false;
     // The folders whose pages came cut: where they go on from is not kept, so that the next run
@@ -158,7 +158,7 @@ pub(crate) fn bounded(mut result: EwsMailResult) -> EwsMailResult {
     }
     let trouble = !result.errors.is_empty() || result.stopped || result.auth_refused || result.busy_for.is_some() || !result.untrusted.is_empty();
     result.whole &= !cut && !trouble && !result.partial;
-    result
+    (result, cut)
 }
 
 /// What a batch of messages fetched whole brought, held to its sizes (as a JMAP batch is,
@@ -294,7 +294,8 @@ pub(crate) fn state_bytes_after(mb: &Mailbox, account: Id, result: &EwsMailResul
         .fold(0usize, usize::saturating_add);
     // (A folder the result has a state for that this mailbox doesn't have yet: its page is passed
     // over, and so is its state, so it isn't counted.)
-    let hierarchy = if result.hierarchy.is_empty() {
+    // (The folder list's state is kept with the folders it brought, never without them.)
+    let hierarchy = if result.hierarchy.is_empty() || result.folders.is_none() {
         mb.account(account).and_then(|a| a.ews.as_ref()).map_or(0, |server| server.hierarchy.len())
     } else {
         result.hierarchy.len()

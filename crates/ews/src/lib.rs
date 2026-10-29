@@ -101,6 +101,8 @@ pub mod standin_write;
 #[cfg(test)]
 mod hostile_tests;
 #[cfg(test)]
+mod items_tests;
+#[cfg(test)]
 mod mail_tests;
 #[cfg(test)]
 mod tests;

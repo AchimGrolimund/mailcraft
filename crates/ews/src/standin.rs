@@ -179,6 +179,8 @@ pub struct State {
     pub lacks_preview: bool,
     /// A server that ignores `MaxChangesReturned` and gives every change it has in one answer.
     pub ignores_max: bool,
+    /// With [`Hostile::BadItems`]: only the items of this folder (its id) are bad; empty for all.
+    pub bad_items_in: String,
     /// How many ids have been given out.
     pub issued: u32,
     /// The server has no follow-up flag: setting `item:Flag` is `ErrorInvalidPropertyForOperation`.
@@ -246,6 +248,7 @@ impl Default for State {
             epoch: 0,
             lacks_preview: false,
             ignores_max: false,
+            bad_items_in: String::new(),
             issued: 0,
             lacks_flag: false,
             outgoing: Vec::new(),

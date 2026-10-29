@@ -134,6 +134,18 @@ impl MailApp {
             let untrusted = !piece.untrusted.is_empty();
             match apply_ews_mail(&mut self.session, piece) {
                 Ok(said) => {
+                    // The folders the run could not read: File › Info names them until the next run.
+                    if last {
+                        let folders: Vec<String> = said["unreadableFolders"]
+                            .as_array()
+                            .map(|all| all.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                            .unwrap_or_default();
+                        if folders.is_empty() {
+                            self.ews_unreadable.remove(&account);
+                        } else {
+                            self.ews_unreadable.insert(account, folders);
+                        }
+                    }
                     let errors = said["errors"].as_array().map(|all| all.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>());
                     self.note_sync_problems(account, &errors.unwrap_or_default(), false);
                 }

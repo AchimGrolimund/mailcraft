@@ -324,5 +324,6 @@ fn a_certificate_that_is_not_for_servers_is_refused_even_when_pinned() {
     });
     assert_eq!(server.asked(), 0);
 }
+
 #[path = "https_held_tests.rs"]
 mod held;

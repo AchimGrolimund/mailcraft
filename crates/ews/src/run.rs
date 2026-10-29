@@ -66,6 +66,8 @@ pub(crate) enum Asked {
     /// A request that makes or sends something went out and its answer was lost (or was none the
     /// server's service would give): it may have happened, and it was not sent again.
     Lost,
+    /// A page of a folder holds a change that can't be taken in: the folder stays where it was.
+    Unreadable,
 }
 
 /// What ends a run.
@@ -88,6 +90,8 @@ struct Outcome {
     busy_for: Option<u32>,
     /// A folder or the folder list was left unread.
     incomplete: bool,
+    /// The folders (their server ids) whose pages hold a change that can't be taken in.
+    blocked: Vec<String>,
 }
 
 impl Outcome {
@@ -123,6 +127,8 @@ pub(crate) struct Run<'a, E: HttpExchange> {
     pub(crate) shape: Shape,
     /// The server has no follow-up flag: flags stay here (E7), said once.
     pub(crate) flag_lacking: bool,
+    /// A read-state change that said no state was passed over: said once a run, with no id.
+    pub(crate) read_unsaid: bool,
 }
 
 impl<E: HttpExchange> Run<'_, E> {
@@ -175,6 +181,7 @@ impl<E: HttpExchange> Run<'_, E> {
                 Error::Server(code) => return Err(Asked::Code(code)),
                 // (An answer that is none the service gives, to a request that may have been done.)
                 Error::Status(_) | Error::Malformed | Error::TooLarge | Error::Unexpected if once => return Err(Asked::Lost),
+                Error::Unreadable => return Err(Asked::Unreadable),
                 _ => return Err(Asked::Bad),
             }
         }
@@ -275,16 +282,20 @@ pub async fn sync_mail<E: HttpExchange>(
     wait: &mut dyn FnMut(u32) -> bool,
     emit: &mut dyn FnMut(EwsMailResult),
 ) {
-    let mut run = Run { client, exchange, cancel, wait, shape: Shape::Full, flag_lacking: false };
+    let mut run = Run { client, exchange, cancel, wait, shape: Shape::Full, flag_lacking: false, read_unsaid: false };
     let mut out = Outcome::default();
     if let Err(stop) = run.all(request, &mut out, emit).await {
         match stop {
             Asked::Stop(why) => out.stop(why),
-            Asked::Code(_) | Asked::Bad | Asked::Lost => {
+            Asked::Code(_) | Asked::Bad | Asked::Lost | Asked::Unreadable => {
                 out.incomplete = true;
                 out.line("The server's answer couldn't be used");
             }
         }
+    }
+    if !out.blocked.is_empty() {
+        // (Once a run, and no id: the engine names the folders by what the owner calls them.)
+        log::warn!("ews mail: {} folders hold a change that can't be taken in; they are left where they were", out.blocked.len());
     }
     log::debug!("ews mail: the run is over (clean: {}, stopped: {}, busy: {})", out.clean(), out.stopped, out.busy_for.is_some());
     emit(EwsMailResult {
@@ -294,6 +305,7 @@ pub async fn sync_mail<E: HttpExchange>(
         whole: out.clean() && !request.inbox_pass && request.scope == EwsScope::All,
         stopped: out.stopped,
         auth_refused: out.auth_refused,
+        blocked: out.blocked,
         ..base(request)
     });
 }
@@ -353,6 +365,14 @@ impl<E: HttpExchange> Run<'_, E> {
                 // (A folder the server doesn't have: the folder list takes it away.)
                 Ok(false) => {}
                 Err(Asked::Stop(stop)) => return Err(Asked::Stop(stop)),
+                // A folder that is blocked is not a server that is failing: the other folders go on,
+                // and it doesn't count towards the folders in a row (the engine says which it was).
+                Err(Asked::Unreadable) => {
+                    out.incomplete = true;
+                    if out.blocked.len() < MAX_FOLDERS {
+                        out.blocked.push(folder.clone());
+                    }
+                }
                 Err(_) => {
                     out.incomplete = true;
                     out.line("Some folders couldn't be read from the server");
@@ -381,7 +401,13 @@ impl<E: HttpExchange> Run<'_, E> {
         for _ in 0..MAX_PAGES {
             let op = SyncFolderItems::new(folder, &state, PAGE, self.shape);
             let page = match self.ask(&op.element(), &|reply| op.answer(reply)).await {
-                Ok(page) => page,
+                Ok(page) => {
+                    if page.read_unsaid > 0 && !self.read_unsaid {
+                        self.read_unsaid = true;
+                        log::info!("ews mail: the server gave a read-state change that says no state; it is passed over");
+                    }
+                    page
+                }
                 Err(Asked::Code(ResponseCode::FolderNotFound)) => return Ok(false),
                 Err(Asked::Code(ResponseCode::InvalidSyncState)) if !lost => {
                     (state, afresh, lost) = (String::new(), true, true);
@@ -443,7 +469,7 @@ pub async fn fetch_messages<E: HttpExchange>(
     cancel: &AtomicBool,
     wait: &mut dyn FnMut(u32) -> bool,
 ) -> GraphFetchResult {
-    let mut run = Run { client, exchange, cancel, wait, shape: Shape::Full, flag_lacking: false };
+    let mut run = Run { client, exchange, cancel, wait, shape: Shape::Full, flag_lacking: false, read_unsaid: false };
     let mut out = GraphFetchResult { account: request.account, email: request.email.clone(), ..GraphFetchResult::default() };
     let mut outcome = Outcome::default();
     for id in request.ids.iter().take(MAX_FETCH) {
@@ -451,7 +477,7 @@ pub async fn fetch_messages<E: HttpExchange>(
         match run.ask(&op.element(), &|reply| op.answer(reply)).await {
             Ok(mime) => out.fetched.push(GraphFetched { id: id.clone(), mime }),
             Err(Asked::Code(ResponseCode::ItemNotFound)) => out.missing.push(id.clone()),
-            Err(Asked::Code(_) | Asked::Bad | Asked::Lost) => out.failed.push(id.clone()),
+            Err(Asked::Code(_) | Asked::Bad | Asked::Lost | Asked::Unreadable) => out.failed.push(id.clone()),
             Err(Asked::Stop(stop)) => {
                 if let Stop::Busy(seconds) = stop {
                     out.busy_for = Some(seconds.max(1));
