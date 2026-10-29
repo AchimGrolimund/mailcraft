@@ -1269,7 +1269,8 @@ mod tests {
     #[test]
     fn an_exchange_account_answers_and_forwards_no_meeting_by_mail() {
         // With the switch on the account sends (#252 E5): only the switch off is a refusal.
-        for switch in [false] {
+        {
+            let switch = false;
             let mut s = Session::at(crate::sample::mailbox(now(), 0), now(), 0);
             s.ews = switch;
             let server = mailcraft_model::EwsServer { url: "https://exchange.example.org/EWS/Exchange.asmx".into(), ..Default::default() };
