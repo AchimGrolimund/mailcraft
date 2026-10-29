@@ -129,6 +129,15 @@ impl<'a> Stream<'a> {
         tcp.set_read_timeout(io).and_then(|()| tcp.set_write_timeout(io))
     }
 
+    /// The DER of the certificate the server showed first (its end-entity certificate), on an
+    /// encrypted connection whose handshake is done: for channel binding.
+    pub(crate) fn server_certificate(&self) -> Option<Vec<u8>> {
+        match &self.io {
+            Io::Plain(_) => None,
+            Io::Tls(tls) => tls.conn.peer_certificates()?.first().map(|c| c.as_ref().to_vec()),
+        }
+    }
+
     /// What every read and write begins with: the flag, and the time the command has had.
     fn before(&mut self, writing: bool) -> std::io::Result<()> {
         if self.cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {

@@ -16,6 +16,10 @@ mailcraft-model = { workspace = true }
 mailcraft-time = { workspace = true }
 log = { workspace = true }
 quick-xml = { workspace = true }
+# NTLMv2 (`ntlm`): MD4 of the password, then HMAC-MD5.
+md4 = { workspace = true }
+md-5 = { workspace = true }
+hmac = { workspace = true }
 
 [features]
 # An in-process Exchange Web Services server that holds a client to the documented schema

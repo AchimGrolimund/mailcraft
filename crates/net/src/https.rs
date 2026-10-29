@@ -19,6 +19,12 @@
 //!   ([`CertificateProblem::Changed`]).
 //!
 //! The call blocks; a host calls it on a background thread.
+//!
+//! [`send`] makes a connection for each exchange. NTLM (#252, E4) signs a **connection** in, in
+//! three legs, so there is also a [`Connection`]: one TLS connection that carries several
+//! requests one after another (keep-alive), under the same rules, and that says the hash of the
+//! server's certificate for channel binding ([`Connection::end_point_hash`]). Mail, pictures and
+//! everything else keep a connection for each exchange.
 
 use std::time::Duration;
 
@@ -85,13 +91,7 @@ impl std::fmt::Debug for Response {
 /// that is no such thing, and the usual connection and protocol errors otherwise.
 pub fn send(request: &Request<'_>) -> Result<Response, NetError> {
     let url = Url::parse(request.url)?;
-    let pin = match request.trusted.trim() {
-        "" => None,
-        fingerprint => Some(
-            cert::parse_fingerprint(fingerprint)
-                .ok_or_else(|| NetError::Config("the trusted certificate's fingerprint isn't a SHA-256 fingerprint".into()))?,
-        ),
-    };
+    let pin = pin_of(request.trusted)?;
     let http_request =
         HttpRequest { method: request.method, headers: request.fields, body: Some(request.body), patience: PATIENCE, max_body: request.max_response };
     if !url.secure {
@@ -104,6 +104,117 @@ pub fn send(request: &Request<'_>) -> Result<Response, NetError> {
         Err(error @ NetError::Tls { .. }) => Err(verifier.take_problem().map_or(error, |problem| NetError::Certificate(Box::new(problem)))),
         Err(other) => Err(other),
     }
+}
+
+/// One connection to an Exchange server that carries several requests, one after another: the
+/// three legs of an NTLM sign-in, and the requests after them, which the server ties to the
+/// connection.
+///
+/// It is made as [`send`] makes its own (TLS, or plain only to this machine; the owner's trusted
+/// certificate; no redirect followed), and the certificate is checked before the first request
+/// goes. A request on it goes only to the server it was made for. It stays open as long as each
+/// answer says where it ends and the server doesn't close; after an answer that doesn't allow
+/// another request, [`Connection::is_open`] is false, [`Connection::send`] says the connection is
+/// closed ([`is_closed`]), and the host makes a new one (and signs in again). A server may also
+/// close an idle connection: the next request then fails the same way.
+///
+/// **Retrying.** A host that reconnects after a failure must retry only a request that is the same
+/// however often it is made, or one for which nothing was written. A request whose answer was lost
+/// after it went out (`CreateItem`, `SendItem`) may have happened: it is never sent again here.
+pub struct Connection {
+    stream: crate::transport::Stream<'static>,
+    url: Url,
+    open: bool,
+}
+
+impl std::fmt::Debug for Connection {
+    /// Whether it is open and encrypted: no address, nothing of what went over it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Connection").field("open", &self.open).field("secure", &self.url.secure).finish()
+    }
+}
+
+/// The SHA-256 fingerprint `trusted` names, if any.
+fn pin_of(trusted: &str) -> Result<Option<[u8; 32]>, NetError> {
+    match trusted.trim() {
+        "" => Ok(None),
+        fingerprint => cert::parse_fingerprint(fingerprint)
+            .map(Some)
+            .ok_or_else(|| NetError::Config("the trusted certificate's fingerprint isn't a SHA-256 fingerprint".into())),
+    }
+}
+
+impl Connection {
+    /// Connects to `url`'s server (an `https://` address; `http://` only to this machine) and, for
+    /// TLS, shakes hands: a certificate that isn't accepted is [`NetError::Certificate`], as for
+    /// [`send`], before anything is sent. `trusted` is the fingerprint the owner chose to trust
+    /// ([`Request::trusted`]), or empty.
+    pub fn open(url: &str, trusted: &str) -> Result<Connection, NetError> {
+        let url = Url::parse(url)?;
+        let pin = pin_of(trusted)?;
+        if !url.secure {
+            return Ok(Connection { stream: http::connect(&url, PATIENCE)?, url, open: true });
+        }
+        let (config, verifier) = crate::tls::pinned_config(pin).map_err(|reason| NetError::Tls { host: url.host.clone(), reason })?;
+        match http::connect_with(&url, PATIENCE, Some(config)) {
+            Ok(stream) => Ok(Connection { stream, url, open: true }),
+            Err(error @ NetError::Tls { .. }) => Err(verifier.take_problem().map_or(error, |problem| NetError::Certificate(Box::new(problem)))),
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Whether the connection may carry another request.
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// The `tls-server-end-point` hash (RFC 5929) of the certificate the server showed, for
+    /// channel binding; none on a connection that isn't TLS, or for a certificate signed in a way
+    /// that names no hash (the host then sends no binding).
+    pub fn end_point_hash(&self) -> Option<Vec<u8>> {
+        cert::end_point_hash(&self.stream.server_certificate()?)
+    }
+
+    /// Sends `request` on this connection and returns the answer, whatever its status. The
+    /// request's address must be this connection's server (its path is the request's own);
+    /// [`Request::trusted`] is not used (the connection was made with it).
+    pub fn send(&mut self, request: &Request<'_>) -> Result<Response, NetError> {
+        if !self.open {
+            return Err(http::closed());
+        }
+        let url = Url::parse(request.url)?;
+        if !url.same_server(&self.url) {
+            return Err(NetError::Config("a held connection carries requests to its own server alone".into()));
+        }
+        let http_request = HttpRequest {
+            method: request.method,
+            headers: request.fields,
+            body: Some(request.body),
+            patience: PATIENCE,
+            max_body: request.max_response,
+        };
+        // Whatever goes wrong, the connection is not used again.
+        self.open = false;
+        let (reply, reusable) = http::exchange(&mut self.stream, &url, &http_request, true)?;
+        self.open = reusable;
+        Ok(response(reply))
+    }
+}
+
+/// Whether `error` says that the server closed the connection (or never took the request): a
+/// held connection that did needs a new one.
+pub fn is_closed(error: &NetError) -> bool {
+    http::is_closed(error)
+}
+
+/// Eight random bytes from the system's generator: the client challenge of an NTLM sign-in.
+pub fn client_challenge() -> Result<[u8; 8], NetError> {
+    use ring::rand::SecureRandom;
+    let mut bytes = [0u8; 8];
+    ring::rand::SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| NetError::Config("this computer couldn't make the random numbers a sign-in is protected with".into()))?;
+    Ok(bytes)
 }
 
 fn response(reply: http::Reply) -> Response {
