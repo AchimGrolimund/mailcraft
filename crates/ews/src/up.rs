@@ -371,11 +371,7 @@ impl<E: HttpExchange> Run<'_, E> {
             done.attachments = Some(
                 here.iter()
                     .map(|a| SyncedAttachment {
-                        id: ids
-                            .as_ref()
-                            .and_then(|n| n.attachments.iter().find(|f| f.name == a.name))
-                            .map(|f| f.id.clone())
-                            .unwrap_or_default(),
+                        id: ids.as_ref().and_then(|n| n.attachments.iter().find(|f| f.name == a.name)).map(|f| f.id.clone()).unwrap_or_default(),
                         name: a.name.clone(),
                         hash: a.hash,
                     })
@@ -432,7 +428,9 @@ impl<E: HttpExchange> Run<'_, E> {
         let mut add = Vec::new();
         for h in up.here.iter().filter(|h| !kept.iter().any(|k| same(&h.name, h.hash, k))) {
             let held = free.iter().position(|f| {
-                f.name == h.name && (f.size == 0 || f.size == h.size) && (h.content_id.is_empty() || f.content_id.is_empty() || f.content_id == h.content_id)
+                f.name == h.name
+                    && (f.size == 0 || f.size == h.size)
+                    && (h.content_id.is_empty() || f.content_id.is_empty() || f.content_id == h.content_id)
             });
             match held {
                 Some(at) => added.push(SyncedAttachment { id: free.remove(at).id, name: h.name.clone(), hash: h.hash }),

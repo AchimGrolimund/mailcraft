@@ -269,7 +269,8 @@ fn a_copy_goes_up_and_takes_the_new_id() {
     let projects = s.mailbox.folder_by_server(account, "F5").unwrap();
     let copy = s.run("mail.copy", &json!({"ids": [a], "folder": projects})).unwrap()["copies"][0].as_u64().unwrap();
     let all = changes(&s, account);
-    let change = all.iter().find(|c| matches!(c, MessageChange::Copy { id, to, .. } if id == "A1" && to == "F5")).unwrap_or_else(|| panic!("{all:?}")).clone();
+    let change =
+        all.iter().find(|c| matches!(c, MessageChange::Copy { id, to, .. } if id == "A1" && to == "F5")).unwrap_or_else(|| panic!("{all:?}")).clone();
     let done = MessageChangeDone {
         change,
         outcome: MessageOutcome::Done { categories: None, flag: None, folder: "F5".into(), id: "A1-copy".into() },

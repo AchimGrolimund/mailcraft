@@ -367,7 +367,10 @@ fn a_draft_whose_make_was_lost_is_found_by_its_marker_and_never_made_twice() {
 #[test]
 fn a_file_whose_add_was_lost_is_not_added_twice() {
     let standin = StandIn::new();
-    let made = run(&standin, &EwsMailRequest { drafts: vec![DraftUp { attachments: Some(AttachmentsUp::default()), ..draft("mark-4", "Hello") }], ..base() });
+    let made = run(
+        &standin,
+        &EwsMailRequest { drafts: vec![DraftUp { attachments: Some(AttachmentsUp::default()), ..draft("mark-4", "Hello") }], ..base() },
+    );
     let made = &made.drafts[0];
     assert!(made.attachments.as_ref().is_some_and(Vec::is_empty));
     // The file is added, and the answer to that is lost: the server has it, the run doesn't know.
@@ -555,7 +558,11 @@ fn a_word_that_may_follow_the_send_holds_it_as_maybe_sent_and_only_a_refusal_bef
     for code in ["ErrorInternalServerError", "ErrorTimeoutExpired", "ErrorMailboxStoreUnavailable", "ErrorSomethingNobodyKnows"] {
         for (operation, send) in sends() {
             let standin = StandIn::new();
-            let replacing = Replacing { inner: &standin, operation, answer: fault_answer(if operation == "CreateItem" { "CreateItem" } else { "SendItem" }, code) };
+            let replacing = Replacing {
+                inner: &standin,
+                operation,
+                answer: fault_answer(if operation == "CreateItem" { "CreateItem" } else { "SendItem" }, code),
+            };
             let (pieces, _) = run_with(&replacing, &EwsMailRequest { sends: vec![send], ..base() });
             let held: Vec<_> = pieces.iter().flat_map(|p| &p.sent).collect();
             assert_eq!(held[0].outcome, SendOutcome::Held { lost: true, why: String::new() }, "{operation} {code}");
@@ -595,14 +602,10 @@ fn a_line_break_or_nul_in_a_subject_name_category_or_folder_name_never_reaches_t
     use crate::changes::{CreateFolder, ItemUpdate, RenameFolder, UpdateItem};
     use crate::compose::{CreateDraft, DraftContent};
     let nasty = "Hi\r\nBcc: evil@example.org\0there";
-    let clean = "HiBcc: evil@example.org" .to_owned() + "there";
+    let clean = "HiBcc: evil@example.org".to_owned() + "there";
     let who = Address::new(nasty, "zoe@example.org\r\nX: y");
-    let update = ItemUpdate {
-        subject: Some(nasty.into()),
-        categories: Some(vec![nasty.into()]),
-        to: Some(vec![who.clone()]),
-        ..ItemUpdate::default()
-    };
+    let update =
+        ItemUpdate { subject: Some(nasty.into()), categories: Some(vec![nasty.into()]), to: Some(vec![who.clone()]), ..ItemUpdate::default() };
     let xml = UpdateItem::marks("ID1", update).element().write();
     let draft = DraftContent {
         subject: nasty.into(),

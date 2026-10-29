@@ -383,8 +383,9 @@ impl CreateFolder {
 
     /// The operation: `ParentFolderId` and `Folders`.
     pub fn element(&self) -> Element {
-        let folder =
-            Element::new("t:Folder").child(Element::new("t:FolderClass").text("IPF.Note")).child(Element::new("t:DisplayName").text(&line(&self.name)));
+        let folder = Element::new("t:Folder")
+            .child(Element::new("t:FolderClass").text("IPF.Note"))
+            .child(Element::new("t:DisplayName").text(&line(&self.name)));
         Element::new("m:CreateFolder").child(folder_target("m:ParentFolderId", &self.parent)).child(Element::new("m:Folders").child(folder))
     }
 
