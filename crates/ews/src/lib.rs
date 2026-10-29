@@ -20,6 +20,8 @@
 //! - [`reply`], [`error`]: the answer: HTTP status, SOAP fault, response messages with their
 //!   class and code, and `ErrorServerBusy` with a capped `BackOffMilliseconds` ([`Error::Busy`]).
 //!   No error holds text a server wrote.
+//! - [`autodiscover`]: finding the service's address from an e-mail address (MS-OXDSCLI), as a
+//!   state machine the host drives; [`basic`]: the `Authorization: Basic` value.
 //! - [`folder`], [`client`]: `GetFolder` by distinguished name, and [`Client::check`], which
 //!   tests an account with it.
 //!
@@ -28,6 +30,12 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+#[deny(missing_docs)]
+#[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
+pub mod autodiscover;
+#[deny(missing_docs)]
+#[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
+pub mod basic;
 #[deny(missing_docs)]
 #[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
 pub mod client;
@@ -51,12 +59,16 @@ pub mod xml;
 
 #[cfg(any(test, feature = "stand-in"))]
 pub mod standin;
+#[cfg(any(test, feature = "stand-in"))]
+pub mod standin_autodiscover;
 
 #[cfg(test)]
 mod hostile_tests;
 #[cfg(test)]
 mod tests;
 
+pub use autodiscover::{Autodiscover, Consent, ConsentReason, Discovered, Failure, Outcome, Step};
+pub use basic::CredentialError;
 pub use client::Client;
 pub use error::{Error, PolicyReason, ResponseClass, ResponseCode};
 pub use folder::{DistinguishedFolder, FolderId, FolderInfo, GetFolder};
