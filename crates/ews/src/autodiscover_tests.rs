@@ -29,7 +29,7 @@ struct Run {
 
 fn run_with(standin: &AutodiscoverStandIn, mut search: Autodiscover, srv: Option<Vec<&str>>, yes: &[bool]) -> Run {
     let (mut asked, mut looked, mut at) = (Vec::new(), Vec::new(), 0usize);
-    let srv = srv.map(|hosts| hosts.into_iter().map(str::to_owned).collect::<Vec<_>>());
+    let srv = srv.map(|hosts| hosts.into_iter().map(|host| (host.to_owned(), 443)).collect::<Vec<_>>());
     let outcome = block_on(search.run(
         standin,
         |name| {
@@ -58,8 +58,10 @@ fn found(run: &Run) -> &Discovered {
 /// Every sign-in went to the owner's domain or to a host in `also`.
 fn only_to(standin: &AutodiscoverStandIn, also: &[&str]) {
     for seen in &standin.state().seen {
-        assert!(seen.authorized, "{}", seen.host);
-        assert!(is_within(&seen.host, "example.org") || also.contains(&seen.host.as_str()), "the sign-in went to {}", seen.host);
+        if seen.credentials {
+            assert!(seen.authorized, "{}", seen.host);
+            assert!(is_within(&seen.host, "example.org") || also.contains(&seen.host.as_str()), "the sign-in went to {}", seen.host);
+        }
     }
 }
 
@@ -207,6 +209,10 @@ fn a_redirect_outside_the_domain_stops_and_asks() {
     let Step::Request(request) = machine.step() else { panic!("not sent on") };
     assert_eq!(request.url(), "https://login.example.net/autodiscover/autodiscover.xml");
     machine.response(block_on(standin.exchange(&request)).unwrap());
+    // It asks for the sign-in, and only then does the sign-in go.
+    let Step::Request(again) = machine.step() else { panic!("no sign-in asked for") };
+    assert_eq!(again.field("authorization"), Some(BASIC));
+    machine.response(block_on(standin.exchange(&again)).unwrap());
     assert!(matches!(machine.step(), Step::Done(Outcome::Found(_))));
     assert_eq!(standin.hosts_asked(), ["example.org", "login.example.net"]);
 
@@ -385,10 +391,33 @@ fn a_mailbox_in_exchange_online_is_said_so_and_nothing_is_sent_there() {
 
 #[test]
 fn look_alikes_of_microsoft_hosts_are_not_exchange_online() {
-    for yes in ["outlook.com", "mail.outlook.com", "outlook.office365.com", "x.y.onmicrosoft.com", "partner.outlook.cn"] {
+    for yes in [
+        "outlook.com",
+        "mail.outlook.com",
+        "outlook.office365.com",
+        "x.y.onmicrosoft.com",
+        "partner.outlook.cn",
+        "hotmail.com",
+        "autodiscover.hotmail.com",
+        "live.co.uk",
+        "msn.com",
+        "outlook.de",
+        "hotmail.co.uk",
+    ] {
         assert!(is_exchange_online(yes), "{yes}");
     }
-    for no in ["notoutlook.com", "outlook.com.example.org", "office365.com.evil.example", "example.org", "outlook", "", "xoffice.com"] {
+    for no in [
+        "live.somecompany.example",
+        "hotmail.com.evil.example",
+        "hotmail",
+        "notoutlook.com",
+        "outlook.com.example.org",
+        "office365.com.evil.example",
+        "example.org",
+        "outlook",
+        "",
+        "xoffice.com",
+    ] {
         assert!(!is_exchange_online(no), "{no}");
     }
 }
@@ -457,6 +486,7 @@ fn each_failure_has_its_reason() {
 #[test]
 fn every_failure_offers_server_settings_and_holds_nothing_a_server_wrote() {
     for failure in [
+        Failure::SignInNotSupported,
         Failure::Unreachable,
         Failure::NoAutodiscover,
         Failure::SecureConnection,
@@ -579,7 +609,8 @@ fn the_request_is_the_documented_one_and_the_address_is_escaped() {
     let Step::Request(request) = machine.step() else { panic!() };
     assert_eq!(request.method(), Method::Post);
     assert_eq!(request.field("content-type"), Some("text/xml; charset=utf-8"));
-    assert_eq!(request.field("authorization"), Some(BASIC));
+    // The first request to any host carries no sign-in.
+    assert_eq!(request.field("authorization"), None);
     let body = String::from_utf8(request.body().to_vec()).unwrap();
     assert!(
         body.contains(&format!("<AcceptableResponseSchema>{RESPONSE_SCHEMA}</AcceptableResponseSchema>"))
@@ -616,7 +647,7 @@ fn the_request_is_the_documented_one_and_the_address_is_escaped() {
 fn calls_out_of_turn_are_ignored() {
     let mut machine = search("ada@example.org");
     machine.response(Ok(HttpResponse::new(200, Vec::new())));
-    machine.srv(Some(vec!["x.example.org".into()]));
+    machine.srv(Some(vec![("x.example.org".into(), 443)]));
     machine.agree();
     machine.decline();
     assert!(matches!(machine.step(), Step::Request(request) if request.url() == "https://example.org/autodiscover/autodiscover.xml"));
@@ -627,10 +658,10 @@ fn calls_out_of_turn_are_ignored() {
     let standin = AutodiscoverStandIn::new().route("example.org", good());
     let mut machine = search("ada@example.org");
     let _ = block_on(machine.run(&standin, |_| None, |_| false));
-    let before = standin.hosts_asked().len();
+    let before = standin.state().seen.len();
     machine.response(Ok(HttpResponse::new(404, Vec::new())));
     assert!(matches!(machine.step(), Step::Done(Outcome::Found(_))));
-    assert_eq!(standin.hosts_asked().len(), before);
+    assert_eq!(standin.state().seen.len(), before);
 }
 
 #[test]
@@ -696,11 +727,174 @@ proptest! {
                         None => machine.response(Err(TransportError::TimedOut)),
                     }
                 }
-                Step::LookupSrv(_) => machine.srv(Some(srv.clone())),
+                Step::LookupSrv(_) => machine.srv(Some(srv.iter().map(|host| (host.clone(), 443)).collect())),
                 Step::NeedsYes(_) => machine.decline(),
                 Step::Done(_) => { done = true; break; }
             }
         }
         prop_assert!(done);
     }
+}
+
+// ---- the sign-in goes only in answer to a challenge ----
+
+#[test]
+fn no_sign_in_goes_to_a_host_that_does_not_ask_for_one() {
+    // The bare domain is a web host that sends visitors on to www; www is a site that answers
+    // what it likes; only the autodiscover host is Exchange and asks for a sign-in.
+    let standin = AutodiscoverStandIn::new()
+        .route("example.org", Route::Redirect(301, "https://www.example.org/autodiscover/autodiscover.xml".into()))
+        .route("www.example.org", Route::Bytes(b"<html>Welcome</html>".to_vec()))
+        .route("autodiscover.example.org", good());
+    let run = go(&standin, None, &[]);
+    found(&run);
+    assert_eq!(standin.hosts_asked(), ["example.org", "www.example.org", "autodiscover.example.org"]);
+    // The password went to the one host that asked for it, and only after it asked.
+    assert_eq!(standin.hosts_sent_credentials(), ["autodiscover.example.org"]);
+    let state = standin.state();
+    let first = state.seen.iter().find(|seen| seen.host == "autodiscover.example.org").unwrap();
+    assert!(!first.credentials && first.status == 401);
+    assert!(state.seen.last().unwrap().credentials);
+}
+
+#[test]
+fn a_challenge_without_basic_sends_nothing_and_the_next_place_is_tried() {
+    // NTLM only on the bare domain: a typed reason, no password, and autodiscover. still found.
+    let standin = AutodiscoverStandIn::new().route("example.org", Route::Challenge("NTLM".into())).route("autodiscover.example.org", good());
+    found(&go(&standin, None, &[]));
+    assert_eq!(standin.hosts_sent_credentials(), ["autodiscover.example.org"]);
+    // NTLM or Negotiate everywhere: the search says that is the trouble.
+    for schemes in ["NTLM", "Negotiate", "Negotiate, NTLM", "ntlm"] {
+        let standin = AutodiscoverStandIn::new()
+            .route("example.org", Route::Challenge(schemes.into()))
+            .route("autodiscover.example.org", Route::Challenge(schemes.into()));
+        let run = go(&standin, None, &[]);
+        assert_eq!(run.outcome, Outcome::Failed(Failure::SignInNotSupported), "{schemes}");
+        assert!(standin.hosts_sent_credentials().is_empty(), "{schemes}");
+    }
+    // Another scheme (a site behind a bearer token) is just not Autodiscover.
+    let standin = AutodiscoverStandIn::new().route("example.org", Route::Challenge("Bearer".into())).route("autodiscover.example.org", good());
+    found(&go(&standin, None, &[]));
+    // Several offered, Basic among them: Basic is taken.
+    let standin = AutodiscoverStandIn::new().route("example.org", good());
+    let mut machine = search("ada@example.org");
+    let Step::Request(request) = machine.step() else { panic!() };
+    machine.response(Ok(HttpResponse::new(401, Vec::new())
+        .with_field("WWW-Authenticate", "Negotiate")
+        .with_field("WWW-Authenticate", "Basic realm=\"x\"")));
+    let Step::Request(again) = machine.step() else { panic!("no second request") };
+    assert_eq!((again.url(), again.field("authorization")), (request.url(), Some(BASIC)));
+    let _ = standin;
+}
+
+#[test]
+fn only_credentials_that_were_sent_and_refused_are_a_refused_sign_in() {
+    // A staging site behind Basic on the bare domain is asked, sends the challenge, gets the sign-in
+    // and refuses it: the search ends there rather than ask others with a password just refused.
+    let standin =
+        AutodiscoverStandIn::new().route("example.org", Route::Challenge("Basic realm=\"staging\"".into())).route("autodiscover.example.org", good());
+    assert_eq!(go(&standin, None, &[]).outcome, Outcome::Failed(Failure::SignInRefused));
+    assert_eq!(standin.hosts_asked(), ["example.org"]);
+    // A 401 that wants no Basic never counted as a refusal (above); and a 401 to a request that
+    // carried no sign-in is never one either.
+    let mut machine = search("ada@example.org");
+    let Step::Request(_) = machine.step() else { panic!() };
+    machine.response(Ok(HttpResponse::new(401, Vec::new())));
+    assert!(matches!(machine.step(), Step::Request(request) if request.url().contains("autodiscover.example.org")));
+}
+
+// ---- Microsoft's own mail ----
+
+#[test]
+fn microsofts_consumer_mail_is_exchange_online_and_nothing_is_sent() {
+    for email in ["ada@hotmail.com", "ada@live.com", "ada@msn.com", "ada@outlook.de", "ada@hotmail.co.uk", "ada@live.com.au", "ada@mail.hotmail.com"]
+    {
+        let standin = AutodiscoverStandIn::new().route("hotmail.com", good()).route("live.com", good());
+        let mut machine = search(email);
+        assert_eq!(machine.step(), Step::Done(Outcome::ExchangeOnline), "{email}");
+        assert_eq!(go_with(&standin, search(email)).outcome, Outcome::ExchangeOnline, "{email}");
+        assert!(standin.state().seen.is_empty(), "{email}");
+    }
+    // Not Microsoft's: a company that happens to start with "live".
+    assert!(matches!(search("ada@live.somecompany.example").step(), Step::Request(_)));
+}
+
+fn go_with(standin: &AutodiscoverStandIn, machine: Autodiscover) -> Run {
+    run_with(standin, machine, None, &[])
+}
+
+#[test]
+fn a_domain_whose_mail_exchangers_are_microsofts_is_exchange_online() {
+    for host in [
+        "example-org.mail.protection.outlook.com",
+        "Example-Org.Mail.Protection.Outlook.com.",
+        "mx1.olc.protection.outlook.com",
+        "example-org.h-v1.mx.microsoft",
+    ] {
+        assert!(is_exchange_online_mx(host.trim_end_matches('.')), "{host}");
+        let mut machine = search("ada@example.org");
+        machine.note_mail_exchangers(&["mx.example.net".into(), host.into()]);
+        assert_eq!(machine.step(), Step::Done(Outcome::ExchangeOnline), "{host}");
+    }
+    for host in ["mx.example.org", "mail.protection.outlook.com.evil.example", "alt1.aspmx.l.google.com", ""] {
+        assert!(!is_exchange_online_mx(host), "{host}");
+        let mut machine = search("ada@example.org");
+        machine.note_mail_exchangers(&[host.into()]);
+        assert!(matches!(machine.step(), Step::Request(_)), "{host}");
+    }
+    // Once the search has begun, a late word changes nothing.
+    let mut machine = search("ada@example.org");
+    let _ = machine.step();
+    machine.note_mail_exchangers(&["x.mail.protection.outlook.com".into()]);
+    assert!(matches!(machine.step(), Step::Request(_)));
+}
+
+// ---- the SRV port, the server's name, the redacted name ----
+
+#[test]
+fn an_srv_target_is_asked_at_its_port() {
+    let standin = AutodiscoverStandIn::new().route("ad.example.org", good());
+    let mut machine = search("ada@example.org");
+    let mut asked = Vec::new();
+    for _ in 0..10 {
+        match machine.step() {
+            Step::Request(request) => {
+                asked.push(request.url().to_owned());
+                machine.response(block_on(standin.exchange(&request)).unwrap());
+            }
+            Step::LookupSrv(name) => {
+                assert_eq!(name.as_str(), "_autodiscover._tcp.example.org");
+                // Ports that are neither 443 nor high are not asked at; 0 is the usual one.
+                machine.srv(Some(vec![("ad.example.org".into(), 25), ("ad.example.org".into(), 8443), ("ad.example.org".into(), 0)]));
+            }
+            Step::NeedsYes(_) => machine.decline(),
+            Step::Done(_) => break,
+        }
+    }
+    assert!(asked.contains(&"https://ad.example.org:8443/autodiscover/autodiscover.xml".to_owned()), "{asked:?}");
+    assert!(!asked.iter().any(|url| url.contains(":25/")), "{asked:?}");
+}
+
+#[test]
+fn the_servers_name_is_not_a_place_the_password_goes() {
+    // An internal server name outside the domain: no question, since nothing is sent to it.
+    let route = Route::Document(settings(INTERNAL, EXTERNAL, "exch01.corp.local"));
+    let standin = AutodiscoverStandIn::new().route("example.org", route);
+    let run = go(&standin, None, &[]);
+    assert_eq!(found(&run).server(), Some("exch01.corp.local"));
+    assert!(run.asked.is_empty());
+}
+
+#[test]
+fn the_srv_name_shows_nothing_in_debug_output() {
+    let mut machine = search("ada@example.org");
+    let step = loop {
+        match machine.step() {
+            Step::Request(_) => machine.response(Err(TransportError::Unreachable)),
+            other => break other,
+        }
+    };
+    let Step::LookupSrv(name) = &step else { panic!() };
+    assert_eq!(name.as_str(), "_autodiscover._tcp.example.org");
+    assert!(!format!("{step:?}").contains("example"), "{step:?}");
 }

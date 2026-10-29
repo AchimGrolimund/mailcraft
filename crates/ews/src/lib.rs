@@ -67,7 +67,7 @@ mod hostile_tests;
 #[cfg(test)]
 mod tests;
 
-pub use autodiscover::{Autodiscover, Consent, ConsentReason, Discovered, Failure, Outcome, Step};
+pub use autodiscover::{Autodiscover, Consent, ConsentReason, Discovered, Failure, Outcome, SrvName, Step};
 pub use basic::CredentialError;
 pub use client::Client;
 pub use error::{Error, PolicyReason, ResponseClass, ResponseCode};

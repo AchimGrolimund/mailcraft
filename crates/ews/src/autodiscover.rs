@@ -41,6 +41,8 @@
 use std::collections::VecDeque;
 use std::fmt;
 
+use mailcraft_model::provider;
+
 use crate::http::{HttpExchange, HttpRequest, HttpResponse, Method, Secret, TransportError, check_endpoint};
 use crate::xml::{self, Node};
 
@@ -77,9 +79,33 @@ const EXCHANGE_ONLINE: [&str; 9] = [
     "office365.cn",
 ];
 
-/// Whether `host` (lower case, no port) is Exchange Online's.
+/// Whether `host` (lower case, no port) is Microsoft's own mail: Exchange Online (Microsoft 365)
+/// or Outlook.com in any of its names and countries (`hotmail.com`, `live.co.uk`, `msn.com`,
+/// `autodiscover.outlook.com`), as `mailcraft_model::provider` knows them. A mailbox there is a
+/// Microsoft account, never an Exchange server account, and no sign-in is ever sent there.
 pub fn is_exchange_online(host: &str) -> bool {
-    EXCHANGE_ONLINE.iter().any(|online| is_within(host, online))
+    EXCHANGE_ONLINE.iter().any(|online| is_within(host, online)) || is_microsoft_consumer(host)
+}
+
+/// Whether `host` is, or is under, one of Microsoft's consumer mail domains.
+fn is_microsoft_consumer(host: &str) -> bool {
+    let mut rest = host;
+    loop {
+        if provider::by_domain(rest).is_some_and(|preset| preset.oauth.is_some()) {
+            return true;
+        }
+        match rest.split_once('.') {
+            Some((_, tail)) if tail.contains('.') => rest = tail,
+            _ => return false,
+        }
+    }
+}
+
+/// Whether `host`, one of a domain's mail exchangers (`example-org.mail.protection.outlook.com`),
+/// is Microsoft's: the domain's mail is in Exchange Online. A host that has looked up the MX
+/// records before it starts tells the search so with [`Autodiscover::note_mail_exchangers`].
+pub fn is_exchange_online_mx(host: &str) -> bool {
+    provider::by_mx(host).is_some_and(|preset| preset.oauth.is_some())
 }
 
 /// Whether `host` is `domain` or a name under it (`mail.example.org` is within `example.org`;
@@ -249,6 +275,9 @@ pub enum Failure {
     ServerRefused,
     /// The answer has no Exchange Web Services address.
     NoExchangeAddress,
+    /// The server offers to sign in only in ways that are not built yet (NTLM, Negotiate), and
+    /// not with a user name and password over TLS (Basic).
+    SignInNotSupported,
     /// The owner did not agree to a host.
     Declined,
     /// The user name or password was not accepted (401). Nothing else was asked.
@@ -267,10 +296,11 @@ impl Failure {
             Self::Unreadable => 3,
             Self::InsecureRedirect => 4,
             Self::ServerRefused => 5,
-            Self::NoExchangeAddress => 6,
-            Self::Declined => 7,
-            Self::SignInRefused => 8,
-            Self::TooManyRedirects => 9,
+            Self::SignInNotSupported => 6,
+            Self::NoExchangeAddress => 7,
+            Self::Declined => 8,
+            Self::SignInRefused => 9,
+            Self::TooManyRedirects => 10,
         }
     }
 }
@@ -285,6 +315,7 @@ impl fmt::Display for Failure {
             Self::InsecureRedirect => "The server sent the setup somewhere that is not encrypted, which is never followed. Type the server's address in Server settings.",
             Self::ServerRefused => "The server or the organisation would not give its settings. Ask your administrator for the server's address and type it in Server settings.",
             Self::NoExchangeAddress => "The server answered without the address of Exchange Web Services. Ask your administrator for it and type it in Server settings.",
+            Self::SignInNotSupported => "The server wants a way of signing in that this program cannot do yet. Ask your administrator whether the server can take a user name and password over an encrypted connection, and type the server's address in Server settings.",
             Self::Declined => "You did not agree to send your sign-in to the server the setup led to. Type the server's address in Server settings.",
             Self::SignInRefused => "The server did not accept the user name and password. Check them, or type the user name in Server settings (DOMAIN\\user or user@example.org).",
             Self::TooManyRedirects => "The setup was sent from one server to another too many times. Type the server's address in Server settings.",
@@ -306,6 +337,24 @@ pub enum Outcome {
     Failed(Failure),
 }
 
+/// The name of an SRV record to look up (`_autodiscover._tcp.example.org`). Its `Debug` shows
+/// nothing: the domain is the owner's.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SrvName(String);
+
+impl SrvName {
+    /// The name to look up.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SrvName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SrvName(<redacted>)")
+    }
+}
+
 /// What to do next.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
@@ -313,9 +362,9 @@ pub enum Step {
     /// follows no redirect itself.
     Request(HttpRequest),
     /// Look up the SRV record with this name (`_autodiscover._tcp.example.org`), then call
-    /// [`Autodiscover::srv`] with the hosts it names, best first, or `None` if the lookup failed.
-    /// Only the domain goes out.
-    LookupSrv(String),
+    /// [`Autodiscover::srv`] with the targets it names (host and port), best first, or `None` if
+    /// the lookup failed. Only the domain goes out.
+    LookupSrv(SrvName),
     /// Ask the owner, then call [`Autodiscover::agree`] or [`Autodiscover::decline`].
     NeedsYes(Consent),
     /// Finished.
@@ -327,7 +376,7 @@ pub enum Step {
 enum Waiting {
     Idle,
     Request(HttpRequest),
-    Srv(String),
+    Srv(SrvName),
     Consent(Consent, Pending),
     Done(Outcome),
 }
@@ -377,6 +426,8 @@ impl Autodiscover {
     pub fn new(email: &str, authorization: Secret) -> Result<Self, AddressError> {
         let (email, domain) = split_address(email).ok_or(AddressError)?;
         let queue = candidates(&domain);
+        // Microsoft's own mail is no Exchange server's: nothing is sent to it.
+        let waiting = if is_exchange_online(&domain) { Waiting::Done(Outcome::ExchangeOnline) } else { Waiting::Idle };
         Ok(Self {
             authorization,
             email,
@@ -385,16 +436,29 @@ impl Autodiscover {
             domains: Vec::new(),
             hosts: Vec::new(),
             queue,
-            waiting: Waiting::Idle,
+            waiting,
             chain: 0,
             requests: 0,
             reason: None,
         })
     }
 
+    /// The host has looked up the domain's mail exchangers before starting and they are
+    /// Microsoft's ([`is_exchange_online_mx`]): the mailbox is in Exchange Online, a Microsoft
+    /// account on its own domain, and the search ends with that said. Nothing is sent. (Ignored
+    /// once the search has begun.)
+    pub fn note_mail_exchangers(&mut self, hosts: &[String]) {
+        if self.requests == 0
+            && matches!(self.waiting, Waiting::Idle)
+            && hosts.iter().any(|host| is_exchange_online_mx(host.trim().trim_end_matches('.')))
+        {
+            self.finish(Outcome::ExchangeOnline);
+        }
+    }
+
     /// The SRV name the third step looks up, for the domain being asked about.
-    fn srv_name(&self) -> String {
-        format!("_autodiscover._tcp.{}", self.domain)
+    fn srv_name(&self) -> SrvName {
+        SrvName(format!("_autodiscover._tcp.{}", self.domain))
     }
 
     /// What to do next. Asked again before the host has answered, it says the same.
@@ -457,7 +521,7 @@ impl Autodiscover {
                         self.waiting = Waiting::Consent(Consent { host, reason: ConsentReason::Redirect }, Pending::Request(url));
                         return;
                     }
-                    match self.request_to(&url) {
+                    match self.request_to(&url, false) {
                         Some(request) => {
                             self.requests = self.requests.saturating_add(1);
                             self.waiting = Waiting::Request(request);
@@ -471,8 +535,9 @@ impl Autodiscover {
         self.finish(Outcome::Failed(self.reason.unwrap_or(Failure::Unreachable)));
     }
 
-    /// The POX request to `url`. Never to anything but `https://`.
-    fn request_to(&self, url: &str) -> Option<HttpRequest> {
+    /// The POX request to `url`. Never to anything but `https://`. It carries the sign-in only
+    /// when `authenticated`, which is only in answer to a host's own `401` offering Basic.
+    fn request_to(&self, url: &str, authenticated: bool) -> Option<HttpRequest> {
         if !url.get(..8).is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://")) {
             return None;
         }
@@ -480,7 +545,10 @@ impl Autodiscover {
             "<?xml version=\"1.0\" encoding=\"utf-8\"?><Autodiscover xmlns=\"{REQUEST_SCHEMA}\"><Request><EMailAddress>{}</EMailAddress><AcceptableResponseSchema>{RESPONSE_SCHEMA}</AcceptableResponseSchema></Request></Autodiscover>",
             xml::escape_text(&self.email)
         );
-        let fields = [("Authorization", self.authorization.expose()), ("Content-Type", "text/xml; charset=utf-8"), ("Accept", "text/xml")];
+        let mut fields = vec![("Content-Type", "text/xml; charset=utf-8"), ("Accept", "text/xml")];
+        if authenticated {
+            fields.push(("Authorization", self.authorization.expose()));
+        }
         HttpRequest::new(Method::Post, url, &fields, body.into_bytes()).ok().map(|request| request.with_response_limit(MAX_ANSWER))
     }
 
@@ -497,7 +565,40 @@ impl Autodiscover {
             Err(TransportError::Tls) => self.fail_step(Failure::SecureConnection),
             Err(TransportError::RedirectRefused) => self.fail_step(Failure::NoAutodiscover),
             Err(_) => self.fail_step(Failure::Unreachable),
+            Ok(response) if response.status() == 401 => self.challenged(&request, &response),
             Ok(response) => self.judge(request.url(), &response),
+        }
+    }
+
+    /// A host answered `401`. Asked without a sign-in, that is a challenge: when it offers Basic,
+    /// the same request is made again with the sign-in, to that same host (which the owner's
+    /// domain or the owner's yes has allowed). Asked with one, it is a refusal of the user name
+    /// and password, and the search ends at once: asking other hosts with a wrong password is
+    /// how an account gets locked.
+    fn challenged(&mut self, request: &HttpRequest, response: &HttpResponse) {
+        if request.field("authorization").is_some() {
+            return self.finish(Outcome::Failed(Failure::SignInRefused));
+        }
+        // Each header offers one scheme or several, separated by commas: the first word of each piece.
+        let offers = |scheme: &str| {
+            response
+                .headers_named("www-authenticate")
+                .flat_map(|value| value.split(','))
+                .any(|piece| piece.split_whitespace().next().is_some_and(|have| have.eq_ignore_ascii_case(scheme)))
+        };
+        if offers("basic") {
+            match self.request_to(request.url(), true) {
+                Some(again) if self.requests < MAX_REQUESTS => {
+                    self.requests = self.requests.saturating_add(1);
+                    self.waiting = Waiting::Request(again);
+                }
+                _ => self.fail_step(Failure::Unreadable),
+            }
+        } else if offers("ntlm") || offers("negotiate") {
+            self.fail_step(Failure::SignInNotSupported);
+        } else {
+            // A site that wants some other sign-in is not an Autodiscover that takes ours.
+            self.fail_step(Failure::NoAutodiscover);
         }
     }
 
@@ -519,7 +620,6 @@ impl Autodiscover {
                 Some(next) => self.follow(&next),
                 None => self.fail_step(Failure::InsecureRedirect),
             },
-            401 => self.finish(Outcome::Failed(Failure::SignInRefused)),
             403 => self.fail_step(Failure::ServerRefused),
             _ => self.fail_step(Failure::NoAutodiscover),
         }
@@ -561,38 +661,43 @@ impl Autodiscover {
 
     /// The answer gave settings: Exchange Online, or the owner's say about each new host, or done.
     fn settings(&mut self, found: Discovered) {
-        let hosts = found.hosts();
-        if hosts.iter().any(|host| is_exchange_online(host)) {
+        if found.hosts().iter().any(|host| is_exchange_online(host)) {
             return self.finish(Outcome::ExchangeOnline);
         }
         if found.urls().is_empty() {
             return self.fail_step(Failure::NoExchangeAddress);
         }
-        match hosts.into_iter().find(|host| !self.allowed(host)) {
+        // The password goes to the addresses, not to the name of the mailbox's server.
+        match found.urls().into_iter().filter_map(host_of).find(|host| !self.allowed(host)) {
             Some(host) => self.waiting = Waiting::Consent(Consent { host, reason: ConsentReason::MailServer }, Pending::Settings(found)),
             None => self.finish(Outcome::Found(found)),
         }
     }
 
-    /// The host has looked up the SRV record asked for: the hosts it names, best first, or
-    /// `None` when the lookup failed. Whatever is given is checked: names only, at most three.
-    pub fn srv(&mut self, hosts: Option<Vec<String>>) {
+    /// The host has looked up the SRV record asked for: the targets it names (host and port),
+    /// best first, or `None` when the lookup failed. Whatever is given is checked: names only, at
+    /// most three, and a port only if it is 443 or 1024 and above (the port of an SRV record
+    /// names where the service listens: MS-OXDSCLI asks there).
+    pub fn srv(&mut self, hosts: Option<Vec<(String, u16)>>) {
         if !matches!(self.waiting, Waiting::Srv(_)) {
             return;
         }
         self.waiting = Waiting::Idle;
-        let mut named: Vec<String> = Vec::new();
-        for host in hosts.unwrap_or_default() {
+        let mut named: Vec<(String, u16)> = Vec::new();
+        for (host, port) in hosts.unwrap_or_default() {
             let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-            if is_name(&host) && !named.contains(&host) && named.len() < MAX_SRV_HOSTS {
-                named.push(host);
+            let port = if port == 0 { 443 } else { port };
+            let target = (host, port);
+            if is_name(&target.0) && (port == 443 || port >= 1024) && !named.contains(&target) && named.len() < MAX_SRV_HOSTS {
+                named.push(target);
             }
         }
         if named.is_empty() {
             return self.fail_step(Failure::Unreachable);
         }
-        for host in named.into_iter().rev() {
-            self.queue.push_front(Target::Url(format!("https://{host}/autodiscover/autodiscover.xml")));
+        for (host, port) in named.into_iter().rev() {
+            let port = if port == 443 { String::new() } else { format!(":{port}") };
+            self.queue.push_front(Target::Url(format!("https://{host}{port}/autodiscover/autodiscover.xml")));
         }
     }
 
@@ -634,7 +739,7 @@ impl Autodiscover {
     pub async fn run<E: HttpExchange>(
         &mut self,
         exchange: &E,
-        mut srv: impl FnMut(&str) -> Option<Vec<String>>,
+        mut srv: impl FnMut(&str) -> Option<Vec<(String, u16)>>,
         mut ask: impl FnMut(&Consent) -> bool,
     ) -> Outcome {
         // Every round is a request, an SRV lookup or a question, and each is bounded.
@@ -645,7 +750,7 @@ impl Autodiscover {
                     self.response(result);
                 }
                 Step::LookupSrv(name) => {
-                    let hosts = srv(&name);
+                    let hosts = srv(name.as_str());
                     self.srv(hosts);
                 }
                 Step::NeedsYes(consent) => {
