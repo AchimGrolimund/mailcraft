@@ -572,6 +572,14 @@ pub fn current_doc(ctx: &egui::Context, place: Place, message: mailcraft_model::
     store.entries.iter().find(|e| e.place == place && e.message.id == message).map(|e| e.doc.clone())
 }
 
+/// The blocks in use for a message shown at `place`, for tests.
+#[cfg(test)]
+pub fn current_doc(ctx: &egui::Context, place: Place, message: mailcraft_model::Id) -> Option<Arc<Doc>> {
+    let store = Store::of(ctx);
+    let store = store.lock().unwrap();
+    store.entries.iter().find(|e| e.place == place && e.message.id == message).map(|e| e.doc.clone())
+}
+
 /// How many times a message's blocks were made so far, for tests.
 #[cfg(test)]
 pub fn docs_made(ctx: &egui::Context) -> usize {

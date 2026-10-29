@@ -166,13 +166,18 @@ impl Transport {
     /// One request on a connection of its own (no sign-in held): with the request's own credential
     /// (Basic), or with none.
     fn alone(&self, request: &HttpRequest, with_credential: bool) -> Result<mailcraft_net::https::Response, TransportError> {
+        self.alone_with(request, with_credential, request.body())
+    }
+
+    /// [`Transport::alone`] with `body` in place of the request's own.
+    fn alone_with(&self, request: &HttpRequest, with_credential: bool, body: &[u8]) -> Result<mailcraft_net::https::Response, TransportError> {
         let authorization = with_credential.then(|| request.field("authorization")).flatten();
         let fields = Self::fields(request, authorization);
         let ask = mailcraft_net::https::Request {
             method: request.method().as_str(),
             url: request.url(),
             fields: &fields,
-            body: request.body(),
+            body,
             max_response: request.max_response_bytes(),
             trusted: &self.trusted,
         };
@@ -185,11 +190,14 @@ impl Transport {
             Some(Scheme::Basic) => self.alone(request, true).map(Self::response),
             Some(Scheme::Ntlm) => self.over_ntlm(&mut state, request),
             None => {
-                // The first request goes with no credential: the server says how to sign in.
-                let answer = self.alone(request, false)?;
+                // The first request goes with no credential: the server says how to sign in. It goes
+                // with no body (a message being sent is not uploaded to be turned away, and then
+                // uploaded again): its answer is the probe's, and the request itself is made
+                // only once the way to sign in is known.
+                let answer = self.alone_with(request, false, &[])?;
                 if answer.status != 401 {
                     state.scheme = Some(Scheme::Basic);
-                    return Ok(Self::response(answer));
+                    return self.alone(request, true).map(Self::response);
                 }
                 match auth::choose(&answer.challenges) {
                     Ok(Scheme::Basic) => {
