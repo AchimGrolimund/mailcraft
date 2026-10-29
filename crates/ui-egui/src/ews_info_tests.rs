@@ -50,7 +50,7 @@ fn an_exchange_accounts_secret_is_kept_under_its_address_and_its_servers_address
     let (a, imap, id) = app(true);
     let exchange = a.session.mailbox.account(id).unwrap();
     let key = MailApp::secret_key("password", exchange);
-    assert_eq!(key, "password:ada@exchange.example|ews=https://mail.example.org:444/EWS/Exchange.asmx");
+    assert_eq!(key, "password:ada@exchange.example|ews=https://mail.example.org:444/EWS/Exchange.asmx|user=");
     // Another server, or another address, is another key; the user name and the trusted
     // certificate are no part of it; and it is not an IMAP account's.
     let other = |change: &dyn Fn(&mut Account)| {
@@ -60,12 +60,12 @@ fn an_exchange_accounts_secret_is_kept_under_its_address_and_its_servers_address
     };
     assert_ne!(other(&|x| x.ews.as_mut().unwrap().url = "https://elsewhere.example/EWS/Exchange.asmx".into()), key);
     assert_ne!(other(&|x| x.email = "bo@exchange.example".into()), key);
-    assert_eq!(other(&|x| x.ews.as_mut().unwrap().username = "CORP\\ada".into()), key);
+    assert_ne!(other(&|x| x.ews.as_mut().unwrap().username = "CORP\\ada".into()), key, "a password is for one user name");
     assert_eq!(other(&|x| x.ews.as_mut().unwrap().trusted = "ab".repeat(32)), key);
     assert_ne!(MailApp::secret_key("refresh", exchange), key);
     assert!(!MailApp::secret_key("password", a.session.mailbox.account(imap).unwrap()).contains("ews="));
     // One that has no server settings gets a key that no server's is.
-    assert_eq!(other(&|x| x.ews = None), "password:ada@exchange.example|ews=none");
+    assert_eq!(other(&|x| x.ews = None), "password:ada@exchange.example|ews=none|user=");
 }
 
 #[test]
