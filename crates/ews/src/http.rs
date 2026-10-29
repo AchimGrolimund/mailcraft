@@ -154,6 +154,10 @@ pub struct HttpRequest {
     headers: Vec<(String, String)>,
     body: Vec<u8>,
     max_response: usize,
+    /// Doing it twice is the same as doing it once (a read, a set of a property). False for a
+    /// request that makes or sends something: if its answer is lost after it went out, it may
+    /// have happened, and it is never sent again.
+    repeatable: bool,
 }
 
 impl HttpRequest {
@@ -168,7 +172,7 @@ impl HttpRequest {
             .take(MAX_FIELDS)
             .map(|(name, value)| ((*name).to_owned(), value.chars().filter(|c| !c.is_control()).collect()))
             .collect();
-        Ok(Self { method, url: url.to_owned(), headers, body, max_response: RESPONSE_LIMIT })
+        Ok(Self { method, url: url.to_owned(), headers, body, max_response: RESPONSE_LIMIT, repeatable: true })
     }
 
     /// A `POST` of the SOAP document `body` to `url`, with `authorization` in its `Authorization`
@@ -183,6 +187,19 @@ impl HttpRequest {
     pub fn with_response_limit(mut self, bytes: usize) -> Self {
         self.max_response = bytes.min(RESPONSE_LIMIT);
         self
+    }
+
+    /// Marks the request as one that is never sent twice: when its answer is lost after it went
+    /// out, the program must not send it again ([`TransportError::Lost`]).
+    #[must_use]
+    pub fn once(mut self) -> Self {
+        self.repeatable = false;
+        self
+    }
+
+    /// Whether the program may send the request again after a failure of the connection.
+    pub fn is_repeatable(&self) -> bool {
+        self.repeatable
     }
 
     /// The method.
@@ -326,6 +343,9 @@ pub enum TransportError {
     RedirectRefused,
     /// The exchange was cancelled.
     Aborted,
+    /// The request went out (or may have) and its answer was lost; the request is not
+    /// [repeatable](HttpRequest::is_repeatable), so it was not sent again and may have happened.
+    Lost,
     /// Anything else.
     Other,
 }
@@ -339,6 +359,7 @@ impl fmt::Display for TransportError {
             Self::BodyTooLarge => "the answer passed the size limit set for this request and was not read further",
             Self::RedirectRefused => "the server redirected the request elsewhere and the redirect was not followed",
             Self::Aborted => "the request was cancelled before it completed",
+            Self::Lost => "the connection failed after the request went out, so it may have been done",
             Self::Other => "the connection failed in a way the transport did not classify",
         })
     }

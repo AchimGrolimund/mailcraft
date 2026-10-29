@@ -58,15 +58,18 @@ const MAX_FETCH: usize = 100;
 const MAX_IN_A_ROW: usize = 3;
 
 /// Why a request didn't give an answer: the run has to stop, or the server answered with a code.
-enum Asked {
+pub(crate) enum Asked {
     Stop(Stop),
     Code(ResponseCode),
     /// The answer wasn't one that could be read.
     Bad,
+    /// A request that makes or sends something went out and its answer was lost (or was none the
+    /// server's service would give): it may have happened, and it was not sent again.
+    Lost,
 }
 
 /// What ends a run.
-enum Stop {
+pub(crate) enum Stop {
     Cancelled,
     Auth,
     Busy(u32),
@@ -111,24 +114,37 @@ impl Outcome {
     }
 }
 
-struct Run<'a, E: HttpExchange> {
-    client: &'a Client,
-    exchange: &'a E,
-    cancel: &'a AtomicBool,
-    wait: &'a mut dyn FnMut(u32) -> bool,
+pub(crate) struct Run<'a, E: HttpExchange> {
+    pub(crate) client: &'a Client,
+    pub(crate) exchange: &'a E,
+    pub(crate) cancel: &'a AtomicBool,
+    pub(crate) wait: &'a mut dyn FnMut(u32) -> bool,
     /// The properties asked for besides the default ones, until a server says it lacks some.
-    shape: Shape,
+    pub(crate) shape: Shape,
+    /// The server has no follow-up flag: flags stay here (E7), said once.
+    pub(crate) flag_lacking: bool,
 }
 
 impl<E: HttpExchange> Run<'_, E> {
     /// Sends `operation` and reads the answer with `read`, again after a busy server's wait.
-    async fn ask<T>(&mut self, operation: &Element, read: &dyn Fn(&Reply) -> Result<T, Error>) -> Result<T, Asked> {
+    pub(crate) async fn ask<T>(&mut self, operation: &Element, read: &dyn Fn(&Reply) -> Result<T, Error>) -> Result<T, Asked> {
+        self.ask_with(operation, read, false).await
+    }
+
+    /// [`Run::ask`] for an operation that makes or sends something: never sent twice, and an answer
+    /// that was lost, or that is none the service gives, is [`Asked::Lost`].
+    pub(crate) async fn ask_once<T>(&mut self, operation: &Element, read: &dyn Fn(&Reply) -> Result<T, Error>) -> Result<T, Asked> {
+        self.ask_with(operation, read, true).await
+    }
+
+    async fn ask_with<T>(&mut self, operation: &Element, read: &dyn Fn(&Reply) -> Result<T, Error>, once: bool) -> Result<T, Asked> {
         let mut tries = 0u32;
         loop {
             if self.cancel.load(Ordering::Relaxed) {
                 return Err(Asked::Stop(Stop::Cancelled));
             }
-            let outcome = match self.client.call(self.exchange, operation).await {
+            let called = if once { self.client.call_once(self.exchange, operation).await } else { self.client.call(self.exchange, operation).await };
+            let outcome = match called {
                 Ok(reply) => read(&reply),
                 Err(error) => Err(error),
             };
@@ -153,8 +169,12 @@ impl<E: HttpExchange> Run<'_, E> {
                 Error::Endpoint(_) => return Err(Asked::Stop(Stop::Line("The server's address can't be used"))),
                 Error::Transport(TransportError::Aborted) => return Err(Asked::Stop(Stop::Cancelled)),
                 Error::Transport(TransportError::Tls) => return Err(Asked::Stop(Stop::Tls)),
+                Error::Transport(TransportError::Unreachable) => return Err(Asked::Stop(Stop::Unreachable)),
+                Error::Transport(_) if once => return Err(Asked::Lost),
                 Error::Transport(_) => return Err(Asked::Stop(Stop::Unreachable)),
                 Error::Server(code) => return Err(Asked::Code(code)),
+                // (An answer that is none the service gives, to a request that may have been done.)
+                Error::Status(_) | Error::Malformed | Error::TooLarge | Error::Unexpected if once => return Err(Asked::Lost),
                 _ => return Err(Asked::Bad),
             }
         }
@@ -241,7 +261,7 @@ impl<E: HttpExchange> Run<'_, E> {
     }
 }
 
-fn base(request: &EwsMailRequest) -> EwsMailResult {
+pub(crate) fn base(request: &EwsMailRequest) -> EwsMailResult {
     EwsMailResult { account: request.account, email: request.email.clone(), url: request.url.clone(), ..EwsMailResult::default() }
 }
 
@@ -255,12 +275,12 @@ pub async fn sync_mail<E: HttpExchange>(
     wait: &mut dyn FnMut(u32) -> bool,
     emit: &mut dyn FnMut(EwsMailResult),
 ) {
-    let mut run = Run { client, exchange, cancel, wait, shape: Shape::Full };
+    let mut run = Run { client, exchange, cancel, wait, shape: Shape::Full, flag_lacking: false };
     let mut out = Outcome::default();
     if let Err(stop) = run.all(request, &mut out, emit).await {
         match stop {
             Asked::Stop(why) => out.stop(why),
-            Asked::Code(_) | Asked::Bad => {
+            Asked::Code(_) | Asked::Bad | Asked::Lost => {
                 out.incomplete = true;
                 out.line("The server's answer couldn't be used");
             }
@@ -280,6 +300,10 @@ pub async fn sync_mail<E: HttpExchange>(
 
 impl<E: HttpExchange> Run<'_, E> {
     async fn all(&mut self, request: &EwsMailRequest, out: &mut Outcome, emit: &mut dyn FnMut(EwsMailResult)) -> Result<(), Asked> {
+        // What was changed, written and sent here goes first (not in the Inbox pass).
+        if !request.inbox_pass {
+            self.push(request, emit).await?;
+        }
         // What the server calls its special folders: the Inbox first, and what each folder is.
         let specials = self.specials().await?;
         if specials.inbox.is_none() {
@@ -419,7 +443,7 @@ pub async fn fetch_messages<E: HttpExchange>(
     cancel: &AtomicBool,
     wait: &mut dyn FnMut(u32) -> bool,
 ) -> GraphFetchResult {
-    let mut run = Run { client, exchange, cancel, wait, shape: Shape::Full };
+    let mut run = Run { client, exchange, cancel, wait, shape: Shape::Full, flag_lacking: false };
     let mut out = GraphFetchResult { account: request.account, email: request.email.clone(), ..GraphFetchResult::default() };
     let mut outcome = Outcome::default();
     for id in request.ids.iter().take(MAX_FETCH) {
@@ -427,7 +451,7 @@ pub async fn fetch_messages<E: HttpExchange>(
         match run.ask(&op.element(), &|reply| op.answer(reply)).await {
             Ok(mime) => out.fetched.push(GraphFetched { id: id.clone(), mime }),
             Err(Asked::Code(ResponseCode::ItemNotFound)) => out.missing.push(id.clone()),
-            Err(Asked::Code(_) | Asked::Bad) => out.failed.push(id.clone()),
+            Err(Asked::Code(_) | Asked::Bad | Asked::Lost) => out.failed.push(id.clone()),
             Err(Asked::Stop(stop)) => {
                 if let Stop::Busy(seconds) = stop {
                     out.busy_for = Some(seconds.max(1));

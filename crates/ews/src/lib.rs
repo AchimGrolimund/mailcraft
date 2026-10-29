@@ -47,7 +47,13 @@ pub mod autodiscover;
 pub mod basic;
 #[deny(missing_docs)]
 #[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
+pub mod changes;
+#[deny(missing_docs)]
+#[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
 pub mod client;
+#[deny(missing_docs)]
+#[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
+pub mod compose;
 #[deny(missing_docs)]
 #[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
 pub mod error;
@@ -75,6 +81,7 @@ pub mod run;
 #[deny(missing_docs)]
 #[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
 pub mod soap;
+mod up;
 #[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
 pub mod xml;
 
@@ -86,6 +93,8 @@ pub mod standin;
 pub mod standin_autodiscover;
 #[cfg(any(test, feature = "stand-in"))]
 pub mod standin_mail;
+#[cfg(any(test, feature = "stand-in"))]
+pub mod standin_write;
 
 #[cfg(test)]
 mod hostile_tests;
@@ -93,11 +102,15 @@ mod hostile_tests;
 mod mail_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod up_tests;
 
 pub use auth::{AuthError, Scheme};
 pub use autodiscover::{Autodiscover, Consent, ConsentReason, Discovered, Failure, Outcome, SrvName, Step};
 pub use basic::CredentialError;
+pub use changes::{DeleteMode, ItemUpdate};
 pub use client::Client;
+pub use compose::Unsendable;
 pub use error::{Error, PolicyReason, ResponseClass, ResponseCode};
 pub use folder::{DistinguishedFolder, FolderId, FolderInfo, GetFolder};
 pub use hierarchy::{HierarchyPage, SyncFolderHierarchy};

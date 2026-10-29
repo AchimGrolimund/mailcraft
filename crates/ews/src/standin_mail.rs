@@ -29,6 +29,7 @@ const FIELD_URIS: &[&str] = &[
     "item:Flag",
     "item:DateTimeReceived",
     "item:HasAttachments",
+    "item:Attachments",
 ];
 
 /// A message of the mailbox.
@@ -67,6 +68,16 @@ pub struct Item {
     pub message_id: String,
     /// The preview.
     pub preview: String,
+    /// Who it is blind-copied to.
+    pub bcc: Vec<(String, String)>,
+    /// The body, and whether it is HTML.
+    pub body: (bool, String),
+    /// The flag's status as the server has it: `NotFlagged`, `Flagged` or `Complete`.
+    pub flag: String,
+    /// MailCraft's marker, when the item carries one.
+    pub marker: String,
+    /// Its files: id, name and bytes.
+    pub files: Vec<(String, String, Vec<u8>)>,
     /// The message as the server holds it, MIME.
     pub mime: Vec<u8>,
 }
@@ -109,7 +120,7 @@ pub enum ItemChange {
 }
 
 impl State {
-    fn next_id(&mut self, what: &str) -> String {
+    pub(crate) fn next_id(&mut self, what: &str) -> String {
         self.issued = self.issued.saturating_add(1);
         format!("AAMkAGV4YW1wbGUtb3JnL2V3cy17{what}fQ{:06}AAA=", self.issued)
     }
@@ -149,6 +160,11 @@ impl State {
             importance: "Normal".into(),
             message_id: format!("<{n}@example.org>"),
             preview: format!("Hello about {subject}."),
+            bcc: Vec::new(),
+            body: (false, String::new()),
+            flag: "NotFlagged".into(),
+            marker: String::new(),
+            files: Vec::new(),
             mime,
         });
         self.item_log.push(ItemLog { rev: self.rev, folder: folder_id.clone(), id: id.clone(), kind: ItemChange::Create });
@@ -164,7 +180,7 @@ impl State {
         self.items.iter().find(|i| i.id == id)
     }
 
-    fn touch(&mut self, id: &str, kind: ItemChange, edit: impl FnOnce(&mut Item)) -> bool {
+    pub(crate) fn touch(&mut self, id: &str, kind: ItemChange, edit: impl FnOnce(&mut Item)) -> bool {
         self.rev = self.rev.saturating_add(1);
         let rev = self.rev;
         let Some(item) = self.items.iter_mut().find(|i| i.id == id) else { return false };
@@ -308,7 +324,15 @@ impl State {
             xml.push_str(&format!("<t:Preview>{}</t:Preview>", escape(&item.preview)));
         }
         if wants("item:Flag") {
-            xml.push_str(&format!("<t:Flag><t:FlagStatus>{}</t:FlagStatus></t:Flag>", if item.flagged { "Flagged" } else { "NotFlagged" }));
+            xml.push_str(&format!("<t:Flag><t:FlagStatus>{}</t:FlagStatus></t:Flag>", if item.flagged { item.flag.as_str() } else { "NotFlagged" }));
+        }
+        if wants("item:Attachments") && !item.files.is_empty() {
+            let all: String = item
+                .files
+                .iter()
+                .map(|(id, name, _)| format!("<t:FileAttachment><t:AttachmentId Id=\"{}\"/><t:Name>{}</t:Name></t:FileAttachment>", escape(id), escape(name)))
+                .collect();
+            xml.push_str(&format!("<t:Attachments>{all}</t:Attachments>"));
         }
         xml.push_str("</t:Message>");
         xml
@@ -541,7 +565,7 @@ impl State {
         Check::is(operation, MESSAGES, "GetItem", &[])?;
         let parts = Check::children(operation, MESSAGES, &["ItemShape", "ItemIds"])?;
         let shape = Check::required(operation, parts.first().copied().flatten(), "ItemShape")?;
-        let (base, mime, _) = Self::item_shape(shape, true)?;
+        let (base, mime, extra) = Self::item_shape(shape, true)?;
         let ids = Check::required(operation, parts.get(1).copied().flatten(), "ItemIds")?;
         Check::is(ids, MESSAGES, "ItemIds", &[])?;
         Check::no_text(ids)?;
@@ -555,7 +579,7 @@ impl State {
             let id = Check::attribute(one, "Id")?;
             let code = match self.item(id) {
                 Some(item) => {
-                    let mut xml = self.message_xml(item, &base, &[]);
+                    let mut xml = self.message_xml(item, &base, &extra);
                     if mime {
                         let content = format!("<t:MimeContent CharacterSet=\"UTF-8\">{}</t:MimeContent>", base64(&item.mime));
                         xml = xml.replacen("<t:ItemId", &format!("{content}<t:ItemId"), 1);

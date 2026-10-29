@@ -2309,6 +2309,7 @@ version = "0.8.2"
 dependencies = [
  "hmac",
  "log",
+ "mailcraft-mime",
  "mailcraft-model",
  "mailcraft-time",
  "md-5",

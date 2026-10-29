@@ -46,7 +46,17 @@ impl Client {
 
     /// Sends `operation` and judges the answer to the point of its response messages.
     pub async fn call<E: HttpExchange>(&self, exchange: &E, operation: &Element) -> Result<Reply, Error> {
-        let request = self.request(operation)?;
+        self.send(exchange, self.request(operation)?).await
+    }
+
+    /// [`Client::call`] for an operation that makes or sends something (`CreateItem`, `SendItem`,
+    /// a move): the request is marked so that the program never sends it twice
+    /// ([`HttpRequest::once`]), and an answer lost after it went out is [`TransportError::Lost`].
+    pub async fn call_once<E: HttpExchange>(&self, exchange: &E, operation: &Element) -> Result<Reply, Error> {
+        self.send(exchange, self.request(operation)?.once()).await
+    }
+
+    async fn send<E: HttpExchange>(&self, exchange: &E, request: HttpRequest) -> Result<Reply, Error> {
         let response = exchange.exchange(&request).await?;
         let reply = Reply::judge(&response, request.max_response_bytes())?;
         match reply.busy() {

@@ -337,10 +337,10 @@ fn the_stand_in_refuses_a_bad_envelope() {
 #[test]
 fn the_stand_in_notes_and_refuses_anything_that_would_change_the_mailbox() {
     let standin = StandIn::new();
-    let (status, body) = raw(&standin, &hand("<m:DeleteItem DeleteType=\"HardDelete\"/>"));
+    let (status, body) = raw(&standin, &hand("<m:EmptyFolder DeleteType=\"HardDelete\"/>"));
     assert_eq!(status, 200);
     assert!(body.contains("ErrorAccessDenied"));
-    assert_eq!(standin.state().writes, ["DeleteItem"]);
+    assert_eq!(standin.state().writes, ["EmptyFolder"]);
 }
 
 // ---- the reader's cost ----
