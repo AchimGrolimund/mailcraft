@@ -11158,6 +11158,11 @@ msgstr ""
 
 #. what a command says
 #: crates/engine/src/cmd/ews_mail.rs
+msgid "the result would make this account keep more sync state than is taken in"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/ews_mail.rs
 msgid "the result {why}"
 msgstr ""
 
