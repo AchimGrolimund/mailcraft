@@ -323,7 +323,7 @@ fn an_account_keeps_no_more_sync_state_in_all_than_is_taken_in() {
         }
     }
     let before = s.mailbox.clone();
-    let big = EwsMessagePage { from: "s".repeat(1), ..page("X0", vec![mail("B1", "Hello", 1_000)], false, true) };
+    let big = EwsMessagePage { from: "s".to_string(), ..page("X0", vec![mail("B1", "Hello", 1_000)], false, true) };
     let why = apply_ews_mail(&mut s, EwsMailResult { pages: vec![EwsMessagePage { state: "t".into(), ..big }], ..piece(account) }).unwrap_err();
     assert!(why.to_string().contains("more sync state"), "{why}");
     assert!(s.mailbox == before, "a piece that is refused changes nothing");
@@ -402,4 +402,18 @@ fn the_commands_take_a_result_by_json_and_leave_no_server_id_in_their_errors() {
     let why = s.run("sync.applyEws", &bad).unwrap_err().to_string();
     assert!(!why.contains("F1"), "{why}");
     assert!(s.run("sync.applyEws", &json!({"result": "x"})).is_err());
+}
+
+#[test]
+fn zz_review_refused_second_page_then_clean_end_sweeps() {
+    let (mut s, account) = session();
+    list(&mut s, account);
+    read(&mut s, account, page("F1", vec![mail("A1", "Kickoff", 1_000), mail("A2", "Budget", 2_000)], true, true), "S-1");
+    let first = EwsMessagePage { state: "S-2".into(), ..page("F1", vec![mail("A1", "Kickoff", 1_000)], true, false) };
+    apply_ews_mail(&mut s, EwsMailResult { pages: vec![first], ..piece(account) }).unwrap();
+    let second = EwsMessagePage { from: "S-2".into(), state: "S-3".into(), ..page("F1", vec![mail("A\u{2}", "Odd", 1)], false, true) };
+    assert!(apply_ews_mail(&mut s, EwsMailResult { pages: vec![second], ..piece(account) }).is_err());
+    end(&mut s, account, true);
+    assert_eq!(state_of(&s, account, "F1"), "S-2");
+    assert!(here(&s, account, "A2").is_some(), "A2 is swept although its page was refused");
 }
