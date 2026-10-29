@@ -153,13 +153,23 @@ pub(crate) struct Request<'a> {
 }
 
 /// What a server answered to a [`Request`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Reply {
     pub(crate) status: u16,
     pub(crate) body: Vec<u8>,
     /// What its `Retry-After` header says, when it has one.
     pub(crate) retry_after: Option<String>,
+    /// Its `Location` header (where a redirect leads), as the server wrote it.
+    pub(crate) location: Option<String>,
+    /// Its `WWW-Authenticate` headers (how it offers to be signed in to), as the server wrote them.
+    pub(crate) challenges: Vec<String>,
+    /// Its `X-EWS-Policy-Reason` header (why an organisation shuts Exchange Web Services).
+    pub(crate) policy_reason: Option<String>,
 }
+
+/// Most `WWW-Authenticate` headers kept of one answer, and the longest.
+const MAX_CHALLENGES: usize = 16;
+const MAX_CHALLENGE: usize = 1_024;
 
 /// `text` as one piece of a URL or a form: everything but letters, digits and `-._~` as `%XX`.
 pub(crate) fn encode(text: &str) -> String {
@@ -292,8 +302,13 @@ fn send(url: &Url, method: &str, headers: &[(&str, &str)], body: Option<&str>, p
 /// request going out and the answer coming back. Only a body too large to go up in that time
 /// at the slowest speed that is put up with gets more.
 pub(crate) fn request(url: &Url, request: &Request<'_>) -> Result<Reply, NetError> {
+    request_with(url, request, None)
+}
+
+/// [`request`] over a connection whose TLS settings are `tls` (`None`: the usual ones).
+pub(crate) fn request_with(url: &Url, request: &Request<'_>, tls: Option<std::sync::Arc<rustls::ClientConfig>>) -> Result<Reply, NetError> {
     check_method(request.method)?;
-    let mut stream = connect(url, request.patience)?;
+    let mut stream = connect_with(url, request.patience, tls)?;
     exchange(&mut stream, url, request, false).map(|(reply, _)| reply)
 }
 
@@ -308,8 +323,13 @@ pub(crate) fn check_method(method: &str) -> Result<(), NetError> {
 /// A new connection to `url`'s server, by the rules of every connection: TLS, or plain to this
 /// machine alone. Connecting and every read or write after may take `patience`.
 pub(crate) fn connect(url: &Url, patience: Duration) -> Result<transport::Stream<'static>, NetError> {
+    connect_with(url, patience, None)
+}
+
+/// [`connect`] with TLS settings of the caller's (`None`: the usual ones).
+pub(crate) fn connect_with(url: &Url, patience: Duration, tls: Option<std::sync::Arc<rustls::ClientConfig>>) -> Result<transport::Stream<'static>, NetError> {
     let server = Server { host: url.host.clone(), port: url.port, security: if url.secure { Security::Tls } else { Security::None } };
-    let (stream, _) = transport::open_within(&server, Service::Http, patience, patience)?;
+    let (stream, _) = transport::open_with(&server, Service::Http, &transport::Patience { connect: patience, io: patience, ..Default::default() }, tls)?;
     Ok(stream)
 }
 
@@ -610,6 +630,8 @@ struct Head {
     chunked: bool,
     retry_after: Option<String>,
     location: Option<String>,
+    challenges: Vec<String>,
+    policy_reason: Option<String>,
     content_range: Option<String>,
     /// The server closes the connection after this answer: it said so, it speaks HTTP/1.0, or
     /// the way the body ends is not one that leaves the connection fit for more (a coding
@@ -660,7 +682,15 @@ pub(crate) fn read_reply_kept<R: Read>(stream: &mut R, started: Instant, patienc
         (reader.rest(max_body)?, false)
     };
     let reusable = delimited && !head.close && !reader.ended && reader.pending().is_empty();
-    Ok((Reply { status: head.status, body, retry_after: head.retry_after }, reusable))
+    let reply = Reply {
+        status: head.status,
+        body,
+        retry_after: head.retry_after,
+        location: head.location,
+        challenges: head.challenges,
+        policy_reason: head.policy_reason,
+    };
+    Ok((reply, reusable))
 }
 
 fn read_head<R: Read>(reader: &mut Reader<'_, R>) -> Result<Head, NetError> {
@@ -701,6 +731,12 @@ fn read_head<R: Read>(reader: &mut Reader<'_, R>) -> Result<Head, NetError> {
             head.retry_after = Some(tidy(value));
         } else if name.eq_ignore_ascii_case("location") {
             head.location = Some(value.to_string());
+        } else if name.eq_ignore_ascii_case("www-authenticate") {
+            if head.challenges.len() < MAX_CHALLENGES {
+                head.challenges.push(tidy(value).chars().take(MAX_CHALLENGE).collect());
+            }
+        } else if name.eq_ignore_ascii_case("x-ews-policy-reason") {
+            head.policy_reason = Some(tidy(value).chars().take(MAX_CHALLENGE).collect());
         } else if name.eq_ignore_ascii_case("content-range") {
             head.content_range = Some(value.to_string());
         }
@@ -1042,7 +1078,7 @@ mod tests {
             let answer = format!("HTTP/1.1 429 Too Many Requests\r\n{headers}Content-Length: 2\r\n\r\n{{}}");
             read_reply(&mut answer.as_bytes(), Instant::now(), SOON, MAX_BODY).unwrap()
         };
-        assert_eq!(reply("Retry-After: 30\r\n"), Reply { status: 429, body: b"{}".to_vec(), retry_after: Some("30".into()) });
+        assert_eq!(reply("Retry-After: 30\r\n"), Reply { status: 429, body: b"{}".to_vec(), retry_after: Some("30".into()), ..Default::default() });
         assert_eq!(reply("retry-after:  Wed, 21 Oct 2026 07:28:00 GMT \r\n").retry_after.as_deref(), Some("Wed, 21 Oct 2026 07:28:00 GMT"));
         assert_eq!(reply("X-Other: 1\r\n").retry_after, None);
         // Cut to size and to one line, like any text from a server.

@@ -112,7 +112,10 @@ pub(crate) fn host_of(url: &str) -> Option<String> {
         None => authority.split(':').next().unwrap_or(""),
     };
     let host = host.trim_end_matches('.');
-    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+    // Letters, digits, hyphens, dots (and colons of an IPv6 address): a host that any parser
+    // reads the same way, so that a backslash is not taken for part of a name under a domain.
+    let plain = host.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b':'));
+    (!host.is_empty() && plain).then(|| host.to_ascii_lowercase())
 }
 
 /// An address the owner gave that is not an e-mail address a domain can be taken from.

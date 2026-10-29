@@ -582,6 +582,11 @@ fn the_domain_tests() {
     assert_eq!(host_of("https://[::1]:8443/x").as_deref(), Some("::1"));
     assert_eq!(host_of("http://example.org/"), None);
     assert_eq!(host_of("https:///x"), None);
+    // A host that parsers read differently is no host.
+    for odd in ["https://evil.net\\.example.org/x", "https://evil.net%2eexample.org/x", "https://exa mple.org/", "https://evil.net;.example.org/", "https://evil.net,.example.org/"] {
+        assert_eq!(host_of(odd), None, "{odd}");
+    }
+    assert!(check_endpoint("https://evil.net\\.example.org/x").is_err());
 }
 
 // ---- any answer, in any order ----
