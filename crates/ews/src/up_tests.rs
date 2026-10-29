@@ -356,6 +356,46 @@ fn a_draft_whose_make_was_lost_is_found_by_its_marker_and_never_made_twice() {
     let result = run(&standin, &request);
     assert!(!result.drafts[0].id.is_empty() && result.drafts[0].fields);
     assert_eq!(standin.state().items.iter().filter(|i| i.draft).count(), 1, "found, not made again");
+    // Its file is on it once: the found draft's files are those it holds, not added a second time.
+    let state = standin.state();
+    let item = state.items.iter().find(|i| i.draft).unwrap();
+    assert_eq!(item.files.iter().map(|f| f.1.as_str()).collect::<Vec<_>>(), ["notes.txt"]);
+    drop(state);
+    assert_eq!(result.drafts[0].attachments.as_ref().map(Vec::len), Some(1));
+}
+
+#[test]
+fn a_file_whose_add_was_lost_is_not_added_twice() {
+    let standin = StandIn::new();
+    let made = run(&standin, &EwsMailRequest { drafts: vec![DraftUp { attachments: Some(AttachmentsUp::default()), ..draft("mark-4", "Hello") }], ..base() });
+    let made = &made.drafts[0];
+    assert!(made.attachments.as_ref().is_some_and(Vec::is_empty));
+    // The file is added, and the answer to that is lost: the server has it, the run doesn't know.
+    let file = draft("mark-4", "").attachments.unwrap().here;
+    let next = |here: Vec<AttachmentUp>| DraftUp {
+        id: made.id.clone(),
+        change_key: made.change_key.clone(),
+        subject: None,
+        body: None,
+        to: None,
+        cc: None,
+        bcc: None,
+        importance: None,
+        attachments: Some(AttachmentsUp { here, synced: vec![] }),
+        ..draft("mark-4", "")
+    };
+    let losing = Losing { inner: &standin, operation: "CreateAttachment", lost: Cell::new(1) };
+    let _ = run_with(&losing, &EwsMailRequest { drafts: vec![next(file.clone())], ..base() });
+    assert_eq!(standin.state().item(&made.id).unwrap().files.len(), 1);
+    // The next run (which still has nothing synced) takes it as added, and adds nothing.
+    let result = run(&standin, &EwsMailRequest { drafts: vec![next(file.clone())], ..base() });
+    let files = result.drafts[0].attachments.as_ref().unwrap();
+    assert_eq!((files.len(), files[0].name.as_str(), files[0].id.is_empty()), (1, "notes.txt", false));
+    assert_eq!(standin.state().item(&made.id).unwrap().files.len(), 1, "not added twice");
+    // A file of the same name and another size is another file.
+    let other = AttachmentUp { size: 99, data: std::sync::Arc::new(vec![1; 99]), hash: 77, ..file[0].clone() };
+    run(&standin, &EwsMailRequest { drafts: vec![next(vec![other])], ..base() });
+    assert_eq!(standin.state().item(&made.id).unwrap().files.len(), 2);
 }
 
 fn message(to: &str, bcc: &str) -> Box<Message> {

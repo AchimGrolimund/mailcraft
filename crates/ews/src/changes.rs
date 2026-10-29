@@ -504,8 +504,21 @@ pub struct ItemNow {
     pub change_key: String,
     /// The categories now.
     pub categories: Vec<String>,
-    /// The attachments: id and name.
-    pub attachments: Vec<(String, String)>,
+    /// The attachments the item holds.
+    pub attachments: Vec<NowFile>,
+}
+
+/// A file attached to an item, as the server says it is.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NowFile {
+    /// The server's id of it.
+    pub id: String,
+    /// Its file name.
+    pub name: String,
+    /// Its size in bytes; 0 when the server said none.
+    pub size: u64,
+    /// Its content id, for an inline one.
+    pub content_id: String,
 }
 
 impl std::fmt::Debug for ItemNow {
@@ -564,7 +577,12 @@ impl GetItemNow {
                     .take(MAX_NOW_ATTACHMENTS)
                     .filter_map(|a| {
                         let id = a.child_in(TYPES, "AttachmentId")?.attribute("Id").filter(|id| valid_id(id))?.to_owned();
-                        Some((id, a.child_in(TYPES, "Name").map(|n| n.text.trim().to_owned()).unwrap_or_default()))
+                        Some(NowFile {
+                            id,
+                            name: a.child_in(TYPES, "Name").map(|n| n.text.trim().to_owned()).unwrap_or_default(),
+                            size: a.child_in(TYPES, "Size").and_then(|n| n.text.trim().parse().ok()).unwrap_or(0),
+                            content_id: a.child_in(TYPES, "ContentId").map(|n| n.text.trim().to_owned()).unwrap_or_default(),
+                        })
                     })
                     .collect()
             })

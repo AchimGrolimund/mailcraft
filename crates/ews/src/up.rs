@@ -362,8 +362,8 @@ impl<E: HttpExchange> Run<'_, E> {
                     .map(|a| SyncedAttachment {
                         id: ids
                             .as_ref()
-                            .and_then(|n| n.attachments.iter().find(|(_, name)| *name == a.name))
-                            .map(|(id, _)| id.clone())
+                            .and_then(|n| n.attachments.iter().find(|f| f.name == a.name))
+                            .map(|f| f.id.clone())
                             .unwrap_or_default(),
                         name: a.name.clone(),
                         hash: a.hash,
@@ -390,6 +390,7 @@ impl<E: HttpExchange> Run<'_, E> {
         let now = GetItemNow::new(id);
         let there = self.ask(&now.element(), &|reply| now.answer(reply)).await?;
         let mut key = (!key.is_empty()).then(|| key.to_owned());
+        // (The files the server holds that are not yet matched to one known to be synced.)
         let mut free = there.attachments.clone();
         let same = |name: &str, hash: u64, other: &SyncedAttachment| other.name == name && other.hash == hash;
         // Taken off here: what was synced and is no longer here.
@@ -398,11 +399,11 @@ impl<E: HttpExchange> Run<'_, E> {
         for s in &up.synced {
             if up.here.iter().any(|h| same(&h.name, h.hash, s)) {
                 // (Still there: its id is the one known, or the one by its name.)
-                let at = free.iter().position(|(fid, name)| (!s.id.is_empty() && *fid == s.id) || (s.id.is_empty() && *name == s.name));
+                let at = free.iter().position(|f| (!s.id.is_empty() && f.id == s.id) || (s.id.is_empty() && f.name == s.name));
                 let found = at.map(|i| free.remove(i));
-                kept.push(SyncedAttachment { id: found.map(|(fid, _)| fid).unwrap_or_else(|| s.id.clone()), name: s.name.clone(), hash: s.hash });
-            } else if let Some(at) = free.iter().position(|(fid, name)| (!s.id.is_empty() && *fid == s.id) || (s.id.is_empty() && *name == s.name)) {
-                remove.push(free.remove(at).0);
+                kept.push(SyncedAttachment { id: found.map(|f| f.id).unwrap_or_else(|| s.id.clone()), name: s.name.clone(), hash: s.hash });
+            } else if let Some(at) = free.iter().position(|f| (!s.id.is_empty() && f.id == s.id) || (s.id.is_empty() && f.name == s.name)) {
+                remove.push(free.remove(at).id);
             }
         }
         if !remove.is_empty() {
@@ -412,9 +413,21 @@ impl<E: HttpExchange> Run<'_, E> {
                 key = Some(new);
             }
         }
-        // Added here: what is here and was not synced.
-        let add: Vec<_> = up.here.iter().filter(|h| !kept.iter().any(|k| same(&h.name, h.hash, k))).cloned().collect();
+        // Added here: what is here and was not synced. A file the server draft already holds (a
+        // make or an add whose answer was lost, so that this draft's `synced` doesn't know it) is
+        // taken as added, by its name and size (and content id, for an inline one), and never
+        // added again: the draft would be sent with it twice.
         let mut added = Vec::new();
+        let mut add = Vec::new();
+        for h in up.here.iter().filter(|h| !kept.iter().any(|k| same(&h.name, h.hash, k))) {
+            let held = free.iter().position(|f| {
+                f.name == h.name && (f.size == 0 || f.size == h.size) && (h.content_id.is_empty() || f.content_id.is_empty() || f.content_id == h.content_id)
+            });
+            match held {
+                Some(at) => added.push(SyncedAttachment { id: free.remove(at).id, name: h.name.clone(), hash: h.hash }),
+                None => add.push(h.clone()),
+            }
+        }
         if !add.is_empty() {
             let op = AddAttachments::new(id, key.as_deref().unwrap_or(&there.change_key), add.clone());
             match self.ask_once(&op.element(), &|reply| op.answer(reply)).await {
@@ -422,7 +435,7 @@ impl<E: HttpExchange> Run<'_, E> {
                     if !new.is_empty() {
                         key = Some(new);
                     }
-                    added = add.iter().zip(ids).map(|(a, aid)| SyncedAttachment { id: aid, name: a.name.clone(), hash: a.hash }).collect();
+                    added.extend(add.iter().zip(ids).map(|(a, aid)| SyncedAttachment { id: aid, name: a.name.clone(), hash: a.hash }));
                 }
                 // (It may have gone: the files are read again next run, and not added twice by name and hash.)
                 Err(Asked::Lost) => return Err(Asked::Lost),
