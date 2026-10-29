@@ -99,7 +99,10 @@ fn a_host_that_is_down_or_has_no_certificate_goes_on_to_the_next() {
 
 #[test]
 fn the_srv_record_is_third_and_a_host_inside_the_domain_needs_no_question() {
-    let standin = AutodiscoverStandIn::new().route("example.org", Route::Status(404)).route("autodiscover.example.org", Route::Unreachable).route("ad.example.org", good());
+    let standin = AutodiscoverStandIn::new()
+        .route("example.org", Route::Status(404))
+        .route("autodiscover.example.org", Route::Unreachable)
+        .route("ad.example.org", good());
     let run = go(&standin, Some(vec!["AD.example.org."]), &[]);
     found(&run);
     assert_eq!(run.srv, ["_autodiscover._tcp.example.org"]);
@@ -126,7 +129,18 @@ fn the_host_an_srv_record_names_outside_the_domain_is_asked_about_first() {
 #[test]
 fn what_an_srv_lookup_gives_is_checked() {
     let standin = AutodiscoverStandIn::new();
-    let hostile = vec!["", ".", "localhost", "a b.example.org", "ex@mple.org", "evil.example.org/path", "https://evil.example.org", "-x.example.org", "x_y.example.org", "e\r\nvil.example.org"];
+    let hostile = vec![
+        "",
+        ".",
+        "localhost",
+        "a b.example.org",
+        "ex@mple.org",
+        "evil.example.org/path",
+        "https://evil.example.org",
+        "-x.example.org",
+        "x_y.example.org",
+        "e\r\nvil.example.org",
+    ];
     let run = go(&standin, Some(hostile), &[]);
     assert_eq!(run.outcome, Outcome::Failed(Failure::Unreachable));
     assert_eq!(standin.hosts_asked(), ["example.org", "autodiscover.example.org"]);
@@ -172,7 +186,8 @@ fn a_redirect_inside_the_domain_is_followed_without_asking() {
         let run = run_with(&standin, search("ada@example.org"), None, &[]);
         assert_eq!(run.outcome, Outcome::Failed(Failure::TooManyRedirects), "{status}");
     }
-    let standin = AutodiscoverStandIn::new().route("example.org", Route::Redirect(301, "https://example.org:8443/autodiscover/autodiscover.xml".into()));
+    let standin =
+        AutodiscoverStandIn::new().route("example.org", Route::Redirect(301, "https://example.org:8443/autodiscover/autodiscover.xml".into()));
     assert_eq!(run_with(&standin, search("ada@example.org"), None, &[]).outcome, Outcome::Failed(Failure::TooManyRedirects));
 }
 
@@ -260,7 +275,8 @@ fn a_redirect_that_is_not_https_is_refused() {
         assert_eq!(standin.hosts_asked(), ["example.org", "autodiscover.example.org"], "{location:?}");
     }
     // The same in an answer's redirectUrl.
-    let standin = AutodiscoverStandIn::new().route("example.org", Route::Document(redirect_url("http://mail.example.org/autodiscover/autodiscover.xml")));
+    let standin =
+        AutodiscoverStandIn::new().route("example.org", Route::Document(redirect_url("http://mail.example.org/autodiscover/autodiscover.xml")));
     assert_eq!(run_with(&standin, search("ada@example.org"), None, &[]).outcome, Outcome::Failed(Failure::InsecureRedirect));
 }
 
@@ -283,7 +299,9 @@ fn redirect_url_in_an_answer_is_a_redirect_like_any() {
 #[test]
 fn redirect_addr_starts_again_with_the_new_address_and_may_ask_about_its_domain() {
     // Inside the domain: no question.
-    let standin = AutodiscoverStandIn::new().route("example.org", Route::Document(redirect_addr("Ada@Mail.Example.org"))).route("autodiscover.mail.example.org", good());
+    let standin = AutodiscoverStandIn::new()
+        .route("example.org", Route::Document(redirect_addr("Ada@Mail.Example.org")))
+        .route("autodiscover.mail.example.org", good());
     let run = go(&standin, None, &[]);
     found(&run);
     assert!(run.asked.is_empty());
@@ -321,7 +339,11 @@ fn redirect_addr_starts_again_with_the_new_address_and_may_ask_about_its_domain(
 #[test]
 fn a_mailbox_in_exchange_online_is_said_so_and_nothing_is_sent_there() {
     // The settings name a Microsoft 365 host.
-    let online = Route::Document(settings("https://outlook.office365.com/EWS/Exchange.asmx", "https://outlook.office365.com/EWS/Exchange.asmx", "outlook.office365.com"));
+    let online = Route::Document(settings(
+        "https://outlook.office365.com/EWS/Exchange.asmx",
+        "https://outlook.office365.com/EWS/Exchange.asmx",
+        "outlook.office365.com",
+    ));
     let standin = AutodiscoverStandIn::new().route("example.org", online);
     let run = go(&standin, None, &[]);
     assert_eq!(run.outcome, Outcome::ExchangeOnline);
@@ -333,7 +355,8 @@ fn a_mailbox_in_exchange_online_is_said_so_and_nothing_is_sent_there() {
     assert_eq!(run_with(&standin, search("ada@example.org"), None, &[]).outcome, Outcome::ExchangeOnline);
 
     // A redirect to Microsoft's Autodiscover: never asked, never sent the sign-in.
-    for target in ["https://autodiscover-s.outlook.com/autodiscover/autodiscover.xml", "https://outlook.office365.com/autodiscover/autodiscover.xml"] {
+    for target in ["https://autodiscover-s.outlook.com/autodiscover/autodiscover.xml", "https://outlook.office365.com/autodiscover/autodiscover.xml"]
+    {
         let standin = AutodiscoverStandIn::new()
             .route("example.org", Route::Redirect(302, target.into()))
             .route("autodiscover-s.outlook.com", good())
@@ -343,7 +366,8 @@ fn a_mailbox_in_exchange_online_is_said_so_and_nothing_is_sent_there() {
         assert!(run.asked.is_empty(), "{target}");
         assert_eq!(standin.hosts_asked(), ["example.org"], "{target}");
     }
-    let standin = AutodiscoverStandIn::new().route("example.org", Route::Document(redirect_url("https://autodiscover-s.outlook.com/autodiscover/autodiscover.xml")));
+    let standin = AutodiscoverStandIn::new()
+        .route("example.org", Route::Document(redirect_url("https://autodiscover-s.outlook.com/autodiscover/autodiscover.xml")));
     assert_eq!(run_with(&standin, search("ada@example.org"), None, &[true]).outcome, Outcome::ExchangeOnline);
 
     // A redirect to an address in a tenant.
@@ -373,7 +397,13 @@ fn look_alikes_of_microsoft_hosts_are_not_exchange_online() {
 
 #[test]
 fn an_address_on_another_host_asks_before_the_password_goes_there() {
-    let route = || Route::Document(settings("https://exch.hoster.example.net/EWS/Exchange.asmx", "https://exch.hoster.example.net/EWS/Exchange.asmx", "exch.hoster.example.net"));
+    let route = || {
+        Route::Document(settings(
+            "https://exch.hoster.example.net/EWS/Exchange.asmx",
+            "https://exch.hoster.example.net/EWS/Exchange.asmx",
+            "exch.hoster.example.net",
+        ))
+    };
     let standin = AutodiscoverStandIn::new().route("example.org", route());
     let run = go(&standin, None, &[true]);
     assert_eq!(found(&run).urls(), ["https://exch.hoster.example.net/EWS/Exchange.asmx"]);
@@ -384,7 +414,9 @@ fn an_address_on_another_host_asks_before_the_password_goes_there() {
     assert_eq!(run.outcome, Outcome::Failed(Failure::Declined));
 
     // A host agreed to for a redirect is not asked about again for the address.
-    let standin = AutodiscoverStandIn::new().route("example.org", Route::Redirect(302, "https://exch.hoster.example.net/autodiscover/autodiscover.xml".into())).route("exch.hoster.example.net", route());
+    let standin = AutodiscoverStandIn::new()
+        .route("example.org", Route::Redirect(302, "https://exch.hoster.example.net/autodiscover/autodiscover.xml".into()))
+        .route("exch.hoster.example.net", route());
     let run = run_with(&standin, search("ada@example.org"), None, &[true]);
     found(&run);
     assert_eq!(run.asked.len(), 1);
@@ -446,7 +478,8 @@ fn every_failure_offers_server_settings_and_holds_nothing_a_server_wrote() {
 // ---- hostile answers ----
 
 fn answer_of(account: &str) -> Vec<u8> {
-    format!("<Autodiscover xmlns=\"{ANSWER_SCHEMA}\"><Response xmlns=\"{RESPONSE_SCHEMA}\"><Account>{account}</Account></Response></Autodiscover>").into_bytes()
+    format!("<Autodiscover xmlns=\"{ANSWER_SCHEMA}\"><Response xmlns=\"{RESPONSE_SCHEMA}\"><Account>{account}</Account></Response></Autodiscover>")
+        .into_bytes()
 }
 
 fn protocol(kind: &str, extra: &str) -> String {
@@ -457,7 +490,10 @@ fn protocol(kind: &str, extra: &str) -> String {
 fn only_the_address_and_the_server_are_taken() {
     let account = format!(
         "<Action>settings</Action>{}{}{}",
-        protocol("EXCH", "<Server>Mail.Example.org.</Server><EwsUrl>https://mail.example.org/EWS/A.asmx</EwsUrl><ASUrl>https://evil.example.net/AS</ASUrl><OOFUrl>https://evil.example.net/OOF</OOFUrl><EmwsUrl>https://evil.example.net/EMWS</EmwsUrl><EwsPartnerUrl>https://evil.example.net/P</EwsPartnerUrl>"),
+        protocol(
+            "EXCH",
+            "<Server>Mail.Example.org.</Server><EwsUrl>https://mail.example.org/EWS/A.asmx</EwsUrl><ASUrl>https://evil.example.net/AS</ASUrl><OOFUrl>https://evil.example.net/OOF</OOFUrl><EmwsUrl>https://evil.example.net/EMWS</EmwsUrl><EwsPartnerUrl>https://evil.example.net/P</EwsPartnerUrl>"
+        ),
         protocol("EXCH", "<EwsUrl>https://evil.example.net/second</EwsUrl>"),
         protocol("WEB", "<EwsUrl>https://evil.example.net/web</EwsUrl>")
     );
@@ -496,7 +532,11 @@ fn addresses_that_are_not_https_are_not_taken() {
 
 #[test]
 fn hostile_documents_are_unreadable_not_trusted() {
-    let honest = String::from_utf8(answer_of(&format!("<Action>settings</Action>{}", protocol("EXCH", "<EwsUrl>https://mail.example.org/EWS/Exchange.asmx</EwsUrl>")))).unwrap();
+    let honest = String::from_utf8(answer_of(&format!(
+        "<Action>settings</Action>{}",
+        protocol("EXCH", "<EwsUrl>https://mail.example.org/EWS/Exchange.asmx</EwsUrl>")
+    )))
+    .unwrap();
     assert!(matches!(read_answer(honest.as_bytes()), Answer::Settings(_)));
     let bomb = "<!DOCTYPE a [<!ENTITY x \"aaaaaaaaaa\"><!ENTITY y \"&x;&x;&x;&x;&x;&x;&x;&x;\"><!ENTITY z \"&y;&y;&y;&y;&y;&y;&y;&y;\">]>";
     let external = "<!DOCTYPE a [<!ENTITY x SYSTEM \"file:///etc/passwd\">]>";
@@ -541,13 +581,32 @@ fn the_request_is_the_documented_one_and_the_address_is_escaped() {
     assert_eq!(request.field("content-type"), Some("text/xml; charset=utf-8"));
     assert_eq!(request.field("authorization"), Some(BASIC));
     let body = String::from_utf8(request.body().to_vec()).unwrap();
-    assert!(body.contains(&format!("<AcceptableResponseSchema>{RESPONSE_SCHEMA}</AcceptableResponseSchema>")) && body.contains("<EMailAddress>ada@example.org</EMailAddress>"), "{body}");
+    assert!(
+        body.contains(&format!("<AcceptableResponseSchema>{RESPONSE_SCHEMA}</AcceptableResponseSchema>"))
+            && body.contains("<EMailAddress>ada@example.org</EMailAddress>"),
+        "{body}"
+    );
     // The debug output of the request and the machine holds neither address nor secret.
-    for shown in [format!("{request:?}"), format!("{machine:?}"), format!("{:?}", Consent { host: "secret.example.net".into(), reason: ConsentReason::Redirect })] {
+    for shown in [
+        format!("{request:?}"),
+        format!("{machine:?}"),
+        format!("{:?}", Consent { host: "secret.example.net".into(), reason: ConsentReason::Redirect }),
+    ] {
         assert!(!shown.contains("example") && !shown.contains("Basic") && !shown.contains("c3Rhbm"), "{shown}");
     }
     // An address with markup in it cannot be made.
-    for bad in ["a<b>@example.org", "ada@exa mple.org", "ada@localhost", "@example.org", "ada", "ada@", "ada@-x.org", "ada@example..org", "ada@exämple.org", "a\r\nb@example.org"] {
+    for bad in [
+        "a<b>@example.org",
+        "ada@exa mple.org",
+        "ada@localhost",
+        "@example.org",
+        "ada",
+        "ada@",
+        "ada@-x.org",
+        "ada@example..org",
+        "ada@exämple.org",
+        "a\r\nb@example.org",
+    ] {
         assert!(Autodiscover::new(bad, Secret::new(BASIC)).is_err(), "{bad:?}");
     }
     assert!(Autodiscover::new(" Ada.Lovelace+tag@Example.ORG. ", Secret::new(BASIC)).is_ok());
@@ -577,13 +636,23 @@ fn calls_out_of_turn_are_ignored() {
 #[test]
 fn the_domain_tests() {
     assert!(is_within("example.org", "example.org") && is_within("a.b.example.org", "example.org"));
-    assert!(!is_within("evil-example.org", "example.org") && !is_within("example.org", "a.example.org") && !is_within("example.org.evil.net", "example.org"));
+    assert!(
+        !is_within("evil-example.org", "example.org")
+            && !is_within("example.org", "a.example.org")
+            && !is_within("example.org.evil.net", "example.org")
+    );
     assert_eq!(host_of("https://Mail.Example.org.:8443/x?y#z").as_deref(), Some("mail.example.org"));
     assert_eq!(host_of("https://[::1]:8443/x").as_deref(), Some("::1"));
     assert_eq!(host_of("http://example.org/"), None);
     assert_eq!(host_of("https:///x"), None);
     // A host that parsers read differently is no host.
-    for odd in ["https://evil.net\\.example.org/x", "https://evil.net%2eexample.org/x", "https://exa mple.org/", "https://evil.net;.example.org/", "https://evil.net,.example.org/"] {
+    for odd in [
+        "https://evil.net\\.example.org/x",
+        "https://evil.net%2eexample.org/x",
+        "https://exa mple.org/",
+        "https://evil.net;.example.org/",
+        "https://evil.net,.example.org/",
+    ] {
         assert_eq!(host_of(odd), None, "{odd}");
     }
     assert!(check_endpoint("https://evil.net\\.example.org/x").is_err());

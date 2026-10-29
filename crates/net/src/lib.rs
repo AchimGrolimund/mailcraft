@@ -34,9 +34,9 @@ mod favorite_paths;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod graph;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod https;
-#[cfg(not(target_arch = "wasm32"))]
 mod http;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod https;
 #[cfg(not(target_arch = "wasm32"))]
 mod kept;
 #[cfg(not(target_arch = "wasm32"))]
@@ -120,7 +120,7 @@ mod native {
         /// ([`https`](crate::https)): what setup shows is in it. It holds nothing of the
         /// certificate in its text.
         #[error("{0}")]
-        Certificate(CertificateProblem),
+        Certificate(Box<CertificateProblem>),
         /// A shared mailbox Microsoft won't open for the owner of the token (#70), by Graph's own
         /// code: asking again by itself changes nothing.
         #[error("{}", .0.said())]

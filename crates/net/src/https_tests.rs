@@ -15,8 +15,8 @@ use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 
 use super::*;
-use crate::cert::cert_tests::make;
 use crate::cert::CertificateFault;
+use crate::cert::cert_tests::make;
 use crate::fake::FakeHttp;
 use crate::tls_test_support::{Authority, trusting};
 
@@ -109,7 +109,7 @@ fn get(url: &str, trusted: &str) -> Result<Response, NetError> {
 
 fn problem(result: Result<Response, NetError>) -> CertificateProblem {
     match result {
-        Err(NetError::Certificate(problem)) => problem,
+        Err(NetError::Certificate(problem)) => *problem,
         other => panic!("not a certificate problem: {other:?}"),
     }
 }
@@ -156,7 +156,10 @@ fn exactly_the_chosen_certificate_is_accepted() {
     assert_eq!(server.asked(), 2);
     // The request went as written (the credential reaches a server that has the chosen certificate).
     let seen = server.last.lock().unwrap().clone();
-    assert!(seen.starts_with("POST /autodiscover/autodiscover.xml HTTP/1.1\r\n") && seen.contains("Authorization: Basic c2VjcmV0OnNlY3JldA==\r\n"), "{seen}");
+    assert!(
+        seen.starts_with("POST /autodiscover/autodiscover.xml HTTP/1.1\r\n") && seen.contains("Authorization: Basic c2VjcmV0OnNlY3JldA==\r\n"),
+        "{seen}"
+    );
 }
 
 #[test]
@@ -181,13 +184,20 @@ fn certificates_out_of_date_or_for_another_server_are_never_accepted_by_fingerpr
     let (expired, expired_der) = self_signed(&["localhost"], year() - 4, year() - 2);
     let (early, early_der) = self_signed(&["localhost"], year() + 2, year() + 4);
     let (wrong, wrong_der) = self_signed(&["mail.example.org"], year() - 1, year() + 1);
-    for (config, der, fault) in [(expired, expired_der, CertificateFault::Expired), (early, early_der, CertificateFault::NotYetValid), (wrong, wrong_der, CertificateFault::WrongName)] {
+    for (config, der, fault) in [
+        (expired, expired_der, CertificateFault::Expired),
+        (early, early_der, CertificateFault::NotYetValid),
+        (wrong, wrong_der, CertificateFault::WrongName),
+    ] {
         let server = Server::start(config);
         let fingerprint = cert::fingerprint(&der);
         // Not with its own fingerprint, and not without one.
         for trusted in [fingerprint.as_str(), ""] {
             let found = problem(get(&server.url(), trusted));
-            assert!(matches!(&found, CertificateProblem::Unacceptable(have, info) if *have == fault && info.fingerprint == fingerprint), "{fault:?}: {found:?}");
+            assert!(
+                matches!(&found, CertificateProblem::Unacceptable(have, info) if *have == fault && info.fingerprint == fingerprint),
+                "{fault:?}: {found:?}"
+            );
             assert!(!found.can_be_trusted());
         }
         assert_eq!(server.asked(), 0, "{fault:?}");
@@ -236,7 +246,10 @@ fn the_answers_headers_that_are_read_come_back() {
     let response = get(&plain.url("/x"), "").unwrap();
     assert_eq!(response.status, 401);
     assert_eq!(response.challenges, ["Negotiate", "NTLM", "Basic realm=\"mail\""]);
-    assert_eq!((response.location.as_deref(), response.retry_after.as_deref(), response.policy_reason.as_deref()), (Some("https://other.example.org/x"), Some("7"), Some("blocked")));
+    assert_eq!(
+        (response.location.as_deref(), response.retry_after.as_deref(), response.policy_reason.as_deref()),
+        (Some("https://other.example.org/x"), Some("7"), Some("blocked"))
+    );
     // No redirect is followed: the status and the Location are handed back as they are.
     let redirect = FakeHttp::answering(b"HTTP/1.1 302 Found\r\nLocation: https://other.example.org/y\r\nContent-Length: 0\r\n\r\n".to_vec());
     assert_eq!(get(&redirect.url("/x"), "").unwrap().status, 302);

@@ -63,13 +63,23 @@ impl Pinned {
     }
 
     /// What to do with a certificate the system refused with `error`.
-    fn refused(&self, error: Error, end_entity: &CertificateDer<'_>, server_name: &ServerName<'_>, now: UnixTime) -> Result<ServerCertVerified, Error> {
+    fn refused(
+        &self,
+        error: Error,
+        end_entity: &CertificateDer<'_>,
+        server_name: &ServerName<'_>,
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, Error> {
         let Some(info) = cert::describe(end_entity.as_ref()) else { return Err(error) };
         // What the system itself says is wrong with the dates or the name is believed.
         let fault = match &error {
             Error::InvalidCertificate(CertificateError::Expired | CertificateError::ExpiredContext { .. }) => Some(CertificateFault::Expired),
-            Error::InvalidCertificate(CertificateError::NotValidYet | CertificateError::NotValidYetContext { .. }) => Some(CertificateFault::NotYetValid),
-            Error::InvalidCertificate(CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. }) => Some(CertificateFault::WrongName),
+            Error::InvalidCertificate(CertificateError::NotValidYet | CertificateError::NotValidYetContext { .. }) => {
+                Some(CertificateFault::NotYetValid)
+            }
+            Error::InvalidCertificate(CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. }) => {
+                Some(CertificateFault::WrongName)
+            }
             // The system does not trust the chain: the one thing a fingerprint may change.
             Error::InvalidCertificate(CertificateError::UnknownIssuer | CertificateError::Other(_)) => None,
             // Anything else (a bad signature, a revocation, a purpose, a protocol error) is final.
@@ -117,11 +127,21 @@ impl ServerCertVerifier for Pinned {
         }
     }
 
-    fn verify_tls12_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
         self.system.verify_tls12_signature(message, cert, dss)
     }
 
-    fn verify_tls13_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
         self.system.verify_tls13_signature(message, cert, dss)
     }
 

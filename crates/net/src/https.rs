@@ -87,9 +87,13 @@ pub fn send(request: &Request<'_>) -> Result<Response, NetError> {
     let url = Url::parse(request.url)?;
     let pin = match request.trusted.trim() {
         "" => None,
-        fingerprint => Some(cert::parse_fingerprint(fingerprint).ok_or_else(|| NetError::Config("the trusted certificate's fingerprint isn't a SHA-256 fingerprint".into()))?),
+        fingerprint => Some(
+            cert::parse_fingerprint(fingerprint)
+                .ok_or_else(|| NetError::Config("the trusted certificate's fingerprint isn't a SHA-256 fingerprint".into()))?,
+        ),
     };
-    let http_request = HttpRequest { method: request.method, headers: request.fields, body: Some(request.body), patience: PATIENCE, max_body: request.max_response };
+    let http_request =
+        HttpRequest { method: request.method, headers: request.fields, body: Some(request.body), patience: PATIENCE, max_body: request.max_response };
     if !url.secure {
         return http::request(&url, &http_request).map(response);
     }
@@ -97,7 +101,7 @@ pub fn send(request: &Request<'_>) -> Result<Response, NetError> {
     match http::request_with(&url, &http_request, Some(config)) {
         Ok(reply) => Ok(response(reply)),
         // A handshake that stopped at the certificate says which, and why; any other failure is the usual one.
-        Err(error @ NetError::Tls { .. }) => Err(verifier.take_problem().map_or(error, NetError::Certificate)),
+        Err(error @ NetError::Tls { .. }) => Err(verifier.take_problem().map_or(error, |problem| NetError::Certificate(Box::new(problem)))),
         Err(other) => Err(other),
     }
 }
@@ -119,7 +123,7 @@ pub use crate::cert::CertificateInfo;
 /// The problem with the server's certificate behind `error`, when that is what it is.
 pub fn certificate_problem(error: &NetError) -> Option<&CertificateProblem> {
     match error {
-        NetError::Certificate(problem) => Some(problem),
+        NetError::Certificate(problem) => Some(problem.as_ref()),
         _ => None,
     }
 }

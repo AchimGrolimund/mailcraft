@@ -64,7 +64,20 @@ fn the_next_name_server_is_asked_when_one_fails() {
 fn only_a_domain_is_ever_asked_about() {
     let server = FakeHttp::answering(json_answer("200 OK", ANSWER));
     let endpoint = server.url("/dns-query");
-    for bad in ["", "localhost", "ada@example.org", "example.org/path", "example.org&type=A", "example.org\r\nHost: evil", "exa mple.org", "example.org:53", "exämple.org", "_x._tcp.example.org", "*.example.org", ".example.org"] {
+    for bad in [
+        "",
+        "localhost",
+        "ada@example.org",
+        "example.org/path",
+        "example.org&type=A",
+        "example.org\r\nHost: evil",
+        "exa mple.org",
+        "example.org:53",
+        "exämple.org",
+        "_x._tcp.example.org",
+        "*.example.org",
+        ".example.org",
+    ] {
         assert!(matches!(lookup_autodiscover_at(&[&endpoint], bad), Err(NetError::Config(_))), "{bad:?}");
         assert!(matches!(lookup_autodiscover(bad), Err(NetError::Config(_))), "{bad:?}");
     }

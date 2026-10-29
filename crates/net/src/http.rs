@@ -327,9 +327,14 @@ pub(crate) fn connect(url: &Url, patience: Duration) -> Result<transport::Stream
 }
 
 /// [`connect`] with TLS settings of the caller's (`None`: the usual ones).
-pub(crate) fn connect_with(url: &Url, patience: Duration, tls: Option<std::sync::Arc<rustls::ClientConfig>>) -> Result<transport::Stream<'static>, NetError> {
+pub(crate) fn connect_with(
+    url: &Url,
+    patience: Duration,
+    tls: Option<std::sync::Arc<rustls::ClientConfig>>,
+) -> Result<transport::Stream<'static>, NetError> {
     let server = Server { host: url.host.clone(), port: url.port, security: if url.secure { Security::Tls } else { Security::None } };
-    let (stream, _) = transport::open_with(&server, Service::Http, &transport::Patience { connect: patience, io: patience, ..Default::default() }, tls)?;
+    let (stream, _) =
+        transport::open_with(&server, Service::Http, &transport::Patience { connect: patience, io: patience, ..Default::default() }, tls)?;
     Ok(stream)
 }
 

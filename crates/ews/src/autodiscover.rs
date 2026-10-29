@@ -136,7 +136,8 @@ fn split_address(address: &str) -> Option<(String, String)> {
     let address = address.trim();
     let (local, domain) = address.rsplit_once('@')?;
     let domain = domain.trim_end_matches('.').to_ascii_lowercase();
-    let local_ok = !local.is_empty() && local.len() <= 64 && !local.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '<' | '>' | '@'));
+    let local_ok =
+        !local.is_empty() && local.len() <= 64 && !local.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '<' | '>' | '@'));
     (local_ok && is_name(&domain)).then(|| (format!("{local}@{domain}"), domain))
 }
 
@@ -630,7 +631,12 @@ impl Autodiscover {
     /// request, `srv` looks a name up (the hosts it names, or `None`), and `ask` asks the owner
     /// (true is yes). The host that must wait for a person calls [`step`](Self::step) itself
     /// instead.
-    pub async fn run<E: HttpExchange>(&mut self, exchange: &E, mut srv: impl FnMut(&str) -> Option<Vec<String>>, mut ask: impl FnMut(&Consent) -> bool) -> Outcome {
+    pub async fn run<E: HttpExchange>(
+        &mut self,
+        exchange: &E,
+        mut srv: impl FnMut(&str) -> Option<Vec<String>>,
+        mut ask: impl FnMut(&Consent) -> bool,
+    ) -> Outcome {
         // Every round is a request, an SRV lookup or a question, and each is bounded.
         for _ in 0..usize::from(MAX_REQUESTS).saturating_mul(8) {
             match self.step() {

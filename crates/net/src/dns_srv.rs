@@ -86,7 +86,8 @@ pub(crate) fn targets(answer: &Answer) -> Result<Vec<String>, NetError> {
         // `10 60 443 mail.example.org.`: priority (lower is better), weight, port, target.
         let mut words = record.get("data").and_then(Value::as_str).unwrap_or("").split_whitespace();
         let number = |word: Option<&str>| word.and_then(|n| n.parse::<u16>().ok());
-        let (Some(priority), Some(weight), Some(_port), Some(host), None) = (number(words.next()), number(words.next()), number(words.next()), words.next(), words.next())
+        let (Some(priority), Some(weight), Some(_port), Some(host), None) =
+            (number(words.next()), number(words.next()), number(words.next()), words.next(), words.next())
         else {
             continue;
         };

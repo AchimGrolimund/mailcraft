@@ -237,12 +237,14 @@ fn text(tag: u8, value: &[u8]) -> Option<String> {
         0x14 => value.iter().map(|b| char::from(*b)).collect(),
         // BMPString (UTF-16, big-endian)
         0x1e => {
-            let units: Vec<u16> = value.chunks_exact(2).map(|pair| u16::from_be_bytes([pair.first().copied().unwrap_or(0), pair.get(1).copied().unwrap_or(0)])).collect();
+            let (pairs, _) = value.as_chunks::<2>();
+            let units: Vec<u16> = pairs.iter().map(|pair| u16::from_be_bytes(*pair)).collect();
             String::from_utf16(&units).ok()?
         }
         _ => return None,
     };
-    let clean: String = decoded.chars().filter(|c| !c.is_control() && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')).take(MAX_NAME).collect();
+    let clean: String =
+        decoded.chars().filter(|c| !c.is_control() && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')).take(MAX_NAME).collect();
     let clean = clean.trim().to_owned();
     (!clean.is_empty()).then_some(clean)
 }

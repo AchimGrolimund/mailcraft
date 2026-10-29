@@ -226,7 +226,12 @@ pub(crate) fn open<'a>(server: &Server, service: Service, patience: &Patience) -
 }
 
 /// [`open`] with TLS settings of the caller's (`None`: the usual ones, `crate::tls`).
-pub(crate) fn open_with<'a>(server: &Server, service: Service, patience: &Patience, tls: Option<Arc<ClientConfig>>) -> Result<(Stream<'a>, String), NetError> {
+pub(crate) fn open_with<'a>(
+    server: &Server,
+    service: Service,
+    patience: &Patience,
+    tls: Option<Arc<ClientConfig>>,
+) -> Result<(Stream<'a>, String), NetError> {
     let host = checked_host(server)?;
     log::debug!("connecting to {host}:{} ({service:?}, {})", port(server, service), server.security.code());
     let (connect, io) = (patience.connect.min(CONNECT_TIMEOUT), patience.io.min(IO_TIMEOUT));
