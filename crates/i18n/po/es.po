@@ -4933,12 +4933,6 @@ msgstr ""
 msgid "MailCraft doesn't rename or move a JMAP account's folders yet: its server wouldn't be told"
 msgstr ""
 
-#. what a command says
-#: crates/engine/src/cmd/calendar/invitation.rs crates/engine/src/cmd/compose.rs
-#, fuzzy
-msgid "MailCraft doesn't send mail from a JMAP account yet"
-msgstr "MailCraft todavía no envía correo desde una cuenta JMAP"
-
 #. interface
 #: crates/ui-egui/src/account_setup.rs
 #, fuzzy
@@ -12121,7 +12115,7 @@ msgstr "agregue al menos un destinatario"
 
 #. what a command says
 #: crates/engine/src/cmd/account.rs
-msgid "an Exchange server account's server and address can't be changed once its mail is here: remove it and add the other one"
+msgid "an Exchange server account's server, address and user name can't be changed once its mail is here: remove it and add the other one"
 msgstr ""
 
 #. what a command says
@@ -13019,6 +13013,11 @@ msgstr "el fin propuesto no es posterior al inicio propuesto"
 #. what a command says
 #: crates/engine/src/cmd/ews_mail.rs
 msgid "the result is for another account"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "the result {why}"
 msgstr ""
 
 #. what a command says
@@ -14453,11 +14452,6 @@ msgstr[1] "{sent} mensajes enviados"
 msgid "{service} account"
 msgstr "Cuenta de {service}"
 
-#. what a command says
-#: crates/engine/src/cmd/compose.rs
-msgid "{switched_off}: send this message from another account, or save it as a draft"
-msgstr ""
-
 #. interface
 #: crates/ui-egui/src/reminders.rs
 #, fuzzy
@@ -14541,6 +14535,10 @@ msgstr "«{subject}» era demasiado grande para descargarlo: solo está aquí su
 #, fuzzy
 msgid "“{subject}” wasn't found on its server, so it can't be forwarded as an attachment"
 msgstr "«{subject}» no se encontró en su servidor, así que no se puede reenviar como datos adjuntos"
+
+#, fuzzy
+#~ msgid "MailCraft doesn't send mail from a JMAP account yet"
+#~ msgstr "MailCraft todavía no envía correo desde una cuenta JMAP"
 
 #, fuzzy
 #~ msgid "Pictures are always downloaded from:"

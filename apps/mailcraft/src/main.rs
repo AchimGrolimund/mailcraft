@@ -287,9 +287,10 @@ fn log_dir() -> Option<PathBuf> {
     Some(prefs_path()?.parent()?.join("logs"))
 }
 
-/// The switch for testing Exchange server accounts (#252): `MAILCRAFT_EWS=1`. Off, Add Account
-/// doesn't offer them, `account.add` and every `sync.ews*` command refuse, and an Exchange server
-/// account already in a mailbox opens, shows its mail and isn't kept in step.
+/// The switch for testing Exchange server accounts (#252): `MAILCRAFT_EWS=1`. Off, `account.add`
+/// with `kind: "exchange"` and every `sync.ews*` command refuse, and an Exchange server account
+/// already in a mailbox opens, shows its mail and isn't kept in step. (Add Account doesn't offer
+/// them either way yet: its page for them comes later, and will be shown only while this is on.)
 fn ews_switch() -> bool {
     let on = std::env::var("MAILCRAFT_EWS").is_ok_and(|value| value.trim() == "1");
     static SAID: std::sync::Once = std::sync::Once::new();

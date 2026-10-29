@@ -4929,12 +4929,6 @@ msgstr ""
 msgid "MailCraft doesn't rename or move a JMAP account's folders yet: its server wouldn't be told"
 msgstr ""
 
-#. what a command says
-#: crates/engine/src/cmd/calendar/invitation.rs crates/engine/src/cmd/compose.rs
-#, fuzzy
-msgid "MailCraft doesn't send mail from a JMAP account yet"
-msgstr "MailCraft sendet noch keine E-Mails aus einem JMAP-Konto"
-
 #. interface
 #: crates/ui-egui/src/account_setup.rs
 #, fuzzy
@@ -12103,7 +12097,7 @@ msgstr "fügen Sie mindestens einen Empfänger hinzu"
 
 #. what a command says
 #: crates/engine/src/cmd/account.rs
-msgid "an Exchange server account's server and address can't be changed once its mail is here: remove it and add the other one"
+msgid "an Exchange server account's server, address and user name can't be changed once its mail is here: remove it and add the other one"
 msgstr ""
 
 #. what a command says
@@ -13001,6 +12995,11 @@ msgstr "das vorgeschlagene Ende liegt nicht nach dem vorgeschlagenen Beginn"
 #. what a command says
 #: crates/engine/src/cmd/ews_mail.rs
 msgid "the result is for another account"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/ews_mail.rs
+msgid "the result {why}"
 msgstr ""
 
 #. what a command says
@@ -14435,11 +14434,6 @@ msgstr[1] "{sent} Nachrichten gesendet"
 msgid "{service} account"
 msgstr "{service}-Konto"
 
-#. what a command says
-#: crates/engine/src/cmd/compose.rs
-msgid "{switched_off}: send this message from another account, or save it as a draft"
-msgstr ""
-
 #. interface
 #: crates/ui-egui/src/reminders.rs
 #, fuzzy
@@ -14523,6 +14517,10 @@ msgstr "„{subject}“ war zu groß zum Herunterladen: nur die Kopfzeilen sind 
 #, fuzzy
 msgid "“{subject}” wasn't found on its server, so it can't be forwarded as an attachment"
 msgstr "„{subject}“ wurde auf seinem Server nicht gefunden, daher kann die Nachricht nicht als Anlage weitergeleitet werden"
+
+#, fuzzy
+#~ msgid "MailCraft doesn't send mail from a JMAP account yet"
+#~ msgstr "MailCraft sendet noch keine E-Mails aus einem JMAP-Konto"
 
 #, fuzzy
 #~ msgid "Pictures are always downloaded from:"

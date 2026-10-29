@@ -54,9 +54,14 @@ fn problem_and_host_follow_the_checks() {
 
 #[test]
 fn debug_output_shows_no_address_name_or_fingerprint() {
-    let server = EwsServer { url: "https://secret.example.org/EWS".into(), username: "CORP\\ada".into(), trusted: "ab".repeat(32) };
+    let server = EwsServer {
+        url: "https://secret.example.org/EWS".into(),
+        username: "CORP\\ada".into(),
+        trusted: "ab".repeat(32),
+        hierarchy: "HIER-STATE".into(),
+    };
     let text = format!("{server:?}");
-    assert!(!text.contains("secret") && !text.contains("ada") && !text.contains("abab"), "{text}");
+    assert!(!text.contains("secret") && !text.contains("ada") && !text.contains("abab") && !text.contains("HIER"), "{text}");
 }
 
 #[test]
@@ -71,12 +76,24 @@ fn an_exchange_account_has_a_server_server_ids_and_sends_mail_but_only_behind_th
 #[test]
 fn an_exchange_account_keeps_its_setting_and_a_damaged_one_costs_only_itself() {
     use crate::{Account, AccountKind};
-    let server = EwsServer { url: "https://mail.example.org/EWS/Exchange.asmx".into(), username: "CORP\\ada".into(), trusted: "ab".repeat(32) };
+    let server = EwsServer {
+        url: "https://mail.example.org/EWS/Exchange.asmx".into(),
+        username: "CORP\\ada".into(),
+        trusted: "ab".repeat(32),
+        hierarchy: "HIER-STATE".into(),
+    };
     let account = Account { id: 4, email: "ada@example.org".into(), kind: AccountKind::Exchange, ews: Some(server), ..Default::default() };
     let json = serde_json::to_string(&account).unwrap();
     assert!(json.contains(r#""kind":"exchange""#) && json.contains(r#""ews":{"url""#), "{json}");
     assert_eq!(serde_json::from_str::<Account>(&json).unwrap(), account);
+    assert!(json.contains("HIER-STATE"), "the hierarchy's state is kept with the account: {json}");
     assert!(!serde_json::to_string(&Account::default()).unwrap().contains("ews"));
+    // A folder keeps its own state, and a folder of any other account has none to write.
+    let folder = crate::ServerFolder { id: "F1".into(), sync_state: "FOLDER-STATE".into(), ..Default::default() };
+    let json = serde_json::to_string(&folder).unwrap();
+    assert!(json.contains(r#""syncState":"FOLDER-STATE""#), "{json}");
+    assert_eq!(serde_json::from_str::<crate::ServerFolder>(&json).unwrap(), folder);
+    assert!(!serde_json::to_string(&crate::ServerFolder::default()).unwrap().contains("syncState"));
     for odd in ["5", "\"https://mail.example.org\"", "[]", "null", r#"{"url":5}"#, r#"{"trusted":[]}"#] {
         let read: Account = serde_json::from_str(&format!(r#"{{"id":4,"email":"ada@example.org","kind":"exchange","ews":{odd}}}"#)).unwrap();
         assert_eq!(read.kind, AccountKind::Exchange, "{odd}");

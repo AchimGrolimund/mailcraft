@@ -164,6 +164,12 @@ pub struct ServerFolder {
     /// (a round not ended, one begun in an earlier run, a mailbox from before): never passed over.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub counts: Option<FolderCounts>,
+    /// For a folder of an Exchange server account: where its mail goes on from, the sync state the
+    /// server gave at the end of the last `SyncFolderItems` (opaque), kept with the mail it
+    /// brought in one step. Empty until its mail has been read once, and for every other account
+    /// (which use `delta`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub sync_state: String,
 }
 
 /// A folder's message counts as its server's listing gives them (#276).

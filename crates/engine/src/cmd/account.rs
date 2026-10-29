@@ -464,10 +464,16 @@ fn edit(s: &mut Session, v: &Value) -> CmdResult {
     // And once its mail is here, those ids are one account's at one server and mailbox.
     if listed_ews(s, id) && a.kind == AccountKind::Exchange {
         let url = |x: &Account| x.ews.as_ref().filter(|server| server.problem().is_none()).map(|server| server.url.trim().to_string());
+        // (The name that signs in, with the e-mail address when none is given: another name may
+        // open another mailbox, and these ids are one mailbox's.)
+        let login = |x: &Account| {
+            let name = x.ews.as_ref().map(|server| server.username.trim()).filter(|name| !name.is_empty()).unwrap_or(x.email.trim());
+            name.to_lowercase()
+        };
         let moved = url(&before).is_some_and(|was| Some(was) != url(&a));
-        if moved || !before.email.trim().eq_ignore_ascii_case(a.email.trim()) {
+        if moved || !before.email.trim().eq_ignore_ascii_case(a.email.trim()) || login(&before) != login(&a) {
             return Err(fail(
-                "an Exchange server account's server and address can't be changed once its mail is here: remove it and add the other one",
+                "an Exchange server account's server, address and user name can't be changed once its mail is here: remove it and add the other one",
             ));
         }
     }

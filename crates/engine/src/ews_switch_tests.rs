@@ -87,7 +87,7 @@ fn switched_on_an_exchange_account_is_added_and_its_commands_say_it_is_not_built
     let a = s.mailbox.account(id).unwrap();
     assert_eq!(a.kind, AccountKind::Exchange);
     assert!(a.incoming.is_none() && a.outgoing.is_none() && a.oauth.is_none() && a.jmap.is_none());
-    assert_eq!(a.ews, Some(EwsServer { url: URL.into(), username: "CORP\\ada".into(), trusted: String::new() }));
+    assert_eq!(a.ews, Some(EwsServer { url: URL.into(), username: "CORP\\ada".into(), trusted: String::new(), hierarchy: String::new() }));
     // It has the standard folders a server account has.
     assert!(s.mailbox.folder_of_kind(id, FolderKind::Inbox).is_some());
     // The list says where it connects, never the whole address.
@@ -231,4 +231,65 @@ fn an_account_of_a_kind_this_version_does_not_know_still_loads_beside_an_exchang
     assert_eq!(serde_json::to_value(AccountKind::Exchange).unwrap(), "exchange");
     let unknown: AccountKind = serde_json::from_value(json!("someFutureKind")).unwrap();
     assert_eq!(unknown, AccountKind::Unknown);
+}
+
+/// Once the server's folders are here, the ids are one server's and one mailbox's: the address, the
+/// server and the name that signs in are fixed, and the rest (a trusted certificate, a display name)
+/// is not. The state the server gave is no setting, and an edit leaves it.
+#[test]
+fn an_exchange_accounts_server_address_and_user_name_are_fixed_once_its_mail_is_here() {
+    let mut s = session(true);
+    let id = s.run("account.add", &exchange("ada@example.org")).unwrap()["id"].as_u64().unwrap();
+    s.mailbox.account_mut(id).unwrap().ews.as_mut().unwrap().hierarchy = "HIER".into();
+    let edits = [
+        json!({"id": id, "ews": {"url": "https://other.example.org/EWS/Exchange.asmx"}}),
+        json!({"id": id, "ews": {"username": "CORP\\bo"}}),
+        json!({"id": id, "email": "bo@example.org"}),
+    ];
+    // Before any folder is the server's, they can all be changed (and changed back).
+    for edit in &edits {
+        assert!(s.run("account.edit", edit).is_ok(), "{edit}");
+        assert!(s.run("account.edit", &json!({"id": id, "email": "ada@example.org", "ews": {"url": URL, "username": "CORP\\ada"}})).is_ok());
+    }
+    let inbox = s.mailbox.folder_of_kind(id, FolderKind::Inbox).unwrap();
+    s.mailbox.folder_mut(inbox).unwrap().server = Some(mailcraft_model::ServerFolder { id: "F1".into(), ..Default::default() });
+    for edit in &edits {
+        let why = said(s.run("account.edit", edit));
+        assert!(why.contains("can't be changed once its mail is here"), "{edit}: {why}");
+    }
+    // The same user name, said another way (the e-mail address when none is given), is the same.
+    assert!(s.run("account.edit", &json!({"id": id, "ews": {"username": "CORP\\ADA "}})).is_ok(), "case and spaces make no other user");
+    assert!(s.run("account.edit", &json!({"id": id, "ews": {"trusted": "cd".repeat(32)}, "displayName": "Ada"})).is_ok());
+    let ews = s.mailbox.account(id).unwrap().ews.clone().unwrap();
+    assert_eq!((ews.url.as_str(), ews.trusted.len(), ews.hierarchy.as_str()), (URL, 64, "HIER"));
+}
+
+/// Nothing is queued in an Exchange server account's Outbox until its sending is built, with the
+/// switch on as with it off.
+#[test]
+fn nothing_is_queued_for_an_exchange_account_with_the_switch_on() {
+    let mut s = session(true);
+    let id = s.run("account.add", &exchange("ada@example.org")).unwrap()["id"].as_u64().unwrap();
+    s.run("mail.new", &json!({"account": id, "to": "bob@example.org", "subject": "Hello"})).unwrap();
+    let refused = said(s.run("compose.send", &json!({})));
+    assert!(refused.contains(crate::cmd::ews_mail::SENDING_NOT_BUILT) && refused.contains("send this message from another account"), "{refused}");
+    assert!(s.compose.is_some());
+    let outbox = s.mailbox.folder_of_kind(id, FolderKind::Outbox).unwrap();
+    assert_eq!(s.mailbox.messages_in(outbox).count(), 0);
+}
+
+/// A result is held to the caps before any of it is used: a result with too much in it is refused
+/// by `sync.applyEws` with the reason, and not with "not built".
+#[test]
+fn a_result_with_too_much_in_it_is_refused_before_anything_else_is_asked() {
+    let mut s = session(true);
+    let id = s.run("account.add", &exchange("ada@example.org")).unwrap()["id"].as_u64().unwrap();
+    let states: Vec<Value> = (0..=mailcraft_model::sync::MAX_EWS_STATES).map(|i| json!({"folder": format!("F{i}"), "state": "S"})).collect();
+    let too_many = json!({"result": {"account": id, "email": "ada@example.org", "states": states}});
+    assert!(said(s.run("sync.applyEws", &too_many)).contains("more in it than is taken in"));
+    let long = "x".repeat(mailcraft_model::sync::MAX_EWS_STATE + 1);
+    let long_state = json!({"result": {"account": id, "email": "ada@example.org", "hierarchy": long}});
+    assert!(said(s.run("sync.applyEws", &long_state)).contains("folder state that can't be one"));
+    let sound = json!({"result": {"account": id, "email": "ada@example.org", "hierarchy": "H", "states": [{"folder": "F1", "state": "S"}]}});
+    assert_eq!(said(s.run("sync.applyEws", &sound)), NOT_BUILT);
 }

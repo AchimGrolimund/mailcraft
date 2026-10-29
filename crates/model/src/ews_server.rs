@@ -28,6 +28,12 @@ pub struct EwsServer {
     /// errors" switch: any other certificate is refused.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub trusted: String,
+    /// Where the account's folder hierarchy goes on from: the sync state the server gave at the
+    /// end of the last `SyncFolderHierarchy`, opaque. Kept in the mailbox file with the folders it
+    /// brought, in one step; empty until the hierarchy has been read once. Not a setting: an edit
+    /// of the settings leaves it as it is, and it is never checked as one.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub hierarchy: String,
 }
 
 /// The address, the name and the fingerprint stay out of debug output, which may reach a log.
@@ -37,6 +43,7 @@ impl std::fmt::Debug for EwsServer {
             .field("url", &!self.url.is_empty())
             .field("username", &!self.username.is_empty())
             .field("trusted", &!self.trusted.is_empty())
+            .field("hierarchy", &!self.hierarchy.is_empty())
             .finish()
     }
 }
