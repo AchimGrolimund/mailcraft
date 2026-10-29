@@ -273,3 +273,6 @@ fn mail_connections_and_pictures_are_unchanged_by_all_this() {
     let config = crate::tls::client_config(crate::tls::Purpose::Mail).unwrap();
     assert!(config.alpn_protocols.is_empty());
 }
+
+#[path = "https_held_tests.rs"]
+mod held;

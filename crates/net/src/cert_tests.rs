@@ -102,3 +102,31 @@ proptest! {
         }
     }
 }
+
+fn signed_with(algorithm: &'static rcgen::SignatureAlgorithm) -> Vec<u8> {
+    let params = CertificateParams::new(vec!["mail.example.org".to_string()]).unwrap();
+    let key = KeyPair::generate_for(algorithm).unwrap();
+    params.self_signed(&key).unwrap().der().to_vec()
+}
+
+#[test]
+fn the_end_point_hash_follows_the_certificates_signature() {
+    // RFC 5929 4.1: the hash of the signature algorithm, over the whole certificate.
+    let p256 = signed_with(&rcgen::PKCS_ECDSA_P256_SHA256);
+    assert_eq!(end_point_hash(&p256), Some(digest::digest(&digest::SHA256, &p256).as_ref().to_vec()));
+    let p384 = signed_with(&rcgen::PKCS_ECDSA_P384_SHA384);
+    let hash = end_point_hash(&p384).unwrap();
+    assert_eq!(hash.len(), 48);
+    assert_eq!(hash, digest::digest(&digest::SHA384, &p384).as_ref().to_vec());
+    // A signature with no hash of its own to name gets none, and so does anything that isn't a certificate.
+    assert_eq!(end_point_hash(&signed_with(&rcgen::PKCS_ED25519)), None);
+    assert_eq!(end_point_hash(&[]), None);
+    assert_eq!(end_point_hash(&[0x30, 0x03, 0x30, 0x01, 0x00]), None);
+}
+
+proptest! {
+    #[test]
+    fn the_end_point_hash_of_noise_is_no_panic(bytes in proptest::collection::vec(any::<u8>(), 0..300)) {
+        let _ = end_point_hash(&bytes);
+    }
+}

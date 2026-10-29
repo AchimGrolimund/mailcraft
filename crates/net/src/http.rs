@@ -241,7 +241,7 @@ fn nonsense(text: &str) -> NetError {
 /// What an answer cut off by the server hanging up is called.
 const CLOSED: &str = "the server closed the connection";
 
-fn closed() -> NetError {
+pub(crate) fn closed() -> NetError {
     problem(CLOSED)
 }
 

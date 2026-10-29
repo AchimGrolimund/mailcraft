@@ -21,7 +21,9 @@
 //!   class and code, and `ErrorServerBusy` with a capped `BackOffMilliseconds` ([`Error::Busy`]).
 //!   No error holds text a server wrote.
 //! - [`autodiscover`]: finding the service's address from an e-mail address (MS-OXDSCLI), as a
-//!   state machine the host drives; [`basic`]: the `Authorization: Basic` value.
+//!   state machine the host drives; [`basic`]: the `Authorization: Basic` value; [`ntlm`]: NTLMv2
+//!   (MS-NLMP) as three legs on one held connection; [`auth`]: NTLM or Basic, from what the
+//!   server offers.
 //! - [`folder`], [`client`]: `GetFolder` by distinguished name, and [`Client::check`], which
 //!   tests an account with it.
 //!
@@ -30,6 +32,9 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+#[deny(missing_docs)]
+#[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
+pub mod auth;
 #[deny(missing_docs)]
 #[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
 pub mod autodiscover;
@@ -50,6 +55,9 @@ pub mod folder;
 pub mod http;
 #[deny(missing_docs)]
 #[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
+pub mod ntlm;
+#[deny(missing_docs)]
+#[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
 pub mod reply;
 #[deny(missing_docs)]
 #[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
@@ -67,11 +75,13 @@ mod hostile_tests;
 #[cfg(test)]
 mod tests;
 
+pub use auth::{AuthError, Scheme};
 pub use autodiscover::{Autodiscover, Consent, ConsentReason, Discovered, Failure, Outcome, Step};
 pub use basic::CredentialError;
 pub use client::Client;
 pub use error::{Error, PolicyReason, ResponseClass, ResponseCode};
 pub use folder::{DistinguishedFolder, FolderId, FolderInfo, GetFolder};
 pub use http::{EndpointError, HttpExchange, HttpRequest, HttpResponse, Method, Secret, TransportError};
+pub use ntlm::{Credentials as NtlmCredentials, NtlmError};
 pub use reply::{Message, Reply};
 pub use soap::{Element, Version};
