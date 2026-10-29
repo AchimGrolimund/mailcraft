@@ -23,7 +23,7 @@
 //! (`SyncFolderHierarchy`, `SyncFolderItems`): an opaque string. It is kept in the mailbox file,
 //! with what it brought, in one step: the account's is [`crate::EwsServer::hierarchy`], a folder's
 //! is [`crate::ServerFolder::sync_state`]. An answer carries them in
-//! [`EwsMailResult::hierarchy`] and [`EwsMailResult::states`], and taking a piece in puts a state
+//! [`EwsMailResult::hierarchy`] and, one to each page, [`EwsMessagePage::state`], and taking a piece in puts a state
 //! and the folders and messages it brought in together, like Graph's links; `link` and
 //! `caught_up` of Graph's [`MessagePage`](super::MessagePage) are never used for Exchange, which
 //! has pages of its own ([`EwsMessagePage`]). A state the server no longer knows
@@ -222,8 +222,8 @@ pub struct EwsFolderDeltas {
 }
 
 /// One page of a folder's changes (`SyncFolderItems`). The state to go on from is not here but in
-/// [`EwsMailResult::states`], taken in with it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// [`EwsMessagePage::state`], taken in with it.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct EwsMessagePage {
     /// The folder's server id.
@@ -245,6 +245,14 @@ pub struct EwsMessagePage {
     /// the folder, and what the fresh read doesn't have is removed when it ends (`last`).
     #[serde(skip_serializing_if = "is_false")]
     pub afresh: bool,
+    /// The sync state this page was read from (empty: from the folder's start). A page is taken in
+    /// only when the folder is at that state (or the page is the start of a fresh read), so that a
+    /// page whose predecessor was refused or cut can never move the folder past what was lost.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub from: String,
+    /// The sync state that goes on from this page: kept with it, in one step. Empty: none is kept.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub state: String,
 }
 
 /// What a run for an Exchange server account brought back, or a piece of it.
@@ -290,9 +298,6 @@ pub struct EwsMailResult {
     /// The pages of messages read, in the order they came: each is taken in by itself.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<EwsMessagePage>,
-    /// Where each folder read goes on from now.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub states: Vec<EwsFolderState>,
     /// Problems worth telling the owner; empty when all went well.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
@@ -369,7 +374,7 @@ impl EwsMailResult {
         if self.email.len() > crate::EwsServer::MAX_USERNAME || self.url.len() > crate::EwsServer::MAX_URL {
             return Err("names an account or a server that is too long");
         }
-        if self.states.len() > MAX_EWS_STATES || self.pages.len() > MAX_EWS_PAGES || self.errors.len() > MAX_EWS_ERRORS {
+        if self.pages.len() > MAX_EWS_PAGES || self.errors.len() > MAX_EWS_ERRORS {
             return Err(TOO_MANY);
         }
         if self.changes.len() > super::MAX_FOLDER_CHANGES
@@ -389,16 +394,11 @@ impl EwsMailResult {
         if crate::EwsServer::check_fingerprint(&self.untrusted).is_err() {
             return Err("has a certificate fingerprint that can't be one");
         }
-        if self.states.iter().map(|s| s.state.len()).fold(0usize, usize::saturating_add) > MAX_EWS_STATE_BYTES {
+        if self.pages.iter().map(|p| p.state.len().saturating_add(p.from.len())).fold(0usize, usize::saturating_add) > MAX_EWS_STATE_BYTES {
             return Err(TOO_MANY);
         }
-        for state in &self.states {
-            if !id_ok(&state.folder) {
-                return Err(ODD_ID);
-            }
-            if !state_ok(&state.state) {
-                return Err("has a sync state that can't be one");
-            }
+        if self.pages.iter().any(|p| !state_ok(&p.state) || !state_ok(&p.from)) {
+            return Err("has a sync state that can't be one");
         }
         if let Some(folders) = &self.folders {
             if folders.changed.len() > MAX_LISTED_FOLDERS || folders.deleted.len() > MAX_LISTED_FOLDERS {
@@ -453,7 +453,6 @@ impl EwsMailResult {
             self.hierarchy = piece.hierarchy;
         }
         self.pages.extend(piece.pages);
-        self.states.extend(piece.states);
         self.errors.extend(piece.errors);
         self.busy_for = piece.busy_for.or(self.busy_for);
         (self.partial, self.whole, self.stopped) = (piece.partial, piece.whole, piece.stopped);
@@ -464,6 +463,20 @@ impl EwsMailResult {
         if !piece.untrusted.is_empty() {
             self.untrusted = piece.untrusted;
         }
+    }
+}
+
+/// Counts and flags: neither a server's id nor a sync state is ever shown.
+impl std::fmt::Debug for EwsMessagePage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EwsMessagePage")
+            .field("messages", &self.messages.len())
+            .field("removed", &self.removed.len())
+            .field("read", &self.read.len())
+            .field("last", &self.last)
+            .field("afresh", &self.afresh)
+            .field("state", &!self.state.is_empty())
+            .finish()
     }
 }
 
@@ -483,7 +496,6 @@ impl std::fmt::Debug for EwsMailRequest {
             .field("trusted", &!self.trusted.is_empty())
             .field("list_folders", &self.list_folders)
             .field("scope", &self.scope.describe())
-            .field("states", &self.states.len())
             .field("changes", &self.changes.len())
             .field("messages", &self.messages.len())
             .field("drafts", &self.drafts.len())
@@ -522,7 +534,6 @@ impl std::fmt::Debug for EwsMailResult {
             .field("folders", &self.folders.as_ref().map(|folders| (folders.changed.len(), folders.deleted.len(), folders.afresh)))
             .field("pages", &self.pages.len())
             .field("messages", &messages)
-            .field("states", &self.states.len())
             .field("errors", &self.errors.len())
             .field("busy_for", &self.busy_for)
             .field("partial", &self.partial)

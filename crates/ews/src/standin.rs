@@ -177,6 +177,8 @@ pub struct State {
     /// The server doesn't know the properties `item:Preview` and `item:Flag`
     /// (`ErrorInvalidPropertyRequest`).
     pub lacks_preview: bool,
+    /// A server that ignores `MaxChangesReturned` and gives every change it has in one answer.
+    pub ignores_max: bool,
     /// How many ids have been given out.
     pub issued: u32,
 }
@@ -237,6 +239,7 @@ impl Default for State {
             item_log: Vec::new(),
             epoch: 0,
             lacks_preview: false,
+            ignores_max: false,
             issued: 0,
         }
     }
@@ -455,7 +458,7 @@ impl State {
         for found in ids.into_iter().skip(skip) {
             let code = match found {
                 Some(folder) => {
-                    let id = if self.hostile == Some(Hostile::BadId) { "<script>".to_owned() } else { folder.id.clone() };
+                    let id = if self.hostile == Some(Hostile::BadId) { "x".repeat(2_000) } else { folder.id.clone() };
                     let mut xml = format!("<t:Folder><t:FolderId Id=\"{}\" ChangeKey=\"AQAAAA==\"/>", escape(&id));
                     if base != "IdOnly" {
                         xml.push_str(&format!(

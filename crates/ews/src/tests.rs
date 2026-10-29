@@ -191,7 +191,8 @@ fn a_folder_id_that_is_not_an_id_is_not_taken() {
     assert_eq!(check(&standin), Err(Error::Unexpected));
     assert!(FolderId::new("AAMk+Tk/Zm9=").is_some());
     assert!(FolderId::new("").is_none());
-    assert!(FolderId::new("a b").is_none());
+    assert!(FolderId::new("a\u{1}b").is_none(), "no control character");
+    assert!(FolderId::new("a b<c>&\"d").is_some(), "an id is opaque: any other character does");
     assert!(FolderId::new(&"a".repeat(2_000)).is_none());
 }
 

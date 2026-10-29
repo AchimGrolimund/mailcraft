@@ -4,7 +4,7 @@
 //! takes in what it brings back, with results made by hand. (Against `mailcraft-ews`'s stand-in:
 //! `apps/mailcraft/src/ews_mail_flow.rs`.)
 
-use mailcraft_model::sync::{EwsFolderDeltas, EwsFolderState, EwsMessagePage, GraphFetched, GraphFolder, GraphMessage, ReadState, ServerMessage};
+use mailcraft_model::sync::{EwsFolderDeltas, EwsMessagePage, GraphFetched, GraphFolder, GraphMessage, ReadState, ServerMessage};
 use mailcraft_model::{Address, FlagStatus, Message};
 use serde_json::json;
 
@@ -55,20 +55,26 @@ fn page(folder: &str, messages: Vec<GraphMessage>, afresh: bool, last: bool) -> 
     EwsMessagePage { folder: folder.into(), messages, afresh, last, ..Default::default() }
 }
 
-fn state(folder: &str, state: &str) -> EwsFolderState {
-    EwsFolderState { folder: folder.into(), state: state.into() }
-}
-
 /// The folder list, as a first read brings it.
 fn list(s: &mut Session, account: Id) {
     let deltas = EwsFolderDeltas { changed: folders(), afresh: true, ..Default::default() };
     apply_ews_mail(s, EwsMailResult { folders: Some(deltas), hierarchy: "HIER-1".into(), ..piece(account) }).unwrap();
 }
 
+/// The page as the host makes it: read from where the folder is now (unless it begins afresh) and
+/// going on from `state_after`.
+fn next(s: &Session, account: Id, mut page: EwsMessagePage, state_after: &str) -> EwsMessagePage {
+    if !page.afresh && page.from.is_empty() {
+        page.from = s.mailbox.folder_by_server(account, &page.folder).map(|_| state_of(s, account, &page.folder)).unwrap_or_default();
+    }
+    page.state = state_after.into();
+    page
+}
+
 /// One page of a folder with its state, more to come.
 fn read(s: &mut Session, account: Id, page: EwsMessagePage, state_after: &str) -> Value {
-    let folder = page.folder.clone();
-    apply_ews_mail(s, EwsMailResult { pages: vec![page], states: vec![state(&folder, state_after)], ..piece(account) }).unwrap()
+    let page = next(s, account, page, state_after);
+    apply_ews_mail(s, EwsMailResult { pages: vec![page], ..piece(account) }).unwrap()
 }
 
 /// The run's last piece.
@@ -247,18 +253,80 @@ fn a_piece_that_is_too_large_is_refused_and_one_that_is_odd_is_cut_and_removes_n
     let long_folder = EwsFolderDeltas { changed: vec![folder("F9", "", &"x".repeat(5_000), FolderKind::Custom)], ..Default::default() };
     assert!(apply_ews_mail(&mut s, EwsMailResult { folders: Some(long_folder), ..piece(account) }).is_err());
     assert!(s.mailbox == before);
-    // An id that is no id: the message is passed over, the piece is cut, and the run that
-    // follows it is not one that went well: nothing is removed for it.
-    let odd_id = mail("<script>", "Odd", 5_000);
-    read(&mut s, account, page("F1", vec![odd_id, mail("A3", "Agenda", 3_000)], false, false), "S-2");
-    assert!(here(&s, account, "A3").is_some() && here(&s, account, "<script>").is_none());
-    // The page that came cut is no fresh read, and its state is not kept.
+    // An id that is no id (it has a control character): the piece is refused whole, with its state.
+    let odd_id = mail("A\u{1}B", "Odd", 5_000);
+    let refused = next(&s, account, page("F1", vec![odd_id, mail("A3", "Agenda", 3_000)], false, false), "S-2");
+    assert!(apply_ews_mail(&mut s, EwsMailResult { pages: vec![refused], ..piece(account) }).is_err());
+    assert!(here(&s, account, "A3").is_none() && s.mailbox == before);
+    // The page after it was read from the state that was never kept (S-2): it is not taken in,
+    // and the folder stays where it is. Nothing is skipped over.
+    let after = EwsMessagePage { from: "S-2".into(), ..page("F1", vec![mail("A5", "Later", 5_000)], false, true) };
+    let said = apply_ews_mail(&mut s, EwsMailResult { pages: vec![EwsMessagePage { state: "S-3".into(), ..after }], ..piece(account) }).unwrap();
+    assert_eq!(said["new"], 0);
+    assert!(here(&s, account, "A5").is_none());
     assert_eq!(state_of(&s, account, "F1"), "S-1");
     // Long text that is within the limits is cut to what is shown.
     let long = GraphMessage { subject: format!("{}\r\n{}", "y".repeat(2_000), "z"), ..mail("A4", "s", 4_000) };
     read(&mut s, account, page("F1", vec![long], false, true), "S-3");
     let subject = &here(&s, account, "A4").unwrap().subject;
     assert!(subject.chars().count() <= 998 && !subject.contains(['\r', '\n']));
+}
+
+#[test]
+fn a_state_is_taken_in_only_after_the_page_it_followed_and_a_run_that_left_one_out_removes_nothing() {
+    let (mut s, account) = session();
+    list(&mut s, account);
+    read(&mut s, account, page("F1", vec![mail("A1", "Kickoff", 1_000), mail("A2", "Budget", 2_000)], true, true), "S-1");
+    // The state was lost: the fresh read's first page is refused (the host went on with S-2 in
+    // memory), its second page is read from S-2, and the run ends "well".
+    let first = page("F1", vec![mail("A1", "Kickoff", 1_000), mail("A\u{2}", "Odd", 1)], true, false);
+    let first = EwsMessagePage { state: "S-2".into(), ..first };
+    assert!(apply_ews_mail(&mut s, EwsMailResult { pages: vec![first], ..piece(account) }).is_err());
+    let second = EwsMessagePage { from: "S-2".into(), state: "S-3".into(), ..page("F1", vec![mail("A3", "Agenda", 3_000)], false, true) };
+    apply_ews_mail(&mut s, EwsMailResult { pages: vec![second], ..piece(account) }).unwrap();
+    end(&mut s, account, true);
+    // Nothing that was here is gone, and the folder is where it was: it is read again.
+    assert!(here(&s, account, "A1").is_some() && here(&s, account, "A2").is_some() && here(&s, account, "A3").is_none());
+    assert!(!here(&s, account, "A2").unwrap().server.as_ref().unwrap().gone);
+    assert_eq!(state_of(&s, account, "F1"), "S-1");
+}
+
+#[test]
+fn each_state_belongs_to_its_own_page_when_a_result_has_several_for_one_folder() {
+    let (mut s, account) = session();
+    list(&mut s, account);
+    let one = EwsMessagePage { state: "S-1".into(), ..page("F1", vec![mail("A1", "Kickoff", 1_000)], true, false) };
+    let two = EwsMessagePage { from: "S-1".into(), state: "S-2".into(), ..page("F1", vec![mail("A2", "Budget", 2_000)], false, false) };
+    // The third came cut (it has no state): the folder goes on from the second, not past the third.
+    let three = EwsMessagePage { from: "S-2".into(), state: String::new(), ..page("F1", vec![mail("A3", "Agenda", 3_000)], false, true) };
+    apply_ews_mail(&mut s, EwsMailResult { pages: vec![one, two, three], ..piece(account) }).unwrap();
+    assert_eq!(state_of(&s, account, "F1"), "S-2");
+    assert!(here(&s, account, "A3").is_some());
+    // A page that skips a state (from S-5) is not taken in.
+    let skip = EwsMessagePage { from: "S-5".into(), state: "S-6".into(), ..page("F1", vec![mail("A4", "Skipped", 4_000)], false, true) };
+    apply_ews_mail(&mut s, EwsMailResult { pages: vec![skip], ..piece(account) }).unwrap();
+    assert!(here(&s, account, "A4").is_none());
+    assert_eq!(state_of(&s, account, "F1"), "S-2");
+}
+
+#[test]
+fn an_account_keeps_no_more_sync_state_in_all_than_is_taken_in() {
+    let (mut s, account) = session();
+    let many: Vec<GraphFolder> = (0..40).map(|n| folder(&format!("X{n}"), "", &format!("Box {n}"), FolderKind::Custom)).collect();
+    let deltas = EwsFolderDeltas { changed: many, afresh: true, ..Default::default() };
+    apply_ews_mail(&mut s, EwsMailResult { folders: Some(deltas), ..piece(account) }).unwrap();
+    for n in 0..40 {
+        let id = s.mailbox.folder_by_server(account, &format!("X{n}")).unwrap();
+        // (Each state is within its own size; together they are past the account's.)
+        if let Some(server) = s.mailbox.folder_mut(id).unwrap().server.as_mut() {
+            server.sync_state = "s".repeat(mailcraft_model::sync::MAX_EWS_STATE);
+        }
+    }
+    let before = s.mailbox.clone();
+    let big = EwsMessagePage { from: "s".repeat(1), ..page("X0", vec![mail("B1", "Hello", 1_000)], false, true) };
+    let why = apply_ews_mail(&mut s, EwsMailResult { pages: vec![EwsMessagePage { state: "t".into(), ..big }], ..piece(account) }).unwrap_err();
+    assert!(why.to_string().contains("more sync state"), "{why}");
+    assert!(s.mailbox == before, "a piece that is refused changes nothing");
 }
 
 #[test]

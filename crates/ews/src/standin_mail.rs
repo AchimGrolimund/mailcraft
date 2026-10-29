@@ -274,7 +274,8 @@ impl State {
     /// The `t:Message` of an item as the shape asks for it.
     fn message_xml(&self, item: &Item, shape: &str, extra: &[String]) -> String {
         let hostile = self.hostile == Some(Hostile::BadItems);
-        let id = if hostile { "<script>" } else { item.id.as_str() };
+        let long = "x".repeat(2_000);
+        let id = if hostile { long.as_str() } else { item.id.as_str() };
         let mut xml = format!("<t:Message><t:ItemId Id=\"{}\" ChangeKey=\"{}\"/>", escape(id), escape(&item.change_key));
         let wants = |uri: &str| extra.iter().any(|e| e == uri);
         if shape != "IdOnly" {
@@ -450,6 +451,7 @@ impl State {
         if !(1..=512).contains(&max) {
             return Err(invalid("MaxChangesReturned is from 1 to 512"));
         }
+        let max = if self.ignores_max { usize::MAX } else { max };
         if let Some(scope) = parts.get(5).copied().flatten() {
             Check::is(scope, MESSAGES, "SyncScope", &[])?;
             if !["NormalItems", "NormalAndAssociatedItems"].contains(&scope.text.trim()) {

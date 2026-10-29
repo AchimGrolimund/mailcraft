@@ -7,8 +7,9 @@
 //! ([`bounded`], after [`mailcraft_model::sync::EwsMailResult::check`] has refused what is larger
 //! than anything real):
 //!
-//! - **Ids** (a folder's, an item's) are held to the characters of base64 and the length the
-//!   model allows; a folder or message with any other id is passed over.
+//! - **Ids** (a folder's, an item's) are opaque: held to the length the model allows and to no
+//!   control character. A folder with any other id is passed over; a message, a removal or a read
+//!   state with one makes its page a cut one, whose sync state is not kept.
 //! - **Text** is put on one line and cut to what is shown (a subject and a `Message-ID` to a line of
 //!   RFC 5322, a preview to 256 characters, a name to 256, an address to 320).
 //! - **What an Exchange server doesn't say** is none of it: `answered` and `forwarded` are not
@@ -38,12 +39,11 @@ const MAX_NAME: usize = 255;
 /// Most pages one piece brings, and most messages of the batch fetched whole.
 const MAX_PAGES: usize = 1_000;
 
-/// Whether `id` may be an Exchange server id (of a folder, an item or a change key): the characters
-/// of base64 and its URL variant, at most [`mailcraft_model::sync::MAX_EWS_ID`] of them.
+/// Whether `id` may be an Exchange server id (of a folder, an item or a change key): opaque, so
+/// any characters but control characters, at most [`mailcraft_model::sync::MAX_EWS_ID`] bytes (the
+/// rule of the model, which holds a result to the same).
 pub(crate) fn is_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= mailcraft_model::sync::MAX_EWS_ID
-        && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_'))
+    !id.is_empty() && id.len() <= mailcraft_model::sync::MAX_EWS_ID && !id.chars().any(char::is_control)
 }
 
 /// A message of a page: whether it can be taken in at all (its id is one), and if so with its text
@@ -151,7 +151,11 @@ pub(crate) fn bounded(mut result: EwsMailResult) -> EwsMailResult {
     if cut {
         result.pages.iter_mut().for_each(|page| page.afresh = false);
     }
-    result.states.retain(|s| is_id(&s.folder) && !cut_folders.contains(&s.folder));
+    // (A page's state is kept with it: a cut folder's pages keep none, and since the next page of
+    // that folder was read from the one that is not kept, [`take_page`] takes none of them in.)
+    for page in result.pages.iter_mut().filter(|p| cut_folders.contains(&p.folder)) {
+        page.state.clear();
+    }
     result.errors = lines(&result.errors);
     result.busy_for = result.busy_for.map(|seconds| seconds.min(MAX_BUSY));
     if let Some(progress) = result.progress.as_mut().filter(|progress| !is_id(&progress.folder)) {
@@ -239,13 +243,21 @@ pub(crate) fn take_folders(mb: &mut Mailbox, account: Id, deltas: &EwsFolderDelt
     removed
 }
 
-/// Take in one page of a folder's changes with the sync state that goes on from it. A page for a
-/// folder this mailbox doesn't have (yet) is passed over, and so is its state: it comes again.
-pub(crate) fn take_page(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, page: &EwsMessagePage, state: Option<&str>, down: &mut Down) {
-    let Some(folder) = mb.folder_by_server(account, &page.folder) else { return };
+/// Take in one page of a folder's changes with the sync state that goes on from it, when the page
+/// is the next one: the folder is at the state the page was read from (`page.from`), or the page
+/// begins a fresh read of the folder. A page whose state doesn't follow is **not taken in at all**
+/// (it would carry the folder past a page that was refused, cut or lost), and nothing of it is
+/// kept: the folder is read again from where it is. A page for a folder this mailbox doesn't have
+/// (yet) is passed over the same way. Whether the page was taken in.
+pub(crate) fn take_page(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, page: &EwsMessagePage, down: &mut Down) -> bool {
+    let Some(folder) = mb.folder_by_server(account, &page.folder) else { return false };
+    let at = mb.folder(folder).and_then(|f| f.server.as_ref());
+    if !page.afresh && at.is_none_or(|s| s.sync_state != page.from) {
+        return false;
+    }
     // Whether the folder's first round had ended before this page ([`graph_down::take_page`] sorts
     // what arrives by it): the same for a link of Graph's and a sync state of Exchange's.
-    let sorting = !page.afresh && mb.folder(folder).and_then(|f| f.server.as_ref()).is_some_and(|s| s.round_ended || s.caught_up);
+    let sorting = !page.afresh && at.is_some_and(|s| s.round_ended || s.caught_up);
     let as_page = MessagePage {
         folder: page.folder.clone(),
         messages: page.messages.clone(),
@@ -257,18 +269,40 @@ pub(crate) fn take_page(mb: &mut Mailbox, index: &mut ServerIndex, account: Id, 
         counts: None,
     };
     graph_down::take_page(mb, index, account, &as_page, down);
-    if let Some(state) = state
+    if !page.state.is_empty()
         && let Ok(f) = mb.folder_mut(folder)
         && let Some(s) = f.server.as_mut()
     {
-        s.sync_state = state.to_owned();
+        s.sync_state = page.state.clone();
         s.caught_up = page.last;
         s.round_ended = sorting || page.last;
         s.counts = None;
     }
+    true
 }
 
-/// The sync state a run's result gives for `folder`: the last it gives.
-pub(crate) fn state_of<'r>(result: &'r EwsMailResult, folder: &str) -> Option<&'r str> {
-    result.states.iter().rev().find(|s| s.folder == folder).map(|s| s.state.as_str())
+/// How many bytes of sync state the account would keep once `result` is taken in: the folders'
+/// states (a folder the result has pages for goes on from the last it gives) and the folder list's.
+/// Held to [`mailcraft_model::sync::MAX_EWS_STATE_BYTES`] for the account, where a result's own
+/// states are held to it by [`mailcraft_model::sync::EwsMailResult::check`].
+pub(crate) fn state_bytes_after(mb: &Mailbox, account: Id, result: &EwsMailResult) -> usize {
+    let mut last: HashMap<&str, usize> = HashMap::new();
+    for page in result.pages.iter().filter(|p| !p.state.is_empty()) {
+        last.insert(page.folder.as_str(), page.state.len());
+    }
+    let folders = mb
+        .folders
+        .iter()
+        .filter(|f| f.account == account)
+        .filter_map(|f| f.server.as_ref())
+        .map(|server| last.remove(server.id.as_str()).unwrap_or(server.sync_state.len()))
+        .fold(0usize, usize::saturating_add);
+    // (A folder the result has a state for that this mailbox doesn't have yet: its page is passed
+    // over, and so is its state, so it isn't counted.)
+    let hierarchy = if result.hierarchy.is_empty() {
+        mb.account(account).and_then(|a| a.ews.as_ref()).map_or(0, |server| server.hierarchy.len())
+    } else {
+        result.hierarchy.len()
+    };
+    folders.saturating_add(hierarchy)
 }

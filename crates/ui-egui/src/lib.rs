@@ -2294,9 +2294,11 @@ impl MailApp {
             let (session, bearer) = a.jmap.as_ref().map_or(("none", false), |j| (j.session.trim(), j.bearer));
             format!("{kind}:{address}|jmap={session}|bearer={bearer}")
         } else if a.kind == mailcraft_model::AccountKind::Exchange {
-            // (Its whole EWS address: another one, on the same server or not, is another server.)
+            // (Its whole EWS address: another one, on the same server or not, is another server;
+            // and the user name it signs in with: a password is for one name.)
             let url = a.ews.as_ref().map_or("none", |e| e.url.trim());
-            format!("{kind}:{address}|ews={url}")
+            let user = a.ews.as_ref().map_or_else(String::new, |e| e.username.trim().to_ascii_lowercase());
+            format!("{kind}:{address}|ews={url}|user={user}")
         } else {
             format!("{kind}:{address}|imap={}|smtp={}", server(&a.incoming), server(&a.outgoing))
         }

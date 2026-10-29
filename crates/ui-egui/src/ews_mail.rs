@@ -136,7 +136,15 @@ impl MailApp {
                     let errors = said["errors"].as_array().map(|all| all.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>());
                     self.note_sync_problems(account, &errors.unwrap_or_default(), false);
                 }
-                Err(e) => self.status(e.to_string()),
+                Err(e) => {
+                    self.status(e.to_string());
+                    // A piece that was refused is not skipped over: the run is called off, and the
+                    // pages after it (read from the state it would have kept) are left out by the
+                    // engine, whichever of them still come ([`apply_ews_mail`]).
+                    if !last {
+                        self.services.sync_cancel.store(true, Ordering::Relaxed);
+                    }
+                }
             }
             if !last {
                 continue;

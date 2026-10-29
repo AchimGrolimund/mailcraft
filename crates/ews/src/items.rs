@@ -23,8 +23,6 @@ use crate::xml::{MAX_MIME_TEXT, Node};
 
 /// Most changes one page asks for (the schema's own limit is 512).
 pub const MAX_CHANGES: u32 = 512;
-/// The most changes one answer is read for.
-const MAX_READ: usize = 600;
 /// Longest subject, `Message-ID`, preview and name kept, in characters; the most people a
 /// message names in one list.
 const MAX_SUBJECT: usize = 998;
@@ -75,8 +73,6 @@ pub struct ItemsPage {
     pub removed: Vec<String>,
     /// Items whose read state alone changed.
     pub read: Vec<ReadState>,
-    /// How many items could not be read (no id, no subject worth showing is *not* a reason).
-    pub skipped: usize,
 }
 
 impl std::fmt::Debug for ItemsPage {
@@ -86,7 +82,6 @@ impl std::fmt::Debug for ItemsPage {
             .field("messages", &self.messages.len())
             .field("removed", &self.removed.len())
             .field("read", &self.read.len())
-            .field("skipped", &self.skipped)
             .finish()
     }
 }
@@ -120,6 +115,13 @@ impl SyncFolderItems {
 
     /// The server's answer. A state the server no longer knows is [`Error::Server`] of
     /// `InvalidSyncState`.
+    ///
+    /// **A page is whole or it is an error.** The answer's new state says "everything up to here
+    /// has been taken in", so a page that left a change out would lose it for good: an answer with
+    /// more changes than were asked for (a server that ignores `MaxChangesReturned`), and one with a
+    /// change that can't be read (an item with no id, or an id that can't be one), is
+    /// [`Error::Unexpected`], with nothing of it handed on and no state taken from it. The folder
+    /// stays where it was, and is read again next time.
     pub fn answer(&self, reply: &Reply) -> Result<ItemsPage, Error> {
         let messages = reply.messages("SyncFolderItems")?;
         let [message] = messages.as_slice() else { return Err(Error::Unexpected) };
@@ -128,25 +130,28 @@ impl SyncFolderItems {
         let last = node.child_in(MESSAGES, "IncludesLastItemInRange").is_none_or(|n| n.text.trim() != "false");
         let mut page = ItemsPage { state, last, ..ItemsPage::default() };
         let Some(changes) = node.child_in(MESSAGES, "Changes") else { return Ok(page) };
-        for change in changes.children.iter().filter(|c| *c.namespace == *TYPES).take(MAX_READ) {
-            match change.name.as_str() {
-                "Create" | "Update" => match change.children.iter().find(|c| *c.namespace == *TYPES).and_then(read_item) {
-                    Some(item) => page.messages.push(item),
-                    None => page.skipped = page.skipped.saturating_add(1),
-                },
-                "Delete" => {
-                    if let Some(id) = change.child_in(TYPES, "ItemId").and_then(|id| id.attribute("Id")).filter(|id| valid_id(id)) {
-                        page.removed.push(id.to_owned());
-                    }
+        let mut counted = 0usize;
+        for change in changes.children.iter().filter(|c| *c.namespace == *TYPES) {
+            let kind = change.name.as_str();
+            // (Only the four kinds of change count; anything else the schema may add is not one.)
+            if !matches!(kind, "Create" | "Update" | "Delete" | "ReadFlagChange") {
+                continue;
+            }
+            counted = counted.saturating_add(1);
+            if counted > usize::try_from(self.max).unwrap_or(usize::MAX) {
+                return Err(Error::Unexpected);
+            }
+            let id = || change.child_in(TYPES, "ItemId").and_then(|id| id.attribute("Id")).filter(|id| valid_id(id));
+            match kind {
+                "Create" | "Update" => {
+                    page.messages.push(change.children.iter().find(|c| *c.namespace == *TYPES).and_then(read_item).ok_or(Error::Unexpected)?)
                 }
-                "ReadFlagChange" => {
-                    let id = change.child_in(TYPES, "ItemId").and_then(|id| id.attribute("Id")).filter(|id| valid_id(id));
+                "Delete" => page.removed.push(id().ok_or(Error::Unexpected)?.to_owned()),
+                _ => {
                     let read = change.child_in(TYPES, "IsRead").map(|n| n.text.trim().eq_ignore_ascii_case("true"));
-                    if let Some((id, read)) = id.zip(read) {
-                        page.read.push(ReadState { id: id.to_owned(), read });
-                    }
+                    let (id, read) = id().zip(read).ok_or(Error::Unexpected)?;
+                    page.read.push(ReadState { id: id.to_owned(), read });
                 }
-                _ => {}
             }
         }
         Ok(page)

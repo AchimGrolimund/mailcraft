@@ -30,8 +30,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use mailcraft_model::FolderKind;
 use mailcraft_model::sync::{
-    EwsFetchRequest, EwsFolderDeltas, EwsFolderState, EwsMailRequest, EwsMailResult, EwsMessagePage, EwsScope, GraphFetchResult, GraphFetched,
-    GraphProgress,
+    EwsFetchRequest, EwsFolderDeltas, EwsMailRequest, EwsMailResult, EwsMessagePage, EwsScope, GraphFetchResult, GraphFetched, GraphProgress,
 };
 
 use crate::client::Client;
@@ -376,9 +375,19 @@ impl<E: HttpExchange> Run<'_, E> {
             let mut messages = page.messages;
             messages.iter_mut().for_each(|m| m.server.folder = folder.to_owned());
             let last = page.last;
+            // (The page carries the state it was read from and the one that goes on from it, so that
+            // the engine takes a state in only after the page it came from, in order.)
             emit(EwsMailResult {
-                pages: vec![EwsMessagePage { folder: folder.to_owned(), messages, removed: page.removed, read: page.read, last, afresh }],
-                states: vec![EwsFolderState { folder: folder.to_owned(), state: page.state.clone() }],
+                pages: vec![EwsMessagePage {
+                    folder: folder.to_owned(),
+                    messages,
+                    removed: page.removed,
+                    read: page.read,
+                    last,
+                    afresh,
+                    from: state.clone(),
+                    state: page.state.clone(),
+                }],
                 progress: Some(GraphProgress { folder: folder.to_owned(), read, total: 0, number, folders }),
                 partial: true,
                 ..base(request)

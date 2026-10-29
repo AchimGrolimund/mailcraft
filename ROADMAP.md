@@ -525,4 +525,5 @@ follows:
 | 2026-10-29 | #252, first step: Exchange server accounts behind `MAILCRAFT_EWS=1` (progress log) |
 | 2026-10-29 | #252 E3: Autodiscover, Basic sign-in and certificate trust by fingerprint (progress log) |
 | 2026-10-29 | #252 E4: mail down from an Exchange server account (progress log) |
+| 2026-10-29 | #252 E4 review: Exchange sync states are bound to their pages and a state is kept only after the page it followed (progress log) |
 | 2026-10-29 | #252 E3 review: the sign-in goes only in answer to a Basic challenge; Microsoft's consumer mail is refused up front (progress log) |

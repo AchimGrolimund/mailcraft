@@ -316,12 +316,13 @@ fn nothing_is_queued_for_an_exchange_account_with_the_switch_on() {
 fn a_result_with_too_much_in_it_is_refused_before_anything_else_is_asked() {
     let mut s = session(true);
     let id = s.run("account.add", &exchange("ada@example.org")).unwrap()["id"].as_u64().unwrap();
-    let states: Vec<Value> = (0..=mailcraft_model::sync::MAX_EWS_STATES).map(|i| json!({"folder": format!("F{i}"), "state": "S"})).collect();
-    let too_many = json!({"result": {"account": id, "email": "ada@example.org", "states": states}});
+    let pages: Vec<Value> = (0..=mailcraft_model::sync::MAX_EWS_PAGES).map(|i| json!({"folder": format!("F{i}")})).collect();
+    let too_many = json!({"result": {"account": id, "email": "ada@example.org", "pages": pages}});
     assert!(said(s.run("sync.applyEws", &too_many)).contains("more in it than is taken in"));
     let long = "x".repeat(mailcraft_model::sync::MAX_EWS_STATE + 1);
     let long_state = json!({"result": {"account": id, "email": "ada@example.org", "hierarchy": long}});
     assert!(said(s.run("sync.applyEws", &long_state)).contains("folder state that can't be one"));
-    let sound = json!({"result": {"account": id, "email": "ada@example.org", "hierarchy": "H", "states": [{"folder": "F1", "state": "S"}]}});
+    let sound =
+        json!({"result": {"account": id, "email": "ada@example.org", "hierarchy": "H", "pages": [{"folder": "F1", "from": "S0", "state": "S"}]}});
     assert!(s.run("sync.applyEws", &sound).is_ok());
 }

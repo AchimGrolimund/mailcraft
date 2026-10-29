@@ -84,7 +84,17 @@ fn the_first_run_lists_the_folders_and_downloads_the_inbox_in_pages() {
     assert!(first.message_id.ends_with("@example.org") && !first.message_id.starts_with('<'));
     assert!(last(&pieces).whole && !last(&pieces).partial && last(&pieces).errors.is_empty());
     // Each page comes with the state to go on from.
-    assert!(pieces.iter().filter(|p| !p.pages.is_empty()).all(|p| p.states.len() == 1 && !p.states[0].state.is_empty()));
+    assert!(pieces.iter().filter(|p| !p.pages.is_empty()).all(|p| p.pages.len() == 1 && !p.pages[0].state.is_empty()));
+}
+
+/// Where each folder goes on from, as the pages of a run say: the last of each folder.
+fn states_of(pieces: &[EwsMailResult]) -> Vec<EwsFolderState> {
+    let mut out: Vec<EwsFolderState> = Vec::new();
+    for page in pieces.iter().flat_map(|p| &p.pages) {
+        out.retain(|s| s.folder != page.folder);
+        out.push(EwsFolderState { folder: page.folder.clone(), state: page.state.clone() });
+    }
+    out
 }
 
 #[test]
@@ -96,7 +106,7 @@ fn a_run_from_the_states_it_gave_brings_the_changes_alone() {
     };
     let (first, _) = run(&standin, &request());
     let hierarchy = first.iter().find_map(|p| (!p.hierarchy.is_empty()).then(|| p.hierarchy.clone())).unwrap();
-    let states: Vec<EwsFolderState> = first.iter().flat_map(|p| p.states.clone()).collect();
+    let states = states_of(&first);
     let inbox = standin.state().folder_id("inbox").unwrap();
     assert!(states.iter().any(|s| s.folder == inbox));
     {
@@ -120,7 +130,7 @@ fn a_run_from_the_states_it_gave_brings_the_changes_alone() {
     assert!(pieces.iter().flat_map(|p| &p.pages).any(|p| p.afresh && p.messages.is_empty() && p.last));
     // Nothing happened since: an empty page, and the run is whole.
     let again = EwsMailRequest {
-        states: pieces.iter().flat_map(|p| p.states.clone()).collect(),
+        states: states_of(&pieces),
         hierarchy: pieces.iter().find_map(|p| (!p.hierarchy.is_empty()).then(|| p.hierarchy.clone())).unwrap(),
         ..request()
     };
@@ -134,7 +144,7 @@ fn a_state_the_server_forgot_reads_the_folder_and_the_folders_afresh() {
     standin.state().deliver("inbox", "Kickoff", false);
     let (first, _) = run(&standin, &request());
     let hierarchy = first.iter().find_map(|p| (!p.hierarchy.is_empty()).then(|| p.hierarchy.clone())).unwrap();
-    let states: Vec<EwsFolderState> = first.iter().flat_map(|p| p.states.clone()).collect();
+    let states = states_of(&first);
     standin.state().forget_sync_states();
     let (pieces, _) = run(&standin, &EwsMailRequest { hierarchy, states, ..request() });
     assert!(pieces.iter().find_map(|p| p.folders.as_ref()).unwrap().afresh, "the folder list is read afresh");
@@ -246,12 +256,32 @@ fn a_hostile_server_ends_a_run_with_a_line_and_never_a_panic() {
 }
 
 #[test]
-fn items_with_ids_that_are_not_ids_are_passed_over() {
+fn a_server_that_ignores_the_page_size_gives_no_page_and_no_state() {
+    let standin = StandIn::new();
+    for n in 0..700 {
+        standin.state().deliver("inbox", &format!("Mail {n}"), false);
+    }
+    standin.state().ignores_max = true;
+    let (pieces, _) = run(&standin, &EwsMailRequest { inbox_pass: true, list_folders: false, ..request() });
+    // (Taking the first of 700 and keeping the state past all of them would lose the rest.)
+    assert!(subjects(&pieces).is_empty() && pieces.iter().all(|p| p.pages.is_empty()), "{pieces:?}");
+    assert!(!last(&pieces).whole && !last(&pieces).errors.is_empty());
+    // A server that keeps to the size is read to its end.
+    standin.state().ignores_max = false;
+    let (pieces, _) = run(&standin, &EwsMailRequest { inbox_pass: true, list_folders: false, ..request() });
+    assert_eq!(subjects(&pieces).len(), 700);
+}
+
+#[test]
+fn a_page_with_a_change_that_cannot_be_read_gives_no_message_and_no_state() {
     let standin = StandIn::new();
     standin.state().deliver("inbox", "Kickoff", false);
     standin.state().hostile = Some(Hostile::BadItems);
     let (pieces, _) = run(&standin, &EwsMailRequest { inbox_pass: true, list_folders: false, ..request() });
     assert!(subjects(&pieces).is_empty(), "an id that isn't one is no message");
+    // Nothing of the page, and so no state past it: the folder is read again from where it was.
+    assert!(pieces.iter().all(|p| p.pages.is_empty()), "{pieces:?}");
+    assert!(!last(&pieces).whole && !last(&pieces).errors.is_empty());
 }
 
 #[test]

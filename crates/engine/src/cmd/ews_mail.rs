@@ -33,7 +33,9 @@
 //! with a message while it is where it is. A mark the server changed comes down, but for one
 //! changed here since the server last said. No server id and no sync state is logged.
 
-use mailcraft_model::sync::{EwsFetchRequest, EwsFolderState, EwsMailRequest, EwsMailResult, EwsScope, GraphFetchResult, MAX_EWS_STATES, SyncPhase};
+use mailcraft_model::sync::{
+    EwsFetchRequest, EwsFolderState, EwsMailRequest, EwsMailResult, EwsScope, GraphFetchResult, MAX_EWS_STATE_BYTES, MAX_EWS_STATES, SyncPhase,
+};
 use mailcraft_model::{Account, AccountKind, EwsServer, FolderKind, Id, Mailbox};
 use serde_json::{Value, json};
 
@@ -52,6 +54,8 @@ pub const SENDING_NOT_BUILT: &str = "Exchange server accounts can't send mail ye
 /// Whether sending mail through Exchange Web Services is built (step 5 of #252 flips this): until
 /// it is, nothing is queued in an Exchange server account's Outbox, switch on or off.
 const SENDING_BUILT: bool = false;
+/// What a piece is refused with when the account would keep more sync state than is taken in.
+const STATES_TOO_LARGE: &str = "the result would make this account keep more sync state than is taken in";
 
 /// Whether a message may be queued in the Outbox of an account of this kind, to be sent by the
 /// next Send/Receive. The one place that says so, for a message being written, an answer to a
@@ -301,6 +305,11 @@ pub fn apply_ews_mail(s: &mut Session, result: EwsMailResult) -> CmdResult {
     let account = result.account;
     let name = receiving(&s.mailbox, account, &result.email, &result.url)?;
     let result = ews_down::bounded(result);
+    if ews_down::state_bytes_after(&s.mailbox, account, &result) > MAX_EWS_STATE_BYTES {
+        // (The sync states kept for one account are held to a total, as one is held to a size: a
+        // piece that would go over is refused whole, and what it was for is read again.)
+        return Err(fail(STATES_TOO_LARGE));
+    }
     if s.file_is_current() {
         s.note_saved();
     }
@@ -316,13 +325,18 @@ pub fn apply_ews_mail(s: &mut Session, result: EwsMailResult) -> CmdResult {
         }
     }
     let mut index = std::mem::take(&mut s.graph_index);
+    // A page that doesn't follow the folder's state is left out ([`ews_down::take_page`]): what was
+    // lost before it is not skipped over, and a run that left a page out removes nothing.
+    let mut left_out = 0usize;
     for page in &result.pages {
-        ews_down::take_page(&mut s.mailbox, &mut index, account, page, ews_down::state_of(&result, &page.folder), &mut down);
+        if !ews_down::take_page(&mut s.mailbox, &mut index, account, page, &mut down) {
+            left_out = left_out.saturating_add(1);
+        }
     }
     s.graph_index = index;
     // The run's end: what its fresh reads left out goes, when every folder was read and it went
     // well (the host says `whole` of such a run only).
-    if result.whole && !result.partial {
+    if result.whole && !result.partial && left_out == 0 {
         graph_down::sweep(&mut s.mailbox, account, &mut down);
     }
     if taken != Taken::default() || down != Down::default() || !result.pages.is_empty() {
