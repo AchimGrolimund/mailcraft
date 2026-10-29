@@ -33,9 +33,7 @@
 //! with a message while it is where it is. A mark the server changed comes down, but for one
 //! changed here since the server last said. No server id and no sync state is logged.
 
-use mailcraft_model::sync::{
-    EwsFetchRequest, EwsFolderState, EwsMailRequest, EwsMailResult, EwsScope, GraphFetchResult, MAX_EWS_STATES, SyncPhase,
-};
+use mailcraft_model::sync::{EwsFetchRequest, EwsFolderState, EwsMailRequest, EwsMailResult, EwsScope, GraphFetchResult, MAX_EWS_STATES, SyncPhase};
 use mailcraft_model::{Account, AccountKind, EwsServer, FolderKind, Id, Mailbox};
 use serde_json::{Value, json};
 

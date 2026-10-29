@@ -135,7 +135,12 @@ fn the_folders_and_the_first_pages_come_in_with_the_states_that_go_on_from_them(
 fn a_delta_changes_what_changed_and_what_left_goes_when_the_run_ends_well() {
     let (mut s, account) = session();
     list(&mut s, account);
-    read(&mut s, account, page("F1", vec![mail("A1", "Kickoff", 1_000), mail("A2", "Budget", 2_000), mail("A3", "Agenda", 3_000)], true, true), "S-1");
+    read(
+        &mut s,
+        account,
+        page("F1", vec![mail("A1", "Kickoff", 1_000), mail("A2", "Budget", 2_000), mail("A3", "Agenda", 3_000)], true, true),
+        "S-1",
+    );
     end(&mut s, account, true);
     let mut edited = mail("A1", "Kickoff (moved)", 1_000);
     edited.server.change_key = "CK2".into();
@@ -174,7 +179,11 @@ fn a_folder_read_afresh_keeps_what_the_server_still_has_and_drops_the_rest() {
     // The one fetched whole keeps its body through a fresh read: it is matched by item id.
     let kickoff = here(&s, account, "A1").unwrap().id;
     let mime = b"From: Zoe Park <zoe@example.org>\r\nTo: Ada <ada@example.org>\r\nSubject: Kickoff\r\nMessage-ID: <A1@example.org>\r\n\r\nThe whole text.\r\n";
-    apply_ews_fetch(&mut s, GraphFetchResult { account, email: ME.into(), fetched: vec![GraphFetched { id: "A1".into(), mime: mime.to_vec() }], ..Default::default() }).unwrap();
+    apply_ews_fetch(
+        &mut s,
+        GraphFetchResult { account, email: ME.into(), fetched: vec![GraphFetched { id: "A1".into(), mime: mime.to_vec() }], ..Default::default() },
+    )
+    .unwrap();
     assert!(!s.mailbox.message(kickoff).unwrap().unfetched);
     // The server lost its state: the fresh read lists A1 and A3, and not A2.
     let fresh = read(&mut s, account, page("F1", vec![mail("A1", "Kickoff", 1_000), mail("A3", "Agenda", 3_000)], true, true), "S-9");
@@ -231,7 +240,8 @@ fn a_piece_that_is_too_large_is_refused_and_one_that_is_odd_is_cut_and_removes_n
         GraphMessage { to: vec![Address::new("x", "a@example.org"); 2_000], ..mail("B1", "s", 1) },
         GraphMessage { message_id: "x".repeat(20_000), ..mail("B1", "s", 1) },
     ] {
-        let why = apply_ews_mail(&mut s, EwsMailResult { pages: vec![page("F1", vec![odd], false, true)], ..piece(account) }).unwrap_err().to_string();
+        let why =
+            apply_ews_mail(&mut s, EwsMailResult { pages: vec![page("F1", vec![odd], false, true)], ..piece(account) }).unwrap_err().to_string();
         assert!(why.contains("longer than is taken in"), "{why}");
     }
     let long_folder = EwsFolderDeltas { changed: vec![folder("F9", "", &"x".repeat(5_000), FolderKind::Custom)], ..Default::default() };
@@ -310,10 +320,7 @@ fn messages_are_fetched_whole_within_what_the_account_keeps() {
     assert!(ews_fetch_request(&s, account, None, 10).unwrap().ids.is_empty());
     // A command that asks for it by the commands' own door gets the same.
     assert_eq!(s.run("sync.ewsFetchRequest", &json!({"account": account, "message": kickoff})).unwrap()["ids"], json!([]));
-    let again = s.run(
-        "sync.applyEwsFetch",
-        &json!({"result": {"account": account, "email": ME, "fetched": [{"id": "A2", "mime": mime.to_vec()}]}}),
-    );
+    let again = s.run("sync.applyEwsFetch", &json!({"result": {"account": account, "email": ME, "fetched": [{"id": "A2", "mime": mime.to_vec()}]}}));
     assert!(again.is_ok());
 }
 

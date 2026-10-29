@@ -38,6 +38,9 @@ mod control_server;
 mod desktop_theme;
 mod diagnostics;
 #[cfg(test)]
+mod ews_mail_flow;
+mod ews_runner;
+#[cfg(test)]
 mod favorites_flow;
 #[cfg(test)]
 mod favorites_organisation_flow;
@@ -1438,6 +1441,7 @@ fn services(
     let check_ctx = ctx.clone();
     let approval_ctx = ctx.clone();
     let fetch_ctx = ctx.clone();
+    let (ews_ctx, ews_fetch_ctx) = (ctx.clone(), ctx.clone());
     let search_ctx = ctx.clone();
     let tasks_ctx = ctx.clone();
     let ahead_ctx = ctx.clone();
@@ -1483,6 +1487,9 @@ fn services(
         graph_fetch: Some(Box::new(move |job: mailcraft_ui_egui::graph_fetch::GraphFetchJob| {
             background(&fetch_ctx, "message download", move || mailcraft_net::graph::fetch_messages(&job.access, &job.request, &job.cancel))
         })),
+        // An Exchange server account (#252): read through Exchange Web Services, and its messages fetched whole.
+        ews: Some(Box::new(move |job| ews_runner::run_mail(job, &ews_ctx))),
+        ews_fetch: Some(Box::new(move |job| ews_runner::run_fetch(job, &ews_fetch_ctx))),
         // A Microsoft mailbox searched on its server, a page at a time, on the owner's click (R6.2).
         graph_search: Some(Box::new(move |job: mailcraft_ui_egui::server_search::GraphSearchJob| {
             background(&search_ctx, "server search", move || mailcraft_net::graph::search_messages(&job.access, &job.request))

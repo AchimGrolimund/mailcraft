@@ -276,7 +276,8 @@ fn putting_a_server_address_right_forgets_where_its_folders_went_on_from() {
     let mut s = session(true);
     let id = s.run("account.add", &exchange("ada@example.org")).unwrap()["id"].as_u64().unwrap();
     let inbox = s.mailbox.folder_of_kind(id, FolderKind::Inbox).unwrap();
-    s.mailbox.folder_mut(inbox).unwrap().server = Some(mailcraft_model::ServerFolder { id: "F1".into(), sync_state: "FOLDER-STATE".into(), ..Default::default() });
+    s.mailbox.folder_mut(inbox).unwrap().server =
+        Some(mailcraft_model::ServerFolder { id: "F1".into(), sync_state: "FOLDER-STATE".into(), ..Default::default() });
     {
         let ews = s.mailbox.account_mut(id).unwrap().ews.as_mut().unwrap();
         (ews.url, ews.hierarchy) = ("ftp://not-a-server.example.org".into(), "HIER".into());

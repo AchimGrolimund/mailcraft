@@ -41,7 +41,9 @@ const MAX_PAGES: usize = 1_000;
 /// Whether `id` may be an Exchange server id (of a folder, an item or a change key): the characters
 /// of base64 and its URL variant, at most [`mailcraft_model::sync::MAX_EWS_ID`] of them.
 pub(crate) fn is_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= mailcraft_model::sync::MAX_EWS_ID && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_'))
+    !id.is_empty()
+        && id.len() <= mailcraft_model::sync::MAX_EWS_ID
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_'))
 }
 
 /// A message of a page: whether it can be taken in at all (its id is one), and if so with its text
@@ -220,7 +222,13 @@ pub(crate) fn take_folders(mb: &mut Mailbox, account: Id, deltas: &EwsFolderDelt
             .filter(|f| f.account == account)
             .filter_map(|f| f.server.as_ref().map(|server| (f.kind, server)))
             .filter(|(_, server)| !named.contains(server.id.as_str()))
-            .map(|(kind, server)| GraphFolder { id: server.id.clone(), parent: server.parent.clone(), name: server.name.clone(), kind, ..Default::default() })
+            .map(|(kind, server)| GraphFolder {
+                id: server.id.clone(),
+                parent: server.parent.clone(),
+                name: server.name.clone(),
+                kind,
+                ..Default::default()
+            })
             .collect();
         folders.extend(stubs);
     }
