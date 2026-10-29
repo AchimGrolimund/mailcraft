@@ -67,9 +67,13 @@ pub const MAX_EWS_ERROR: usize = 1000;
 /// Most folders whose sync state a request or an answer carries.
 pub const MAX_EWS_STATES: usize = 10_000;
 
-/// Longest sync state, in bytes, that is kept or handed back: the server's own are short, so a
-/// longer one is not one.
-pub const MAX_EWS_STATE: usize = 8192;
+/// Longest sync state, in bytes, that is kept or handed back. The server's own grow with the
+/// folder (a compressed record of the items it has told of, some tens of kilobytes for a large
+/// folder), so the limit is a megabyte; a longer one is not one, and the folder is read afresh.
+pub const MAX_EWS_STATE: usize = 1 << 20;
+
+/// Most sync-state bytes one piece of an answer carries in all.
+pub const MAX_EWS_STATE_BYTES: usize = 32 << 20;
 
 /// Which folders a run reads.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

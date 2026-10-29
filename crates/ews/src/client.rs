@@ -48,7 +48,11 @@ impl Client {
     pub async fn call<E: HttpExchange>(&self, exchange: &E, operation: &Element) -> Result<Reply, Error> {
         let request = self.request(operation)?;
         let response = exchange.exchange(&request).await?;
-        Reply::judge(&response, request.max_response_bytes())
+        let reply = Reply::judge(&response, request.max_response_bytes())?;
+        match reply.busy() {
+            Some(busy) => Err(busy),
+            None => Ok(reply),
+        }
     }
 
     /// The folders `get` asks for, one result each.

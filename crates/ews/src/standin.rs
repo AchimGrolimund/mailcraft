@@ -103,6 +103,8 @@ pub enum Hostile {
     TooFew,
     /// A folder id that is not an id.
     BadId,
+    /// Items whose ids are not ids, with subjects of any length.
+    BadItems,
 }
 
 /// A folder of the mailbox.
@@ -118,6 +120,10 @@ pub struct Folder {
     pub total: u32,
     /// How many are unread.
     pub unread: u32,
+    /// The id of the folder it lies in; empty for the top.
+    pub parent: String,
+    /// Its `FolderClass` (`IPF.Note` for a folder of mail).
+    pub class: String,
 }
 
 /// A request that came in, and what it was answered with.
@@ -158,6 +164,21 @@ pub struct State {
     pub requests: Vec<Asked>,
     /// The operations that would have changed something, by name.
     pub writes: Vec<String>,
+    /// The items of the mailbox, in the order they came.
+    pub items: Vec<crate::standin_mail::Item>,
+    /// The revision of the mailbox: every change to a folder or an item is one more.
+    pub rev: u64,
+    /// What changed in the folders, and in the items, by revision.
+    pub folder_log: Vec<crate::standin_mail::FolderLog>,
+    pub item_log: Vec<crate::standin_mail::ItemLog>,
+    /// Every sync state carries this: raising it makes the server not know any it gave before
+    /// (`ErrorInvalidSyncStateData`).
+    pub epoch: u32,
+    /// The server doesn't know the properties `item:Preview` and `item:Flag`
+    /// (`ErrorInvalidPropertyRequest`).
+    pub lacks_preview: bool,
+    /// How many ids have been given out.
+    pub issued: u32,
 }
 
 impl Default for State {
@@ -172,16 +193,33 @@ impl Default for State {
             ("junkemail", "Junk Email"),
             ("outbox", "Outbox"),
         ];
+        let id_of = |n: usize| format!("AAMkAGV4YW1wbGUtb3JnL2V3cy1zdGFuZC1pbgAuAAAAAACq{n:06}+Tk/Zm9sZGVyLWlkAAA=");
         let folders = names
             .iter()
             .enumerate()
             .map(|(n, (distinguished, name))| Folder {
                 distinguished: (*distinguished).into(),
-                id: format!("AAMkAGV4YW1wbGUtb3JnL2V3cy1zdGFuZC1pbgAuAAAAAACq{n:06}+Tk/Zm9sZGVyLWlkAAA="),
+                id: id_of(n),
                 name: (*name).into(),
                 total: if *distinguished == "inbox" { 12 } else { 0 },
                 unread: if *distinguished == "inbox" { 3 } else { 0 },
+                // (The root has nothing above it, the top of the mail lies in the root, and the rest in the top of the mail.)
+                parent: match n {
+                    0 => String::new(),
+                    1 => id_of(0),
+                    _ => id_of(1),
+                },
+                class: if *distinguished == "root" || *distinguished == "msgfolderroot" { String::new() } else { "IPF.Note".into() },
             })
+            .chain([Folder {
+                distinguished: "calendar".into(),
+                id: id_of(100),
+                name: "Calendar".into(),
+                total: 0,
+                unread: 0,
+                parent: id_of(1),
+                class: "IPF.Appointment".into(),
+            }])
             .collect();
         Self {
             authorization: AUTHORIZATION.into(),
@@ -193,6 +231,13 @@ impl Default for State {
             hostile: None,
             requests: Vec::new(),
             writes: Vec::new(),
+            items: Vec::new(),
+            rev: 0,
+            folder_log: Vec::new(),
+            item_log: Vec::new(),
+            epoch: 0,
+            lacks_preview: false,
+            issued: 0,
         }
     }
 }
@@ -222,23 +267,23 @@ impl HttpExchange for StandIn {
 }
 
 /// A refusal: the response code, and why.
-struct Refusal {
-    code: &'static str,
-    why: String,
+pub(crate) struct Refusal {
+    pub(crate) code: &'static str,
+    pub(crate) why: String,
 }
 
-fn invalid(why: impl Into<String>) -> Refusal {
+pub(crate) fn invalid(why: impl Into<String>) -> Refusal {
     Refusal { code: "ErrorSchemaValidation", why: why.into() }
 }
 
 // ---- holding a request to the schema ----
 
 /// Checks of elements against the schema.
-struct Check;
+pub(crate) struct Check;
 
 impl Check {
     /// `node` is the element `name` of the namespace `space`, with no attributes but `allowed`.
-    fn is(node: &Node, space: &str, name: &str, allowed: &[&str]) -> Result<(), Refusal> {
+    pub(crate) fn is(node: &Node, space: &str, name: &str, allowed: &[&str]) -> Result<(), Refusal> {
         if !node.is(space, name) {
             return Err(invalid(format!("the element {name} of {space} was expected, not {}", node.name)));
         }
@@ -250,7 +295,7 @@ impl Check {
 
     /// The children of `node`, which are all of the namespace `space` and come in the order of
     /// `order` (each at most once): the child of each name, or none.
-    fn children<'c>(node: &'c Node, space: &str, order: &[&str]) -> Result<Vec<Option<&'c Node>>, Refusal> {
+    pub(crate) fn children<'c>(node: &'c Node, space: &str, order: &[&str]) -> Result<Vec<Option<&'c Node>>, Refusal> {
         Self::no_text(node)?;
         let mut found: Vec<Option<&'c Node>> = order.iter().map(|_| None).collect();
         let mut at = 0usize;
@@ -269,31 +314,31 @@ impl Check {
     }
 
     /// Element-only content: nothing but white space between the elements.
-    fn no_text(node: &Node) -> Result<(), Refusal> {
+    pub(crate) fn no_text(node: &Node) -> Result<(), Refusal> {
         if node.text.trim().is_empty() { Ok(()) } else { Err(invalid(format!("{} holds elements, not text", node.name))) }
     }
 
     /// An element with text at most.
-    fn no_children(node: &Node) -> Result<(), Refusal> {
+    pub(crate) fn no_children(node: &Node) -> Result<(), Refusal> {
         if node.children.is_empty() { Ok(()) } else { Err(invalid(format!("{} holds text, not elements", node.name))) }
     }
 
     /// An element with nothing inside it.
-    fn empty(node: &Node) -> Result<(), Refusal> {
+    pub(crate) fn empty(node: &Node) -> Result<(), Refusal> {
         if node.children.is_empty() && node.text.trim().is_empty() { Ok(()) } else { Err(invalid(format!("{} holds nothing", node.name))) }
     }
 
-    fn required<'c>(node: &Node, child: Option<&'c Node>, name: &str) -> Result<&'c Node, Refusal> {
+    pub(crate) fn required<'c>(node: &Node, child: Option<&'c Node>, name: &str) -> Result<&'c Node, Refusal> {
         child.ok_or_else(|| invalid(format!("{} needs a {name}", node.name)))
     }
 
-    fn attribute<'c>(node: &'c Node, name: &str) -> Result<&'c str, Refusal> {
+    pub(crate) fn attribute<'c>(node: &'c Node, name: &str) -> Result<&'c str, Refusal> {
         node.attribute(name).ok_or_else(|| invalid(format!("{} needs the attribute {name}", node.name)))
     }
 }
 
 impl State {
-    fn folder(&self, key: &str, by_name: bool) -> Option<&Folder> {
+    pub(crate) fn folder(&self, key: &str, by_name: bool) -> Option<&Folder> {
         self.folders.iter().find(|folder| if by_name { folder.distinguished == key } else { folder.id == key })
     }
 
@@ -376,6 +421,9 @@ impl State {
         }
         match operation.name.as_str() {
             "GetFolder" => self.get_folder(operation),
+            "SyncFolderHierarchy" => self.sync_hierarchy(operation),
+            "SyncFolderItems" => self.sync_items(operation),
+            "GetItem" => self.get_item(operation),
             name if WRITES.contains(&name) => {
                 self.writes.push(name.to_owned());
                 let message = error_message(name, "ErrorAccessDenied");
@@ -471,14 +519,14 @@ fn envelope(body: &str) -> String {
 }
 
 /// One response message that says no.
-fn error_message(operation: &str, code: &str) -> String {
+pub(crate) fn error_message(operation: &str, code: &str) -> String {
     format!(
         "<m:{operation}ResponseMessage ResponseClass=\"Error\"><m:MessageText>The request was refused.</m:MessageText>\
          <m:ResponseCode>{code}</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey><m:Folders/></m:{operation}ResponseMessage>"
     )
 }
 
-fn response(operation: &str, messages: &str) -> String {
+pub(crate) fn response(operation: &str, messages: &str) -> String {
     envelope(&format!(
         "<m:{operation}Response xmlns:m=\"{MESSAGES}\" xmlns:t=\"{TYPES}\"><m:ResponseMessages>{messages}</m:ResponseMessages></m:{operation}Response>"
     ))
@@ -509,7 +557,7 @@ fn misbehave(how: Hostile, honest: String) -> (u16, String) {
         Hostile::Fault => {
             (500, envelope("<s:Fault><faultcode>s:Server</faultcode><faultstring>An internal server error occurred.</faultstring></s:Fault>"))
         }
-        Hostile::TooFew | Hostile::BadId => (200, honest),
+        Hostile::TooFew | Hostile::BadId | Hostile::BadItems => (200, honest),
     }
 }
 

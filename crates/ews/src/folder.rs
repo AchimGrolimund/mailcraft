@@ -51,6 +51,12 @@ impl DistinguishedFolder {
     }
 }
 
+/// Whether `text` may be a server's id (of a folder or an item) or a change key: short, and made of
+/// the characters of base64 (with the URL variant's).
+pub(crate) fn valid_id(text: &str) -> bool {
+    !text.is_empty() && text.len() <= MAX_ID && text.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_'))
+}
+
 /// A server's id for a folder: opaque, short, and made of the characters of base64 (with the URL
 /// variant's). It stays inside the crate's users and out of every log, so `Debug` hides it.
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -59,10 +65,7 @@ pub struct FolderId(String);
 impl FolderId {
     /// Checks an id received from a server.
     pub fn new(text: &str) -> Option<Self> {
-        let ok = !text.is_empty()
-            && text.len() <= MAX_ID
-            && text.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_'));
-        ok.then(|| Self(text.to_owned()))
+        valid_id(text).then(|| Self(text.to_owned()))
     }
 
     /// The id, for a request.

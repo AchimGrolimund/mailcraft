@@ -44,6 +44,10 @@ pub const MAX_TEXT: usize = 8_192;
 /// Longest text kept of a `MimeContent` (bytes): a whole message in base64, which the answer to
 /// `GetItem` carries in one element. (Charged at its real size, like any text.)
 pub const MAX_MIME_TEXT: usize = 16 * 1024 * 1024;
+/// Longest text kept of a `SyncState` (bytes): the server's own record of what a folder's client
+/// has, which grows with the folder (a compressed list of the items it has told of): a large
+/// folder's runs to some tens of kilobytes.
+pub const MAX_SYNC_STATE: usize = 1024 * 1024;
 /// What an element costs besides its name, attributes and text: the size of a node and the
 /// allocator's share of the block that holds it in its parent's `children`. (The vectors of a
 /// node are shrunk to fit when it is closed, so that a vector's spare room is no further cost.)
@@ -284,7 +288,11 @@ impl Walk {
     fn text(&mut self, text: &str) -> Result<(), Malformed> {
         let text = clean(text);
         let Some(open) = self.stack.last_mut() else { return Ok(()) };
-        let cap = if open.node.name == "MimeContent" { MAX_MIME_TEXT } else { MAX_TEXT };
+        let cap = match open.node.name.as_str() {
+            "MimeContent" => MAX_MIME_TEXT,
+            "SyncState" => MAX_SYNC_STATE,
+            _ => MAX_TEXT,
+        };
         if open.node.text.len().saturating_add(text.len()) > cap {
             open.spoiled = true;
         } else if !open.spoiled {

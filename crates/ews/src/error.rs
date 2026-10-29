@@ -63,6 +63,8 @@ pub enum ResponseCode {
     NonExistentMailbox,
     /// `ErrorInvalidSyncStateData`: the sync state is no longer known; read afresh.
     InvalidSyncState,
+    /// `ErrorInvalidPropertyRequest`: the server doesn't know a property that was asked for.
+    InvalidPropertyRequest,
     /// `ErrorSchemaValidation`: the request did not fit the schema (a bug here).
     SchemaValidation,
     /// `ErrorInvalidServerVersion`: the server does not know the version asked for.
@@ -92,6 +94,7 @@ impl ResponseCode {
             "ErrorItemNotFound" => Self::ItemNotFound,
             "ErrorNonExistentMailbox" => Self::NonExistentMailbox,
             "ErrorInvalidSyncStateData" => Self::InvalidSyncState,
+            "ErrorInvalidPropertyRequest" => Self::InvalidPropertyRequest,
             "ErrorSchemaValidation" => Self::SchemaValidation,
             "ErrorInvalidServerVersion" => Self::InvalidServerVersion,
             "ErrorInvalidRequest" => Self::InvalidRequest,
@@ -116,6 +119,7 @@ impl fmt::Display for ResponseCode {
             Self::ItemNotFound => f.write_str("ErrorItemNotFound"),
             Self::NonExistentMailbox => f.write_str("ErrorNonExistentMailbox"),
             Self::InvalidSyncState => f.write_str("ErrorInvalidSyncStateData"),
+            Self::InvalidPropertyRequest => f.write_str("ErrorInvalidPropertyRequest"),
             Self::SchemaValidation => f.write_str("ErrorSchemaValidation"),
             Self::InvalidServerVersion => f.write_str("ErrorInvalidServerVersion"),
             Self::InvalidRequest => f.write_str("ErrorInvalidRequest"),
