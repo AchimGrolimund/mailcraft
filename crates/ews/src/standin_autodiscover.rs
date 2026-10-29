@@ -6,11 +6,14 @@
 //! It holds a client to what the specification documents:
 //!
 //! - **The request.** `POST` to `/autodiscover/autodiscover.xml` over `https://` (a plain
-//!   `http://` address is never answered: the test fails instead), with the `Authorization` it
-//!   was set up with (401 otherwise), a `text/xml` body whose document element `Autodiscover`
+//!   `http://` address is never answered: the test fails instead), a `text/xml` body whose document element `Autodiscover`
 //!   is in the request namespace and holds `Request` with an `EMailAddress` and the
 //!   `AcceptableResponseSchema` the answer is read for (400 otherwise).
 //! - **The hosts.** Each host name is given a [`Route`]; a host nobody set up is unreachable.
+//!   Only an Autodiscover service ([`Route::Document`]) asks for a sign-in: it answers `401`
+//!   with `WWW-Authenticate: Basic` to a request without the `Authorization` it was set up with,
+//!   as Exchange does. A web server that is no Autodiscover answers what it answers, whether or
+//!   not there is a sign-in in the request, so a test can say that nobody sent it one.
 //!   Every request is noted ([`Seen`]), so a test can say which hosts were sent a sign-in, and
 //!   that none went where it should not.
 
@@ -27,8 +30,12 @@ pub const BASIC: &str = "Basic c3RhbmRpbjpwYXNzd29yZA==";
 /// What a host does with a request.
 #[derive(Clone, Debug)]
 pub enum Route {
-    /// 200 with this document.
+    /// The Autodiscover service: 200 with this document to a request with the sign-in, `401`
+    /// offering Basic to one without, `401` to one with another.
     Document(String),
+    /// Always `401`, offering these schemes (the whole `WWW-Authenticate` value), whatever the
+    /// request carries: a service behind NTLM only, or a staging site behind Basic.
+    Challenge(String),
     /// This status and no body.
     Status(u16),
     /// This status and a `Location`.
@@ -48,8 +55,10 @@ pub struct Seen {
     pub url: String,
     /// The host in it.
     pub host: String,
-    /// Whether the `Authorization` was the one the stand-in takes.
+    /// Whether the request carried the `Authorization` the stand-in takes.
     pub authorized: bool,
+    /// Whether the request carried any `Authorization` at all: a sign-in sent.
+    pub credentials: bool,
     /// The address in the request's `EMailAddress`.
     pub email: String,
     /// The status answered.
@@ -93,9 +102,21 @@ impl AutodiscoverStandIn {
         self
     }
 
-    /// The hosts that were sent a request, in order.
+    /// The hosts that were sent a request, in order. A host asked twice in a row (the request, and
+    /// the same request again with the sign-in after its `401`) counts once.
     pub fn hosts_asked(&self) -> Vec<String> {
-        self.state().seen.iter().map(|seen| seen.host.clone()).collect()
+        let mut hosts: Vec<String> = Vec::new();
+        for seen in &self.state().seen {
+            if hosts.last() != Some(&seen.host) {
+                hosts.push(seen.host.clone());
+            }
+        }
+        hosts
+    }
+
+    /// The hosts that were sent a sign-in, in order.
+    pub fn hosts_sent_credentials(&self) -> Vec<String> {
+        self.state().seen.iter().filter(|seen| seen.credentials).map(|seen| seen.host.clone()).collect()
     }
 }
 
@@ -111,7 +132,13 @@ impl State {
         let url = request.url().to_owned();
         assert!(url.get(..8).is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://")), "Autodiscover was asked over plain HTTP");
         let host = host_of(&url).unwrap_or_default();
-        let mut seen = Seen { url: url.clone(), host: host.clone(), authorized: request.field("authorization") == Some(BASIC), ..Seen::default() };
+        let mut seen = Seen {
+            url: url.clone(),
+            host: host.clone(),
+            authorized: request.field("authorization") == Some(BASIC),
+            credentials: request.field("authorization").is_some(),
+            ..Seen::default()
+        };
         let route = self.routes.iter().find(|(have, _)| *have == host).map(|(_, route)| route.clone());
         let result = match route {
             None | Some(Route::Unreachable) => Err(TransportError::Unreachable),
@@ -130,16 +157,15 @@ fn answer(request: &HttpRequest, route: &Route, seen: &mut Seen) -> HttpResponse
     if request.method() != Method::Post || !path.eq_ignore_ascii_case("/autodiscover/autodiscover.xml") {
         return HttpResponse::new(404, Vec::new());
     }
-    if !seen.authorized {
-        return HttpResponse::new(401, Vec::new()).with_field("WWW-Authenticate", "Basic realm=\"stand-in\"");
-    }
     if !request.field("content-type").is_some_and(|value| value.to_ascii_lowercase().starts_with("text/xml")) {
         return HttpResponse::new(400, Vec::new());
     }
     let Some(email) = asked_email(request.body()) else { return HttpResponse::new(400, Vec::new()) };
     seen.email = email;
     match route {
+        Route::Document(_) if !seen.authorized => HttpResponse::new(401, Vec::new()).with_field("WWW-Authenticate", "Basic realm=\"stand-in\""),
         Route::Document(document) => HttpResponse::new(200, document.clone().into_bytes()),
+        Route::Challenge(schemes) => HttpResponse::new(401, Vec::new()).with_field("WWW-Authenticate", schemes),
         Route::Status(status) => HttpResponse::new(*status, Vec::new()),
         Route::Redirect(status, location) => HttpResponse::new(*status, Vec::new()).with_field("Location", location),
         Route::Bytes(bytes) => HttpResponse::new(200, bytes.clone()),

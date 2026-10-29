@@ -273,3 +273,54 @@ fn mail_connections_and_pictures_are_unchanged_by_all_this() {
     let config = crate::tls::client_config(crate::tls::Purpose::Mail).unwrap();
     assert!(config.alpn_protocols.is_empty());
 }
+
+/// Presents one certificate and signs with the key of another.
+#[derive(Debug)]
+struct Impostor(Arc<rustls::sign::CertifiedKey>);
+
+impl rustls::server::ResolvesServerCert for Impostor {
+    fn resolve(&self, _: rustls::server::ClientHello<'_>) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        Some(self.0.clone())
+    }
+}
+
+#[test]
+fn a_server_that_shows_the_chosen_certificate_but_cannot_sign_with_its_key_is_refused() {
+    let (_, der) = self_signed(&["localhost"], year() - 1, year() + 1);
+    // The right certificate on the wire, the signature of a stranger's key.
+    let stranger = KeyPair::generate().unwrap();
+    let provider = rustls::crypto::ring::default_provider();
+    let key = provider.key_provider.load_private_key(PrivatePkcs8KeyDer::from(stranger.serialize_der()).into()).unwrap();
+    let certified = rustls::sign::CertifiedKey::new(vec![CertificateDer::from(der.clone())], key);
+    let config = ServerConfig::builder_with_provider(Arc::new(provider))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_cert_resolver(Arc::new(Impostor(Arc::new(certified))));
+    let server = Server::start(Arc::new(config));
+    let error = get(&server.url(), &cert::fingerprint(&der)).unwrap_err();
+    // Refused as a failed handshake: not accepted, and not a certificate to offer for trust.
+    assert!(matches!(error, NetError::Tls { .. }), "{error:?}");
+    assert_eq!(server.asked(), 0);
+}
+
+/// Where the platform verifier is webpki over the system's store (Linux, FreeBSD), a certificate
+/// made for clients only, issued by an authority the test trusts, goes through the real verifier:
+/// it says "invalid extensions", and not even the owner's choice of that certificate gets it in.
+#[cfg(all(unix, not(target_vendor = "apple")))]
+#[test]
+fn a_certificate_that_is_not_for_servers_is_refused_even_when_pinned() {
+    let authority = Authority::new("MailCraft Test Authority");
+    let (config, der) = authority.server_for(&["localhost"], vec![ExtendedKeyUsagePurpose::ClientAuth]);
+    let server = Server::start(config);
+    let fingerprint = cert::fingerprint(&der);
+    trusting(vec![authority.root()], || {
+        // Neither with its fingerprint nor without it is it accepted or offered.
+        for trusted in [fingerprint.as_str(), ""] {
+            let error = get(&server.url(), trusted).unwrap_err();
+            assert!(!matches!(error, NetError::Certificate(_)), "offered for trust: {error:?}");
+            assert!(matches!(error, NetError::Tls { .. }), "{error:?}");
+        }
+    });
+    assert_eq!(server.asked(), 0);
+}
