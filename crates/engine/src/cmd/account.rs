@@ -462,14 +462,17 @@ fn edit(s: &mut Session, v: &Value) -> CmdResult {
         return Err(fail("an account becomes a JMAP account, or stops being one, only by being removed and added again"));
     }
     // And once its mail is here, those ids are one account's at one server and mailbox.
+    let url = |x: &Account| x.ews.as_ref().filter(|server| server.problem().is_none()).map(|server| server.url.trim().to_string());
+    // (The name that signs in, with the e-mail address when none is given: another name may
+    // open another mailbox, and these ids are one mailbox's.)
+    let login = |x: &Account| {
+        let name = x.ews.as_ref().map(|server| server.username.trim()).filter(|name| !name.is_empty()).unwrap_or(x.email.trim());
+        name.to_lowercase()
+    };
+    // Another server or another user name is another mailbox: where the folder list and the
+    // folders went on from is the old one's, and is forgotten with it (below).
+    let other_mailbox = a.kind == AccountKind::Exchange && (url(&before) != url(&a) || login(&before) != login(&a));
     if listed_ews(s, id) && a.kind == AccountKind::Exchange {
-        let url = |x: &Account| x.ews.as_ref().filter(|server| server.problem().is_none()).map(|server| server.url.trim().to_string());
-        // (The name that signs in, with the e-mail address when none is given: another name may
-        // open another mailbox, and these ids are one mailbox's.)
-        let login = |x: &Account| {
-            let name = x.ews.as_ref().map(|server| server.username.trim()).filter(|name| !name.is_empty()).unwrap_or(x.email.trim());
-            name.to_lowercase()
-        };
         let moved = url(&before).is_some_and(|was| Some(was) != url(&a));
         if moved || !before.email.trim().eq_ignore_ascii_case(a.email.trim()) || login(&before) != login(&a) {
             return Err(fail(
@@ -508,7 +511,24 @@ fn edit(s: &mut Session, v: &Value) -> CmdResult {
         return Err(failed!("{address} is already set up", address = a.email));
     }
     *s.mailbox.account_mut(id)? = a;
+    if other_mailbox {
+        forget_ews_states(&mut s.mailbox, id);
+    }
     Ok(json!({"id": id}))
+}
+
+/// An Exchange server account's sync states belong to the mailbox they were given for: forgotten,
+/// where the account's folder list went on from and where each of its folders did, so that the
+/// next run reads from the start (#252).
+fn forget_ews_states(mb: &mut mailcraft_model::Mailbox, account: Id) {
+    if let Some(server) = mb.account_mut(account).ok().and_then(|a| a.ews.as_mut()) {
+        server.hierarchy.clear();
+    }
+    for f in mb.folders.iter_mut().filter(|f| f.account == account) {
+        if let Some(server) = f.server.as_mut() {
+            server.sync_state.clear();
+        }
+    }
 }
 
 fn remove(s: &mut Session, v: &Value) -> CmdResult {

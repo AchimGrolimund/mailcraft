@@ -26,6 +26,10 @@
 //!   server offers.
 //! - [`folder`], [`client`]: `GetFolder` by distinguished name, and [`Client::check`], which
 //!   tests an account with it.
+//! - [`hierarchy`], [`items`], [`run`]: mail down (#252, E6): `SyncFolderHierarchy`,
+//!   `SyncFolderItems` (headers and a preview first) and `GetItem` with the MIME content, each a
+//!   request and a reader of its answer; and [`sync_mail`] and [`fetch_messages`], which run them
+//!   over an [`HttpExchange`] and hand the run back in pieces.
 //!
 //! Everything a server sends is hostile: nothing indexes into what came over the wire, and a
 //! server's ids stay behind types whose `Debug` shows nothing ([`FolderId`], [`Secret`]).
@@ -52,7 +56,13 @@ pub mod error;
 pub mod folder;
 #[deny(missing_docs)]
 #[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
+pub mod hierarchy;
+#[deny(missing_docs)]
+#[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
 pub mod http;
+#[deny(missing_docs)]
+#[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
+pub mod items;
 #[deny(missing_docs)]
 #[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
 pub mod ntlm;
@@ -61,27 +71,41 @@ pub mod ntlm;
 pub mod reply;
 #[deny(missing_docs)]
 #[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
+pub mod run;
+#[deny(missing_docs)]
+#[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
 pub mod soap;
 #[cfg_attr(not(test), deny(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
 pub mod xml;
+
+mod b64;
 
 #[cfg(any(test, feature = "stand-in"))]
 pub mod standin;
 #[cfg(any(test, feature = "stand-in"))]
 pub mod standin_autodiscover;
+#[cfg(any(test, feature = "stand-in"))]
+pub mod standin_mail;
 
 #[cfg(test)]
 mod hostile_tests;
 #[cfg(test)]
+mod items_tests;
+#[cfg(test)]
+mod mail_tests;
+#[cfg(test)]
 mod tests;
 
 pub use auth::{AuthError, Scheme};
-pub use autodiscover::{Autodiscover, Consent, ConsentReason, Discovered, Failure, Outcome, Step};
+pub use autodiscover::{Autodiscover, Consent, ConsentReason, Discovered, Failure, Outcome, SrvName, Step};
 pub use basic::CredentialError;
 pub use client::Client;
 pub use error::{Error, PolicyReason, ResponseClass, ResponseCode};
 pub use folder::{DistinguishedFolder, FolderId, FolderInfo, GetFolder};
+pub use hierarchy::{HierarchyPage, SyncFolderHierarchy};
 pub use http::{EndpointError, HttpExchange, HttpRequest, HttpResponse, Method, Secret, TransportError};
+pub use items::{GetItemMime, ItemsPage, Shape, SyncFolderItems};
 pub use ntlm::{Credentials as NtlmCredentials, NtlmError};
 pub use reply::{Message, Reply};
+pub use run::{failed_run, fetch_messages, sync_mail};
 pub use soap::{Element, Version};

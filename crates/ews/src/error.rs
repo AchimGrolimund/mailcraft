@@ -63,6 +63,8 @@ pub enum ResponseCode {
     NonExistentMailbox,
     /// `ErrorInvalidSyncStateData`: the sync state is no longer known; read afresh.
     InvalidSyncState,
+    /// `ErrorInvalidPropertyRequest`: the server doesn't know a property that was asked for.
+    InvalidPropertyRequest,
     /// `ErrorSchemaValidation`: the request did not fit the schema (a bug here).
     SchemaValidation,
     /// `ErrorInvalidServerVersion`: the server does not know the version asked for.
@@ -92,6 +94,7 @@ impl ResponseCode {
             "ErrorItemNotFound" => Self::ItemNotFound,
             "ErrorNonExistentMailbox" => Self::NonExistentMailbox,
             "ErrorInvalidSyncStateData" => Self::InvalidSyncState,
+            "ErrorInvalidPropertyRequest" => Self::InvalidPropertyRequest,
             "ErrorSchemaValidation" => Self::SchemaValidation,
             "ErrorInvalidServerVersion" => Self::InvalidServerVersion,
             "ErrorInvalidRequest" => Self::InvalidRequest,
@@ -116,6 +119,7 @@ impl fmt::Display for ResponseCode {
             Self::ItemNotFound => f.write_str("ErrorItemNotFound"),
             Self::NonExistentMailbox => f.write_str("ErrorNonExistentMailbox"),
             Self::InvalidSyncState => f.write_str("ErrorInvalidSyncStateData"),
+            Self::InvalidPropertyRequest => f.write_str("ErrorInvalidPropertyRequest"),
             Self::SchemaValidation => f.write_str("ErrorSchemaValidation"),
             Self::InvalidServerVersion => f.write_str("ErrorInvalidServerVersion"),
             Self::InvalidRequest => f.write_str("ErrorInvalidRequest"),
@@ -179,6 +183,9 @@ pub enum Error {
     /// The answer is a document but not the answer to this request (wrong namespace, a missing
     /// element, fewer answers than questions, a value that is not one).
     Unexpected,
+    /// A change in the answer can't be taken in (it has no usable id, or no item): the page holding
+    /// it is no page, since its state would say the change was taken in.
+    Unreadable,
     /// The answer was longer than the limit.
     TooLarge,
     /// An HTTP status the service does not use.
@@ -198,6 +205,7 @@ impl fmt::Display for Error {
             Self::Server(code) => write!(f, "the server answered with {code}"),
             Self::Malformed => f.write_str("the server's answer could not be read"),
             Self::Unexpected => f.write_str("the server's answer is not the answer to the request"),
+            Self::Unreadable => f.write_str("a change in the server's answer could not be taken in"),
             Self::TooLarge => f.write_str("the server's answer is larger than any this program reads"),
             Self::Status(code) => write!(f, "the server answered with HTTP status {code}"),
         }

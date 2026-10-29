@@ -18,6 +18,46 @@ fn honest() -> Vec<u8> {
     block_on(standin.exchange(&request)).unwrap().unwrap().body().to_vec()
 }
 
+/// Nearly right answers to the mail operations: `SyncFolderHierarchy`, `SyncFolderItems` (a first
+/// read and a later one) and `GetItem`, from a stand-in holding a little mail.
+fn honest_mail() -> Vec<Vec<u8>> {
+    let standin = StandIn::new();
+    let (id, folder) = {
+        let mut state = standin.state();
+        let id = state.deliver("inbox", "Kickoff", false);
+        state.deliver("inbox", "Budget", true);
+        state.set_read(&id, true);
+        state.edit_subject(&id, "Kickoff (moved)");
+        state.remove(&id);
+        (state.deliver("inbox", "Agenda", false), state.folder_id("inbox").unwrap_or_default())
+    };
+    let client = Client::new("https://mail.example.org/EWS/Exchange.asmx", Secret::new(AUTHORIZATION)).unwrap();
+    let delta = format!("S0|d|{folder}|0");
+    let operations = [
+        SyncFolderHierarchy::new("").element(),
+        SyncFolderItems::new(&folder, "", 200, Shape::Full).element(),
+        SyncFolderItems::new(&folder, &delta, 200, Shape::Full).element(),
+        GetItemMime::new(&id).element(),
+    ];
+    operations
+        .iter()
+        .filter_map(|operation| {
+            let request = client.request(operation).ok()?;
+            let request =
+                HttpRequest::soap("http://127.0.0.1/", &Secret::new(AUTHORIZATION), String::from_utf8(request.body().to_vec()).ok()?).ok()?;
+            block_on(standin.exchange(&request)).and_then(Result::ok).map(|response| response.body().to_vec())
+        })
+        .collect()
+}
+
+/// Every reader of the mail operations, over a parsed answer.
+fn read_mail(reply: &Reply) {
+    let _ = SyncFolderHierarchy::new("").answer(reply);
+    let _ = SyncFolderItems::new("AAMk", "", 200, Shape::Full).answer(reply);
+    let _ = GetItemMime::new("AAMk").answer(reply);
+    let _ = reply.busy();
+}
+
 /// Everything that reads an answer, over `bytes`.
 fn read_everything(bytes: &[u8], status: u16) {
     let _ = xml::parse(bytes);
@@ -32,6 +72,7 @@ fn read_everything(bytes: &[u8], status: u16) {
             }
         }
         let _ = GetFolder::new(&[DistinguishedFolder::Inbox, DistinguishedFolder::Drafts]).answer(&reply);
+        read_mail(&reply);
     }
     let _ = Error::from(xml::Malformed).to_string();
 }
@@ -59,6 +100,28 @@ proptest! {
         read_everything(&body, 200);
         body.truncate(cut % (body.len() + 1));
         read_everything(&body, 200);
+    }
+
+    #[test]
+    fn a_nearly_right_mail_answer_broken_anywhere_is_never_a_panic(which in 0usize..4, at in 0usize..16384, byte in any::<u8>(), cut in 0usize..16384) {
+        let all = honest_mail();
+        prop_assert!(all.len() == 4);
+        let mut body = all.get(which % all.len().max(1)).cloned().unwrap_or_default();
+        let place = at % body.len().max(1);
+        if let Some(slot) = body.get_mut(place) {
+            *slot = byte;
+        }
+        read_everything(&body, 200);
+        body.truncate(cut % (body.len() + 1));
+        read_everything(&body, 200);
+    }
+
+    #[test]
+    fn base64_and_ids_and_times_take_any_text(text in "\\PC{0,300}") {
+        let _ = crate::b64::decode(&text, 1 << 20);
+        let _ = SyncFolderItems::new(&text, &text, 0, Shape::Lean).element().write();
+        let _ = SyncFolderHierarchy::new(&text).element().write();
+        let _ = GetItemMime::new(&text).element().write();
     }
 
     #[test]

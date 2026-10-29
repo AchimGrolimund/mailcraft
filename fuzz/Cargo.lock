@@ -300,6 +300,9 @@ name = "mailcraft-ews"
 version = "0.8.2"
 dependencies = [
  "hmac",
+ "log",
+ "mailcraft-model",
+ "mailcraft-time",
  "md-5",
  "md4",
  "quick-xml",

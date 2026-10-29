@@ -10,6 +10,11 @@ description = "MailCraft Exchange Web Services without sockets or browser APIs: 
 workspace = true
 
 [dependencies]
+# What a run brings back is the model's own sync data, and an item's dates are read by the time
+# crate (lower layers, both wasm-ready).
+mailcraft-model = { workspace = true }
+mailcraft-time = { workspace = true }
+log = { workspace = true }
 quick-xml = { workspace = true }
 # NTLMv2 (`ntlm`): MD4 of the password, then HMAC-MD5.
 md4 = { workspace = true }

@@ -2225,6 +2225,7 @@ dependencies = [
  "mailcraft-charset",
  "mailcraft-control-key",
  "mailcraft-engine",
+ "mailcraft-ews",
  "mailcraft-jmap",
  "mailcraft-link",
  "mailcraft-model",
@@ -2307,6 +2308,9 @@ name = "mailcraft-ews"
 version = "0.8.2"
 dependencies = [
  "hmac",
+ "log",
+ "mailcraft-model",
+ "mailcraft-time",
  "md-5",
  "md4",
  "proptest",

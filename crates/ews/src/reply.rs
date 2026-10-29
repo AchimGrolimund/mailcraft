@@ -83,6 +83,15 @@ impl Reply {
         Ok(Self { body })
     }
 
+    /// The busy error, when any response message of the answer says the server is busy: it is
+    /// the whole request that is to be made again, whatever the operation, and a busy server
+    /// answers one message however many questions there were.
+    pub fn busy(&self) -> Option<Error> {
+        let response = self.body.children.first()?;
+        let all = response.child_in(MESSAGES, "ResponseMessages")?;
+        all.children.iter().find_map(|child| Message::read(child).ok()?.ok().err().filter(|error| matches!(error, Error::Busy { .. })))
+    }
+
     /// The response messages of the answer to `operation` (`GetFolder`: the
     /// `GetFolderResponseMessage`s inside `GetFolderResponse`), in order.
     pub fn messages(&self, operation: &str) -> Result<Vec<Message<'_>>, Error> {

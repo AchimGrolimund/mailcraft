@@ -17,7 +17,11 @@ const ANSWER: &str = r#"{"Status":0,"Question":[{"name":"_autodiscover._tcp.exam
     ]}"#;
 
 fn read(body: &str) -> Result<Vec<String>, NetError> {
-    targets(&Answer { status: 200, body: body.as_bytes().to_vec() })
+    targets(&Answer { status: 200, body: body.as_bytes().to_vec() }).map(|all| all.into_iter().map(|target| target.host).collect())
+}
+
+fn hosts_of(result: Result<Vec<SrvTarget>, NetError>) -> Result<Vec<String>, NetError> {
+    result.map(|all| all.into_iter().map(|target| target.host).collect())
 }
 
 fn records(data: &[&str]) -> String {
@@ -28,7 +32,11 @@ fn records(data: &[&str]) -> String {
 #[test]
 fn targets_come_back_best_first_and_only_the_domain_is_asked() {
     let server = FakeHttp::answering(json_answer("200 OK", ANSWER));
-    let hosts = lookup_autodiscover_at(&[&server.url("/dns-query")], " Example.ORG. ").unwrap();
+    let found = lookup_autodiscover_at(&[&server.url("/dns-query")], " Example.ORG. ").unwrap();
+    // The port comes with the host.
+    assert_eq!(found.iter().map(|target| target.port).collect::<Vec<_>>(), [443, 443, 443]);
+    assert!(!format!("{found:?}").contains("example"));
+    let hosts = found.into_iter().map(|target| target.host).collect::<Vec<_>>();
     assert_eq!(hosts, ["high.example.org", "low.example.org", "backup.example.org"]);
     let request = server.request(0);
     assert!(request.starts_with("GET /dns-query?name=_autodiscover._tcp.example.org&type=SRV HTTP/1.1\r\n"), "{request}");
@@ -54,7 +62,7 @@ fn no_record_and_no_service_are_not_errors() {
 fn the_next_name_server_is_asked_when_one_fails() {
     let good = FakeHttp::answering(json_answer("200 OK", ANSWER));
     let broken = FakeHttp::answering(json_answer("500 Internal Server Error", "{}"));
-    assert_eq!(lookup_autodiscover_at(&[&broken.url("/a"), &good.url("/b")], "example.org").map(|hosts| hosts.len()), Ok(3));
+    assert_eq!(hosts_of(lookup_autodiscover_at(&[&broken.url("/a"), &good.url("/b")], "example.org")).map(|hosts| hosts.len()), Ok(3));
     let failed = lookup_autodiscover_at(&[&broken.url("/a")], "example.org");
     assert_eq!(failed, Err(NetError::Proto(ProtoError::Protocol("the name server answered with status 500".into()))));
     assert_eq!(lookup_autodiscover_at(&[], "example.org"), Err(NetError::Config("there is no name server to ask".into())));
@@ -117,6 +125,14 @@ fn hostile_answers_give_host_names_or_nothing() {
     }
     let nested = format!(r#"{{"Status":0,"Answer":{}{}}}"#, "[".repeat(5_000), "]".repeat(5_000));
     assert!(matches!(read(&nested), Err(NetError::Proto(ProtoError::Protocol(_)))));
+}
+
+#[test]
+fn a_port_is_kept_and_a_host_at_two_ports_is_two_targets() {
+    let body =
+        records(&[r#""1 1 8443 a.example.org.""#, r#""1 1 443 a.example.org.""#, r#""1 1 8443 a.example.org.""#, r#""1 1 99999 b.example.org.""#]);
+    let found = targets(&Answer { status: 200, body: body.into_bytes() }).unwrap();
+    assert_eq!(found.iter().map(|target| (target.host.as_str(), target.port)).collect::<Vec<_>>(), [("a.example.org", 8443), ("a.example.org", 443)]);
 }
 
 #[test]
