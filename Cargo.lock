@@ -2303,6 +2303,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mailcraft-ews"
+version = "0.8.2"
+dependencies = [
+ "log",
+ "proptest",
+ "quick-xml 0.42.0",
+]
+
+[[package]]
 name = "mailcraft-html"
 version = "0.8.2"
 dependencies = [

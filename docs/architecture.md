@@ -8,7 +8,7 @@ shape — layers, "everything is a command", the swappable egui front end, the c
 
 ## Layers
 
-17 crates, 3 apps and `xtask` (`cargo xtask stats` prints lines and tests per crate). Layering is
+18 crates, 3 apps and `xtask` (`cargo xtask stats` prints lines and tests per crate). Layering is
 enforced by `cargo xtask layers`: a crate may only depend on crates in lower layers (two exceptions:
 inside L3, `net` drives `proto`; inside L0, `link` uses `names`), and nothing below L6 depends on
 egui, eframe, winit or rfd.
@@ -29,6 +29,7 @@ egui, eframe, winit or rfd.
 | L2 | `vcard` | vCard 2.1/3.0/4.0 reader, 3.0 writer |
 | L3 | `proto` | IMAP4rev1 and SMTP clients over any `Read + Write` stream (no sockets, so they test against scripted transcripts and build for wasm) |
 | L3 | `net` | TCP + TLS (rustls), sending through SMTP, two-way IMAP synchronisation, OAuth sign-in, MX lookup, Microsoft Graph (`graph`); empty on wasm |
+| L3 | `ews` | Exchange Web Services (Microsoft's public documentation only) without sockets or browser APIs: the SOAP request writer, a hostile XML reader, the response-code and `ErrorServerBusy` judgement and `GetFolder`; the program does the exchange (`HttpExchange`); a strict in-process stand-in for tests (`stand-in` feature). Behind `MAILCRAFT_EWS` while it is built (#252) |
 | L3 | `jmap` | JMAP (RFC 8620, 8621) without sockets or browser APIs: builds each HTTP request and judges the answer, the program does the exchange (`HttpExchange`); an in-process server for tests (`stand-in` feature). The browser build runs it over `fetch` (M6, [jmap.md](jmap.md)) |
 | L4 | `engine` | `Session` (mailbox, selection, view, the message being written, undo), the **command registry** (`cmd/*.rs`), the message list (`list.rs`), the Outlook feature catalog (`catalog.rs`), the sample mailbox, file dispatch (`io.rs`) |
 | L5 | `mcp` | MCP server: tools over the command registry; headless or bridged to the running app |
@@ -283,3 +284,4 @@ a made-up mailbox of 64,000 messages (ignored by `cargo test`).
 | 2026-10-27 | patch | #519 slice 2 review: a body whose file is damaged, read in the background, is marked and counted |
 | 2026-10-28 | minor | M6: the browser build runs `jmap` over `fetch`; a JMAP account's Send/Receive in the data flow |
 | 2026-10-29 | minor | #252: Exchange server accounts, first step: `AccountKind::Exchange`, `Account::ews`, the request and result shapes, three registered commands, the `MAILCRAFT_EWS` switch in the data flow |
+| 2026-10-29 | minor | #252 E8: `ews`, L3: Exchange Web Services requests and answers without I/O, a hostile XML reader and a strict stand-in; 18 crates |
