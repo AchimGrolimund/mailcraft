@@ -39,6 +39,8 @@ mod desktop_theme;
 mod diagnostics;
 #[cfg(test)]
 mod ews_mail_flow;
+#[cfg(test)]
+mod ews_up_flow;
 mod ews_runner;
 #[cfg(test)]
 mod favorites_flow;

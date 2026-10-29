@@ -175,7 +175,8 @@ fn the_window_reads_an_exchange_account_and_fetches_what_is_opened_or_answered_w
     assert_eq!((row.state, row.new), (mailcraft_engine::cmd::sync_progress::RunState::Done, 4));
     // Nothing but reading went to the server.
     assert!(server.standin.state().writes.is_empty());
-    assert!(server.standin.state().requests.iter().all(|r| r.status == 200));
+    // (The first request of a run goes with no credential and is told how to sign in: that 401 is all that isn't 200.)
+    assert!(server.standin.state().requests.iter().filter(|r| r.status != 200).all(|r| r.status == 401));
 
     // Opened: fetched whole at once.
     app.session.sel.messages = vec![kickoff];

@@ -26,7 +26,7 @@ fn last() -> EwsMailResult {
 #[test]
 fn a_certificate_the_owner_may_be_asked_about_ends_the_run_with_the_question() {
     for problem in [CertificateProblem::NotTrusted(info()), CertificateProblem::Changed(info())] {
-        let piece = settled(last(), Some(&problem));
+        let piece = settled(last(), Some(&problem), None);
         assert_eq!(piece.untrusted, "ab".repeat(32));
         assert!(piece.errors.is_empty(), "the line of a failed secure connection gives way to the question");
         assert!(!piece.whole && !piece.auth_refused && !piece.partial);
@@ -37,7 +37,7 @@ fn a_certificate_the_owner_may_be_asked_about_ends_the_run_with_the_question() {
 fn a_certificate_nobody_may_trust_is_told_in_words_and_never_offered() {
     for fault in [CertificateFault::Expired, CertificateFault::NotYetValid, CertificateFault::WrongName] {
         let problem = CertificateProblem::Unacceptable(fault, info());
-        let piece = settled(last(), Some(&problem));
+        let piece = settled(last(), Some(&problem), None);
         assert!(piece.untrusted.is_empty());
         assert_eq!(piece.errors.len(), 1);
         assert!(piece.errors[0].starts_with("the server's certificate"), "{:?}", piece.errors);
@@ -49,10 +49,10 @@ fn a_certificate_nobody_may_trust_is_told_in_words_and_never_offered() {
 #[test]
 fn a_run_without_a_certificate_problem_is_left_as_it_was_and_a_piece_under_way_is_never_touched() {
     let piece = EwsMailResult { whole: true, partial: false, ..Default::default() };
-    assert_eq!(settled(piece.clone(), None), piece);
+    assert_eq!(settled(piece.clone(), None, None), piece);
     let under_way = EwsMailResult { partial: true, ..Default::default() };
-    assert_eq!(settled(under_way.clone(), Some(&CertificateProblem::NotTrusted(info()))), under_way);
-    let fetched = settled_fetch(GraphFetchResult::default(), Some(&CertificateProblem::NotTrusted(info())));
+    assert_eq!(settled(under_way.clone(), Some(&CertificateProblem::NotTrusted(info())), None), under_way);
+    let fetched = settled_fetch(GraphFetchResult::default(), Some(&CertificateProblem::NotTrusted(info())), None);
     assert_eq!(fetched.errors.len(), 1);
     assert!(fetched.errors[0].contains("not one this computer trusts"));
 }

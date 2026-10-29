@@ -94,6 +94,8 @@ pub mod standin_autodiscover;
 #[cfg(any(test, feature = "stand-in"))]
 pub mod standin_mail;
 #[cfg(any(test, feature = "stand-in"))]
+pub mod standin_ntlm;
+#[cfg(any(test, feature = "stand-in"))]
 pub mod standin_write;
 
 #[cfg(test)]

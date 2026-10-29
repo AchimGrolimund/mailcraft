@@ -2795,7 +2795,7 @@ impl MailApp {
 
     /// How much of `account` waits to go to its server: mail in the Outbox, and changes made here
     /// that the server hasn't been told.
-    fn waiting_to_go(&self, account: Id) -> usize {
+    pub(crate) fn waiting_to_go(&self, account: Id) -> usize {
         let mb = &self.session.mailbox;
         // (A held message waits for the owner, not for a run; and so does mail in a shared
         // mailbox's Outbox that may not be sent from it yet, #70.)
