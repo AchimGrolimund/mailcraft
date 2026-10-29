@@ -26,6 +26,8 @@ pub const AVAILABLE: bool = false;
 #[cfg(not(target_arch = "wasm32"))]
 mod dns;
 #[cfg(not(target_arch = "wasm32"))]
+mod dns_srv;
+#[cfg(not(target_arch = "wasm32"))]
 mod favorite_paths;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod graph;
@@ -70,6 +72,7 @@ mod native {
     use mailcraft_model::Account;
 
     pub use crate::dns::{lookup_mx, lookup_mx_at};
+    pub use crate::dns_srv::{lookup_autodiscover, lookup_autodiscover_at};
     pub use crate::send::send;
     pub use crate::sync::{sync, sync_with};
 
