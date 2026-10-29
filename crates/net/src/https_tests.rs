@@ -303,3 +303,24 @@ fn a_server_that_shows_the_chosen_certificate_but_cannot_sign_with_its_key_is_re
     assert!(matches!(error, NetError::Tls { .. }), "{error:?}");
     assert_eq!(server.asked(), 0);
 }
+
+/// Where the platform verifier is webpki over the system's store (Linux, FreeBSD), a certificate
+/// made for clients only, issued by an authority the test trusts, goes through the real verifier:
+/// it says "invalid extensions", and not even the owner's choice of that certificate gets it in.
+#[cfg(all(unix, not(target_vendor = "apple")))]
+#[test]
+fn a_certificate_that_is_not_for_servers_is_refused_even_when_pinned() {
+    let authority = Authority::new("MailCraft Test Authority");
+    let (config, der) = authority.server_for(&["localhost"], vec![ExtendedKeyUsagePurpose::ClientAuth]);
+    let server = Server::start(config);
+    let fingerprint = cert::fingerprint(&der);
+    trusting(vec![authority.root()], || {
+        // Neither with its fingerprint nor without it is it accepted or offered.
+        for trusted in [fingerprint.as_str(), ""] {
+            let error = get(&server.url(), trusted).unwrap_err();
+            assert!(!matches!(error, NetError::Certificate(_)), "offered for trust: {error:?}");
+            assert!(matches!(error, NetError::Tls { .. }), "{error:?}");
+        }
+    });
+    assert_eq!(server.asked(), 0);
+}

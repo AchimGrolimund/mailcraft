@@ -399,14 +399,19 @@ fn look_alikes_of_microsoft_hosts_are_not_exchange_online() {
         "partner.outlook.cn",
         "hotmail.com",
         "autodiscover.hotmail.com",
-        "live.co.uk",
+        "live.com",
         "msn.com",
-        "outlook.de",
-        "hotmail.co.uk",
     ] {
         assert!(is_exchange_online(yes), "{yes}");
     }
     for no in [
+        "outlook.abc.com",
+        "mail.outlook.abc.com",
+        "live.bbc.com",
+        "msn.xy.org",
+        "live.co.uk",
+        "hotmail.co.uk",
+        "outlook.de",
         "live.somecompany.example",
         "hotmail.com.evil.example",
         "hotmail",
@@ -807,16 +812,43 @@ fn only_credentials_that_were_sent_and_refused_are_a_refused_sign_in() {
 
 #[test]
 fn microsofts_consumer_mail_is_exchange_online_and_nothing_is_sent() {
-    for email in ["ada@hotmail.com", "ada@live.com", "ada@msn.com", "ada@outlook.de", "ada@hotmail.co.uk", "ada@live.com.au", "ada@mail.hotmail.com"]
-    {
+    for email in [
+        "ada@hotmail.com",
+        "ada@live.com",
+        "ada@msn.com",
+        "ada@outlook.de",
+        "ada@hotmail.co.uk",
+        "ada@live.com.au",
+        "ada@outlook.com.br",
+        "ada@hotmail.fr",
+        "ada@Live.IT",
+    ] {
         let standin = AutodiscoverStandIn::new().route("hotmail.com", good()).route("live.com", good());
         let mut machine = search(email);
         assert_eq!(machine.step(), Step::Done(Outcome::ExchangeOnline), "{email}");
         assert_eq!(go_with(&standin, search(email)).outcome, Outcome::ExchangeOnline, "{email}");
         assert!(standin.state().seen.is_empty(), "{email}");
     }
-    // Not Microsoft's: a company that happens to start with "live".
-    assert!(matches!(search("ada@live.somecompany.example").step(), Step::Request(_)));
+    // Not Microsoft's: companies whose names happen to start so.
+    for email in [
+        "ada@live.somecompany.example",
+        "ada@live.abc.com",
+        "ada@outlook.abc.com",
+        "ada@outlook.ucs.de",
+        "ada@live.bbc.com",
+        "ada@msn.xy.org",
+        "ada@mail.outlook.abc.com",
+        "ada@msn.de",
+        "ada@hotmail.org",
+    ] {
+        assert!(matches!(search(email).step(), Step::Request(_)), "{email}");
+    }
+    // Nor are their servers: an organisation's own server may be called outlook.something.
+    let route =
+        Route::Document(settings("https://outlook.abc.com/EWS/Exchange.asmx", "https://outlook.abc.com/EWS/Exchange.asmx", "outlook.abc.com"));
+    let standin = AutodiscoverStandIn::new().route("abc.com", route);
+    let run = run_with(&standin, search("ada@abc.com"), None, &[true]);
+    assert_eq!(found(&run).urls(), ["https://outlook.abc.com/EWS/Exchange.asmx"]);
 }
 
 fn go_with(standin: &AutodiscoverStandIn, machine: Autodiscover) -> Run {

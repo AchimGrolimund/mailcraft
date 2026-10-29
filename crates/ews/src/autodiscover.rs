@@ -66,9 +66,14 @@ pub(crate) const ANSWER_SCHEMA: &str = "http://schemas.microsoft.com/exchange/au
 /// The schema asked for, and the namespace of the answer's `Response`.
 pub(crate) const RESPONSE_SCHEMA: &str = "http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a";
 
-/// Hosts that are Exchange Online (Microsoft 365): a name and every name under it.
-const EXCHANGE_ONLINE: [&str; 9] = [
+/// Hosts that are Microsoft's own mail: Exchange Online (Microsoft 365) and Outlook.com: a name
+/// and every name under it. Fixed; nothing is guessed from a pattern, so an organisation's own
+/// server called `outlook.abc.com` is not taken for Microsoft's.
+const EXCHANGE_ONLINE: [&str; 12] = [
     "outlook.com",
+    "hotmail.com",
+    "live.com",
+    "msn.com",
     "office365.com",
     "office365.us",
     "office.com",
@@ -79,26 +84,35 @@ const EXCHANGE_ONLINE: [&str; 9] = [
     "office365.cn",
 ];
 
-/// Whether `host` (lower case, no port) is Microsoft's own mail: Exchange Online (Microsoft 365)
-/// or Outlook.com in any of its names and countries (`hotmail.com`, `live.co.uk`, `msn.com`,
-/// `autodiscover.outlook.com`), as `mailcraft_model::provider` knows them. A mailbox there is a
-/// Microsoft account, never an Exchange server account, and no sign-in is ever sent there.
+/// Whether `host` (lower case, no port) is, or is under, one of [`EXCHANGE_ONLINE`]'s hosts.
+/// Used for every host the search is sent to or told about: a redirect, an SRV target, the
+/// addresses in an answer. A mailbox there is a Microsoft account, never an Exchange server
+/// account, and no sign-in is ever sent there.
 pub fn is_exchange_online(host: &str) -> bool {
-    EXCHANGE_ONLINE.iter().any(|online| is_within(host, online)) || is_microsoft_consumer(host)
+    EXCHANGE_ONLINE.iter().any(|online| is_within(host, online))
 }
 
-/// Whether `host` is, or is under, one of Microsoft's consumer mail domains.
-fn is_microsoft_consumer(host: &str) -> bool {
-    let mut rest = host;
-    loop {
-        if provider::by_domain(rest).is_some_and(|preset| preset.oauth.is_some()) {
-            return true;
-        }
-        match rest.split_once('.') {
-            Some((_, tail)) if tail.contains('.') => rest = tail,
-            _ => return false,
-        }
+/// Whether the domain of an e-mail address (lower case) is one of Microsoft's consumer mail
+/// domains, in the forms Microsoft has them in: `outlook.com` and `msn.com`; `hotmail` and
+/// `live` and `outlook` with `com`, a country (`hotmail.fr`, `live.it`, `outlook.de`), or `co` or
+/// `com` and a country (`hotmail.co.uk`, `live.com.au`, `outlook.com.br`). Only the domain of
+/// the address itself: a name that merely starts so (`outlook.abc.com`, `live.bbc.com`,
+/// `msn.xy.org`) is somebody else's.
+fn is_microsoft_consumer_domain(domain: &str) -> bool {
+    let labels: Vec<&str> = domain.split('.').collect();
+    let country = |label: &&str| label.len() == 2 && label.bytes().all(|b| b.is_ascii_lowercase());
+    match labels.as_slice() {
+        ["msn", "com"] | ["outlook" | "hotmail" | "live", "com"] => true,
+        ["outlook" | "hotmail" | "live", cc] => country(cc),
+        ["outlook" | "hotmail" | "live", "co" | "com", cc] => country(cc),
+        _ => false,
     }
+}
+
+/// Whether an address in `domain` is Microsoft's: Exchange Online's hosts or Outlook.com's
+/// consumer domains. Nothing is sent to it.
+fn is_microsoft_domain(domain: &str) -> bool {
+    is_exchange_online(domain) || is_microsoft_consumer_domain(domain)
 }
 
 /// Whether `host`, one of a domain's mail exchangers (`example-org.mail.protection.outlook.com`),
@@ -427,7 +441,7 @@ impl Autodiscover {
         let (email, domain) = split_address(email).ok_or(AddressError)?;
         let queue = candidates(&domain);
         // Microsoft's own mail is no Exchange server's: nothing is sent to it.
-        let waiting = if is_exchange_online(&domain) { Waiting::Done(Outcome::ExchangeOnline) } else { Waiting::Idle };
+        let waiting = if is_microsoft_domain(&domain) { Waiting::Done(Outcome::ExchangeOnline) } else { Waiting::Idle };
         Ok(Self {
             authorization,
             email,
@@ -650,7 +664,7 @@ impl Autodiscover {
         self.queue = candidates(&domain);
         self.email = email;
         self.domain = domain.clone();
-        self.waiting = if is_exchange_online(&domain) {
+        self.waiting = if is_microsoft_domain(&domain) {
             Waiting::Done(Outcome::ExchangeOnline)
         } else if self.allowed(&domain) {
             Waiting::Idle
