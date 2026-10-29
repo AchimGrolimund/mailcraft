@@ -51,10 +51,7 @@ fn item_id_xml(item: &Item) -> String {
 }
 
 fn people_of(node: &Node) -> Vec<(String, String)> {
-    node.children
-        .iter()
-        .map(|m| (m.text_of("Name").trim().to_owned(), m.text_of("EmailAddress").trim().to_owned()))
-        .collect()
+    node.children.iter().map(|m| (m.text_of("Name").trim().to_owned(), m.text_of("EmailAddress").trim().to_owned())).collect()
 }
 
 impl State {
@@ -239,7 +236,10 @@ impl State {
                 i.change_key = key;
             });
             let now = self.item(&id).map(item_id_xml).unwrap_or_default();
-            messages.push_str(&ok_message("UpdateItem", &format!("<m:Items><t:Message>{now}</t:Message></m:Items><m:ConflictResults><t:Count>0</t:Count></m:ConflictResults>")));
+            messages.push_str(&ok_message(
+                "UpdateItem",
+                &format!("<m:Items><t:Message>{now}</t:Message></m:Items><m:ConflictResults><t:Count>0</t:Count></m:ConflictResults>"),
+            ));
             if first.is_empty() {
                 first = "NoError".into();
             }
@@ -388,7 +388,9 @@ impl State {
             let bytes = crate::b64::decode(&mime.text, 64 << 20).ok_or_else(|| invalid("MimeContent is Base64"))?;
             let text = String::from_utf8_lossy(&bytes).into_owned();
             let header = |name: &str| {
-                text.lines().find_map(|l| l.split_once(':').filter(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.trim().to_owned())).unwrap_or_default()
+                text.lines()
+                    .find_map(|l| l.split_once(':').filter(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.trim().to_owned()))
+                    .unwrap_or_default()
             };
             item.subject = header("Subject");
             item.message_id = header("Message-ID");
@@ -425,11 +427,8 @@ impl State {
             item.preview = item.body.1.chars().take(200).collect();
             item.message_id = format!("<{}@example.org>", self.issued.saturating_add(1));
         }
-        let folder = if sending {
-            self.folder("sentitems", true).cloned()
-        } else {
-            saved_in.clone().or_else(|| self.folder("drafts", true).cloned())
-        };
+        let folder =
+            if sending { self.folder("sentitems", true).cloned() } else { saved_in.clone().or_else(|| self.folder("drafts", true).cloned()) };
         let Some(folder) = folder else { return no("CreateItem", "ErrorFolderNotFound") };
         item.id = self.next_id("item");
         item.folder = folder.id.clone();
@@ -437,11 +436,7 @@ impl State {
         item.change_key = format!("CQAAABYAAAA{}", self.rev);
         if sending {
             // What went out: the MIME as it was, or the message as fields written as MIME.
-            let out = if item.mime.is_empty() {
-                format!("Subject: {}\r\n\r\n{}", item.subject, item.body.1).into_bytes()
-            } else {
-                item.mime.clone()
-            };
+            let out = if item.mime.is_empty() { format!("Subject: {}\r\n\r\n{}", item.subject, item.body.1).into_bytes() } else { item.mime.clone() };
             self.outgoing.push(out);
             item.draft = false;
         }
@@ -469,7 +464,12 @@ impl State {
                         && let Some(mut item) = self.relocate(at, sent, false)
                     {
                         item.draft = false;
-                        let out = format!("Subject: {}\r\nBcc: {}\r\n\r\n{}", item.subject, item.bcc.iter().map(|(_, a)| a.as_str()).collect::<Vec<_>>().join(", "), item.body.1);
+                        let out = format!(
+                            "Subject: {}\r\nBcc: {}\r\n\r\n{}",
+                            item.subject,
+                            item.bcc.iter().map(|(_, a)| a.as_str()).collect::<Vec<_>>().join(", "),
+                            item.body.1
+                        );
                         self.outgoing.push(out.into_bytes());
                         if let Some(stored) = self.items.iter_mut().find(|i| i.id == item.id) {
                             stored.draft = false;
@@ -571,7 +571,13 @@ impl State {
                     }
                     self.touch(&owner, ItemChange::Update, |_| {});
                     let key = self.item(&owner).map(|i| i.change_key.clone()).unwrap_or_default();
-                    ("NoError", ok_message("DeleteAttachment", &format!("<m:RootItemId RootItemId=\"{}\" RootItemChangeKey=\"{}\"/>", escape(&owner), escape(&key))))
+                    (
+                        "NoError",
+                        ok_message(
+                            "DeleteAttachment",
+                            &format!("<m:RootItemId RootItemId=\"{}\" RootItemChangeKey=\"{}\"/>", escape(&owner), escape(&key)),
+                        ),
+                    )
                 }
             };
             messages.push_str(&inner);

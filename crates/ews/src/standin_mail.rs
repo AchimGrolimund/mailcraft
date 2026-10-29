@@ -330,7 +330,9 @@ impl State {
             let all: String = item
                 .files
                 .iter()
-                .map(|(id, name, _)| format!("<t:FileAttachment><t:AttachmentId Id=\"{}\"/><t:Name>{}</t:Name></t:FileAttachment>", escape(id), escape(name)))
+                .map(|(id, name, _)| {
+                    format!("<t:FileAttachment><t:AttachmentId Id=\"{}\"/><t:Name>{}</t:Name></t:FileAttachment>", escape(id), escape(name))
+                })
                 .collect();
             xml.push_str(&format!("<t:Attachments>{all}</t:Attachments>"));
         }

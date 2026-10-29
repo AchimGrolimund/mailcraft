@@ -26,9 +26,7 @@ use mailcraft_model::sync::{
 };
 use mailcraft_model::{FolderKind, Id, Importance};
 
-use crate::changes::{
-    CreateFolder, DeleteFolder, DeleteItem, DeleteMode, GetItemNow, ItemUpdate, MoveFolder, MoveItem, RenameFolder, UpdateItem,
-};
+use crate::changes::{CreateFolder, DeleteFolder, DeleteItem, DeleteMode, GetItemNow, ItemUpdate, MoveFolder, MoveItem, RenameFolder, UpdateItem};
 use crate::compose::{AddAttachments, CreateDraft, DraftContent, FindDraft, RemoveAttachments, SendDraft, SendMessage};
 use crate::error::ResponseCode;
 use crate::http::HttpExchange;
@@ -57,7 +55,9 @@ fn plain(code: &ResponseCode) -> String {
         "ErrorSendAsDenied" => mailcraft_model::sync::SEND_AS_DENIED.to_owned(),
         "ErrorAccessDenied" => "the server doesn't allow it".to_owned(),
         "ErrorQuotaExceeded" | "ErrorMessageSizeExceeded" => "the mailbox or the message is over a limit the server holds".to_owned(),
-        "ErrorInvalidRecipients" | "ErrorMessageDispositionRequired" | "ErrorRecipientNotFound" => "a recipient's address isn't one the server accepts".to_owned(),
+        "ErrorInvalidRecipients" | "ErrorMessageDispositionRequired" | "ErrorRecipientNotFound" => {
+            "a recipient's address isn't one the server accepts".to_owned()
+        }
         _ => "the server won't take it".to_owned(),
     }
 }
@@ -360,16 +360,20 @@ impl<E: HttpExchange> Run<'_, E> {
             done.attachments = Some(
                 here.iter()
                     .map(|a| SyncedAttachment {
-                        id: ids.as_ref().and_then(|n| n.attachments.iter().find(|(_, name)| *name == a.name)).map(|(id, _)| id.clone()).unwrap_or_default(),
+                        id: ids
+                            .as_ref()
+                            .and_then(|n| n.attachments.iter().find(|(_, name)| *name == a.name))
+                            .map(|(id, _)| id.clone())
+                            .unwrap_or_default(),
                         name: a.name.clone(),
                         hash: a.hash,
                     })
                     .collect(),
             );
-            if let Some(n) = ids {
-                if !n.change_key.is_empty() {
-                    done.change_key = n.change_key;
-                }
+            if let Some(n) = ids
+                && !n.change_key.is_empty()
+            {
+                done.change_key = n.change_key;
             }
         }
         Ok(())
@@ -426,11 +430,7 @@ impl<E: HttpExchange> Run<'_, E> {
             }
         }
         // In the order they are here.
-        let all = up
-            .here
-            .iter()
-            .filter_map(|h| kept.iter().chain(added.iter()).find(|s| same(&h.name, h.hash, s)).cloned())
-            .collect();
+        let all = up.here.iter().filter_map(|h| kept.iter().chain(added.iter()).find(|s| same(&h.name, h.hash, s)).cloned()).collect();
         Ok((all, key))
     }
 
@@ -456,7 +456,8 @@ impl<E: HttpExchange> Run<'_, E> {
                 }
                 ended?;
                 if let Some(status) = refused {
-                    done.outcome = held(if status == 403 { "the server doesn't allow it".to_owned() } else { "the server won't take the draft".to_owned() });
+                    done.outcome =
+                        held(if status == 403 { "the server doesn't allow it".to_owned() } else { "the server won't take the draft".to_owned() });
                     return Ok(());
                 }
                 if !whole {

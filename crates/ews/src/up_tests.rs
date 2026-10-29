@@ -79,7 +79,6 @@ fn mail(standin: &StandIn, subject: &str) -> String {
     standin.state().deliver("inbox", subject, false)
 }
 
-
 fn done(result: &EwsMailResult, at: usize) -> &MessageOutcome {
     &result.messages.get(at).unwrap().outcome
 }
@@ -202,7 +201,16 @@ fn delete_item_to_the_deleted_items_folder_moves_it_there() {
 #[test]
 fn a_change_to_a_message_the_server_lost_says_so() {
     let standin = StandIn::new();
-    let result = run(&standin, &EwsMailRequest { messages: vec![MessageChange::Update { message: 1, id: "AAMkNoSuchItem".into(), read: Some(true), flag: None, categories: None, importance: None }, MessageChange::Move { message: 2, id: "x".into(), to: "y".into(), to_folder: None }], ..base() });
+    let result = run(
+        &standin,
+        &EwsMailRequest {
+            messages: vec![
+                MessageChange::Update { message: 1, id: "AAMkNoSuchItem".into(), read: Some(true), flag: None, categories: None, importance: None },
+                MessageChange::Move { message: 2, id: "x".into(), to: "y".into(), to_folder: None },
+            ],
+            ..base()
+        },
+    );
     // (An update with nothing set is an update with nothing to set: asked, and the item isn't there.)
     assert!(matches!(done(&result, 0), MessageOutcome::Gone | MessageOutcome::Refused { .. }));
 }
@@ -219,7 +227,13 @@ fn folders_are_made_renamed_moved_and_deleted_softly() {
     let ChangeOutcome::Done { folder: apollo } = &result.changes[1].outcome else { panic!() };
     assert_eq!((projects.name.as_str(), apollo.parent.as_str()), ("Projects", projects.id.as_str()));
     // A name taken is refused, in words.
-    let again = run(&standin, &EwsMailRequest { changes: vec![FolderChange::Create { folder: 12, name: "projects".into(), parent: String::new(), parent_folder: None }], ..base() });
+    let again = run(
+        &standin,
+        &EwsMailRequest {
+            changes: vec![FolderChange::Create { folder: 12, name: "projects".into(), parent: String::new(), parent_folder: None }],
+            ..base()
+        },
+    );
     assert!(matches!(&again.changes[0].outcome, ChangeOutcome::Refused { why } if why.contains("already")));
     let changes = vec![
         FolderChange::Rename { folder: 10, id: projects.id.clone(), name: "Work".into() },
@@ -246,7 +260,14 @@ fn a_special_folder_cannot_be_deleted() {
 }
 
 fn draft(marker: &str, subject: &str) -> DraftUp {
-    let file = AttachmentUp { name: "notes.txt".into(), mime: "text/plain".into(), hash: 11, size: 5, data: std::sync::Arc::new(b"hello".to_vec()), ..Default::default() };
+    let file = AttachmentUp {
+        name: "notes.txt".into(),
+        mime: "text/plain".into(),
+        hash: 11,
+        size: 5,
+        data: std::sync::Arc::new(b"hello".to_vec()),
+        ..Default::default()
+    };
     DraftUp {
         message: 5,
         marker: marker.into(),
@@ -277,7 +298,14 @@ fn a_draft_is_made_in_drafts_with_its_file_and_then_changed_in_place() {
         assert_eq!((item.subject.as_str(), item.marker.as_str(), item.bcc.len(), item.files.len()), ("Hello", "mark-1", 1, 1));
     }
     // Saved again: the subject changes, the file is taken off and another is added.
-    let other = AttachmentUp { name: "plan.pdf".into(), mime: "application/pdf".into(), hash: 22, size: 3, data: std::sync::Arc::new(b"pdf".to_vec()), ..Default::default() };
+    let other = AttachmentUp {
+        name: "plan.pdf".into(),
+        mime: "application/pdf".into(),
+        hash: 22,
+        size: 3,
+        data: std::sync::Arc::new(b"pdf".to_vec()),
+        ..Default::default()
+    };
     let again = DraftUp {
         id: made.id.clone(),
         change_key: made.change_key.clone(),
@@ -308,7 +336,8 @@ fn a_draft_changed_elsewhere_is_not_written_over() {
     let result = run(&standin, &EwsMailRequest { drafts: vec![draft("mark-2", "Hello")], ..base() });
     let made = &result.drafts[0];
     standin.state().edit_subject(&made.id, "Edited on the server");
-    let again = DraftUp { id: made.id.clone(), change_key: made.change_key.clone(), subject: Some("Mine".into()), attachments: None, ..draft("mark-2", "") };
+    let again =
+        DraftUp { id: made.id.clone(), change_key: made.change_key.clone(), subject: Some("Mine".into()), attachments: None, ..draft("mark-2", "") };
     let result = run(&standin, &EwsMailRequest { drafts: vec![again], ..base() });
     assert!(result.drafts[0].conflict);
     assert_eq!(standin.state().item(&made.id).unwrap().subject, "Edited on the server");

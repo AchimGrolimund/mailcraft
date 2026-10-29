@@ -375,9 +375,8 @@ impl CreateFolder {
 
     /// The operation: `ParentFolderId` and `Folders`.
     pub fn element(&self) -> Element {
-        let folder = Element::new("t:Folder")
-            .child(Element::new("t:FolderClass").text("IPF.Note"))
-            .child(Element::new("t:DisplayName").text(&self.name));
+        let folder =
+            Element::new("t:Folder").child(Element::new("t:FolderClass").text("IPF.Note")).child(Element::new("t:DisplayName").text(&self.name));
         Element::new("m:CreateFolder").child(folder_target("m:ParentFolderId", &self.parent)).child(Element::new("m:Folders").child(folder))
     }
 
@@ -413,8 +412,7 @@ impl RenameFolder {
         let set = Element::new("t:SetFolderField")
             .child(Element::new("t:FieldURI").attr("FieldURI", "folder:DisplayName"))
             .child(Element::new("t:Folder").child(Element::new("t:DisplayName").text(&self.name)));
-        let change =
-            Element::new("t:FolderChange").child(id_element("t:FolderId", &self.id, None)).child(Element::new("t:Updates").child(set));
+        let change = Element::new("t:FolderChange").child(id_element("t:FolderId", &self.id, None)).child(Element::new("t:Updates").child(set));
         Element::new("m:UpdateFolder").child(Element::new("m:FolderChanges").child(change))
     }
 
@@ -447,9 +445,11 @@ impl MoveFolder {
 
     /// The operation: `ToFolderId` and `FolderIds`.
     pub fn element(&self) -> Element {
-        Element::new("m:MoveFolder")
-            .child(folder_target("m:ToFolderId", &self.to))
-            .child(Element::new("m:FolderIds").child(id_element("t:FolderId", &self.id, None)))
+        Element::new("m:MoveFolder").child(folder_target("m:ToFolderId", &self.to)).child(Element::new("m:FolderIds").child(id_element(
+            "t:FolderId",
+            &self.id,
+            None,
+        )))
     }
 
     /// The folder's id after the move.
@@ -481,9 +481,11 @@ impl DeleteFolder {
 
     /// The operation: `DeleteType` and `FolderIds`.
     pub fn element(&self) -> Element {
-        Element::new("m:DeleteFolder")
-            .attr("DeleteType", self.mode.name())
-            .child(Element::new("m:FolderIds").child(id_element("t:FolderId", &self.id, None)))
+        Element::new("m:DeleteFolder").attr("DeleteType", self.mode.name()).child(Element::new("m:FolderIds").child(id_element(
+            "t:FolderId",
+            &self.id,
+            None,
+        )))
     }
 
     /// Whether it was done.

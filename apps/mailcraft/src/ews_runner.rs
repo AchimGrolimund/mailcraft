@@ -295,7 +295,8 @@ impl Transport {
     /// have gone out is lost, not a failure to connect.
     fn judged_for(&self, error: NetError, request: &HttpRequest) -> TransportError {
         // (Not reached the server, or not past the handshake: nothing of the request went out.)
-        let after_write = !request.is_repeatable() && !matches!(error, NetError::Connect { .. } | NetError::Certificate(_) | NetError::Tls { .. } | NetError::Config(_));
+        let after_write = !request.is_repeatable()
+            && !matches!(error, NetError::Connect { .. } | NetError::Certificate(_) | NetError::Tls { .. } | NetError::Config(_));
         let judged = self.judged(error);
         if after_write { TransportError::Lost } else { judged }
     }

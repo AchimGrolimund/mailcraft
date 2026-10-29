@@ -74,7 +74,8 @@ fn serve(mode: Mode) -> Server {
         schemes: Arc::new(Mutex::new(Vec::new())),
         misbehaves: Arc::new(Mutex::new(Misbehaviour::default())),
     };
-    let (halt, connections, schemes, misbehaves) = (server.stop.clone(), server.connections.clone(), server.schemes.clone(), server.misbehaves.clone());
+    let (halt, connections, schemes, misbehaves) =
+        (server.stop.clone(), server.connections.clone(), server.schemes.clone(), server.misbehaves.clone());
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             if halt.load(Ordering::Relaxed) {
@@ -179,7 +180,8 @@ fn connection(
         }
         let secret = if mode == Mode::Basic { Secret::new(&authorization) } else { Secret::new(&standin.state().authorization) };
         let request = HttpRequest::soap(url, &secret, String::from_utf8_lossy(&body).into_owned()).unwrap();
-        let operation = String::from_utf8_lossy(&body).split("<m:").nth(1).map(|rest| rest.split([' ', '>', '/']).next().unwrap_or_default().to_owned());
+        let operation =
+            String::from_utf8_lossy(&body).split("<m:").nth(1).map(|rest| rest.split([' ', '>', '/']).next().unwrap_or_default().to_owned());
         let response = block_on(standin.exchange(&request)).unwrap().unwrap();
         served += 1;
         if response.status() != 401 {

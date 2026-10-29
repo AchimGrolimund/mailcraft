@@ -9,9 +9,9 @@
 //! `MailCraftMarker`), which no mail program shows. **Nothing here is sent twice**: the host marks
 //! these requests as ones that are never repeated ([`crate::Client::call_once`]).
 
+use mailcraft_mime::WriteOptions;
 use mailcraft_model::sync::AttachmentUp;
 use mailcraft_model::{Address, Importance, Message};
-use mailcraft_mime::WriteOptions;
 
 use crate::basic::base64;
 use crate::changes::{Saved, id_element, recipients};
@@ -194,9 +194,7 @@ impl FindDraft {
         Element::new("m:FindItem")
             .attr("Traversal", "Shallow")
             .child(Element::new("m:ItemShape").child(Element::new("t:BaseShape").text("IdOnly")))
-            .child(
-                Element::new("m:IndexedPageItemView").attr("MaxEntriesReturned", "2").attr("Offset", "0").attr("BasePoint", "Beginning"),
-            )
+            .child(Element::new("m:IndexedPageItemView").attr("MaxEntriesReturned", "2").attr("Offset", "0").attr("BasePoint", "Beginning"))
             .child(Element::new("m:Restriction").child(equal))
             .child(Element::new("m:ParentFolderIds").child(parent))
     }
@@ -296,7 +294,8 @@ impl RemoveAttachments {
 
     /// The operation: `AttachmentIds`.
     pub fn element(&self) -> Element {
-        Element::new("m:DeleteAttachment").child(self.ids.iter().fold(Element::new("m:AttachmentIds"), |list, id| list.child(id_element("t:AttachmentId", id, None))))
+        Element::new("m:DeleteAttachment")
+            .child(self.ids.iter().fold(Element::new("m:AttachmentIds"), |list, id| list.child(id_element("t:AttachmentId", id, None))))
     }
 
     /// Whether they went, and the draft's change key now.

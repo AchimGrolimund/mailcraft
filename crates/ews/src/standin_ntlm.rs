@@ -56,7 +56,9 @@ pub fn verifies(password: &str, user: &str, domain: &str, negotiate: &str, chall
     let Ok(session_key) = hmac_md5(&key, &[proof]) else { return false };
     let info = temp.get(28..temp.len().saturating_sub(4)).unwrap_or(&[]);
     let claims_mic = parse_pairs(info)
-        .map(|pairs| pairs.iter().any(|(id, v)| *id == AV_FLAGS && v.get(..4).is_some_and(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & FLAG_MIC != 0)))
+        .map(|pairs| {
+            pairs.iter().any(|(id, v)| *id == AV_FLAGS && v.get(..4).is_some_and(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & FLAG_MIC != 0))
+        })
         .unwrap_or(false);
     if claims_mic {
         let mut zeroed = message.clone();

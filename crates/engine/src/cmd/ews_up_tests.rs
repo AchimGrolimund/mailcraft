@@ -41,7 +41,8 @@ fn setup() -> (Session, Id, Id, Id) {
         folder("F5", "Projects", FolderKind::Custom),
     ];
     let deltas = EwsFolderDeltas { changed: list, afresh: true, ..Default::default() };
-    apply_ews_mail(&mut s, mailcraft_model::sync::EwsMailResult { folders: Some(deltas), hierarchy: "H".into(), partial: true, ..piece(account) }).unwrap();
+    apply_ews_mail(&mut s, mailcraft_model::sync::EwsMailResult { folders: Some(deltas), hierarchy: "H".into(), partial: true, ..piece(account) })
+        .unwrap();
     let message = |id: &str, from: &str, subject: &str| GraphMessage {
         server: ServerMessage { id: id.into(), folder: "F1".into(), change_key: "CK".into(), ..Default::default() },
         message_id: format!("{id}@example.org"),
@@ -174,7 +175,15 @@ fn a_draft_saved_goes_up_is_taken_in_and_a_send_is_held_when_its_answer_was_lost
     assert_eq!(request.drafts.len(), 1);
     assert_eq!(crate::cmd::account::unpushed(&s, account), 1);
     let up = request.drafts[0].clone();
-    let done = DraftDone { change: up, id: "D1".into(), folder: "F3".into(), change_key: "CK2".into(), fields: true, attachments: Some(vec![]), ..Default::default() };
+    let done = DraftDone {
+        change: up,
+        id: "D1".into(),
+        folder: "F3".into(),
+        change_key: "CK2".into(),
+        fields: true,
+        attachments: Some(vec![]),
+        ..Default::default()
+    };
     took(&mut s, account, mailcraft_model::sync::EwsMailResult { drafts: vec![done], partial: true, ..piece(account) });
     let m = s.mailbox.message(draft).unwrap();
     assert_eq!((m.server.as_ref().unwrap().id.as_str(), m.server_draft.as_ref().unwrap().pending), ("D1", false));
