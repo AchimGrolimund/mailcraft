@@ -290,7 +290,8 @@ fn people(name: &str, list: &[(String, String)]) -> String {
 impl State {
     /// The `t:Message` of an item as the shape asks for it.
     fn message_xml(&self, item: &Item, shape: &str, extra: &[String]) -> String {
-        let hostile = self.hostile == Some(Hostile::BadItems) && (self.bad_items_in.is_empty() || self.bad_items_in.split(',').any(|f| f == item.folder));
+        let hostile =
+            self.hostile == Some(Hostile::BadItems) && (self.bad_items_in.is_empty() || self.bad_items_in.split(',').any(|f| f == item.folder));
         let long = "x".repeat(2_000);
         let id = if hostile { long.as_str() } else { item.id.as_str() };
         let mut xml = format!("<t:Message><t:ItemId Id=\"{}\" ChangeKey=\"{}\"/>", escape(id), escape(&item.change_key));
