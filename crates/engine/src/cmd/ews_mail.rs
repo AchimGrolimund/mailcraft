@@ -14,11 +14,13 @@
 //! `MAILCRAFT_EWS=1`, never by a command's params) every one of them refuses with
 //! [`SWITCHED_OFF`].
 //!
-//! **Mail down only, for now.** A run reads the server's folders (a delta from the sync state the
-//! server gave) and each folder's messages as headers and a preview from the folder's sync state;
-//! nothing made here goes up yet and nothing is sent from such an account ([`can_queue_mail`]).
-//! A mark made here stays here, and mail the server has isn't moved or deleted here until those
-//! go up ([`mailcraft_model::Mailbox::stays_on_server`]).
+//! **Mail down, and changes up.** A run first takes up what was done here (folder changes, message
+//! changes, drafts, what waits in the Outbox: the same pieces as a Microsoft account's, worked out
+//! from the difference with what the server last said, `graph_up`, `graph_drafts`, `graph_send`),
+//! then reads the server's folders (a delta from the sync state the server gave) and each folder's
+//! messages as headers and a preview from the folder's sync state. Sending is through Exchange
+//! Web Services alone ([`can_queue_mail`]); a send whose answer was lost is held, as a Microsoft
+//! account's is. Undo is a reverse change, which the next run sends.
 //!
 //! **What comes back is hostile** (a host may hand over anything): the model holds a piece to
 //! sizes ([`mailcraft_model::sync::EwsMailResult::check`]), then [`super::ews_down::bounded`] cuts
@@ -34,13 +36,15 @@
 //! changed here since the server last said. No server id and no sync state is logged.
 
 use mailcraft_model::sync::{
-    EwsFetchRequest, EwsFolderState, EwsMailRequest, EwsMailResult, EwsScope, GraphFetchResult, MAX_EWS_STATE_BYTES, MAX_EWS_STATES, SyncPhase,
+    EwsFetchRequest, EwsFolderState, EwsMailRequest, EwsMailResult, EwsScope, GraphFetchResult, MAX_DRAFTS, MAX_EWS_STATE_BYTES, MAX_EWS_STATES,
+    MAX_FOLDER_CHANGES, MAX_MESSAGE_CHANGES, MessageOutcome, SendOutcome, SyncPhase,
 };
 use mailcraft_model::{Account, AccountKind, EwsServer, FolderKind, Id, Mailbox};
 use serde_json::{Value, json};
 
 use super::graph_down::{self, Down};
 use super::graph_mail::{self, Taken};
+use super::graph_up::{self, Refusals};
 use super::sync_progress::{self, Piece};
 use super::{bad, ews_down, fail};
 use crate::{CmdError, CmdResult, CommandSpec, Session, p};
@@ -48,12 +52,12 @@ use crate::{CmdError, CmdResult, CommandSpec, Session, p};
 /// What a build says while Exchange server accounts are off ([`Session::ews`]).
 pub const SWITCHED_OFF: &str = "Exchange server accounts are being tested: start MailCraft with MAILCRAFT_EWS=1 to try them";
 
-/// What a build says of sending from an Exchange server account until sending is built.
+/// What a build says of sending from an Exchange server account while sending is not built.
 pub const SENDING_NOT_BUILT: &str = "Exchange server accounts can't send mail yet: that part is not built";
 
-/// Whether sending mail through Exchange Web Services is built (step 5 of #252 flips this): until
-/// it is, nothing is queued in an Exchange server account's Outbox, switch on or off.
-const SENDING_BUILT: bool = false;
+/// Whether sending mail through Exchange Web Services is built (step 5 of #252): with the switch
+/// on, mail is queued in an Exchange server account's Outbox; with it off, nothing is.
+const SENDING_BUILT: bool = true;
 /// What a piece is refused with when the account would keep more sync state than is taken in.
 /// Most folders a run names as unreadable in its lines (the rest are counted in the log).
 const MAX_BLOCKED_SHOWN: usize = 8;
@@ -151,7 +155,10 @@ fn base(s: &Session, account: Id) -> Result<EwsMailRequest, CmdError> {
 ///   account (none of its folders is the server's yet): from the state the server gave, so that
 ///   only what changed comes.
 /// - **States.** Where each folder goes on from: its sync state, empty for a folder not read yet.
-/// - Nothing goes up: no change of a folder or a message and nothing to send.
+/// - **What goes up** (the same in a light run): the changes of folders and of messages made here
+///   since the server said, the drafts saved here, and what waits in the Outbox, as for a Microsoft
+///   account ([`graph_mail::folder_changes`], [`graph_up::message_changes`]). The Inbox pass
+///   ([`ews_inbox_request`]) sends and changes nothing.
 pub fn ews_mail_request(s: &Session, account: Id, light: bool) -> Result<EwsMailRequest, CmdError> {
     let mut request = base(s, account)?;
     let (_, server) = ews_account(&s.mailbox, account)?;
@@ -166,6 +173,10 @@ pub fn ews_mail_request(s: &Session, account: Id, light: bool) -> Result<EwsMail
     } else {
         EwsScope::All
     };
+    request.changes = graph_mail::folder_changes(mb, account, MAX_FOLDER_CHANGES).0;
+    request.messages = graph_up::message_changes(s, account, MAX_MESSAGE_CHANGES).0;
+    request.drafts = super::graph_drafts::draft_changes(s, account, MAX_DRAFTS).0;
+    request.sends = super::graph_send::sends(s, account);
     request.list_folders = !light || !listed;
     request.hierarchy = server.hierarchy.clone();
     let wanted = |id: &str| match &request.scope {
@@ -331,6 +342,42 @@ fn take_in(s: &mut Session, result: EwsMailResult) -> CmdResult {
     }
     let mut taken = Taken::default();
     let mut down = Down::default();
+    // What became of what went up, as for a Microsoft account: the folders, the messages (a
+    // refusal is said once per kind and reason), the drafts, and what was sent.
+    let mut errors = result.errors.clone();
+    for done in &result.changes {
+        if let Some(said) = graph_mail::change_done(&mut s.mailbox, account, &done.change, &done.outcome, &mut taken) {
+            errors.push(said);
+        }
+    }
+    let mut refusals = Refusals::default();
+    for done in &result.messages {
+        if graph_up::message_done(&mut s.mailbox, account, done, &mut refusals) {
+            match done.outcome {
+                MessageOutcome::Done { .. } => taken.pushed += 1,
+                _ => taken.updated += 1,
+            }
+            // (A moved message has an id of its own in its new folder.)
+            s.graph_index = Default::default();
+        }
+    }
+    let mut refused = refusals.lines();
+    for done in &result.drafts {
+        if super::graph_drafts::draft_done(&mut s.mailbox, account, done, s.interface_language, &mut refused) {
+            taken.updated += 1;
+            s.graph_index = Default::default();
+        }
+    }
+    let mut sent = 0;
+    for done in &result.sent {
+        if super::graph_send::send_done(&mut s.mailbox, account, done, s.interface_language, &mut refused) {
+            sent += usize::from(matches!(done.outcome, SendOutcome::Sent));
+            taken.updated += 1;
+            s.graph_index = Default::default();
+        }
+    }
+    errors.extend(refused.iter().cloned());
+    s.graph_said.extend(refused);
     if let Some(deltas) = &result.folders {
         down.removed = ews_down::take_folders(&mut s.mailbox, account, deltas, &mut taken);
         // The folder list goes on from here (with the folders it brought, in one step).
@@ -350,6 +397,11 @@ fn take_in(s: &mut Session, result: EwsMailResult) -> CmdResult {
         }
     }
     s.graph_index = index;
+    // A rule moved new mail out of the account (#567): there is no going back past it
+    // ([`super::graph_mail::apply_graph_mail`] says why).
+    if down.left > 0 {
+        s.forget_history();
+    }
     // The run's end: what its fresh reads left out goes, when every folder was read and it went
     // well (the host says `whole` of such a run only).
     // A page lost anywhere in the run, not in this piece alone, keeps the end from sweeping.
@@ -372,7 +424,6 @@ fn take_in(s: &mut Session, result: EwsMailResult) -> CmdResult {
         s.sel.messages.clear();
     }
     let lang = s.interface_language;
-    let mut errors = result.errors.clone();
     if result.auth_refused {
         errors.insert(0, mailcraft_i18n::fmt(lang.t("The server turned down the sign-in for {name}: sign in again"), &[("name", &name)]));
     }
@@ -403,7 +454,7 @@ fn take_in(s: &mut Session, result: EwsMailResult) -> CmdResult {
         step,
         folders: result.progress.as_ref().map(|p| (p.number, p.folders)),
         new: down.new,
-        sent: 0,
+        sent,
         problems: &errors,
         last: !result.partial,
         stopped: result.stopped,
@@ -411,6 +462,12 @@ fn take_in(s: &mut Session, result: EwsMailResult) -> CmdResult {
     };
     s.sync_progress.take(account, piece);
     let summary = errors.first().cloned().unwrap_or_else(|| "Up to date".to_string());
+    if !result.partial {
+        // What the server refused in this run, said once, ahead of anything else.
+        let refused = std::mem::take(&mut s.graph_said);
+        let fresh: Vec<String> = refused.into_iter().filter(|line| !errors.contains(line)).collect();
+        errors.splice(0..0, fresh);
+    }
     if result.partial {
         // Under way: how far it has got.
         if let Some(progress) = &result.progress {
@@ -426,7 +483,7 @@ fn take_in(s: &mut Session, result: EwsMailResult) -> CmdResult {
         s.sync_status = format!("{said} — {}", s.time_said(t));
     }
     Ok(json!({
-        "pushed": 0,
+        "pushed": taken.pushed,
         "added": taken.added,
         "updated": taken.updated,
         "removed": taken.removed,
@@ -467,3 +524,7 @@ pub fn apply_ews_fetch(s: &mut Session, result: GraphFetchResult) -> CmdResult {
 #[cfg(test)]
 #[path = "ews_mail_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "ews_up_tests.rs"]
+mod up_tests;

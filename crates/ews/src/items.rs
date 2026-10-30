@@ -75,6 +75,8 @@ pub struct ItemsPage {
     pub removed: Vec<String>,
     /// Items whose read state alone changed.
     pub read: Vec<ReadState>,
+    /// How many `ReadFlagChange`s said no read state and were passed over (they carry nothing to lose).
+    pub read_unsaid: usize,
 }
 
 impl std::fmt::Debug for ItemsPage {
@@ -152,8 +154,9 @@ impl SyncFolderItems {
                 "Delete" => page.removed.push(id().ok_or(Error::Unreadable)?.to_owned()),
                 "ReadFlagChange" => {
                     let id = id().ok_or(Error::Unreadable)?;
-                    if let Some(read) = change.child_in(TYPES, "IsRead").map(|n| n.text.trim().eq_ignore_ascii_case("true")) {
-                        page.read.push(ReadState { id: id.to_owned(), read });
+                    match change.child_in(TYPES, "IsRead").map(|n| n.text.trim().eq_ignore_ascii_case("true")) {
+                        Some(read) => page.read.push(ReadState { id: id.to_owned(), read }),
+                        None => page.read_unsaid = page.read_unsaid.saturating_add(1),
                     }
                 }
                 _ => {}

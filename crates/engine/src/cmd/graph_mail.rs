@@ -177,7 +177,7 @@ fn parent_on_server(mb: &Mailbox, folder: &Folder) -> Option<String> {
 
 /// The folder changes made in `account` that its server hasn't heard of, parents before what lies
 /// in them: at most `limit` spelled out, and how many there are.
-fn folder_changes(mb: &Mailbox, account: Id, limit: usize) -> (Vec<FolderChange>, usize) {
+pub(super) fn folder_changes(mb: &Mailbox, account: Id, limit: usize) -> (Vec<FolderChange>, usize) {
     let (mut changes, mut count) = (Vec::new(), 0usize);
     let mut note = |change: &dyn Fn() -> FolderChange| {
         if changes.len() < limit {
@@ -504,7 +504,7 @@ fn shown(name: &str) -> String {
 }
 
 /// Take in what became of one change. Answers what to tell the owner, when there is something.
-fn change_done(mb: &mut Mailbox, account: Id, change: &FolderChange, outcome: &ChangeOutcome, taken: &mut Taken) -> Option<String> {
+pub(super) fn change_done(mb: &mut Mailbox, account: Id, change: &FolderChange, outcome: &ChangeOutcome, taken: &mut Taken) -> Option<String> {
     let mine = |mb: &Mailbox, id: Id| mb.folder(id).is_some_and(|f| f.account == account);
     match (change, outcome) {
         (FolderChange::Delete { id }, ChangeOutcome::Done { .. } | ChangeOutcome::Gone) => {

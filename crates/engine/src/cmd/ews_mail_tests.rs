@@ -428,6 +428,24 @@ fn a_refused_page_keeps_the_end_of_its_run_from_sweeping() {
 }
 
 #[test]
+fn a_run_that_ends_on_a_refused_last_piece_does_not_hold_the_next_run_back() {
+    let (mut s, account) = session();
+    list(&mut s, account);
+    read(&mut s, account, page("F1", vec![mail("A1", "Kickoff", 1_000), mail("A2", "Budget", 2_000)], true, true), "S-1");
+    // Run 1: the folder is read afresh, and its last piece is the one that is refused.
+    s.run("sync.ewsRequest", &json!({"account": account})).unwrap();
+    let bad = EwsMessagePage { from: "S-1".into(), state: "S-2".into(), ..page("F1", vec![mail("A\u{2}", "Odd", 1)], true, true) };
+    let last = EwsMailResult { pages: vec![bad], whole: true, partial: false, ..piece(account) };
+    assert!(apply_ews_mail(&mut s, last).is_err());
+    assert!(here(&s, account, "A2").is_some());
+    // Run 2 begins with its own slate: it reads the folder, and its end sweeps what the server lacks.
+    s.run("sync.ewsRequest", &json!({"account": account})).unwrap();
+    read(&mut s, account, page("F1", vec![mail("A1", "Kickoff", 1_000)], true, true), "S-3");
+    end(&mut s, account, true);
+    assert!(here(&s, account, "A2").is_none(), "the next run sweeps");
+}
+
+#[test]
 fn a_page_left_out_or_cut_or_a_blocked_folder_each_keep_the_end_of_their_run_from_sweeping() {
     let sweeps = |spoil: &dyn Fn(&mut Session, Id)| {
         let (mut s, account) = session();

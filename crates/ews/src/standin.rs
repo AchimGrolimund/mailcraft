@@ -183,6 +183,12 @@ pub struct State {
     pub bad_items_in: String,
     /// How many ids have been given out.
     pub issued: u32,
+    /// The server has no follow-up flag: setting `item:Flag` is `ErrorInvalidPropertyForOperation`.
+    pub lacks_flag: bool,
+    /// The messages sent, as the MIME that went out (a draft sent as itself is written as MIME).
+    pub outgoing: Vec<Vec<u8>>,
+    /// The `DeleteType` of every item or folder delete, in order.
+    pub deletes: Vec<String>,
 }
 
 impl Default for State {
@@ -244,6 +250,9 @@ impl Default for State {
             ignores_max: false,
             bad_items_in: String::new(),
             issued: 0,
+            lacks_flag: false,
+            outgoing: Vec::new(),
+            deletes: Vec::new(),
         }
     }
 }
@@ -430,6 +439,10 @@ impl State {
             "SyncFolderHierarchy" => self.sync_hierarchy(operation),
             "SyncFolderItems" => self.sync_items(operation),
             "GetItem" => self.get_item(operation),
+            name if crate::standin_write::HANDLED.contains(&name) => {
+                self.writes.push(name.to_owned());
+                self.write(name, operation)
+            }
             name if WRITES.contains(&name) => {
                 self.writes.push(name.to_owned());
                 let message = error_message(name, "ErrorAccessDenied");

@@ -87,3 +87,14 @@ fn file_info_names_the_folders_the_last_run_could_not_read() {
     let card = crate::backstage::account_detail(&a, a.session.mailbox.account(id).unwrap());
     assert_eq!(card, "Exchange server mail.example.org · not kept in step yet: this part is not built");
 }
+
+#[test]
+fn the_folders_a_run_could_not_read_go_with_the_mailbox_that_is_replaced() {
+    let (mut a, _, id) = app(true);
+    a.ews_unreadable.insert(id, vec!["Inbox".into()]);
+    a.drop_secrets_if_replaced();
+    assert!(!a.ews_unreadable.is_empty(), "kept while the mailbox stays");
+    a.session.replace_mailbox(mailcraft_model::Mailbox::with_local_account("", ""));
+    a.drop_secrets_if_replaced();
+    assert!(a.ews_unreadable.is_empty());
+}

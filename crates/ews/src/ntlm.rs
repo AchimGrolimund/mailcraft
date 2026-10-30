@@ -63,12 +63,12 @@ const OFFERED: u32 = NEGOTIATE_UNICODE | REQUEST_TARGET | NEGOTIATE_NTLM | NEGOT
 
 // AvIds (2.2.2.1).
 const AV_EOL: u16 = 0;
-const AV_FLAGS: u16 = 6;
-const AV_TIMESTAMP: u16 = 7;
+pub(crate) const AV_FLAGS: u16 = 6;
+pub(crate) const AV_TIMESTAMP: u16 = 7;
 const AV_TARGET_NAME: u16 = 9;
 const AV_CHANNEL_BINDINGS: u16 = 10;
 /// `MsvAvFlags` bit 0x2: the AUTHENTICATE message has a MIC.
-const FLAG_MIC: u32 = 0x2;
+pub(crate) const FLAG_MIC: u32 = 0x2;
 
 /// Most AV pairs, and most bytes of target information, taken from a server.
 const MAX_PAIRS: usize = 64;
@@ -77,7 +77,7 @@ const MAX_TARGET_INFO: usize = 16 * 1024;
 const MAX_TOKEN: usize = 32 * 1024;
 const MAX_PART: usize = 1_024;
 /// Where the MIC sits in an AUTHENTICATE message: after the fixed fields and the version.
-const MIC_AT: usize = 72;
+pub(crate) const MIC_AT: usize = 72;
 /// Seconds between 1601-01-01 (the epoch of a FILETIME) and 1970-01-01.
 const FILETIME_EPOCH: u64 = 11_644_473_600;
 
@@ -416,7 +416,7 @@ impl Challenge {
 
 /// The AV pairs of `info`, up to the end marker. A pair that runs past the end, too many pairs
 /// or too much information is refused.
-fn parse_pairs(info: &[u8]) -> Result<Vec<(u16, Vec<u8>)>, NtlmError> {
+pub(crate) fn parse_pairs(info: &[u8]) -> Result<Vec<(u16, Vec<u8>)>, NtlmError> {
     if info.len() > MAX_TARGET_INFO {
         return Err(NtlmError::TooLarge);
     }
@@ -460,7 +460,7 @@ fn channel_bindings(end_point_hash: Option<&[u8]>) -> [u8; 16] {
 }
 
 /// `NTOWFv2(password, user, domain)` (3.3.2): `HMAC_MD5(MD4(UNICODE(password)), UNICODE(UPPER(user) + domain))`.
-fn ntowf_v2(password: &str, user: &str, domain: &str) -> Result<[u8; 16], NtlmError> {
+pub(crate) fn ntowf_v2(password: &str, user: &str, domain: &str) -> Result<[u8; 16], NtlmError> {
     let hash: [u8; 16] = Md4::digest(utf16(password)).into();
     // Windows upper-cases one character to one character: a character whose full Unicode
     // upper case is several (the German sharp s becomes "SS" in Rust) is kept as it is.
@@ -500,7 +500,7 @@ fn nt_response(
     Ok((response, session_base_key))
 }
 
-fn hmac_md5(key: &[u8], parts: &[&[u8]]) -> Result<[u8; 16], NtlmError> {
+pub(crate) fn hmac_md5(key: &[u8], parts: &[&[u8]]) -> Result<[u8; 16], NtlmError> {
     let mut mac = <Hmac<Md5> as KeyInit>::new_from_slice(key).map_err(|_| NtlmError::Internal)?;
     for part in parts {
         mac.update(part);
@@ -513,22 +513,22 @@ fn filetime(unix_seconds: u64) -> [u8; 8] {
     unix_seconds.saturating_add(FILETIME_EPOCH).saturating_mul(10_000_000).to_le_bytes()
 }
 
-fn utf16(text: &str) -> Vec<u8> {
+pub(crate) fn utf16(text: &str) -> Vec<u8> {
     text.encode_utf16().flat_map(u16::to_le_bytes).collect()
 }
 
-fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
+pub(crate) fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
     let end = at.checked_add(2)?;
     Some(u16::from_le_bytes(<[u8; 2]>::try_from(bytes.get(at..end)?).ok()?))
 }
 
-fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
+pub(crate) fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
     let end = at.checked_add(4)?;
     Some(u32::from_le_bytes(<[u8; 4]>::try_from(bytes.get(at..end)?).ok()?))
 }
 
 /// Standard Base64 (RFC 4648), padding optional; anything else, or a token over [`MAX_TOKEN`], is none.
-fn unbase64(text: &str) -> Option<Vec<u8>> {
+pub(crate) fn unbase64(text: &str) -> Option<Vec<u8>> {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let text = text.trim().trim_end_matches('=');
     if text.is_empty() || text.len() > MAX_TOKEN {

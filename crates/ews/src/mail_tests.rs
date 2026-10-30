@@ -330,6 +330,31 @@ fn a_blocked_folder_leaves_the_others_to_be_read_and_is_no_server_failing() {
 }
 
 #[test]
+fn folders_that_are_blocked_do_not_count_towards_the_folders_in_a_row_that_end_a_run() {
+    let standin = StandIn::new();
+    let (blocked, last_box) = {
+        let mut s = standin.state();
+        let ids: Vec<String> = (0..4).map(|n| s.add_folder(&format!("Box {n}"))).collect();
+        s.deliver("inbox", "Kickoff", false);
+        for (n, id) in ids.iter().enumerate() {
+            s.deliver(id, &format!("In box {n}"), false);
+        }
+        // Three folders and the Inbox are blocked (more than the folders in a row that end a run).
+        let mut blocked = vec![s.folder_id("inbox").unwrap()];
+        blocked.extend(ids[..3].iter().cloned());
+        (blocked, ids[3].clone())
+    };
+    assert!(blocked.len() > 3);
+    standin.state().hostile = Some(Hostile::BadItems);
+    standin.state().bad_items_in = blocked.join(",");
+    let (pieces, _) = run(&standin, &request());
+    // The folder after them is read all the same, and the run is no failing server.
+    assert_eq!(subjects(&pieces), ["In box 3"], "{last_box}");
+    assert_eq!(last(&pieces).blocked.len(), 4);
+    assert!(last(&pieces).errors.is_empty());
+}
+
+#[test]
 fn a_message_is_fetched_whole_and_the_missing_and_the_refused_are_told() {
     let standin = StandIn::new();
     let id = standin.state().deliver("inbox", "Kickoff", false);

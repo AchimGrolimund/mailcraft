@@ -296,18 +296,23 @@ fn putting_a_server_address_right_forgets_where_its_folders_went_on_from() {
     assert_eq!(s.mailbox.folder(inbox).unwrap().server.as_ref().unwrap().sync_state, "S2");
 }
 
-/// Nothing is queued in an Exchange server account's Outbox until its sending is built, with the
-/// switch on as with it off.
+/// Mail is queued in an Exchange server account's Outbox with the switch on (its sending is built),
+/// and with the switch off nothing is: the message stays as it is being written.
 #[test]
-fn nothing_is_queued_for_an_exchange_account_with_the_switch_on() {
+fn mail_is_queued_for_an_exchange_account_with_the_switch_on_and_refused_with_it_off() {
     let mut s = session(true);
     let id = s.run("account.add", &exchange("ada@example.org")).unwrap()["id"].as_u64().unwrap();
     s.run("mail.new", &json!({"account": id, "to": "bob@example.org", "subject": "Hello"})).unwrap();
-    let refused = said(s.run("compose.send", &json!({})));
-    assert!(refused.contains(crate::cmd::ews_mail::SENDING_NOT_BUILT) && refused.contains("send this message from another account"), "{refused}");
-    assert!(s.compose.is_some());
+    assert_eq!(s.run("compose.send", &json!({})).unwrap()["queued"], true);
     let outbox = s.mailbox.folder_of_kind(id, FolderKind::Outbox).unwrap();
-    assert_eq!(s.mailbox.messages_in(outbox).count(), 0);
+    assert_eq!(s.mailbox.messages_in(outbox).count(), 1);
+    // The switch off: a message being written is refused, queued nowhere.
+    s.run("mail.new", &json!({"account": id, "to": "bob@example.org", "subject": "Again"})).unwrap();
+    s.ews = false;
+    let refused = said(s.run("compose.send", &json!({})));
+    assert!(refused.contains(SWITCHED_OFF) && refused.contains("send this message from another account"), "{refused}");
+    assert!(s.compose.is_some());
+    assert_eq!(s.mailbox.messages_in(outbox).count(), 1);
 }
 
 /// A result is held to the caps before any of it is used: a result with too much in it is refused

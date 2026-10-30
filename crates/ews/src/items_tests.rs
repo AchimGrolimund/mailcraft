@@ -40,7 +40,7 @@ fn an_item_that_lacks_what_is_not_essential_is_read_with_nothing_said() {
     assert_eq!(odd.messages[0].server.id, "a b<c>/+=-_");
     // A read-state change that doesn't say which state carries nothing to lose: passed over.
     let none = page("<t:ReadFlagChange><t:ItemId Id=\"ID1\" ChangeKey=\"CK\"/></t:ReadFlagChange>", 10).unwrap();
-    assert!(none.read.is_empty() && none.messages.is_empty());
+    assert!(none.read.is_empty() && none.messages.is_empty() && none.read_unsaid == 1);
     // A kind of change this program doesn't know is passed over as well.
     let unknown = page("<t:Frobnicate><t:ItemId Id=\"ID1\"/></t:Frobnicate>", 10).unwrap();
     assert!(unknown.messages.is_empty() && unknown.removed.is_empty() && unknown.read.is_empty());

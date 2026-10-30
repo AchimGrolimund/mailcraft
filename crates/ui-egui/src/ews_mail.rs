@@ -26,8 +26,8 @@
 //! **Work started for one mailbox stays with it**: a run under way when another mailbox takes its
 //! place is called off, and nothing it still brings is taken in.
 //!
-//! **Reading only**: nothing made here goes up yet, so nothing made here calls a run off to go up
-//! first.
+//! **Going up**: what was changed here, saved as a draft or queued in the Outbox goes with the next run, which
+//! takes it up before it reads; something made while a run is under way calls it off to go up first.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -87,7 +87,8 @@ impl MailApp {
         self.services.sync_cancel.store(false, Ordering::Relaxed);
         let pieces = run(EwsJob { request, secret, cancel: self.services.sync_cancel.clone() });
         self.sync_refused = false;
-        self.sync_run = Some((account, None, false, quiet));
+        // (Something made here while the run is under way calls it off to go up first, as a Microsoft account's does.)
+        self.sync_run = Some((account, Some(self.waiting_to_go(account)), false, quiet));
         self.sync_rx = Some(MailRun::Ews { account, opening: self.session.openings(), pieces });
         // (Send/Receive Progress: under way from now, the server's folders first.)
         self.session.sync_progress.phase(account, if inbox_pass { SyncPhase::Inbox } else { SyncPhase::Folders });
