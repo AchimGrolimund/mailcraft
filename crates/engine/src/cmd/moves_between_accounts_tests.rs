@@ -1232,6 +1232,21 @@ fn a_message_refused_after_leaving_an_outbox_comes_back_held_and_isnt_sent() {
 }
 
 #[test]
+fn a_message_queued_with_send_and_moved_out_comes_back_held_when_refused() {
+    let (mut s, a, _) = imap();
+    let b = second_imap(&mut s);
+    let (outbox, theirs) = (s.mailbox.folder_of_kind(a, FolderKind::Outbox).unwrap(), s.mailbox.folder_of_kind(b, FolderKind::Inbox).unwrap());
+    s.run("mail.new", &json!({"to": "maya@lumen.example", "subject": "Queued", "account": a})).unwrap();
+    let queued = s.run("compose.send", &json!({})).unwrap()["id"].as_u64().unwrap();
+    assert_eq!(sync_request(&s, a).unwrap().outbox.iter().map(|m| m.id).collect::<Vec<_>>(), [queued]);
+    s.run("mail.move", &json!({"ids": [queued], "folder": theirs})).unwrap();
+    apply_sync(&mut s, SyncResult { account: b, unplaced: vec![queued], ..Default::default() }).unwrap();
+    assert_eq!(at(&s, queued), (a, outbox, 0));
+    assert_eq!(s.mailbox.message(queued).unwrap().held, mailcraft_model::MOVED_INTO_OUTBOX);
+    assert!(sync_request(&s, a).unwrap().outbox.is_empty(), "taken out of the queue, it goes only by Send Again");
+}
+
+#[test]
 fn a_move_out_of_an_outbox_undone_leaves_it_held_and_isnt_sent() {
     for into_microsoft in [false, true] {
         let (mut s, a, _) = imap();
