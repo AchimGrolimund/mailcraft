@@ -67,7 +67,16 @@ egui, eframe, winit or rfd.
    fingerprint, a certificate question stopping the run instead of a TLS error) and hands the run
    back in pieces, and `sync.applyEws` (pure) takes each in by server id; messages are fetched whole
    through `sync.ewsFetchRequest` and `sync.applyEwsFetch`. All refuse while the switch is off.
-   Mail down only so far: nothing made here goes up, and nothing is sent.
+   What is made here goes up and is sent through the same run. Setting one up is Add Account's
+   explicit Exchange server choice (L6, `account_setup/exchange.rs`): the page only collects, and
+   the host (`Services::ews_setup`, `apps/mailcraft/src/ews_setup.rs`, on a thread of its own once
+   the owner presses Connect) does the DNS-over-HTTPS lookups, drives `mailcraft_ews::Autodiscover`,
+   asks the owner through the job's channel before a sign-in goes to another host, tries the account
+   with one request for its Inbox through the run's own transport, and answers in kinds
+   (`ui-egui`'s `ews_setup`), never in a server's words; `account.add` with `kind: "exchange"` then
+   adds it. A certificate the system doesn't trust is shown and trusted by fingerprint only on the
+   owner's tick; File › Info shows the server, the user name, the sign-in and that certificate, with
+   Forget (`account.forgetEwsCertificate`).
 5. **Save:** the desktop app writes the mailbox file a few seconds after each change and on
    exit; the browser writes to its storage; File › Save As and the exports write other files (a
    download in the browser).
@@ -296,3 +305,4 @@ a made-up mailbox of 64,000 messages (ignored by `cargo test`).
 | 2026-10-29 | patch | #252 E4 second review: an Exchange page with more changes than asked for is believed when every change is readable; a change that can not be taken in (no usable id) blocks its folder, which stays where it was and is named to the owner (`blocked`, File › Info) while the other folders go on; a lost, refused or cut page anywhere in a run keeps the end of that run from sweeping |
 | 2026-10-29 | patch | #252 E3 review: `ews` depends on `model` (L1) for the providers table; Autodiscover asks for the sign-in only on a challenge |
 | 2026-10-29 | minor | #252 E6: `ews` signs in with NTLMv2 (`ntlm`, from MS-NLMP; RustCrypto `md4`, `md-5`, `hmac`) and chooses NTLM or Basic from the server's offer (`auth`); `net`'s `https::Connection` holds one TLS connection across the legs and gives the hash of the server's certificate; nothing drives them yet |
+| 2026-10-29 | minor | #252 E7: setting up an Exchange server account (Add Account's explicit choice, the host's `ews_setup` job, the owner's questions, File › Info) |

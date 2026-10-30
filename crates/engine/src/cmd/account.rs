@@ -26,6 +26,8 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new("account.add", "Add Account", "File › Info", add).params(ACCOUNT),
         CommandSpec::new("account.edit", "Account Settings", "File › Info", edit).params(r#"{"id": number, …the fields of account.add, "downloadInFull"?: "upTo10Mb"|"upTo25Mb"|"upTo50Mb"|"everything" (a Microsoft account: which messages are fetched whole in the background), "keepOffline"?: "3d"|"1w"|"2w"|"1m"|"3m"|"6m"|"12m"|"2y"|"5y"|"10y"|"all" (a Microsoft account's mail to keep offline: how far back, by received date, mail is kept in full on this computer; older mail keeps its headers and preview. A shared mailbox follows its owner's. Shortening it removes nothing by itself: account.thinOffline does), "askBeforeDeletingConversation"?: bool (Delete on a conversation's row that takes more than one message, in its folder or found by a search, asks first in the window; on unless turned off. A shared mailbox follows its owner's)}"#),
+        CommandSpec::new("account.forgetEwsCertificate", "Forget Trusted Certificate", "File › Info", forget_ews_certificate)
+            .params(r#"{"id": number} — an Exchange server account stops trusting the one certificate it was told to trust although the system doesn't: its fingerprint is forgotten, so the server's certificate is judged by the system alone and the owner is asked again if it isn't trusted. Answers {"id": id, "forgotten": bool}. Only while Exchange server accounts are being tested (MAILCRAFT_EWS=1)"#),
         CommandSpec::new("account.remove", "Remove Account", "File › Info", remove).params(r#"{"id": number} — removes the account, its mail and what is kept for it on this computer (bodies and attachments leave the content folder once a state without it is saved; no Undo step is kept), and what came from its server: its events, contacts, to-dos and calendars (what was made here and not sent yet stays, as this computer's own), Outlook's list of categories, and, where the window's settings are kept (the window, not mailcraft-cli), its mailbox's working hours; nothing on the server is touched. Mail moved into it from elsewhere that its server wasn't given yet goes back to where it came from, and so does mail moved into it whose original another server keeps until the copy is safe; once the copy is safe on its server, that original goes as it would have (mail moved onto this computer goes back to its original, as its copy goes with the account). The only account leaves an empty mailbox, as at a first start. Answers {"deleted": id, "leftToSweep": n (content files the sweep removes later)}"#),
         CommandSpec::new("account.list", "List Accounts", "File › Info", list).pure(),
         CommandSpec::new("account.preset", "Suggest Account Settings", "File › Info", preset)
@@ -515,6 +517,22 @@ fn edit(s: &mut Session, v: &Value) -> CmdResult {
         forget_ews_states(&mut s.mailbox, id);
     }
     Ok(json!({"id": id}))
+}
+
+/// `account.forgetEwsCertificate`: the account no longer trusts the certificate it was told to trust (#252).
+fn forget_ews_certificate(s: &mut Session, v: &Value) -> CmdResult {
+    if !s.ews {
+        return Err(fail(super::ews_mail::SWITCHED_OFF));
+    }
+    let id = p::req_id(v, "id")?;
+    let a = s.mailbox.account_mut(id)?;
+    if a.kind != AccountKind::Exchange {
+        return Err(failed!("{name} isn't an Exchange server account", name = a.name));
+    }
+    let server = a.ews.as_mut().ok_or_else(|| fail("this Exchange server account has no server settings"))?;
+    let forgotten = !server.trusted.is_empty();
+    server.trusted.clear();
+    Ok(json!({"id": id, "forgotten": forgotten}))
 }
 
 /// An Exchange server account's sync states belong to the mailbox they were given for: forgotten,

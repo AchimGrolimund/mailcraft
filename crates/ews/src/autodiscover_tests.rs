@@ -506,6 +506,7 @@ fn each_failure_has_its_reason() {
 fn every_failure_offers_server_settings_and_holds_nothing_a_server_wrote() {
     for failure in [
         Failure::SignInNotSupported,
+        Failure::SignInNtlmOnly,
         Failure::Unreachable,
         Failure::NoAutodiscover,
         Failure::SecureConnection,
@@ -518,7 +519,8 @@ fn every_failure_offers_server_settings_and_holds_nothing_a_server_wrote() {
         Failure::TooManyRedirects,
     ] {
         let text = failure.to_string();
-        assert!(text.contains("Server settings"), "{text}");
+        // (Kerberos only: typing the address would not help, and the words don't say it would.)
+        assert!(text.contains("Server settings") != (failure == Failure::SignInNotSupported), "{text}");
         assert!(!text.contains("ada") && !text.contains("exch") && !text.contains("https:"), "{text}");
     }
     assert!(AddressError.to_string().contains("Server settings"));
@@ -783,12 +785,17 @@ fn a_challenge_without_basic_sends_nothing_and_the_next_place_is_tried() {
     found(&go(&standin, None, &[]));
     assert_eq!(standin.hosts_sent_credentials(), ["autodiscover.example.org"]);
     // NTLM or Negotiate everywhere: the search says that is the trouble.
-    for schemes in ["NTLM", "Negotiate", "Negotiate, NTLM", "ntlm"] {
+    for (schemes, failure) in [
+        ("NTLM", Failure::SignInNtlmOnly),
+        ("Negotiate", Failure::SignInNotSupported),
+        ("Negotiate, NTLM", Failure::SignInNtlmOnly),
+        ("ntlm", Failure::SignInNtlmOnly),
+    ] {
         let standin = AutodiscoverStandIn::new()
             .route("example.org", Route::Challenge(schemes.into()))
             .route("autodiscover.example.org", Route::Challenge(schemes.into()));
         let run = go(&standin, None, &[]);
-        assert_eq!(run.outcome, Outcome::Failed(Failure::SignInNotSupported), "{schemes}");
+        assert_eq!(run.outcome, Outcome::Failed(failure), "{schemes}");
         assert!(standin.hosts_sent_credentials().is_empty(), "{schemes}");
     }
     // Another scheme (a site behind a bearer token) is just not Autodiscover.

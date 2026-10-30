@@ -41,7 +41,9 @@
 use std::collections::VecDeque;
 use std::fmt;
 
+pub use mailcraft_model::is_exchange_online;
 use mailcraft_model::provider;
+use mailcraft_model::{is_microsoft_domain, is_within};
 
 use crate::http::{HttpExchange, HttpRequest, HttpResponse, Method, Secret, TransportError, check_endpoint};
 use crate::xml::{self, Node};
@@ -66,66 +68,11 @@ pub(crate) const ANSWER_SCHEMA: &str = "http://schemas.microsoft.com/exchange/au
 /// The schema asked for, and the namespace of the answer's `Response`.
 pub(crate) const RESPONSE_SCHEMA: &str = "http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a";
 
-/// Hosts that are Microsoft's own mail: Exchange Online (Microsoft 365) and Outlook.com: a name
-/// and every name under it. Fixed; nothing is guessed from a pattern, so an organisation's own
-/// server called `outlook.abc.com` is not taken for Microsoft's.
-const EXCHANGE_ONLINE: [&str; 12] = [
-    "outlook.com",
-    "hotmail.com",
-    "live.com",
-    "msn.com",
-    "office365.com",
-    "office365.us",
-    "office.com",
-    "onmicrosoft.com",
-    "microsoftonline.com",
-    "outlook.cn",
-    "partner.outlook.cn",
-    "office365.cn",
-];
-
-/// Whether `host` (lower case, no port) is, or is under, one of [`EXCHANGE_ONLINE`]'s hosts.
-/// Used for every host the search is sent to or told about: a redirect, an SRV target, the
-/// addresses in an answer. A mailbox there is a Microsoft account, never an Exchange server
-/// account, and no sign-in is ever sent there.
-pub fn is_exchange_online(host: &str) -> bool {
-    EXCHANGE_ONLINE.iter().any(|online| is_within(host, online))
-}
-
-/// Whether the domain of an e-mail address (lower case) is one of Microsoft's consumer mail
-/// domains, in the forms Microsoft has them in: `outlook.com` and `msn.com`; `hotmail` and
-/// `live` and `outlook` with `com`, a country (`hotmail.fr`, `live.it`, `outlook.de`), or `co` or
-/// `com` and a country (`hotmail.co.uk`, `live.com.au`, `outlook.com.br`). Only the domain of
-/// the address itself: a name that merely starts so (`outlook.abc.com`, `live.bbc.com`,
-/// `msn.xy.org`) is somebody else's.
-fn is_microsoft_consumer_domain(domain: &str) -> bool {
-    let labels: Vec<&str> = domain.split('.').collect();
-    let country = |label: &&str| label.len() == 2 && label.bytes().all(|b| b.is_ascii_lowercase());
-    match labels.as_slice() {
-        ["msn", "com"] | ["outlook" | "hotmail" | "live", "com"] => true,
-        ["outlook" | "hotmail" | "live", cc] => country(cc),
-        ["outlook" | "hotmail" | "live", "co" | "com", cc] => country(cc),
-        _ => false,
-    }
-}
-
-/// Whether an address in `domain` is Microsoft's: Exchange Online's hosts or Outlook.com's
-/// consumer domains. Nothing is sent to it.
-fn is_microsoft_domain(domain: &str) -> bool {
-    is_exchange_online(domain) || is_microsoft_consumer_domain(domain)
-}
-
 /// Whether `host`, one of a domain's mail exchangers (`example-org.mail.protection.outlook.com`),
 /// is Microsoft's: the domain's mail is in Exchange Online. A host that has looked up the MX
 /// records before it starts tells the search so with [`Autodiscover::note_mail_exchangers`].
 pub fn is_exchange_online_mx(host: &str) -> bool {
     provider::by_mx(host).is_some_and(|preset| preset.oauth.is_some())
-}
-
-/// Whether `host` is `domain` or a name under it (`mail.example.org` is within `example.org`;
-/// `evil-example.org` is not).
-fn is_within(host: &str, domain: &str) -> bool {
-    host == domain || host.strip_suffix(domain).is_some_and(|front| front.ends_with('.'))
 }
 
 /// Whether `text` is a host or domain name with a dot in it: labels of letters, digits and
@@ -292,6 +239,9 @@ pub enum Failure {
     /// The server offers to sign in only in ways that are not built yet (NTLM, Negotiate), and
     /// not with a user name and password over TLS (Basic).
     SignInNotSupported,
+    /// The server offers NTLM and not Basic: the search can't sign in that way (it speaks Basic
+    /// only), but a typed server address is signed in to with NTLM.
+    SignInNtlmOnly,
     /// The owner did not agree to a host.
     Declined,
     /// The user name or password was not accepted (401). Nothing else was asked.
@@ -311,6 +261,7 @@ impl Failure {
             Self::InsecureRedirect => 4,
             Self::ServerRefused => 5,
             Self::SignInNotSupported => 6,
+            Self::SignInNtlmOnly => 6,
             Self::NoExchangeAddress => 7,
             Self::Declined => 8,
             Self::SignInRefused => 9,
@@ -329,7 +280,8 @@ impl fmt::Display for Failure {
             Self::InsecureRedirect => "The server sent the setup somewhere that is not encrypted, which is never followed. Type the server's address in Server settings.",
             Self::ServerRefused => "The server or the organisation would not give its settings. Ask your administrator for the server's address and type it in Server settings.",
             Self::NoExchangeAddress => "The server answered without the address of Exchange Web Services. Ask your administrator for it and type it in Server settings.",
-            Self::SignInNotSupported => "The server wants a way of signing in that this program cannot do yet. Ask your administrator whether the server can take a user name and password over an encrypted connection, and type the server's address in Server settings.",
+            Self::SignInNotSupported => "The server wants a way of signing in (Kerberos) that this program cannot do yet. Ask your administrator whether the server can take a user name and password over an encrypted connection.",
+            Self::SignInNtlmOnly => "Automatic setup can't sign in to this server. Type its address in Server settings, and MailCraft will sign in with NTLM.",
             Self::Declined => "You did not agree to send your sign-in to the server the setup led to. Type the server's address in Server settings.",
             Self::SignInRefused => "The server did not accept the user name and password. Check them, or type the user name in Server settings (DOMAIN\\user or user@example.org).",
             Self::TooManyRedirects => "The setup was sent from one server to another too many times. Type the server's address in Server settings.",
@@ -608,7 +560,9 @@ impl Autodiscover {
                 }
                 _ => self.fail_step(Failure::Unreadable),
             }
-        } else if offers("ntlm") || offers("negotiate") {
+        } else if offers("ntlm") {
+            self.fail_step(Failure::SignInNtlmOnly);
+        } else if offers("negotiate") {
             self.fail_step(Failure::SignInNotSupported);
         } else {
             // A site that wants some other sign-in is not an Autodiscover that takes ours.

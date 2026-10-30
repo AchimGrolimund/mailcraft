@@ -52,12 +52,6 @@ use crate::{CmdError, CmdResult, CommandSpec, Session, p};
 /// What a build says while Exchange server accounts are off ([`Session::ews`]).
 pub const SWITCHED_OFF: &str = "Exchange server accounts are being tested: start MailCraft with MAILCRAFT_EWS=1 to try them";
 
-/// What a build says of sending from an Exchange server account while sending is not built.
-pub const SENDING_NOT_BUILT: &str = "Exchange server accounts can't send mail yet: that part is not built";
-
-/// Whether sending mail through Exchange Web Services is built (step 5 of #252): with the switch
-/// on, mail is queued in an Exchange server account's Outbox; with it off, nothing is.
-const SENDING_BUILT: bool = true;
 /// What a piece is refused with when the account would keep more sync state than is taken in.
 /// Most folders a run names as unreadable in its lines (the rest are counted in the log).
 const MAX_BLOCKED_SHOWN: usize = 8;
@@ -66,18 +60,17 @@ const STATES_TOO_LARGE: &str = "the result would make this account keep more syn
 /// Whether a message may be queued in the Outbox of an account of this kind, to be sent by the
 /// next Send/Receive. The one place that says so, for a message being written, an answer to a
 /// meeting and a forwarded meeting alike: an account whose kind sends no mail, or whose sending is
-/// off or not built, has nowhere for the message, and an Outbox would keep it for ever.
+/// off, has nowhere for the message, and an Outbox would keep it for ever.
 pub(crate) fn can_queue_mail(s: &Session, kind: AccountKind) -> bool {
-    kind.sends_mail() && (!kind.needs_switch() || (s.ews && SENDING_BUILT))
+    kind.sends_mail() && (!kind.needs_switch() || s.ews)
 }
 
 /// Why a message can't be queued for an account of this kind ([`can_queue_mail`]), in words that
 /// follow "…: send it from another account". For a kind that has a server; the same words as ever
 /// for a JMAP account.
-pub(crate) fn not_sending_text(s: &Session, kind: AccountKind) -> &'static str {
+pub(crate) fn not_sending_text(_s: &Session, kind: AccountKind) -> &'static str {
     match kind {
-        AccountKind::Exchange if !s.ews => SWITCHED_OFF,
-        AccountKind::Exchange => SENDING_NOT_BUILT,
+        AccountKind::Exchange => SWITCHED_OFF,
         _ => mailcraft_model::NOT_SENDING_YET,
     }
 }

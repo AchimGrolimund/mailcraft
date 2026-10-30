@@ -128,6 +128,15 @@ impl Transport {
         self.stopped_at.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
     }
 
+    /// How the run signed in, `basic` or `ntlm`, once the server has said; `None` before.
+    pub(crate) fn scheme_name(&self) -> Option<&'static str> {
+        match self.sign_in.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).scheme {
+            Some(Scheme::Ntlm) => Some("ntlm"),
+            Some(Scheme::Basic) => Some("basic"),
+            None => None,
+        }
+    }
+
     /// Why the sign-in could not be had, when that stopped the run.
     pub(crate) fn auth_problem(&self) -> Option<AuthProblem> {
         *self.auth_problem.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -146,7 +155,7 @@ impl Transport {
         fields
     }
 
-    fn response(answer: mailcraft_net::https::Response) -> HttpResponse {
+    pub(crate) fn response(answer: mailcraft_net::https::Response) -> HttpResponse {
         let mut response = HttpResponse::new(answer.status, answer.body);
         if let Some(location) = &answer.location {
             response = response.with_field("Location", location);
@@ -371,14 +380,19 @@ pub(crate) fn settled_fetch(mut result: GraphFetchResult, problem: Option<&Certi
 
 /// The Basic credential of `username` (the address when it is empty) and `password`, as a client for
 /// `url`. Why not: words that name neither.
-fn client(url: &str, username: &str, email: &str, password: &str) -> Result<Client, &'static str> {
+pub(crate) fn client(url: &str, username: &str, email: &str, password: &str) -> Result<Client, &'static str> {
+    // A mailbox file is hostile too: an account that names a Microsoft host is never signed in to
+    // here, whatever the file says (its mailbox is a Microsoft account).
+    if crate::ews_setup::on_microsoft(url) {
+        return Err("This server is Microsoft's: add the mailbox as a Microsoft account instead");
+    }
     let name = if username.trim().is_empty() { email.trim() } else { username.trim() };
     let secret = Secret::basic(name, password).map_err(|_| "The user name or the password can't be used to sign in")?;
     Client::new(url, secret).map_err(|_| "The server's address can't be used")
 }
 
 /// The NTLM key for the same user name and password, when they can be sent that way.
-fn ntlm_key(username: &str, email: &str, password: &str) -> Option<NtlmCredentials> {
+pub(crate) fn ntlm_key(username: &str, email: &str, password: &str) -> Option<NtlmCredentials> {
     let name = if username.trim().is_empty() { email.trim() } else { username.trim() };
     NtlmCredentials::new(name, password).ok()
 }
@@ -428,7 +442,12 @@ pub(crate) fn run_mail_with(request: &EwsMailRequest, password: &str, cancel: &A
     let transport = Transport::new(&request.trusted).with_ntlm(ntlm_key(&request.username, &request.email, password));
     let mut pause = |ms: u32| wait(cancel, ms);
     crate::block_on::block_on(mailcraft_ews::sync_mail(&client, &transport, request, cancel, &mut pause, &mut |piece| {
-        emit(settled(piece, transport.problem().as_ref(), transport.auth_problem()));
+        let mut piece = settled(piece, transport.problem().as_ref(), transport.auth_problem());
+        // How it signed in: File › Info says so.
+        if let Some(scheme) = transport.scheme_name() {
+            scheme.clone_into(&mut piece.signed_in_with);
+        }
+        emit(piece);
     }));
 }
 
