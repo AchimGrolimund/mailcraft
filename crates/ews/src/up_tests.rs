@@ -526,7 +526,8 @@ impl HttpExchange for Refusing<'_> {
 
 #[test]
 fn a_send_whose_answer_was_lost_is_held_and_never_sent_twice() {
-    for (operation, send) in [("CreateItem", SendUp { message: 3, draft: None, mime: Some(message("zoe@example.org", "")) })] {
+    {
+        let (operation, send) = ("CreateItem", SendUp { message: 3, draft: None, mime: Some(message("zoe@example.org", "")) });
         let standin = StandIn::new();
         let losing = Losing { inner: &standin, operation, lost: Cell::new(1) };
         let (pieces, _) = run_with(&losing, &EwsMailRequest { sends: vec![send], ..base() });
