@@ -296,6 +296,7 @@ impl Host {
             "certificate" => EwsSetupEvent::Finished(certificate(false)),
             "changed" => EwsSetupEvent::Finished(certificate(true)),
             "expired" => EwsSetupEvent::Finished(EwsSetupEnd::Failed(EwsSetupFailure::Certificate(EwsCertificateFault::Expired))),
+            "ntlm" => EwsSetupEvent::Finished(EwsSetupEnd::Failed(EwsSetupFailure::SignInNtlm)),
             "refused" => EwsSetupEvent::Finished(EwsSetupEnd::Failed(EwsSetupFailure::SignInRefused)),
             _ => EwsSetupEvent::Finished(EwsSetupEnd::Failed(EwsSetupFailure::Unreachable)),
         })
