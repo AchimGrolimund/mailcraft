@@ -951,3 +951,15 @@ fn the_srv_name_shows_nothing_in_debug_output() {
     assert_eq!(name.as_str(), "_autodiscover._tcp.example.org");
     assert!(!format!("{step:?}").contains("example"), "{step:?}");
 }
+
+/// The shape Grommunio 2026 answers with (E8, first contact with a real EWS server, made-up
+/// names): an `EXHTTP` and a MAPI/HTTP protocol first, then `EXCH` whose `Server` is a mailbox
+/// identifier with an `@` in it (not a host name), then an `EXPR` with no `EwsUrl` at all.
+#[test]
+fn the_answer_of_grommunio_is_read_for_its_ews_address_and_a_server_name() {
+    let body = r#"<?xml version="1.0" encoding="UTF-8"?><Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006"><Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a"><User><AutoDiscoverSMTPAddress>ada@example.org</AutoDiscoverSMTPAddress><DisplayName>ada@example.org</DisplayName></User><Account><AccountType>email</AccountType><Action>settings</Action><MicrosoftOnline>False</MicrosoftOnline><ConsumerMailbox>False</ConsumerMailbox><Protocol><OOFUrl>https://mail.example.org/EWS/Exchange.asmx</OOFUrl><Type>EXHTTP</Type><Server>mail.example.org</Server><SSL>On</SSL><AuthPackage>basic</AuthPackage><EwsUrl>https://mail.example.org/EWS/Exchange.asmx</EwsUrl></Protocol><Protocol Type="mapiHttp" Version="1"><MailStore><InternalUrl>https://mail.example.org/mapi/emsmdb/?MailboxId=00000000-0000-0000-0000-000000000001@example.org</InternalUrl></MailStore></Protocol><Protocol><Type>EXCH</Type><Server>00000000-0000-0000-0000-000000000001@example.org</Server><AuthPackage>anonymous</AuthPackage><EwsUrl>https://mail.example.org/EWS/Exchange.asmx</EwsUrl></Protocol><Protocol><Type>EXPR</Type><Server>mail.example.org</Server><SSL>On</SSL><AuthPackage>basic</AuthPackage></Protocol></Account></Response></Autodiscover>"#;
+    let Answer::Settings(found) = read_answer(body.as_bytes()) else { panic!("not settings") };
+    assert_eq!(found.internal.as_deref(), Some("https://mail.example.org/EWS/Exchange.asmx"));
+    assert_eq!(found.external, None);
+    assert_eq!(found.server.as_deref(), Some("mail.example.org"));
+}
