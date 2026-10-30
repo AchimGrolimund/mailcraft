@@ -63,8 +63,7 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-const SOURCE: &str =
-    r#"{"id"?: number} (default: the selected message; a message being written with changes that aren't saved is saved to Drafts first)"#;
+const SOURCE: &str = r#"{"id"?: number} (default: the selected message; a message being written with changes that aren't saved is saved to Drafts first). An `id` that is null or isn't an id, or `ids` naming other than one message, is refused"#;
 
 const FORWARD: &str = r#"{"id"?: number, "discard"?: bool} | {"ids"?: [number], "discard"?: bool} (default: the selected messages; a message being written with changes that aren't saved is saved to Drafts first, unless discard). An id of another kind or null, both, or any other parameter is refused. One message: Forward quotes it, Forward as Attachment attaches it whole as an .eml. Several, at most 200 and 64 MB together, are each attached whole as an .eml, in the message list's order, in a message from the account of the last one named (the one in focus), with no subject for the owner to write"#;
 
@@ -172,7 +171,7 @@ fn new(s: &mut Session, v: &Value) -> CmdResult {
 /// The message a command answers, forwards or opens again, whole: its body and its files in
 /// memory, fetched from where the mailbox keeps them when they weren't (`Session::content`).
 fn source_message(s: &Session, v: &Value) -> Result<Message, CmdError> {
-    let id = p::id(v, "id").or(s.sel.focus()).ok_or_else(|| fail("select a message first"))?;
+    let id = p::message_strict(v)?.or(s.sel.focus()).ok_or_else(|| fail("select a message first"))?;
     if s.mailbox.message(id).is_none() {
         return Err(failed!("no message with id {id}", id));
     }
@@ -182,7 +181,7 @@ fn source_message(s: &Session, v: &Value) -> Result<Message, CmdError> {
 /// The message a reply answers, with what the reply quotes of it in memory: its body and the
 /// pictures its HTML shows (`Session::loaded_for_reply`); its other files stay where they are.
 fn reply_source(s: &Session, v: &Value) -> Result<Message, CmdError> {
-    let id = p::id(v, "id").or(s.sel.focus()).ok_or_else(|| fail("select a message first"))?;
+    let id = p::message_strict(v)?.or(s.sel.focus()).ok_or_else(|| fail("select a message first"))?;
     if s.mailbox.message(id).is_none() {
         return Err(failed!("no message with id {id}", id));
     }
