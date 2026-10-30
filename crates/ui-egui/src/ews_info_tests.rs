@@ -32,7 +32,7 @@ fn file_info_says_why_an_exchange_account_is_not_kept_in_step() {
     assert!(!card.contains("Exchange.asmx") && !card.contains(":444"), "{card}");
     let (a, _, id) = app(true);
     let card = crate::backstage::account_detail(&a, a.session.mailbox.account(id).unwrap());
-    assert_eq!(card, "Exchange server mail.example.org · not kept in step yet: this part is not built");
+    assert_eq!(card, "Exchange server mail.example.org");
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn file_info_names_the_folders_the_last_run_could_not_read() {
     // None named: the card is as it was.
     a.ews_unreadable.insert(id, Vec::new());
     let card = crate::backstage::account_detail(&a, a.session.mailbox.account(id).unwrap());
-    assert_eq!(card, "Exchange server mail.example.org · not kept in step yet: this part is not built");
+    assert_eq!(card, "Exchange server mail.example.org");
 }
 
 #[test]

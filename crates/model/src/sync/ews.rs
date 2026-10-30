@@ -331,6 +331,10 @@ pub struct EwsMailResult {
     /// trust it for this account.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub untrusted: String,
+    /// How the run signed in, `basic` or `ntlm` (what File › Info says of the account); empty when
+    /// it never got as far as the server's offer.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub signed_in_with: String,
 }
 
 /// Whether `id` may be a server id of a folder or an item: not empty, at most [`MAX_EWS_ID`] bytes,
@@ -400,6 +404,9 @@ impl EwsMailResult {
         }
         if crate::EwsServer::check_fingerprint(&self.untrusted).is_err() {
             return Err("has a certificate fingerprint that can't be one");
+        }
+        if !matches!(self.signed_in_with.as_str(), "" | "basic" | "ntlm") {
+            return Err("has a way of signing in that MailCraft doesn't speak");
         }
         if self.pages.iter().map(|p| p.state.len().saturating_add(p.from.len())).fold(0usize, usize::saturating_add) > MAX_EWS_STATE_BYTES {
             return Err(TOO_MANY);
@@ -551,6 +558,7 @@ impl std::fmt::Debug for EwsMailResult {
             .field("progress", &self.progress.is_some())
             .field("auth_refused", &self.auth_refused)
             .field("untrusted", &!self.untrusted.is_empty())
+            .field("signed_in_with", &self.signed_in_with)
             .finish()
     }
 }

@@ -60,9 +60,14 @@ pub struct EwsFetchJob {
 
 impl MailApp {
     /// The password a job of the Exchange server account `account` goes with, when one is at hand:
-    /// the one typed this session.
+    /// the one typed this session, or else the one the operating system was asked to remember (what
+    /// the background read of the store brought, never the store itself, #613).
     pub(crate) fn ews_secret(&self, account: Id) -> Option<String> {
-        self.passwords.get(&account).cloned()
+        if let Some(typed) = self.passwords.get(&account) {
+            return Some(typed.clone());
+        }
+        let address = self.session.mailbox.account(account)?.email.clone();
+        self.remembered("password", &address)
     }
 
     /// A Send/Receive of the Exchange server account `account`; `p` may carry the password the owner
@@ -132,6 +137,13 @@ impl MailApp {
                 self.fetching.wake();
             }
             let untrusted = !piece.untrusted.is_empty();
+            // What File › Info says: how this run signed in, and a certificate that needs a say.
+            if !piece.signed_in_with.is_empty() {
+                self.ews_signed_in.insert(account, piece.signed_in_with.clone());
+            }
+            if untrusted {
+                self.ews_certificate.insert(account, piece.untrusted.clone());
+            }
             match apply_ews_mail(&mut self.session, piece) {
                 Ok(said) => {
                     // The folders the run could not read: File › Info names them until the next run.
@@ -170,14 +182,26 @@ impl MailApp {
             }
             if std::mem::take(&mut self.sync_refused) {
                 // Turned down: the next Send/Receive asks for it again, and no round by itself goes
-                // back until then.
+                // back until then. What the system remembered is no good either.
                 self.passwords.remove(&account);
                 self.jmap_refused.insert(account);
+                if let (Some(store), Some(a)) = (&self.services.secrets, self.session.mailbox.account(account)) {
+                    let key = Self::secret_key("password", a);
+                    store.delete(&key);
+                    self.secret_cache.remove(&key);
+                }
             } else if untrusted {
                 // The certificate question comes first (File › Info): no round by itself tries again.
                 self.jmap_refused.insert(account);
             } else if whole {
-                // And nothing is left of the last run's problems.
+                // It went through: that password is worth remembering (when the owner lets it be),
+                // and nothing is left of the last run's problems.
+                if let Some((address, password)) =
+                    self.session.mailbox.account(account).map(|a| a.email.clone()).zip(self.passwords.get(&account).cloned())
+                {
+                    self.remember("password", &address, &password);
+                }
+                self.ews_certificate.remove(&account);
                 self.note_sync_problems(account, &[], true);
             }
             self.note_pushed(account);

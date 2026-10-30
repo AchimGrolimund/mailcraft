@@ -21,13 +21,13 @@ use mailcraft_ui_egui::{MailApp, Services};
 use serde_json::{Value, json};
 
 const ME: &str = "ada@example.org";
-const USER: &str = "CORP\\ada";
-const PASSWORD: &str = "an invented password";
+pub(crate) const USER: &str = "CORP\\ada";
+pub(crate) const PASSWORD: &str = "an invented password";
 /// Wednesday 2026-10-14 16:00 UTC.
 const NOW: i64 = 1_791_993_600;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
+pub(crate) enum Mode {
     Basic,
     Ntlm,
     /// Offers Negotiate and nothing else.
@@ -44,13 +44,13 @@ struct Misbehaviour {
     drop_answer_of: Option<&'static str>,
 }
 
-struct Server {
-    url: String,
-    standin: Arc<StandIn>,
+pub(crate) struct Server {
+    pub(crate) url: String,
+    pub(crate) standin: Arc<StandIn>,
     stop: Arc<AtomicBool>,
     /// How many connections were accepted, and the schemes of the `Authorization` fields seen.
     connections: Arc<AtomicUsize>,
-    schemes: Arc<Mutex<Vec<String>>>,
+    pub(crate) schemes: Arc<Mutex<Vec<String>>>,
     misbehaves: Arc<Mutex<Misbehaviour>>,
 }
 
@@ -61,7 +61,7 @@ impl Drop for Server {
     }
 }
 
-fn serve(mode: Mode) -> Server {
+pub(crate) fn serve(mode: Mode) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/EWS/Exchange.asmx", listener.local_addr().unwrap());
     let standin = Arc::new(StandIn::new());

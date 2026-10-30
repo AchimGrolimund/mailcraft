@@ -373,6 +373,8 @@ const ACCOUNTS: &[&str] = &[
     "account.add",
     "account.edit",
     "account.remove",
+    // An Exchange server account stops trusting the certificate its owner chose to trust (#252).
+    "account.forgetEwsCertificate",
     "account.graphSwitch",
     "account.addSharedMailbox",
     "account.removeSharedMailbox",

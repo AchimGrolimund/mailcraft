@@ -70,6 +70,7 @@ mod drag_pointer_tests;
 #[cfg(test)]
 mod ews_info_tests;
 pub mod ews_mail;
+pub mod ews_setup;
 pub mod favorites_sync;
 #[cfg(test)]
 mod field_drag_tests;
@@ -245,6 +246,12 @@ pub struct Services {
     /// The same host: fetch messages of an Exchange server account whole
     /// (`mailcraft_ews::fetch_messages`), as `graph_fetch` does for a Microsoft account.
     pub ews_fetch: Option<Box<dyn Fn(ews_mail::EwsFetchJob) -> Receiver<mailcraft_model::sync::GraphFetchResult>>>,
+    /// Desktop: set an Exchange server account up on a background thread (#252, E7), once the owner
+    /// has pressed Connect and not before: find the server unless its address is given, ask the
+    /// owner (through the job's answers) before the sign-in goes to a host outside the domain, and
+    /// test the account with one request for the Inbox ([`ews_setup`]). Absent where no host does
+    /// (the browser): Add Account then says it can't connect.
+    pub ews_setup: Option<Box<dyn Fn(ews_setup::EwsSetupJob) -> Receiver<ews_setup::EwsSetupEvent>>>,
     /// Whether the host holds the credential of this JMAP account itself (a page that signed the
     /// owner in to its server): for such an account the window never asks for a password, and its
     /// jobs go without one. Absent, or false for an account: the owner types it.
@@ -1226,6 +1233,12 @@ pub struct MailApp {
     /// The folders of an Exchange server account the last run could not read (named as the owner
     /// knows them; no id), for File › Info. Not saved.
     pub(crate) ews_unreadable: std::collections::HashMap<Id, Vec<String>>,
+    /// How the last run of each Exchange server account signed in (`basic` or `ntlm`), for File ›
+    /// Info. Not saved.
+    pub(crate) ews_signed_in: std::collections::HashMap<Id, String>,
+    /// The fingerprint of the certificate an Exchange server account's server showed that needs
+    /// the owner's say (its last run stopped at it), for File › Info. Not saved.
+    pub(crate) ews_certificate: std::collections::HashMap<Id, String>,
     /// [`mailcraft_engine::Session::openings`] when the secrets in memory were last checked
     /// against the mailbox they belong to.
     secrets_opening: u64,
@@ -1544,6 +1557,8 @@ impl MailApp {
             list_page_rows: 10,
             passwords: Default::default(),
             ews_unreadable: Default::default(),
+            ews_signed_in: Default::default(),
+            ews_certificate: Default::default(),
             secrets_opening: 0,
             secret_cache: Default::default(),
             secret_read: None,
@@ -1929,6 +1944,9 @@ impl MailApp {
             self.passwords.remove(&account);
             self.tokens.remove(&account);
             self.jmap_refused.remove(&account);
+            self.ews_unreadable.remove(&account);
+            self.ews_signed_in.remove(&account);
+            self.ews_certificate.remove(&account);
             self.forget_account_secrets(&gone);
         }
         // Servers changed: what was kept for the old ones is not given to the new, and the owner
@@ -1942,6 +1960,8 @@ impl MailApp {
             self.tokens.remove(&before.id);
             self.graph_tokens.remove(&before.id);
             self.jmap_refused.remove(&before.id);
+            self.ews_signed_in.remove(&before.id);
+            self.ews_certificate.remove(&before.id);
         }
         // Likewise when Undo or Redo changed them: what was typed for the ones it had goes to none
         // of the others.
@@ -2841,6 +2861,8 @@ impl MailApp {
             self.graph_tokens.clear();
             self.jmap_refused.clear();
             self.ews_unreadable.clear();
+            self.ews_signed_in.clear();
+            self.ews_certificate.clear();
             // Work started for the old mailbox stays with it: a JMAP run and the messages being
             // fetched whole are called off (what they still bring is thrown away, `jmap_mail`,
             // `graph_fetch`), a sign-in on its way is called off, and a switch to Graph (its copy,
