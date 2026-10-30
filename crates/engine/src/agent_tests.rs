@@ -118,11 +118,11 @@ fn the_question_about_an_outbox_says_what_that_outbox_does() {
     let imap =
         s.run("account.add", &json!({"email": "ada@mail.example", "incoming": {"host": "imap.mail.example"}})).unwrap()["id"].as_u64().unwrap();
     let holds = s.mailbox.folder_of_kind(imap, FolderKind::Outbox).unwrap();
-    for id in ["mail.move", "mail.copy"] {
+    for (id, verb) in [("mail.move", "move"), ("mail.copy", "copy")] {
         let d = describe(&s, id, &json!({"ids": [m], "folder": sends}));
         assert!(d.ends_with("in the Outbox, which sends them"), "{d}");
         let d = describe(&s, id, &json!({"ids": [m], "folder": holds}));
-        assert!(d.ends_with("in the Outbox, held there unsent until Send Again"), "{d}");
+        assert!(d.starts_with(verb) && d.ends_with("into the Outbox of ada@mail.example, held there unsent until Send Again"), "{d}");
     }
     // Imported mail never lies in an Outbox, of whichever kind.
     for folder in [sends, holds] {

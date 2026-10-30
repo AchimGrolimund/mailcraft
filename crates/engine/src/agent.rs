@@ -1031,19 +1031,17 @@ fn what_it_does(s: &Session, id: &str, params: &Value) -> String {
         "mail.move" | "mail.copy" => {
             // What the agent names (#620), read as the command reads them (#503, #451).
             let ids = taken(params);
-            let folder = p::id(params, "folder");
-            let into = folder.filter(|f| !is_outbox(&s.mailbox, *f)).and_then(|f| s.mailbox.folder(f));
-            match into {
-                Some(f) => {
-                    let account = s.mailbox.account(f.account).map_or_else(|| "another account".to_string(), |a| clip(&a.email, 80));
-                    let verb = if id == "mail.move" { "move" } else { "copy" };
-                    format!("{verb} {} onto the server of {account}, into {}", messages_text(s, &ids), quoted(&f.name))
+            let verb = if id == "mail.move" { "move" } else { "copy" };
+            let account = |id| s.mailbox.account(id).map_or_else(|| "another account".to_string(), |a| clip(&a.email, 80));
+            match p::id(params, "folder").and_then(|f| s.mailbox.folder(f)) {
+                Some(f) if !is_outbox(&s.mailbox, f.id) => {
+                    format!("{verb} {} onto the server of {}, into {}", messages_text(s, &ids), account(f.account), quoted(&f.name))
                 }
                 // An IMAP account's holds what is put there (#607).
-                None if folder.is_some_and(|f| s.mailbox.is_imap_outbox(f)) => {
-                    format!("put {} in the Outbox, held there unsent until Send Again", messages_text(s, &ids))
+                Some(f) if s.mailbox.is_imap_outbox(f.id) => {
+                    format!("{verb} {} into the Outbox of {}, held there unsent until Send Again", messages_text(s, &ids), account(f.account))
                 }
-                None => format!("put {} in the Outbox, which sends them", messages_text(s, &ids)),
+                _ => format!("put {} in the Outbox, which sends them", messages_text(s, &ids)),
             }
         }
         // (Never into the Outbox itself: `import` puts mail elsewhere, or refuses it.)
