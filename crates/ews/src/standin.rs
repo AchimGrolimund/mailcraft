@@ -188,6 +188,10 @@ pub struct State {
     pub outgoing: Vec<Vec<u8>>,
     /// The `DeleteType` of every item or folder delete, in order.
     pub deletes: Vec<String>,
+    /// The listing of folders gives a folder's `FolderClass` only when the request asks for it
+    /// (`folder:FolderClass` among the additional properties), as Grommunio does: its Default
+    /// shape leaves it out (E8).
+    pub class_only_when_asked: bool,
 }
 
 impl Default for State {
@@ -252,6 +256,7 @@ impl Default for State {
             lacks_flag: false,
             outgoing: Vec::new(),
             deletes: Vec::new(),
+            class_only_when_asked: false,
         }
     }
 }

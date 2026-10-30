@@ -263,9 +263,17 @@ impl AppLogger {
     }
 }
 
+/// The system verifier's own line ("failed to verify TLS certificate", at error level) about a
+/// certificate it doesn't trust, while that is looked at for a connection to a server whose
+/// certificate the owner trusted by its fingerprint: the refusal is expected there, and what
+/// comes of it is reported by the connection (E8). Nothing else of the verifier is left out.
+fn quiet_verifier(target: &str) -> bool {
+    target.starts_with("rustls_platform_verifier") && mailcraft_net::pin_check_under_way()
+}
+
 impl log::Log for AppLogger {
     fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-        metadata.level() <= self.filter.level_for(metadata.target())
+        metadata.level() <= self.filter.level_for(metadata.target()) && !quiet_verifier(metadata.target())
     }
 
     fn log(&self, record: &log::Record<'_>) {
