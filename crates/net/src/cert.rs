@@ -178,6 +178,37 @@ const GENERALIZED_TIME: u8 = 0x18;
 const COMMON_NAME: &[u8] = &[0x55, 0x04, 0x03];
 const ORGANIZATION: &[u8] = &[0x55, 0x04, 0x0a];
 
+/// The hash that `tls-server-end-point` channel binding (RFC 5929 4.1) carries for the certificate
+/// `der`: the hash of its signature algorithm (SHA-256, 384 or 512), with SHA-1 and MD5 replaced by
+/// SHA-256, taken over the whole DER. None for a signature whose hash this doesn't know (RSASSA-PSS,
+/// Ed25519, SHA-224) or for bytes that are no certificate: the caller then sends no binding.
+pub(crate) fn end_point_hash(der: &[u8]) -> Option<Vec<u8>> {
+    // sha1/sha256/sha384/sha512 WithRSAEncryption (1.2.840.113549.1.1.5, .11, .12, .13), md5WithRSA (.4),
+    // and ecdsa-with-SHA1/256/384/512 (1.2.840.10045.4.1, 4.3.2, 4.3.3, 4.3.4).
+    const RSA: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01];
+    const ECDSA: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04];
+    let certificate = Der(der).expect(SEQUENCE)?;
+    let mut parts = Der(certificate);
+    parts.expect(SEQUENCE)?;
+    let algorithm = Der(parts.expect(SEQUENCE)?).expect(OID)?;
+    let algorithm = if let Some(rest) = algorithm.strip_prefix(RSA) {
+        match rest {
+            [0x04 | 0x05 | 0x0b] => &digest::SHA256,
+            [0x0c] => &digest::SHA384,
+            [0x0d] => &digest::SHA512,
+            _ => return None,
+        }
+    } else {
+        match algorithm.strip_prefix(ECDSA)? {
+            [0x01] | [0x03, 0x02] => &digest::SHA256,
+            [0x03, 0x03] => &digest::SHA384,
+            [0x03, 0x04] => &digest::SHA512,
+            _ => return None,
+        }
+    };
+    Some(digest::digest(algorithm, der).as_ref().to_vec())
+}
+
 /// `(not_before, not_after, issuer, subject)` of a certificate's DER.
 fn fields(der: &[u8]) -> Option<(i64, i64, String, String)> {
     let mut certificate = Der(der);
