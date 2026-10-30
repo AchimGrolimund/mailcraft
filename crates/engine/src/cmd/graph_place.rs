@@ -275,7 +275,7 @@ pub(crate) fn put_back(mb: &mut Mailbox, id: Id, copy: bool, from: Option<Id>) {
                 ..Default::default()
             };
             (m.server, m.moving_out, m.returned) = (Some(server), None, RETURNED_LISTINGS);
-            (m.folder, m.account, m.uid, m.synced) = (folder, out.account, 0, None);
+            m.lies_in(folder, out.account, 0, None);
         }
         None if copy => {
             let _ = mb.forget_message(id);
@@ -292,7 +292,9 @@ pub(crate) fn put_back(mb: &mut Mailbox, id: Id, copy: bool, from: Option<Id>) {
                 && let Some(account) = mb.folder(folder).map(|f| f.account)
                 && let Ok(m) = mb.message_mut(id)
             {
-                (m.folder, m.account, m.uid, m.synced) = (folder, account, 0, None);
+                m.lies_in(folder, account, 0, None);
+                // Back in an IMAP account's Outbox it is held again: it left unsent (#607).
+                mb.hold_if_in_outbox(id);
             }
         }
     }
@@ -332,7 +334,7 @@ fn back_on_imap(mb: &mut Mailbox, id: Id) -> bool {
         }
     };
     let Ok(m) = mb.message_mut(id) else { return true };
-    (m.folder, m.account, m.uid, m.synced) = (folder, owner, uid, synced);
+    m.lies_in(folder, owner, uid, synced);
     m.returned = if uid != 0 { RETURNED_LISTINGS } else { 0 };
     true
 }
@@ -347,7 +349,7 @@ pub(crate) fn kept_instead(mb: &mut Mailbox, id: Id) -> bool {
     let Ok(folder) = mb.imported_folder(false) else { return false };
     let Some(account) = mb.folder(folder).map(|f| f.account) else { return false };
     let Ok(m) = mb.message_mut(id) else { return false };
-    (m.folder, m.account, m.uid, m.synced) = (folder, account, 0, None);
+    m.lies_in(folder, account, 0, None);
     (m.server, m.moving_out, m.returned) = (None, None, 0);
     true
 }
