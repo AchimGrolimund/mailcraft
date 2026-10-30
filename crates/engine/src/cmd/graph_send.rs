@@ -16,7 +16,7 @@
 //! never sent from the owner's own address instead.
 
 use mailcraft_model::sync::{MAX_SENDS, SEND_AS_DENIED, SendDone, SendOutcome, SendUp};
-use mailcraft_model::{FolderKind, Id, Mailbox};
+use mailcraft_model::{FolderKind, Id, Mailbox, Queued};
 use serde_json::{Value, json};
 
 use super::{bad, fail};
@@ -45,6 +45,7 @@ pub fn from_server(m: &mailcraft_model::Message) -> bool {
 pub fn sends(s: &Session, account: Id) -> Vec<SendUp> {
     let mb = &s.mailbox;
     let Some(outbox) = mb.folder_of_kind(account, FolderKind::Outbox) else { return Vec::new() };
+    let exchange = mb.account(account).is_some_and(|a| a.kind == mailcraft_model::AccountKind::Exchange);
     let mut waiting: Vec<_> = mb.messages_in(outbox).filter(|m| m.held.is_empty() && !from_server(m)).map(|m| m.id).collect();
     waiting.sort_unstable();
     waiting
@@ -58,6 +59,11 @@ pub fn sends(s: &Session, account: Id) -> Vec<SendUp> {
             }
         })
         .map(|m| match m.server_draft.as_ref().and(super::graph_drafts::draft_up_whole(&m)) {
+            // An Exchange server account's message always goes as its MIME, with the server filing
+            // the copy in Sent Items (not every server files one when a saved draft is sent); the
+            // draft it was saved as is named so that the run takes it away once the send is clear
+            // (E8).
+            Some(draft) if exchange => SendUp { message: m.id, draft: Some(draft), mime: Some(Box::new(m.as_ref().clone())) },
             // Sent as it is here, every field and attachment written over what the server has:
             // whatever was changed on the server meanwhile is the owner's to lose (AU2-14).
             Some(draft) => SendUp { message: m.id, draft: Some(mailcraft_model::sync::DraftUp { change_key: String::new(), ..draft }), mime: None },
@@ -90,6 +96,16 @@ pub fn send_done(mb: &mut Mailbox, account: Id, done: &SendDone, lang: mailcraft
         // Gone: the server files it in Sent Items, and that copy comes down. What it answers or
         // forwards is marked so now (#154).
         SendOutcome::Sent => {
+            // An Exchange server account's draft the run could not take away after the send: the
+            // takeaway goes up with the next run as any other delete, and the send is never made
+            // again (E8).
+            if !done.draft_left.is_empty() {
+                let queued = Queued::DeleteMessage { account, id: done.draft_left.clone(), kept: None };
+                if !mb.queued.contains(&queued) {
+                    mb.queued.push(queued);
+                }
+                changed = true;
+            }
             mb.mark_answered(done.message);
             mb.forget_message(done.message).is_ok() || changed
         }
@@ -145,7 +161,7 @@ fn hold_sends(s: &mut Session, v: &Value) -> CmdResult {
     let waiting: Vec<Id> = s.mailbox.messages_in(outbox).filter(|m| m.held.is_empty()).map(|m| m.id).take(MAX_SENDS).collect();
     let mut said = Vec::new();
     for id in &waiting {
-        let done = SendDone { message: *id, outcome: SendOutcome::Held { lost: false, why: why.to_string() }, draft: None };
+        let done = SendDone { message: *id, outcome: SendOutcome::Held { lost: false, why: why.to_string() }, draft: None, draft_left: String::new() };
         send_done(&mut s.mailbox, account, &done, s.interface_language, &mut said);
     }
     if let Some(first) = said.first() {

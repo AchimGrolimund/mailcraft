@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Drafts and sending (#252, E6): `CreateItem` with `SaveOnly` into the server's Drafts, `FindItem`
 //! by MailCraft's marker (a draft whose make was not answered is found, not made twice),
-//! `CreateAttachment` and `DeleteAttachment`, `SendItem` for a saved draft and `CreateItem` with
-//! `SendAndSaveCopy` for a message never saved ([MS-OXWSCORE], [MS-OXWSMSG], [MS-OXWSATT]).
+//! `CreateAttachment` and `DeleteAttachment`, and `CreateItem` with `SendAndSaveCopy` for every
+//! message sent (a saved draft too: `SendItem` of a draft files no copy on some servers) ([MS-OXWSCORE], [MS-OXWSMSG], [MS-OXWSATT]).
 //!
 //! **The marker** is an extended property of the draft (a string in the `PublicStrings` set called
 //! `MailCraftMarker`), which no mail program shows. **Nothing here is sent twice**: the host marks
@@ -323,41 +323,6 @@ impl RemoveAttachments {
             return Err(Error::Unexpected);
         }
         Ok(key)
-    }
-}
-
-/// `SendItem` of a saved draft, filing the copy in Sent Items.
-#[derive(Clone, PartialEq, Eq)]
-pub struct SendDraft {
-    id: String,
-    change_key: String,
-}
-
-impl std::fmt::Debug for SendDraft {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("SendDraft(..)")
-    }
-}
-
-impl SendDraft {
-    /// Sends the draft `id` as it is at `change_key`.
-    pub fn new(id: &str, change_key: &str) -> Self {
-        Self { id: id.to_owned(), change_key: change_key.to_owned() }
-    }
-
-    /// The operation: `ItemIds` and `SavedItemFolderId`, with `SaveItemToFolder="true"`.
-    pub fn element(&self) -> Element {
-        Element::new("m:SendItem")
-            .attr("SaveItemToFolder", "true")
-            .child(Element::new("m:ItemIds").child(id_element("t:ItemId", &self.id, Some(&self.change_key))))
-            .child(folder_ref("m:SavedItemFolderId", "sentitems", None))
-    }
-
-    /// Whether the server took it.
-    pub fn answer(&self, reply: &Reply) -> Result<(), Error> {
-        let messages = reply.messages("SendItem")?;
-        let [message] = messages.as_slice() else { return Err(Error::Unexpected) };
-        message.ok().map(|_| ())
     }
 }
 

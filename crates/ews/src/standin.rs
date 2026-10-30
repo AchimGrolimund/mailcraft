@@ -72,7 +72,6 @@ const WRITES: &[&str] = &[
     "DeleteItem",
     "MoveItem",
     "CopyItem",
-    "SendItem",
     "CreateFolder",
     "UpdateFolder",
     "DeleteFolder",

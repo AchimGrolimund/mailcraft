@@ -323,4 +323,9 @@ pub struct SendDone {
     pub outcome: SendOutcome,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub draft: Option<DraftDone>,
+    /// An Exchange server account's draft that was sent as a message of its own: its server id
+    /// when the server still has it after a send that is clear (taking it away failed), else
+    /// empty. The takeaway is queued as an ordinary delete; the send is not made again.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub draft_left: String,
 }

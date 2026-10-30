@@ -38,7 +38,7 @@ use mailcraft_model::sync::{
 use mailcraft_model::{FolderKind, Id, Importance};
 
 use crate::changes::{CreateFolder, DeleteFolder, DeleteItem, DeleteMode, GetItemNow, ItemUpdate, MoveFolder, MoveItem, RenameFolder, UpdateItem};
-use crate::compose::{AddAttachments, CreateDraft, DraftContent, FindDraft, RemoveAttachments, SendDraft, SendMessage};
+use crate::compose::{AddAttachments, CreateDraft, DraftContent, FindDraft, RemoveAttachments, SendMessage};
 use crate::error::ResponseCode;
 use crate::http::HttpExchange;
 use crate::run::{Asked, Run, base};
@@ -461,53 +461,48 @@ impl<E: HttpExchange> Run<'_, E> {
     /// One message sent (a saved draft is brought up to date and sent as the draft; one never saved
     /// goes as its MIME). Never twice: a lost answer is held.
     pub(crate) async fn send(&mut self, send: &SendUp) -> (SendDone, Result<(), Asked>) {
-        let mut done = SendDone { message: send.message, outcome: SendOutcome::Waits, draft: None };
+        let mut done = SendDone { message: send.message, outcome: SendOutcome::Waits, draft: None, draft_left: String::new() };
         let ended = self.send_into(send, &mut done).await;
         (done, ended)
     }
 
     async fn send_into(&mut self, send: &SendUp, done: &mut SendDone) -> Result<(), Asked> {
-        let held = |why: String| SendOutcome::Held { lost: false, why };
-        match (&send.draft, &send.mime) {
-            (Some(draft), _) => {
-                let (up, ended) = self.draft(draft).await;
-                let whole = !up.id.is_empty() && up.fields && (draft.attachments.is_none() || up.attachments.is_some()) && !up.conflict;
-                let (refused, id, key) = (up.refused, up.id.clone(), up.change_key.clone());
-                if !up.id.is_empty() || up.refused.is_some() {
-                    done.draft = Some(up);
-                }
-                ended?;
-                if let Some(status) = refused {
-                    done.outcome =
-                        held(if status == 403 { "the server doesn't allow it".to_owned() } else { "the server won't take the draft".to_owned() });
-                    return Ok(());
-                }
-                if !whole {
-                    log::info!("ews sending: a message isn't whole on the server yet; it waits for the next run");
-                    return Ok(());
-                }
-                let op = SendDraft::new(&id, &key);
-                match self.ask_once(&op.element(), &|reply| op.answer(reply)).await {
-                    Ok(()) => done.outcome = SendOutcome::Sent,
-                    Err(error) => return self.sent(error, done, plain_or_lost),
-                }
+        // Every message goes as its MIME with a copy asked for in Sent Items, a saved draft too:
+        // `SendItem` of a draft leaves it in Drafts and files no copy on some servers (Grommunio,
+        // E8). A send with no MIME (not one the engine makes for an Exchange account) waits.
+        let Some(message) = &send.mime else {
+            log::info!("ews sending: a message without its content waits");
+            return Ok(());
+        };
+        let op = match SendMessage::new(message) {
+            Ok(op) => op,
+            Err(e) => {
+                done.outcome = SendOutcome::Held { lost: false, why: e.to_string() };
+                return Ok(());
             }
-            (None, Some(message)) => {
-                let op = match SendMessage::new(message) {
-                    Ok(op) => op,
-                    Err(e) => {
-                        done.outcome = held(e.to_string());
-                        return Ok(());
-                    }
-                };
-                match self.ask_once(&op.element(), &|reply| op.answer(reply)).await {
-                    Ok(()) => done.outcome = SendOutcome::Sent,
-                    Err(error) => return self.sent(error, done, plain_or_lost),
-                }
-            }
-            (None, None) => {}
+        };
+        match self.ask_once(&op.element(), &|reply| op.answer(reply)).await {
+            Ok(()) => done.outcome = SendOutcome::Sent,
+            Err(error) => return self.sent(error, done, plain_or_lost),
         }
-        Ok(())
+        // The draft it was saved as goes only after a clear success, as a soft delete (kept
+        // recoverable); never a hard one. Gone already is as good. One that could not be taken
+        // away is named, and goes with the next run as an ordinary delete: the send is not
+        // made again.
+        let Some(id) = send.draft.as_ref().map(|d| d.id.as_str()).filter(|id| !id.is_empty()) else { return Ok(()) };
+        let op = DeleteItem::new(id, DeleteMode::SoftDelete);
+        match self.ask(&op.element(), &|reply| op.answer(reply)).await {
+            Ok(()) | Err(Asked::Code(ResponseCode::ItemNotFound)) => Ok(()),
+            Err(Asked::Stop(stop)) => {
+                done.draft_left = id.to_owned();
+                Err(Asked::Stop(stop))
+            }
+            Err(_) => {
+                done.draft_left = id.to_owned();
+                log::info!("ews sending: the draft of a message sent stays on the server for now; it is taken away next run");
+                Ok(())
+            }
+        }
     }
 
     /// What an error of a send means: held (the answer was lost, or the server refused it), or the

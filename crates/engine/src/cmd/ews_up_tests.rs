@@ -196,7 +196,7 @@ fn a_draft_saved_goes_up_is_taken_in_and_a_send_is_held_when_its_answer_was_lost
     assert_eq!(request.sends.len(), 2);
     // The answer to one was lost: held, said so, not sent again by itself.
     let lost = request.sends[1].message;
-    let sent = SendDone { message: lost, outcome: SendOutcome::Held { lost: true, why: String::new() }, draft: None };
+    let sent = SendDone { message: lost, outcome: SendOutcome::Held { lost: true, why: String::new() }, draft: None, draft_left: String::new() };
     let said = took(&mut s, account, mailcraft_model::sync::EwsMailResult { sent: vec![sent], partial: true, ..piece(account) });
     let held = &s.mailbox.message(lost).unwrap().held;
     assert!(held.contains("may have been sent") && held.contains("from the server") && !held.contains("Microsoft"), "{held}");
@@ -205,12 +205,37 @@ fn a_draft_saved_goes_up_is_taken_in_and_a_send_is_held_when_its_answer_was_lost
     assert!(next.sends.iter().all(|send| send.message != lost), "a held message is not offered again");
     // The other went: it leaves the Outbox, the server files the copy.
     let went = request.sends[0].message;
-    let sent = SendDone { message: went, outcome: SendOutcome::Sent, draft: None };
+    let sent = SendDone { message: went, outcome: SendOutcome::Sent, draft: None, draft_left: String::new() };
     let said = took(&mut s, account, mailcraft_model::sync::EwsMailResult { sent: vec![sent], ..piece(account) });
     assert!(s.mailbox.message(went).is_none() && said["errors"].as_array().is_some());
     // Send Again puts the held one back.
     s.run("mail.sendAgain", &json!({"id": lost})).unwrap();
     assert!(ews_mail_request(&s, account, false).unwrap().sends.iter().any(|send| send.message == lost));
+}
+
+#[test]
+fn a_saved_draft_goes_as_its_mime_and_a_draft_left_after_the_send_is_deleted_by_the_next_run() {
+    let (mut s, account, ..) = setup();
+    s.run("mail.new", &json!({"account": account, "to": "kit@example.org", "subject": "Hello"})).unwrap();
+    let draft = s.run("compose.saveDraft", &json!({})).unwrap()["draft"].as_u64().unwrap();
+    let up = ews_mail_request(&s, account, false).unwrap().drafts[0].clone();
+    let done = DraftDone { change: up, id: "D1".into(), folder: "F3".into(), change_key: "CK2".into(), fields: true, attachments: Some(vec![]), ..Default::default() };
+    took(&mut s, account, mailcraft_model::sync::EwsMailResult { drafts: vec![done], partial: true, ..piece(account) });
+    s.run("compose.send", &json!({})).unwrap();
+    let request = ews_mail_request(&s, account, false).unwrap();
+    // The message goes as its MIME, and names the draft the run takes away after a clear send.
+    let [send] = request.sends.as_slice() else { panic!("{:?}", request.sends) };
+    let queued = send.message;
+    assert!(send.mime.as_ref().is_some_and(|m| m.subject == "Hello"));
+    assert_eq!(send.draft.as_ref().map(|d| d.id.as_str()), Some("D1"));
+    // It went, and the draft could not be taken away: the send is not offered again, and the
+    // takeaway is an ordinary delete of the next run.
+    let sent = SendDone { message: queued, outcome: SendOutcome::Sent, draft: None, draft_left: "D1".into() };
+    took(&mut s, account, mailcraft_model::sync::EwsMailResult { sent: vec![sent], partial: true, ..piece(account) });
+    assert!(s.mailbox.message(queued).is_none());
+    let next = ews_mail_request(&s, account, false).unwrap();
+    assert!(next.sends.is_empty());
+    assert!(next.messages.contains(&MessageChange::Delete { id: "D1".into() }), "{:?}", next.messages);
 }
 
 #[test]
