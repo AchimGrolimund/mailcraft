@@ -119,6 +119,8 @@ pub enum EwsSetupFailure {
     NoExchangeAddress,
     /// The server wants a way of signing in that MailCraft doesn't speak yet.
     SignInNotSupported,
+    /// The server's automatic setup takes only NTLM, which a typed server address is signed in to with.
+    SignInNtlm,
     /// The owner did not agree to a host.
     Declined,
     /// The user name or password was not accepted.

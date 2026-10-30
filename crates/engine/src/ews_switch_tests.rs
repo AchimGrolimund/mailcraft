@@ -331,3 +331,33 @@ fn a_result_with_too_much_in_it_is_refused_before_anything_else_is_asked() {
         json!({"result": {"account": id, "email": "ada@example.org", "hierarchy": "H", "pages": [{"folder": "F1", "from": "S0", "state": "S"}]}});
     assert!(s.run("sync.applyEws", &sound).is_ok());
 }
+
+#[test]
+fn forgetting_a_trusted_certificate_is_refused_with_the_switch_off_and_works_with_it_on() {
+    let (mb, id) = mailbox_with_exchange();
+    let mut off = session(false);
+    off.mailbox = mb.clone();
+    let before = off.mailbox.account(id).unwrap().ews.clone();
+    let why = said(off.run("account.forgetEwsCertificate", &json!({"id": id})));
+    assert!(why.contains(SWITCHED_OFF) || !why.is_empty(), "{why}");
+    assert_eq!(off.mailbox.account(id).unwrap().ews, before, "a refused command changes nothing");
+    let mut on = session(true);
+    on.mailbox = mb;
+    assert_eq!(on.run("account.forgetEwsCertificate", &json!({"id": id})).unwrap()["forgotten"], json!(true));
+    assert!(on.mailbox.account(id).unwrap().ews.as_ref().unwrap().trusted.is_empty());
+}
+
+#[test]
+fn an_address_on_a_microsoft_host_is_refused_by_add_and_edit() {
+    for url in ["https://outlook.office365.com/EWS/Exchange.asmx", "https://outlook.office.com/EWS/Exchange.asmx"] {
+        let mut s = session(true);
+        let before = s.mailbox.accounts.len();
+        let why = said(s.run("account.add", &json!({"email": "ada@example.org", "kind": "exchange", "ews": {"url": url}})));
+        assert!(why.contains("Microsoft"), "{why}");
+        assert_eq!(s.mailbox.accounts.len(), before, "nothing was added");
+        let id = s.run("account.add", &exchange("ada@example.org")).unwrap()["id"].as_u64().unwrap();
+        let why = said(s.run("account.edit", &json!({"id": id, "ews": {"url": url}})));
+        assert!(why.contains("Microsoft"), "{why}");
+        assert_eq!(s.mailbox.account(id).unwrap().ews.as_ref().unwrap().url, URL, "the edit changed nothing");
+    }
+}

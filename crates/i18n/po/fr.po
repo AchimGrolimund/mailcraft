@@ -1330,6 +1330,11 @@ msgid "Automatic"
 msgstr "Automatique"
 
 #. interface
+#: crates/ui-egui/src/account_setup/exchange.rs
+msgid "Automatic setup can't sign in to this server. Type its address in Server settings and MailCraft will sign in with NTLM."
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/dialogs.rs
 msgid "Available formats:"
 msgstr ""
@@ -5004,6 +5009,11 @@ msgstr "Courrier, calendrier, contacts et tâches, écrits de zéro en Rust. Il 
 #, fuzzy
 msgid "MailCraft can now keep {account} in step with Microsoft through Microsoft Graph, the way Outlook on the web does, instead of IMAP. Your folders, flags, categories and drafts then match what you see in Outlook, and your mail keeps coming even where your organisation has turned IMAP off."
 msgstr "MailCraft peut désormais synchroniser {account} avec Microsoft via Microsoft Graph, comme le fait Outlook sur le web, au lieu d'IMAP. Vos dossiers, indicateurs, catégories et brouillons correspondent alors à ce que vous voyez dans Outlook, et votre courrier continue d'arriver même si votre organisation a désactivé IMAP."
+
+#. interface
+#: crates/ui-egui/src/account_setup/exchange.rs
+msgid "MailCraft can't sign in to this server this way yet (it wants Kerberos). Ask your administrator whether it can take a user name and password over an encrypted connection."
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/account_setup.rs
@@ -10270,11 +10280,6 @@ msgstr ""
 #. what a command says
 #: crates/engine/src/cmd/ews_mail.rs crates/engine/src/cmd/jmap_mail.rs
 msgid "The server turned down the sign-in for {name}: sign in again"
-msgstr ""
-
-#. interface
-#: crates/ui-egui/src/account_setup/exchange.rs
-msgid "The server wants a way of signing in that MailCraft can't do yet. Ask your administrator whether it can take a user name and password over an encrypted connection, and type the server's address in Server settings."
 msgstr ""
 
 #. interface

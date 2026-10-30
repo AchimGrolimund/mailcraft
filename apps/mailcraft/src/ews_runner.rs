@@ -381,6 +381,11 @@ pub(crate) fn settled_fetch(mut result: GraphFetchResult, problem: Option<&Certi
 /// The Basic credential of `username` (the address when it is empty) and `password`, as a client for
 /// `url`. Why not: words that name neither.
 pub(crate) fn client(url: &str, username: &str, email: &str, password: &str) -> Result<Client, &'static str> {
+    // A mailbox file is hostile too: an account that names a Microsoft host is never signed in to
+    // here, whatever the file says (its mailbox is a Microsoft account).
+    if crate::ews_setup::on_microsoft(url) {
+        return Err("This server is Microsoft's: add the mailbox as a Microsoft account instead");
+    }
     let name = if username.trim().is_empty() { email.trim() } else { username.trim() };
     let secret = Secret::basic(name, password).map_err(|_| "The user name or the password can't be used to sign in")?;
     Client::new(url, secret).map_err(|_| "The server's address can't be used")

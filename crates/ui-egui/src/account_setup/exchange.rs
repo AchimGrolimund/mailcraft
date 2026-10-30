@@ -108,8 +108,9 @@ pub(super) fn failure_words(failure: EwsSetupFailure) -> String {
             tl!("The server answered without the address of Exchange Web Services. Ask your administrator for it and type it in Server settings.")
         }
         EwsSetupFailure::SignInNotSupported => {
-            tl!("The server wants a way of signing in that MailCraft can't do yet. Ask your administrator whether it can take a user name and password over an encrypted connection, and type the server's address in Server settings.")
+            tl!("MailCraft can't sign in to this server this way yet (it wants Kerberos). Ask your administrator whether it can take a user name and password over an encrypted connection.")
         }
+        EwsSetupFailure::SignInNtlm => tl!("Automatic setup can't sign in to this server. Type its address in Server settings and MailCraft will sign in with NTLM."),
         EwsSetupFailure::Declined => tl!("You didn't agree to send your sign-in to the server the setup led to. Type the server's address in Server settings."),
         EwsSetupFailure::SignInRefused => {
             tl!("The server didn't accept the user name and password. Check them, or type your user name in Server settings (DOMAIN\\user or you@example.org).")
@@ -157,7 +158,8 @@ impl AccountSetup {
             return Some(self.not_an_address());
         }
         let url = self.exchange.url.trim();
-        if !url.is_empty() && EwsServer::check_url(url).is_err() {
+        // (A Microsoft host is handed over, not refused as a bad address: see `exchange_connect`.)
+        if !url.is_empty() && EwsServer::check_url(url).is_err() && !self.typed_microsoft() {
             return Some(
                 tl!("The server's address must begin with https:// and name the server (https://mail.example.org/EWS/Exchange.asmx)").to_string(),
             );
@@ -168,11 +170,22 @@ impl AccountSetup {
         None
     }
 
+    /// Whether the address typed in Server settings is on one of Microsoft's mail hosts.
+    fn typed_microsoft(&self) -> bool {
+        let server = EwsServer { url: self.exchange.url.trim().to_string(), ..Default::default() };
+        server.host().is_some_and(mailcraft_model::is_exchange_online)
+    }
+
     /// Connect: have the host search for the server (or use the one typed) and test the account.
     fn exchange_connect(&mut self, app: &mut MailApp) {
         if let Some(problem) = self.exchange_problem() {
             self.error = problem;
             self.settings_open = true;
+            return;
+        }
+        // Microsoft's own mail is a Microsoft account: nothing is sent, and the password goes.
+        if self.typed_microsoft() {
+            self.exchange_finished(app, EwsSetupEnd::ExchangeOnline);
             return;
         }
         self.exchange.trusted.clear();

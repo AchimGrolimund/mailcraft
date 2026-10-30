@@ -415,3 +415,40 @@ fn a_run_says_how_it_signed_in_for_file_info() {
         assert!(last.check().is_ok(), "the piece is one the engine takes in");
     }
 }
+
+#[test]
+fn a_typed_address_on_a_microsoft_host_is_handed_over_and_nothing_is_sent() {
+    for url in [
+        "https://outlook.office365.com/EWS/Exchange.asmx",
+        "https://outlook.office.com/EWS/Exchange.asmx",
+        "https://OUTLOOK.Office365.com./EWS/Exchange.asmx",
+        "https://mail.outlook.com/EWS/Exchange.asmx",
+    ] {
+        let world = Fake::new(AutodiscoverStandIn::new());
+        let (job, _) = make_job(ME, USER, PASSWORD, url);
+        assert_eq!(ended(&run(&world, &job)), EwsSetupEnd::ExchangeOnline, "{url}");
+        assert!(world.probes.lock().unwrap().is_empty(), "no sign-in went to {url}");
+        assert!(world.autodiscover.state().seen.is_empty() && world.lookups.lock().unwrap().is_empty(), "{url}");
+        // The certificate review, which signs nobody in, is no way round it either.
+        let (mut job, _) = make_job(ME, USER, "", url);
+        job.certificate_only = true;
+        assert_eq!(ended(&run(&world, &job)), EwsSetupEnd::ExchangeOnline, "{url}");
+    }
+    // An organisation's own server that merely looks alike is its own.
+    assert!(!crate::ews_setup::on_microsoft("https://outlook.abc.com/EWS/Exchange.asmx"));
+    assert!(!crate::ews_setup::on_microsoft("https://evil-office365.com/EWS/Exchange.asmx"));
+}
+
+#[test]
+fn a_run_for_an_account_on_a_microsoft_host_is_refused_before_any_request() {
+    let request = mailcraft_model::sync::EwsMailRequest {
+        url: "https://outlook.office365.com/EWS/Exchange.asmx".into(),
+        email: ME.into(),
+        ..Default::default()
+    };
+    let mut pieces = Vec::new();
+    crate::ews_runner::run_mail_with(&request, PASSWORD, &AtomicBool::new(false), &mut |piece| pieces.push(piece));
+    assert_eq!(pieces.len(), 1);
+    assert!(pieces[0].errors.iter().any(|line| line.contains("Microsoft")), "{:?}", pieces[0].errors);
+    assert!(crate::ews_runner::client("https://outlook.office365.com/EWS/Exchange.asmx", "ada", ME, PASSWORD).is_err());
+}

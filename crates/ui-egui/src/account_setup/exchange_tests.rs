@@ -770,3 +770,112 @@ fn the_dialog_opens_on_the_exchange_page_only_with_the_switch_and_an_address() {
     assert_eq!(AccountSetup::open(&a, &json!({"email": "nobody", "page": "exchange"})).unwrap().page, Page::Address);
     assert_eq!(AccountSetup::open(&app(false), &json!({"email": ME, "page": "exchange"})).unwrap().page, Page::Address);
 }
+
+/// The wizard in hand told `action`, as the window does it (the dialog taken out of the app for the call).
+fn act(h: &mut Harness<'static, MailApp>, action: Action) {
+    let mut dialog = h.state_mut().dialog.take();
+    if let Some(Dialog::Form(Form::Account(w))) = dialog.as_mut() {
+        w.act_exchange(h.state_mut(), action);
+    }
+    h.state_mut().dialog = dialog;
+    h.run_steps(3);
+}
+
+#[test]
+fn go_on_the_certificate_page_without_the_tick_trusts_nothing_and_sends_nothing() {
+    // Adding an account.
+    let mut a = app(true);
+    let host = Host::default();
+    host.install(&mut a);
+    let mut h = to_the_form(a);
+    click(&mut h, "Connect");
+    host.end(EwsSetupEnd::Certificate(certificate(false)));
+    h.run_steps(5);
+    assert_eq!(page(&h), Some(Page::ExchangeCertificate));
+    act(&mut h, Action::Go);
+    assert_eq!((page(&h), host.jobs()), (Some(Page::ExchangeCertificate), 1), "no second test, so no password sent");
+    assert!(wizard(&h).is_some_and(|w| w.exchange.trusted.is_empty()));
+    assert!(h.state().session.mailbox.accounts.iter().all(|a| a.email != ME));
+    // An account that exists: its trusted fingerprint is as it was.
+    let host = Host::default();
+    let (mut a, id) = trusting(&host);
+    a.ews_certificate.insert(id, "cd".repeat(32));
+    a.execute("ui.dialog", json!({"name": "account", "id": id, "page": "certificate"})).unwrap();
+    let mut h = window(a);
+    host.end(EwsSetupEnd::Certificate(EwsCertificate { fingerprint: "cd".repeat(32), ..certificate(true) }));
+    h.run_steps(5);
+    act(&mut h, Action::Go);
+    let kept = h.state().session.mailbox.account(id).and_then(|a| a.ews.as_ref()).map(|e| e.trusted.clone());
+    assert_eq!(kept, Some("ab".repeat(32)));
+    assert!(h.state().ews_certificate.contains_key(&id), "still asked about");
+}
+
+#[test]
+fn removing_the_account_deletes_its_entry_in_the_store_and_a_new_server_forgets_the_old_one() {
+    let store = Store::default();
+    let mut a = app(true);
+    a.services.secrets = Some(Arc::new(store.clone()));
+    let host = Host::default();
+    host.install(&mut a);
+    a.services.ews = Some(Box::new(|_| mpsc::channel().1));
+    let mut h = to_the_form(a);
+    click(&mut h, "Connect");
+    host.end(works(URL, "basic"));
+    h.run_steps(5);
+    let acct = account(&h);
+    let key = MailApp::secret_key("password", &acct);
+    assert_eq!(store.get(&key).as_deref(), Some(TYPED));
+    // A new server address: the password kept for the old one is gone.
+    let moved = "https://exch02.example.org/EWS/Exchange.asmx";
+    h.state_mut().execute("account.edit", json!({"id": acct.id, "ews": {"url": moved}})).unwrap();
+    assert_eq!(store.get(&key), None, "the old server's entry is deleted");
+    assert!(store.0.lock().unwrap().values().all(|v| v != TYPED) || !h.state().passwords.contains_key(&acct.id));
+    // Another user name: likewise, and removing the account leaves nothing of it.
+    store.set(&MailApp::secret_key("password", &account(&h)), TYPED).unwrap();
+    let before = MailApp::secret_key("password", &account(&h));
+    h.state_mut().execute("account.edit", json!({"id": acct.id, "ews": {"username": "CORP\\ada"}})).unwrap();
+    assert_eq!(store.get(&before), None, "a new user name forgets the old entry");
+    let current = MailApp::secret_key("password", &account(&h));
+    store.set(&current, TYPED).unwrap();
+    h.state_mut().execute("account.remove", json!({"id": acct.id})).unwrap();
+    assert!(store.0.lock().unwrap().is_empty(), "{:?}", store.0.lock().unwrap().keys().collect::<Vec<_>>());
+}
+
+#[test]
+fn the_sign_in_failures_that_differ_say_so_in_plain_words() {
+    // NTLM only: Server settings is the way, and NTLM is what will be used.
+    let ntlm = exchange::failure_words(EwsSetupFailure::SignInNtlm);
+    assert!(ntlm.contains("Server settings") && ntlm.contains("NTLM") && !ntlm.contains("can't do yet"), "{ntlm}");
+    // Kerberos: no suggestion that typing the address would help.
+    let kerberos = exchange::failure_words(EwsSetupFailure::SignInNotSupported);
+    assert!(kerberos.contains("Kerberos") && !kerberos.contains("Server settings") && !kerberos.contains("Type"), "{kerberos}");
+    // The window opens Server settings for the first.
+    let mut a = app(true);
+    let host = Host::default();
+    host.install(&mut a);
+    let mut h = to_the_form(a);
+    click(&mut h, "Connect");
+    host.end(EwsSetupEnd::Failed(EwsSetupFailure::SignInNtlm));
+    h.run_steps(5);
+    assert!(wizard(&h).is_some_and(|w| w.settings_open));
+    assert!(says(&h, "Automatic setup can't sign in to this server."));
+}
+
+#[test]
+fn a_server_typed_on_a_microsoft_host_is_handed_over_with_nothing_sent() {
+    for url in ["https://outlook.office365.com/EWS/Exchange.asmx", "https://outlook.office.com/EWS/Exchange.asmx"] {
+        let mut a = app(true);
+        let host = Host::default();
+        host.install(&mut a);
+        let mut h = to_the_form(a);
+        click(&mut h, "Server settings");
+        wizard_mut(&mut h).exchange.url = url.into();
+        click(&mut h, "Connect");
+        h.run_steps(5);
+        assert_eq!(page(&h), Some(Page::ExchangeOnline), "{url}");
+        assert_eq!(host.jobs(), 0, "no job, so no sign-in went to {url}");
+        assert!(says(&h, "This mailbox is in Microsoft 365"));
+        assert!(h.state().session.mailbox.accounts.iter().all(|a| a.email != ME));
+        assert!(wizard(&h).is_some_and(|w| w.password.0.is_empty()), "the password is wiped");
+    }
+}

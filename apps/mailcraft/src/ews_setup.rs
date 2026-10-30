@@ -159,6 +159,7 @@ fn failure_of(failure: Failure) -> EwsSetupFailure {
         Failure::ServerRefused => EwsSetupFailure::ServerRefused,
         Failure::NoExchangeAddress => EwsSetupFailure::NoExchangeAddress,
         Failure::SignInNotSupported => EwsSetupFailure::SignInNotSupported,
+        Failure::SignInNtlmOnly => EwsSetupFailure::SignInNtlm,
         Failure::Declined => EwsSetupFailure::Declined,
         Failure::SignInRefused => EwsSetupFailure::SignInRefused,
         Failure::TooManyRedirects => EwsSetupFailure::TooManyRedirects,
@@ -222,18 +223,31 @@ fn test(world: &dyn World, urls: &[String], who: &Who, trusted: &str) -> EwsSetu
     EwsSetupEnd::Failed(last)
 }
 
+/// Whether `url` is on one of Microsoft's mail hosts (Exchange Online, Outlook.com).
+pub(crate) fn on_microsoft(url: &str) -> bool {
+    let server = mailcraft_model::EwsServer { url: url.trim().to_owned(), ..Default::default() };
+    server.host().is_some_and(mailcraft_model::is_exchange_online)
+}
+
 /// The job, start to end; `emit` is told of the owner's questions as they come.
 fn decide(world: &dyn World, job: &EwsSetupJob, emit: &mut dyn FnMut(EwsSetupEvent)) -> EwsSetupEnd {
     let who = Who { email: job.email.clone(), username: job.username.clone(), password: job.password.clone() };
     if job.certificate_only {
+        if on_microsoft(&job.url) {
+            return EwsSetupEnd::ExchangeOnline;
+        }
         return match world.look(&job.url, &job.trusted) {
             Probed::Certificate(problem) => certificate_end(&job.url, problem),
             Probed::Works(_) => EwsSetupEnd::CertificateFine,
             Probed::Failed(failure) => EwsSetupEnd::Failed(failure),
         };
     }
-    // The owner named the server: no search.
+    // The owner named the server: no search. A Microsoft host is never signed in to as an Exchange
+    // server: that mailbox is a Microsoft account, and nothing is sent.
     if !job.url.trim().is_empty() {
+        if on_microsoft(&job.url) {
+            return EwsSetupEnd::ExchangeOnline;
+        }
         return test(world, &[job.url.trim().to_owned()], &who, &job.trusted);
     }
     let name = if who.username.trim().is_empty() { who.email.trim() } else { who.username.trim() };
