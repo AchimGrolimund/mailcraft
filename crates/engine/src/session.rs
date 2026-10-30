@@ -2545,6 +2545,11 @@ impl Session {
             (Ok(_), Some(_)) if self.owner_changing.iter().any(|e| gone_in(&before.mailbox, &self.mailbox, *e)) => Err(CmdError::Failed(format!(
                 "`{id}` would take away an appointment, a contact or a task the owner is changing in the window and hasn't saved, and the owner wasn't asked about that; nothing was changed. Try again once the owner has saved or closed it"
             ))),
+            // What is written in the message the owner is writing is theirs until it is closed
+            // (#494): an agent doesn't change it, nor empty it and save that over its draft (#577).
+            (Ok(_), Some(_)) if changes_owners_message(compose.as_ref(), self.compose.as_ref()) => Err(CmdError::Failed(format!(
+                "`{id}` would change the message the owner is writing, which is theirs until they close it; nothing was changed. Ask the owner to make the change, or to close the message first"
+            ))),
             (Ok(_), Some(allow)) if let Some(c) = crate::agent::overstep(&before.mailbox, &self.mailbox, allow) => {
                 Err(CmdError::Failed(crate::agent::needs_owner(id, c, false, "do more than an agent is allowed to; nothing was changed")))
             }
@@ -2633,6 +2638,20 @@ fn as_it_was(before: &Compose, now: &Compose) -> bool {
     let at = now.body.selection();
     let mut moved = before.clone();
     moved.body.select(at.anchor, at.head).is_ok() && moved == *now
+}
+
+/// Whether `now` is the message the owner was writing in `before` (#494), still open, with what
+/// is written in it changed: its text, its recipients, its attachments, anything but where the
+/// cursor is, whether it is saved and the draft it was saved as (#577). A message put in its
+/// place (which the owner was asked about) is nobody's yet, so it isn't.
+fn changes_owners_message(before: Option<&Compose>, now: Option<&Compose>) -> bool {
+    let (Some(before), Some(now)) = (before, now) else { return false };
+    if !before.owner_changed || !now.owner_changed {
+        return false;
+    }
+    let mut saved = before.clone();
+    (saved.dirty, saved.draft) = (now.dirty, now.draft);
+    saved != *now && !as_it_was(&saved, now)
 }
 
 /// Commands that remove what is kept of an account on this computer (#177): they leave nothing

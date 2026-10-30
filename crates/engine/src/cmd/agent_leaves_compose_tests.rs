@@ -149,8 +149,12 @@ fn the_owners_change_makes_it_theirs_until_it_is_closed() {
     // Saved, by the owner or by the window's own saving every few minutes, it is still theirs.
     run(&mut s, "compose.saveDraft", json!({}));
     assert_eq!(classify(&s, "mail.new", &json!({})), Access::Asked(Class::Leave));
-    // What the agent changes after that doesn't make it the agent's.
-    as_agent(&mut s, "compose.set", json!({"body": "More by the agent"}));
+    // What the agent does after that doesn't make it the agent's (and it can't change what is
+    // written in it, #577).
+    s.agent = Some(Vec::new());
+    assert!(s.run("compose.set", &json!({"body": "More by the agent"})).is_err());
+    s.agent = None;
+    as_agent(&mut s, "compose.saveDraft", json!({}));
     assert_eq!(classify(&s, "mail.new", &json!({})), Access::Asked(Class::Leave));
     // Closed, the next message is nobody's until somebody writes in it.
     run(&mut s, "compose.close", json!({}));
