@@ -193,7 +193,7 @@ pub(super) fn folder_changes(mb: &Mailbox, account: Id, limit: usize) -> (Vec<Fo
         match &f.server {
             // The special folders are the server's: they are found in its listing, never made;
             // so is a folder that was on the account's IMAP server before it switched (R3.7).
-            None if f.kind != FolderKind::Custom || f.awaiting_listing => {}
+            None if (f.kind != FolderKind::Custom && !graph_up::made_on_server(mb, f)) || f.awaiting_listing => {}
             None => {
                 let parent = mb.folder(f.parent.unwrap_or(0)).filter(|p| p.account == account);
                 let (server_parent, local_parent) = match parent {
@@ -671,10 +671,17 @@ fn adopt(mb: &Mailbox, account: Id, there: &GraphFolder, parent_here: Option<Id>
         return mb.folders.iter().filter(unsynced).find(|f| f.kind == there.kind).map(|f| f.id);
     }
     let name = name.to_lowercase();
+    // An Exchange server account's Archive is the folder of that name at the top, when the server
+    // has one (E8).
+    let exchange = mb.account(account).is_some_and(|a| a.kind == AccountKind::Exchange);
     mb.folders
         .iter()
         .filter(unsynced)
-        .find(|f| f.kind == FolderKind::Custom && f.parent == parent_here && f.name.to_lowercase() == name)
+        .find(|f| {
+            f.parent == parent_here
+                && f.name.to_lowercase() == name
+                && (f.kind == FolderKind::Custom || (exchange && f.kind == FolderKind::Archive && parent_here.is_none() && !f.awaiting_listing))
+        })
         .map(|f| f.id)
 }
 

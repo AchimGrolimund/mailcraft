@@ -32,6 +32,7 @@
 //! caller to read after the handshake fails: the caller shows setup what it needs (fingerprint,
 //! who it was issued to and by, dates), or says plainly that the certificate can't be trusted.
 
+use std::cell::Cell;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
@@ -41,6 +42,36 @@ use rustls::server::ParsedCertificate;
 use rustls::{CertificateError, DigitallySignedStruct, Error, SignatureScheme};
 
 use crate::cert::{self, CertificateFault, CertificateProblem};
+
+thread_local! {
+    /// Set while the system's verifier looks at a certificate for a connection that has a
+    /// fingerprint chosen for it: the verifier is then expected to refuse the certificate, and
+    /// the line it logs about that (at error level) is noise (E8).
+    static PIN_CHECK: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether this thread is inside the system verifier's look at a certificate for a connection
+/// with a trusted fingerprint. The program's logger leaves out the verifier's own line about a
+/// certificate it doesn't trust while this is so; the outcome is reported by the caller.
+pub fn pin_check_under_way() -> bool {
+    PIN_CHECK.with(Cell::get)
+}
+
+/// Clears [`pin_check_under_way`] when the check ends, however it ends.
+struct PinCheck(bool);
+
+impl PinCheck {
+    fn begin(pinned: bool) -> Self {
+        let before = PIN_CHECK.with(|c| c.replace(pinned || c.get()));
+        Self(before)
+    }
+}
+
+impl Drop for PinCheck {
+    fn drop(&mut self) {
+        PIN_CHECK.with(|c| c.set(self.0));
+    }
+}
 
 /// The system's verifier with the one extra way in.
 pub(crate) struct Pinned {
@@ -133,7 +164,13 @@ impl ServerCertVerifier for Pinned {
         ocsp_response: &[u8],
         now: UnixTime,
     ) -> Result<ServerCertVerified, Error> {
-        match self.system.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now) {
+        let checked = {
+            // (Marked only when the certificate shown is the pinned one: the system will refuse it,
+            // and that is expected. Another certificate is a real refusal and its line stays.)
+            let _quiet = PinCheck::begin(self.pin.is_some_and(|pin| pin == cert::sha256(end_entity.as_ref())));
+            self.system.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+        };
+        match checked {
             Ok(verified) => Ok(verified),
             Err(error) => self.refused(error, end_entity, server_name, now),
         }

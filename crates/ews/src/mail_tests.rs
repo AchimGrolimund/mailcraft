@@ -87,6 +87,47 @@ fn the_first_run_lists_the_folders_and_downloads_the_inbox_in_pages() {
     assert!(pieces.iter().filter(|p| !p.pages.is_empty()).all(|p| p.pages.len() == 1 && !p.pages[0].state.is_empty()));
 }
 
+/// A server that leaves a folder's class out of the listing unless it is asked for (Grommunio's
+/// Default shape does): folders of other kinds were taken for folders of mail (E8).
+#[test]
+fn a_server_that_gives_no_class_unless_asked_still_has_its_other_folders_left_out() {
+    let standin = StandIn::new();
+    {
+        let mut s = standin.state();
+        s.class_only_when_asked = true;
+        let top = s.folders.iter().find(|f| f.distinguished == "msgfolderroot").unwrap().id.clone();
+        for (n, (name, class)) in [
+            ("Journal", "IPF.Journal"),
+            ("Notes", "IPF.StickyNote"),
+            ("Tasks", "IPF.Task"),
+            ("Contacts", "IPF.Contact"),
+            ("Settings", "IPF.Configuration"),
+            ("Projects", "IPF.Note"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let folder = crate::standin::Folder {
+                distinguished: String::new(),
+                id: format!("AAMkAGV4YW1wbGUtb3JnL2V3cy1zdGFuZC1pbgAuAAAAAACq{:06}+Tk/Zm9sZGVyLWlkAAA=", 200 + n),
+                name: name.into(),
+                total: 0,
+                unread: 0,
+                parent: top.clone(),
+                class: class.into(),
+            };
+            s.folders.push(folder);
+        }
+    }
+    let (pieces, _) = run(&standin, &request());
+    let folders = pieces.iter().find_map(|p| p.folders.as_ref()).unwrap();
+    let names: Vec<&str> = folders.changed.iter().map(|f| f.name.as_str()).collect();
+    assert!(names.contains(&"Projects") && names.contains(&"Inbox"), "{names:?}");
+    for other in ["Journal", "Notes", "Tasks", "Contacts", "Settings", "Calendar"] {
+        assert!(!names.contains(&other), "{other} is no folder of mail: {names:?}");
+    }
+}
+
 /// Where each folder goes on from, as the pages of a run say: the last of each folder.
 fn states_of(pieces: &[EwsMailResult]) -> Vec<EwsFolderState> {
     let mut out: Vec<EwsFolderState> = Vec::new();

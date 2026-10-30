@@ -166,6 +166,65 @@ fn folders_made_renamed_and_deleted_go_up_and_come_back_as_the_servers() {
 }
 
 #[test]
+fn mail_moved_into_the_archive_makes_it_on_the_server_once_and_the_move_follows() {
+    let (mut s, account, a, _) = setup();
+    let archive = s.mailbox.folder_of_kind(account, FolderKind::Archive).unwrap();
+    // An empty Archive is not made on the server: nothing asked for it.
+    assert!(ews_mail_request(&s, account, false).unwrap().changes.is_empty());
+    s.run("mail.move", &json!({"ids": [a], "folder": archive})).unwrap();
+    let request = ews_mail_request(&s, account, false).unwrap();
+    let [FolderChange::Create { folder, name, parent, parent_folder }] = request.changes.as_slice() else { panic!("{:?}", request.changes) };
+    // At the top of the mail, named Archive; the Outbox is never made.
+    assert_eq!((*folder, name.as_str(), parent.as_str(), *parent_folder), (archive, "Archive", "", None));
+    // The move waits on the folder made in the same run.
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(|c| matches!(c, MessageChange::Move { id, to, to_folder, .. } if id == "A1" && to.is_empty() && *to_folder == Some(archive))),
+        "{:?}",
+        request.messages
+    );
+    let there = GraphFolder { id: "FA".into(), name: "Archive".into(), parent: String::new(), kind: FolderKind::Custom, ..Default::default() };
+    let made = FolderChangeDone { change: request.changes[0].clone(), outcome: mailcraft_model::sync::ChangeOutcome::Done { folder: there } };
+    let moved = MessageChangeDone {
+        change: request.messages[0].clone(),
+        outcome: MessageOutcome::Done { categories: None, flag: None, folder: "FA".into(), id: "A1-moved".into() },
+        there: None,
+    };
+    took(&mut s, account, mailcraft_model::sync::EwsMailResult { changes: vec![made], messages: vec![moved], partial: true, ..piece(account) });
+    let f = s.mailbox.folder(archive).unwrap();
+    assert_eq!((f.kind, f.server.as_ref().map(|server| server.id.as_str())), (FolderKind::Archive, Some("FA")));
+    assert_eq!(s.mailbox.message(a).unwrap().server.as_ref().unwrap().folder, "FA");
+    // The next run asks for nothing: the folder is not made twice.
+    let next = ews_mail_request(&s, account, false).unwrap();
+    assert!(next.changes.is_empty() && next.messages.is_empty(), "{:?} {:?}", next.changes, next.messages);
+    // And the server's listing of it, as a folder like another, is the same folder.
+    let deltas = EwsFolderDeltas { changed: vec![folder_at("FA", "Archive")], ..Default::default() };
+    took(&mut s, account, mailcraft_model::sync::EwsMailResult { folders: Some(deltas), hierarchy: "H2".into(), partial: true, ..piece(account) });
+    assert_eq!(s.mailbox.folders.iter().filter(|f| f.account == account && f.name == "Archive").count(), 1);
+    assert!(ews_mail_request(&s, account, false).unwrap().changes.is_empty());
+}
+
+fn folder_at(id: &str, name: &str) -> GraphFolder {
+    folder(id, name, FolderKind::Custom)
+}
+
+#[test]
+fn an_archive_the_server_has_already_is_the_archive_and_is_not_made() {
+    let (mut s, account, a, _) = setup();
+    let deltas = EwsFolderDeltas { changed: vec![folder_at("FA", "Archive")], ..Default::default() };
+    took(&mut s, account, mailcraft_model::sync::EwsMailResult { folders: Some(deltas), hierarchy: "H2".into(), partial: true, ..piece(account) });
+    let archive = s.mailbox.folder_of_kind(account, FolderKind::Archive).unwrap();
+    assert_eq!(s.mailbox.folder(archive).unwrap().server.as_ref().map(|server| server.id.as_str()), Some("FA"));
+    assert_eq!(s.mailbox.folders.iter().filter(|f| f.account == account && f.name == "Archive").count(), 1);
+    s.run("mail.move", &json!({"ids": [a], "folder": archive})).unwrap();
+    let request = ews_mail_request(&s, account, false).unwrap();
+    assert!(request.changes.is_empty(), "{:?}", request.changes);
+    assert!(request.messages.iter().any(|c| matches!(c, MessageChange::Move { id, to, .. } if id == "A1" && to == "FA")), "{:?}", request.messages);
+}
+
+#[test]
 fn a_draft_saved_goes_up_is_taken_in_and_a_send_is_held_when_its_answer_was_lost() {
     let (mut s, account, ..) = setup();
     s.run("mail.new", &json!({"account": account, "to": "kit@example.org", "subject": "Hello"})).unwrap();
@@ -196,7 +255,7 @@ fn a_draft_saved_goes_up_is_taken_in_and_a_send_is_held_when_its_answer_was_lost
     assert_eq!(request.sends.len(), 2);
     // The answer to one was lost: held, said so, not sent again by itself.
     let lost = request.sends[1].message;
-    let sent = SendDone { message: lost, outcome: SendOutcome::Held { lost: true, why: String::new() }, draft: None };
+    let sent = SendDone { message: lost, outcome: SendOutcome::Held { lost: true, why: String::new() }, draft: None, draft_left: String::new() };
     let said = took(&mut s, account, mailcraft_model::sync::EwsMailResult { sent: vec![sent], partial: true, ..piece(account) });
     let held = &s.mailbox.message(lost).unwrap().held;
     assert!(held.contains("may have been sent") && held.contains("from the server") && !held.contains("Microsoft"), "{held}");
@@ -205,12 +264,45 @@ fn a_draft_saved_goes_up_is_taken_in_and_a_send_is_held_when_its_answer_was_lost
     assert!(next.sends.iter().all(|send| send.message != lost), "a held message is not offered again");
     // The other went: it leaves the Outbox, the server files the copy.
     let went = request.sends[0].message;
-    let sent = SendDone { message: went, outcome: SendOutcome::Sent, draft: None };
+    let sent = SendDone { message: went, outcome: SendOutcome::Sent, draft: None, draft_left: String::new() };
     let said = took(&mut s, account, mailcraft_model::sync::EwsMailResult { sent: vec![sent], ..piece(account) });
     assert!(s.mailbox.message(went).is_none() && said["errors"].as_array().is_some());
     // Send Again puts the held one back.
     s.run("mail.sendAgain", &json!({"id": lost})).unwrap();
     assert!(ews_mail_request(&s, account, false).unwrap().sends.iter().any(|send| send.message == lost));
+}
+
+#[test]
+fn a_saved_draft_goes_as_its_mime_and_a_draft_left_after_the_send_is_deleted_by_the_next_run() {
+    let (mut s, account, ..) = setup();
+    s.run("mail.new", &json!({"account": account, "to": "kit@example.org", "subject": "Hello"})).unwrap();
+    s.run("compose.saveDraft", &json!({})).unwrap()["draft"].as_u64().unwrap();
+    let up = ews_mail_request(&s, account, false).unwrap().drafts[0].clone();
+    let done = DraftDone {
+        change: up,
+        id: "D1".into(),
+        folder: "F3".into(),
+        change_key: "CK2".into(),
+        fields: true,
+        attachments: Some(vec![]),
+        ..Default::default()
+    };
+    took(&mut s, account, mailcraft_model::sync::EwsMailResult { drafts: vec![done], partial: true, ..piece(account) });
+    s.run("compose.send", &json!({})).unwrap();
+    let request = ews_mail_request(&s, account, false).unwrap();
+    // The message goes as its MIME, and names the draft the run takes away after a clear send.
+    let [send] = request.sends.as_slice() else { panic!("{:?}", request.sends) };
+    let queued = send.message;
+    assert!(send.mime.as_ref().is_some_and(|m| m.subject == "Hello"));
+    assert_eq!(send.draft.as_ref().map(|d| d.id.as_str()), Some("D1"));
+    // It went, and the draft could not be taken away: the send is not offered again, and the
+    // takeaway is an ordinary delete of the next run.
+    let sent = SendDone { message: queued, outcome: SendOutcome::Sent, draft: None, draft_left: "D1".into() };
+    took(&mut s, account, mailcraft_model::sync::EwsMailResult { sent: vec![sent], partial: true, ..piece(account) });
+    assert!(s.mailbox.message(queued).is_none());
+    let next = ews_mail_request(&s, account, false).unwrap();
+    assert!(next.sends.is_empty());
+    assert!(next.messages.contains(&MessageChange::Delete { id: "D1".into() }), "{:?}", next.messages);
 }
 
 #[test]

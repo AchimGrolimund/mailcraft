@@ -440,28 +440,144 @@ fn a_message_that_cannot_go_is_held_with_why() {
     assert!(standin.state().outgoing.is_empty());
 }
 
+/// A draft saved on the stand-in and the request that sends it (as the engine makes it for an
+/// Exchange server account: the draft's id and the message's MIME).
+fn saved_draft_to_send(standin: &StandIn) -> SendUp {
+    let made = run(standin, &EwsMailRequest { drafts: vec![draft("mark-4", "Hello")], ..base() });
+    let id = made.drafts[0].id.clone();
+    assert!(!id.is_empty());
+    SendUp { message: 5, draft: Some(DraftUp { id, ..draft("mark-4", "Hello") }), mime: Some(message("zoe@example.org", "kit@example.org")) }
+}
+
 #[test]
-fn a_draft_is_brought_up_to_date_and_sent_as_the_draft() {
+fn a_saved_draft_is_sent_once_as_its_mime_with_one_copy_in_sent_items_and_no_draft_left() {
     let standin = StandIn::new();
-    let send = SendUp { message: 5, draft: Some(DraftUp { change_key: String::new(), ..draft("mark-4", "Hello") }), mime: None };
+    let send = saved_draft_to_send(&standin);
     let result = run(&standin, &EwsMailRequest { sends: vec![send], ..base() });
     assert_eq!(result.sent[0].outcome, SendOutcome::Sent);
-    let made = result.sent[0].draft.as_ref().unwrap();
-    assert!(!made.id.is_empty() && made.fields);
+    assert!(result.sent[0].draft_left.is_empty());
     let state = standin.state();
-    assert!(state.outgoing[0].windows(5).any(|w| w == b"Hello"));
-    assert!(state.outgoing.len() == 1 && state.items.iter().all(|i| !i.draft));
-    // Filed in Sent Items.
-    let sent = state.folder_id("sentitems").unwrap();
-    assert!(state.items.iter().any(|i| i.folder == sent && i.subject == "Hello"));
+    assert_eq!(state.outgoing.len(), 1);
+    let out = String::from_utf8_lossy(&state.outgoing[0]).into_owned();
+    assert!(out.contains("Subject: Quarterly") && out.to_lowercase().contains("bcc: kit@example.org"), "{out}");
+    // One copy in Sent Items, none left in Drafts, taken away with a soft delete.
+    let (sent, drafts) = (state.folder_id("sentitems").unwrap(), state.folder_id("drafts").unwrap());
+    assert_eq!(state.items.iter().filter(|i| i.folder == sent).count(), 1);
+    assert!(state.items.iter().all(|i| i.folder != drafts));
+    assert_eq!(state.deletes, ["SoftDelete"]);
+}
+
+/// A draft whose make was lost: it is on the server, and nothing here knows its id, only its marker.
+fn draft_made_but_unknown(standin: &StandIn) -> SendUp {
+    let losing = Losing { inner: standin, operation: "CreateItem", lost: Cell::new(1) };
+    let (pieces, _) = run_with(&losing, &EwsMailRequest { drafts: vec![draft("mark-9", "Hello")], ..base() });
+    assert!(pieces.iter().all(|p| p.drafts.is_empty()), "the make was lost");
+    let state = standin.state();
+    let drafts = state.folder_id("drafts").unwrap();
+    assert_eq!(state.items.iter().filter(|i| i.folder == drafts).count(), 1, "but it is there");
+    drop(state);
+    SendUp { message: 5, draft: Some(draft("mark-9", "Hello")), mime: Some(message("zoe@example.org", "kit@example.org")) }
+}
+
+#[test]
+fn a_draft_whose_make_was_lost_is_found_by_its_marker_and_taken_away_after_the_send() {
+    let standin = StandIn::new();
+    let send = draft_made_but_unknown(&standin);
+    let result = run(&standin, &EwsMailRequest { sends: vec![send], ..base() });
+    assert_eq!(result.sent[0].outcome, SendOutcome::Sent);
+    assert!(result.sent[0].draft_left.is_empty());
+    let state = standin.state();
+    assert_eq!(state.outgoing.len(), 1);
+    let (sent, drafts) = (state.folder_id("sentitems").unwrap(), state.folder_id("drafts").unwrap());
+    assert_eq!(state.items.iter().filter(|i| i.folder == sent).count(), 1);
+    assert!(state.items.iter().all(|i| i.folder != drafts), "no ghost draft is left");
+}
+
+#[test]
+fn when_the_look_for_the_draft_is_lost_its_marker_is_carried_and_the_next_run_takes_it_away() {
+    let standin = StandIn::new();
+    let send = draft_made_but_unknown(&standin);
+    let refusing = Refusing { inner: &standin, operation: "FindItem", code: "ErrorInternalServerError" };
+    let (pieces, _) = run_with(&refusing, &EwsMailRequest { sends: vec![send], ..base() });
+    let sent: Vec<_> = pieces.iter().flat_map(|p| &p.sent).collect();
+    assert_eq!(sent[0].outcome, SendOutcome::Sent);
+    assert_eq!(sent[0].draft_left, mailcraft_model::sync::marker_id("mark-9"));
+    assert_eq!(standin.state().outgoing.len(), 1, "sent once");
+    // The next run is told of an ordinary delete by that marker: the draft goes, nothing is sent.
+    let delete = MessageChange::Delete { id: sent[0].draft_left.clone() };
+    let result = run(&standin, &EwsMailRequest { messages: vec![delete.clone()], ..base() });
+    assert!(matches!(done(&result, 0), MessageOutcome::Done { .. }), "{:?}", done(&result, 0));
+    let state = standin.state();
+    assert_eq!(state.outgoing.len(), 1);
+    let drafts = state.folder_id("drafts").unwrap();
+    assert!(state.items.iter().all(|i| i.folder != drafts));
+    drop(state);
+    // And once it is gone, the same delete is gone, not an error.
+    let again = run(&standin, &EwsMailRequest { messages: vec![delete], ..base() });
+    assert!(matches!(done(&again, 0), MessageOutcome::Gone), "{:?}", done(&again, 0));
+}
+
+#[test]
+fn a_saved_draft_whose_send_is_lost_is_held_and_kept() {
+    let standin = StandIn::new();
+    let send = saved_draft_to_send(&standin);
+    let losing = Losing { inner: &standin, operation: "CreateItem", lost: Cell::new(1) };
+    let (pieces, _) = run_with(&losing, &EwsMailRequest { sends: vec![send], ..base() });
+    let held: Vec<_> = pieces.iter().flat_map(|p| &p.sent).collect();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].outcome, SendOutcome::Held { lost: true, why: String::new() });
+    assert!(held[0].draft_left.is_empty());
+    let state = standin.state();
+    // It went once; the draft stays where it was for the owner to look at, and nothing was deleted.
+    assert_eq!(state.outgoing.len(), 1);
+    let drafts = state.folder_id("drafts").unwrap();
+    assert_eq!(state.items.iter().filter(|i| i.folder == drafts).count(), 1);
+    assert!(state.deletes.is_empty());
+}
+
+#[test]
+fn a_draft_that_cannot_be_taken_away_after_a_clear_send_is_named_and_the_message_is_not_sent_again() {
+    let standin = StandIn::new();
+    let send = saved_draft_to_send(&standin);
+    let id = send.draft.as_ref().unwrap().id.clone();
+    let refusing = Refusing { inner: &standin, operation: "DeleteItem", code: "ErrorAccessDenied" };
+    let (pieces, _) = run_with(&refusing, &EwsMailRequest { sends: vec![send], ..base() });
+    let sent: Vec<_> = pieces.iter().flat_map(|p| &p.sent).collect();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].outcome, SendOutcome::Sent);
+    assert_eq!(sent[0].draft_left, id);
+    assert_eq!(standin.state().outgoing.len(), 1, "sent once");
+    // The next run is told by the engine of an ordinary delete, not of a send: the message
+    // goes once only, and the delete takes the draft away.
+    let delete = MessageChange::Delete { id: id.clone() };
+    let result = run(&standin, &EwsMailRequest { messages: vec![delete], ..base() });
+    assert!(matches!(done(&result, 0), MessageOutcome::Done { .. }), "{:?}", done(&result, 0));
+    let state = standin.state();
+    assert_eq!(state.outgoing.len(), 1);
+    let drafts = state.folder_id("drafts").unwrap();
+    assert!(state.items.iter().all(|i| i.folder != drafts));
+}
+
+/// Answers an operation with a refusal in its place, without letting the stand-in do it.
+struct Refusing<'a> {
+    inner: &'a StandIn,
+    operation: &'static str,
+    code: &'static str,
+}
+
+impl HttpExchange for Refusing<'_> {
+    fn exchange(&self, request: &HttpRequest) -> impl Future<Output = Result<HttpResponse, TransportError>> {
+        let body = String::from_utf8_lossy(request.body()).into_owned();
+        let hit = body.contains(&format!("<m:{} ", self.operation)) || body.contains(&format!("<m:{}>", self.operation));
+        let answer = if hit { Ok(fault_answer(self.operation, self.code)) } else { block_on(self.inner.exchange(request)).unwrap() };
+        std::future::ready(answer)
+    }
 }
 
 #[test]
 fn a_send_whose_answer_was_lost_is_held_and_never_sent_twice() {
-    for (operation, send) in [
-        ("CreateItem", SendUp { message: 3, draft: None, mime: Some(message("zoe@example.org", "")) }),
-        ("SendItem", SendUp { message: 5, draft: Some(draft("mark-5", "Hello")), mime: None }),
-    ] {
+    {
+        let (operation, send) = ("CreateItem", SendUp { message: 3, draft: None, mime: Some(message("zoe@example.org", "")) });
         let standin = StandIn::new();
         let losing = Losing { inner: &standin, operation, lost: Cell::new(1) };
         let (pieces, _) = run_with(&losing, &EwsMailRequest { sends: vec![send], ..base() });
@@ -533,12 +649,7 @@ fn fault_answer(operation: &str, code: &str) -> HttpResponse {
 
 #[test]
 fn a_word_that_may_follow_the_send_holds_it_as_maybe_sent_and_only_a_refusal_before_it_does_not() {
-    let sends = || {
-        [
-            ("CreateItem", SendUp { message: 3, draft: None, mime: Some(message("zoe@example.org", "")) }),
-            ("SendItem", SendUp { message: 5, draft: Some(draft("mark-6", "Hello")), mime: None }),
-        ]
-    };
+    let sends = || [("CreateItem", SendUp { message: 3, draft: None, mime: Some(message("zoe@example.org", "")) })];
     let may_have_gone = |answer: HttpResponse| {
         for (operation, send) in sends() {
             let standin = StandIn::new();
@@ -558,11 +669,7 @@ fn a_word_that_may_follow_the_send_holds_it_as_maybe_sent_and_only_a_refusal_bef
     for code in ["ErrorInternalServerError", "ErrorTimeoutExpired", "ErrorMailboxStoreUnavailable", "ErrorSomethingNobodyKnows"] {
         for (operation, send) in sends() {
             let standin = StandIn::new();
-            let replacing = Replacing {
-                inner: &standin,
-                operation,
-                answer: fault_answer(if operation == "CreateItem" { "CreateItem" } else { "SendItem" }, code),
-            };
+            let replacing = Replacing { inner: &standin, operation, answer: fault_answer("CreateItem", code) };
             let (pieces, _) = run_with(&replacing, &EwsMailRequest { sends: vec![send], ..base() });
             let held: Vec<_> = pieces.iter().flat_map(|p| &p.sent).collect();
             assert_eq!(held[0].outcome, SendOutcome::Held { lost: true, why: String::new() }, "{operation} {code}");

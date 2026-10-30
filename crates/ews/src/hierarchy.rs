@@ -72,7 +72,11 @@ impl SyncFolderHierarchy {
 
     /// The operation as the schema has it: `FolderShape`, `SyncFolderId`, `SyncState`.
     pub fn element(&self) -> Element {
-        let shape = Element::new("m:FolderShape").child(Element::new("t:BaseShape").text("Default"));
+        // (The class is asked for by name: some servers leave it out of the Default shape, and a
+        // folder with none would be taken for a folder of mail.)
+        let shape = Element::new("m:FolderShape")
+            .child(Element::new("t:BaseShape").text("Default"))
+            .child(Element::new("t:AdditionalProperties").child(Element::new("t:FieldURI").attr("FieldURI", "folder:FolderClass")));
         let root = Element::new("m:SyncFolderId").child(Element::new("t:DistinguishedFolderId").attr("Id", "msgfolderroot"));
         let mut operation = Element::new("m:SyncFolderHierarchy").child(shape).child(root);
         if !self.state.is_empty() {
@@ -116,6 +120,11 @@ impl SyncFolderHierarchy {
 /// The folder in a `Create` or `Update`, when it is a mail folder that can be taken in.
 fn read_folder(change: &Node) -> Option<GraphFolder> {
     let folder = change.children.iter().find(|child| *child.namespace == *TYPES)?;
+    // A calendar, contacts, tasks or search folder is no folder of mail, whatever class it says
+    // (or doesn't: Grommunio's listing gave none without being asked).
+    if ["CalendarFolder", "ContactsFolder", "TasksFolder", "SearchFolder"].contains(&&*folder.name) {
+        return None;
+    }
     let id = folder.child_in(TYPES, "FolderId")?.attribute("Id").and_then(FolderId::new)?;
     let class = folder.child_in(TYPES, "FolderClass").map_or("", |c| c.text.trim());
     // (A folder without a class is a plain folder of mail; `IPF.Note.*` are its kinds.)

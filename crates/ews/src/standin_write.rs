@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: MailCraft contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The writing half of the stand-in (#252, E6): `UpdateItem`, `MoveItem`, `CopyItem`, `DeleteItem`,
-//! `CreateItem` (`SaveOnly`, `SendAndSaveCopy`), `SendItem`, `FindItem`, `CreateAttachment`,
+//! `CreateItem` (`SaveOnly`, `SendAndSaveCopy`), `FindItem`, `CreateAttachment`,
 //! `DeleteAttachment`, `CreateFolder`, `UpdateFolder`, `MoveFolder` and `DeleteFolder`, held to
 //! the schemas of [MS-OXWSCORE], [MS-OXWSFOLD] and [MS-OXWSATT]: the attributes each operation
 //! has, the children it has in the order of the schema, the delete types the service knows.
@@ -21,7 +21,6 @@ pub const HANDLED: &[&str] = &[
     "CopyItem",
     "DeleteItem",
     "CreateItem",
-    "SendItem",
     "FindItem",
     "CreateAttachment",
     "DeleteAttachment",
@@ -61,7 +60,6 @@ impl State {
             "MoveItem" | "CopyItem" => self.move_item(name, operation),
             "DeleteItem" => self.delete_item(operation),
             "CreateItem" => self.create_item(operation),
-            "SendItem" => self.send_item(operation),
             "FindItem" => self.find_item(operation),
             "CreateAttachment" => self.create_attachment(operation),
             "DeleteAttachment" => self.delete_attachment(operation),
@@ -445,46 +443,6 @@ impl State {
         self.items.push(item);
         let inner = if sending { "<m:Items/>".to_owned() } else { format!("<m:Items><t:Message>{xml}</t:Message></m:Items>") };
         yes("CreateItem", &inner)
-    }
-
-    fn send_item(&mut self, operation: &Node) -> Answer {
-        Check::is(operation, MESSAGES, "SendItem", &["SaveItemToFolder"])?;
-        if !["true", "false"].contains(&Check::attribute(operation, "SaveItemToFolder")?) {
-            return Err(invalid("SaveItemToFolder is true or false"));
-        }
-        let parts = Check::children(operation, MESSAGES, &["ItemIds", "SavedItemFolderId"])?;
-        let ids = Self::item_ids_of(Check::required(operation, parts.first().copied().flatten(), "ItemIds")?, "ItemIds")?;
-        let sent = self.folder("sentitems", true).cloned();
-        let mut messages = String::new();
-        let mut first = String::new();
-        for (id, _) in ids {
-            let (code, inner) = match self.at(&id) {
-                Some(at) if self.items.get(at).is_some_and(|i| i.draft) => {
-                    if let Some(sent) = &sent
-                        && let Some(mut item) = self.relocate(at, sent, false)
-                    {
-                        item.draft = false;
-                        let out = format!(
-                            "Subject: {}\r\nBcc: {}\r\n\r\n{}",
-                            item.subject,
-                            item.bcc.iter().map(|(_, a)| a.as_str()).collect::<Vec<_>>().join(", "),
-                            item.body.1
-                        );
-                        self.outgoing.push(out.into_bytes());
-                        if let Some(stored) = self.items.iter_mut().find(|i| i.id == item.id) {
-                            stored.draft = false;
-                        }
-                    }
-                    ("NoError", ok_message("SendItem", ""))
-                }
-                _ => ("ErrorItemNotFound", error_message("SendItem", "ErrorItemNotFound")),
-            };
-            messages.push_str(&inner);
-            if first.is_empty() {
-                first = code.into();
-            }
-        }
-        Ok((200, first, response("SendItem", &messages)))
     }
 
     fn find_item(&self, operation: &Node) -> Answer {

@@ -161,3 +161,47 @@ fn a_certificate_that_cannot_be_read_is_never_pinned() {
     assert!(verifier.refused(Error::InvalidCertificate(CertificateError::UnknownIssuer), &junk, &name("mail.example.org"), now()).is_err());
     assert!(verifier.take_problem().is_none());
 }
+
+/// A system verifier that says whether the pinned check was under way while it looked.
+#[derive(Debug)]
+struct Watches(std::sync::atomic::AtomicBool);
+
+impl ServerCertVerifier for Watches {
+    fn verify_server_cert(
+        &self,
+        _: &CertificateDer<'_>,
+        _: &[CertificateDer<'_>],
+        _: &ServerName<'_>,
+        _: &[u8],
+        _: UnixTime,
+    ) -> Result<ServerCertVerified, Error> {
+        self.0.store(pin_check_under_way(), std::sync::atomic::Ordering::SeqCst);
+        Err(Error::InvalidCertificate(CertificateError::UnknownIssuer))
+    }
+
+    fn verify_tls12_signature(&self, _: &[u8], _: &CertificateDer<'_>, _: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
+        Err(Error::General("test".into()))
+    }
+
+    fn verify_tls13_signature(&self, _: &[u8], _: &CertificateDer<'_>, _: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
+        Err(Error::General("test".into()))
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        Vec::new()
+    }
+}
+
+#[test]
+fn the_systems_look_is_marked_only_for_the_pinned_certificate_and_only_while_it_looks() {
+    let der = CertificateDer::from(make(&["mail.example.org"], "mail.example.org", None, (2026, 1, 1), (2027, 1, 1)));
+    // (A pin for another certificate is no match: the refusal is a real one.)
+    for (pin, marked) in [(Some(cert::sha256(der.as_ref())), true), (Some(cert::sha256(b"another")), false), (None, false)] {
+        let system = Arc::new(Watches(std::sync::atomic::AtomicBool::new(false)));
+        let verifier = Pinned::new(system.clone(), pin);
+        assert!(!pin_check_under_way());
+        let _ = verifier.verify_server_cert(&der, &[], &name("mail.example.org"), &[], now());
+        assert_eq!(system.0.load(std::sync::atomic::Ordering::SeqCst), marked);
+        assert!(!pin_check_under_way(), "cleared when the look is over");
+    }
+}
