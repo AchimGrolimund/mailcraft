@@ -193,9 +193,10 @@ impl ServerCertVerifier for Watches {
 }
 
 #[test]
-fn the_systems_look_is_marked_only_for_a_connection_that_has_a_fingerprint_and_only_while_it_looks() {
+fn the_systems_look_is_marked_only_for_the_pinned_certificate_and_only_while_it_looks() {
     let der = CertificateDer::from(make(&["mail.example.org"], "mail.example.org", None, (2026, 1, 1), (2027, 1, 1)));
-    for (pin, marked) in [(Some(cert::sha256(der.as_ref())), true), (None, false)] {
+    // (A pin for another certificate is no match: the refusal is a real one.)
+    for (pin, marked) in [(Some(cert::sha256(der.as_ref())), true), (Some(cert::sha256(b"another")), false), (None, false)] {
         let system = Arc::new(Watches(std::sync::atomic::AtomicBool::new(false)));
         let verifier = Pinned::new(system.clone(), pin);
         assert!(!pin_check_under_way());

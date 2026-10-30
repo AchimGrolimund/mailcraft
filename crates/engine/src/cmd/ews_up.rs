@@ -43,7 +43,7 @@ fn draft_ok(done: &DraftDone) -> bool {
 }
 
 fn sent_ok(done: &SendDone) -> bool {
-    done.draft.as_ref().is_none_or(draft_ok)
+    done.draft.as_ref().is_none_or(draft_ok) && id_or_empty(&done.draft_left)
 }
 
 /// `result`'s answers to what went up, held to sizes: what can't be taken in is left out. Mail

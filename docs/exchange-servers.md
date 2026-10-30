@@ -36,7 +36,13 @@ against this server.
 
 ### How sending keeps to "never twice"
 
-The send is one request that is never repeated; an answer that is lost or unclear holds the message as "may have been sent" and the draft is kept. The draft is taken away only after a clear success. If that fails, the message is not sent again: the draft's removal waits for the next run as an ordinary delete.
+Within a run the send is one request that is never repeated. An answer that is lost or unclear holds the message as "may have been sent", and the draft is kept. The draft is taken away only after a clear success; a draft whose make was never answered is found by its marker first, and if it cannot be found or taken away the next run deletes it, and sends nothing.
+
+This does not close every window. If MailCraft is killed, or the computer loses power, between the server's answer and the moment the answer is taken in, the message is still in the Outbox and the next run sends it again. It is the same for Microsoft accounts. Look in Sent Items first if a run ended that way.
+
+### Not fixed
+
+- A Calendar (or Contacts, Tasks) folder taken in as a mail folder by the earlier trial build stays in the folder list as an empty stub on a delta run, until the next fresh read of the folders. It only affects accounts added with that build, and the whole is behind the switch.
 
 ## Not yet tried
 
@@ -49,3 +55,4 @@ and modern sign-in (not built), a shared mailbox, and Autodiscover from an addre
 |---|---|---|
 | 2026-10-30 | major | First version: what was seen on Grommunio (#252, E8) |
 | 2026-10-30 | minor | Sending a saved draft, the Archive folder, the folder class and the log line, fixed and tried again on Grommunio |
+| 2026-10-30 | patch | Review: a draft whose make was lost is found by its marker; the log line is left out only for the pinned certificate; the "never twice" wording; one stale stub noted |

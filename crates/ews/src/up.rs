@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use mailcraft_model::sync::{
     ChangeOutcome, DraftDone, DraftUp, EwsMailRequest, EwsMailResult, FlagUp, FolderChange, FolderChangeDone, GraphFolder, MAX_DRAFTS,
     MAX_FOLDER_CHANGES, MAX_MESSAGE_CHANGES, MAX_SENDS, MessageChange, MessageChangeDone, MessageOutcome, SendDone, SendOutcome, SendUp,
-    SyncedAttachment, merge_categories,
+    SyncedAttachment, marker_id, marker_of, merge_categories,
 };
 use mailcraft_model::{FolderKind, Id, Importance};
 
@@ -205,7 +205,19 @@ impl<E: HttpExchange> Run<'_, E> {
                 })
             }
             MessageChange::Delete { id } => {
-                let op = DeleteItem::new(id, DeleteMode::SoftDelete);
+                // (A draft only known by its marker is found first; none found is gone.)
+                let target = match marker_of(id) {
+                    Some(marker) => {
+                        let find = FindDraft::new(None, marker);
+                        match self.ask(&find.element(), &|reply| find.answer(reply)).await {
+                            Ok(Some(found)) => found.id,
+                            Ok(None) => return Ok(Some(MessageOutcome::Gone)),
+                            Err(error) => return settle(error),
+                        }
+                    }
+                    None => id.clone(),
+                };
+                let op = DeleteItem::new(&target, DeleteMode::SoftDelete);
                 self.ask(&op.element(), &|reply| op.answer(reply)).await.map(|()| done("", ""))
             }
             // (A message moved out of the account is not one of an Exchange server account's.)
@@ -486,19 +498,39 @@ impl<E: HttpExchange> Run<'_, E> {
             Err(error) => return self.sent(error, done, plain_or_lost),
         }
         // The draft it was saved as goes only after a clear success, as a soft delete (kept
-        // recoverable); never a hard one. Gone already is as good. One that could not be taken
-        // away is named, and goes with the next run as an ordinary delete: the send is not
-        // made again.
-        let Some(id) = send.draft.as_ref().map(|d| d.id.as_str()).filter(|id| !id.is_empty()) else { return Ok(()) };
-        let op = DeleteItem::new(id, DeleteMode::SoftDelete);
+        // recoverable); never a hard one. Gone already is as good. A draft whose make was not
+        // answered has no id here: it is found by its marker first. One that could not be
+        // found or taken away is named (by its id, or its marker), and goes with the next run as
+        // an ordinary delete: the send is not made again.
+        let Some(draft) = send.draft.as_ref().filter(|d| !d.id.is_empty() || !d.marker.is_empty()) else { return Ok(()) };
+        let id = if draft.id.is_empty() {
+            let find = FindDraft::new(None, &draft.marker);
+            match self.ask(&find.element(), &|reply| find.answer(reply)).await {
+                Ok(Some(found)) => found.id,
+                // (None: it was never made.)
+                Ok(None) => return Ok(()),
+                Err(Asked::Stop(stop)) => {
+                    done.draft_left = marker_id(&draft.marker);
+                    return Err(Asked::Stop(stop));
+                }
+                Err(_) => {
+                    done.draft_left = marker_id(&draft.marker);
+                    log::info!("ews sending: the draft of a message sent could not be looked for; it is taken away next run");
+                    return Ok(());
+                }
+            }
+        } else {
+            draft.id.clone()
+        };
+        let op = DeleteItem::new(&id, DeleteMode::SoftDelete);
         match self.ask(&op.element(), &|reply| op.answer(reply)).await {
             Ok(()) | Err(Asked::Code(ResponseCode::ItemNotFound)) => Ok(()),
             Err(Asked::Stop(stop)) => {
-                done.draft_left = id.to_owned();
+                done.draft_left = id;
                 Err(Asked::Stop(stop))
             }
             Err(_) => {
-                done.draft_left = id.to_owned();
+                done.draft_left = id;
                 log::info!("ews sending: the draft of a message sent stays on the server for now; it is taken away next run");
                 Ok(())
             }

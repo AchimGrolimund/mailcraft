@@ -165,7 +165,9 @@ impl ServerCertVerifier for Pinned {
         now: UnixTime,
     ) -> Result<ServerCertVerified, Error> {
         let checked = {
-            let _quiet = PinCheck::begin(self.pin.is_some());
+            // (Marked only when the certificate shown is the pinned one: the system will refuse it,
+            // and that is expected. Another certificate is a real refusal and its line stays.)
+            let _quiet = PinCheck::begin(self.pin.is_some_and(|pin| pin == cert::sha256(end_entity.as_ref())));
             self.system.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
         };
         match checked {

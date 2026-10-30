@@ -193,3 +193,4 @@ this code base.
 | 2026-10-29 | minor | #252 E7: gap 5: Add Account has an Exchange server choice (behind `MAILCRAFT_EWS=1`): Server settings, the owner's say before a sign-in goes to another host, the certificate question, a Microsoft 365 mailbox offered as a Microsoft account, the password remembered; File › Info shows the server, user name, sign-in and trusted certificate with Forget |
 | 2026-10-30 | minor | #252 E8: gap 5: Exchange server accounts tried against Grommunio with made-up mail; what works and what does not is in exchange-servers.md |
 | 2026-10-30 | minor | #252 E8: gap 5: on Grommunio a sent draft is filed in Sent Items and taken out of Drafts, an Exchange account's Archive is made on the server when mail is put in it, and folders of other kinds are no longer taken for mail |
+| 2026-10-30 | patch | #252 E8 review: gap 5: an Exchange draft whose make was lost is found by its marker and taken away after its message is sent |

@@ -93,7 +93,9 @@ pub(super) fn destination(mb: &Mailbox, account: Id, folder: Id) -> Option<(Stri
     match &f.server {
         Some(server) => Some((server.id.clone(), None)),
         // A folder made here is made on the server by this run; the special ones are found there.
-        None if f.kind == FolderKind::Custom => Some((String::new(), Some(f.id))),
+        // (Not one that is waiting for its place in the server's listing: it is never made, so a
+        // move into it would wait for a make that does not come.)
+        None if f.kind == FolderKind::Custom && !f.awaiting_listing => Some((String::new(), Some(f.id))),
         // An Exchange server account's Archive is a folder like another there (the server has no
         // folder of that kind): made when the owner puts mail in it (E8).
         None if made_on_server(mb, f) => Some((String::new(), Some(f.id))),

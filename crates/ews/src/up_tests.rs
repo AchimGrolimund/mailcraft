@@ -467,6 +467,56 @@ fn a_saved_draft_is_sent_once_as_its_mime_with_one_copy_in_sent_items_and_no_dra
     assert_eq!(state.deletes, ["SoftDelete"]);
 }
 
+/// A draft whose make was lost: it is on the server, and nothing here knows its id, only its marker.
+fn draft_made_but_unknown(standin: &StandIn) -> SendUp {
+    let losing = Losing { inner: standin, operation: "CreateItem", lost: Cell::new(1) };
+    let (pieces, _) = run_with(&losing, &EwsMailRequest { drafts: vec![draft("mark-9", "Hello")], ..base() });
+    assert!(pieces.iter().all(|p| p.drafts.is_empty()), "the make was lost");
+    let state = standin.state();
+    let drafts = state.folder_id("drafts").unwrap();
+    assert_eq!(state.items.iter().filter(|i| i.folder == drafts).count(), 1, "but it is there");
+    drop(state);
+    SendUp { message: 5, draft: Some(draft("mark-9", "Hello")), mime: Some(message("zoe@example.org", "kit@example.org")) }
+}
+
+#[test]
+fn a_draft_whose_make_was_lost_is_found_by_its_marker_and_taken_away_after_the_send() {
+    let standin = StandIn::new();
+    let send = draft_made_but_unknown(&standin);
+    let result = run(&standin, &EwsMailRequest { sends: vec![send], ..base() });
+    assert_eq!(result.sent[0].outcome, SendOutcome::Sent);
+    assert!(result.sent[0].draft_left.is_empty());
+    let state = standin.state();
+    assert_eq!(state.outgoing.len(), 1);
+    let (sent, drafts) = (state.folder_id("sentitems").unwrap(), state.folder_id("drafts").unwrap());
+    assert_eq!(state.items.iter().filter(|i| i.folder == sent).count(), 1);
+    assert!(state.items.iter().all(|i| i.folder != drafts), "no ghost draft is left");
+}
+
+#[test]
+fn when_the_look_for_the_draft_is_lost_its_marker_is_carried_and_the_next_run_takes_it_away() {
+    let standin = StandIn::new();
+    let send = draft_made_but_unknown(&standin);
+    let refusing = Refusing { inner: &standin, operation: "FindItem", code: "ErrorInternalServerError" };
+    let (pieces, _) = run_with(&refusing, &EwsMailRequest { sends: vec![send], ..base() });
+    let sent: Vec<_> = pieces.iter().flat_map(|p| &p.sent).collect();
+    assert_eq!(sent[0].outcome, SendOutcome::Sent);
+    assert_eq!(sent[0].draft_left, mailcraft_model::sync::marker_id("mark-9"));
+    assert_eq!(standin.state().outgoing.len(), 1, "sent once");
+    // The next run is told of an ordinary delete by that marker: the draft goes, nothing is sent.
+    let delete = MessageChange::Delete { id: sent[0].draft_left.clone() };
+    let result = run(&standin, &EwsMailRequest { messages: vec![delete.clone()], ..base() });
+    assert!(matches!(done(&result, 0), MessageOutcome::Done { .. }), "{:?}", done(&result, 0));
+    let state = standin.state();
+    assert_eq!(state.outgoing.len(), 1);
+    let drafts = state.folder_id("drafts").unwrap();
+    assert!(state.items.iter().all(|i| i.folder != drafts));
+    drop(state);
+    // And once it is gone, the same delete is gone, not an error.
+    let again = run(&standin, &EwsMailRequest { messages: vec![delete], ..base() });
+    assert!(matches!(done(&again, 0), MessageOutcome::Gone), "{:?}", done(&again, 0));
+}
+
 #[test]
 fn a_saved_draft_whose_send_is_lost_is_held_and_kept() {
     let standin = StandIn::new();
