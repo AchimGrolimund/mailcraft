@@ -2225,6 +2225,7 @@ dependencies = [
  "mailcraft-charset",
  "mailcraft-control-key",
  "mailcraft-engine",
+ "mailcraft-ews",
  "mailcraft-jmap",
  "mailcraft-link",
  "mailcraft-model",
@@ -2306,7 +2307,9 @@ dependencies = [
 name = "mailcraft-ews"
 version = "0.8.2"
 dependencies = [
+ "log",
  "mailcraft-model",
+ "mailcraft-time",
  "proptest",
  "quick-xml 0.42.0",
 ]

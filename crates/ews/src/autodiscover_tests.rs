@@ -390,6 +390,20 @@ fn a_mailbox_in_exchange_online_is_said_so_and_nothing_is_sent_there() {
 }
 
 #[test]
+fn a_redirect_to_a_microsoft_consumer_address_is_exchange_online_and_nothing_is_sent() {
+    for target in ["ada@hotmail.co.uk", "ada@outlook.com", "ada@live.com", "ada@Hotmail.Co.UK"] {
+        let standin = AutodiscoverStandIn::new()
+            .route("example.org", Route::Document(redirect_addr(target)))
+            .route("hotmail.co.uk", good())
+            .route("autodiscover.hotmail.co.uk", good());
+        let run = run_with(&standin, search("ada@example.org"), None, &[true, true]);
+        assert_eq!(run.outcome, Outcome::ExchangeOnline, "{target}");
+        assert!(run.asked.is_empty(), "{target}");
+        assert_eq!(standin.hosts_asked(), ["example.org"], "{target}: nothing went to the new address's domain");
+    }
+}
+
+#[test]
 fn look_alikes_of_microsoft_hosts_are_not_exchange_online() {
     for yes in [
         "outlook.com",
