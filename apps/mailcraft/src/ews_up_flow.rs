@@ -136,7 +136,9 @@ fn connection(
     loop {
         let Some((fields, body)) = read_request(&mut stream)? else { return Ok(()) };
         let authorization = fields.iter().find(|(n, _)| n == "authorization").map(|(_, v)| v.clone()).unwrap_or_default();
-        schemes.lock().unwrap().push(authorization.split(' ').next().unwrap_or_default().to_ascii_lowercase());
+        let scheme = authorization.split(' ').next().unwrap_or_default().to_ascii_lowercase();
+        // (A request with no credential must carry no body: a message is not uploaded to be turned away.)
+        schemes.lock().unwrap().push(if scheme.is_empty() && !body.is_empty() && !signed_in { "anonymous-with-body".into() } else { scheme });
         let offered: Vec<String> = match mode {
             Mode::Basic => vec!["Basic realm=\"exchange\"".into()],
             Mode::Ntlm => vec!["Negotiate".into(), "NTLM".into()],
@@ -357,6 +359,8 @@ fn a_message_is_sent_once_and_filed_in_sent_items_over_either_sign_in() {
         send_receive(&mut app, json!({"account": account}));
         assert_eq!(server.standin.state().outgoing.len(), 1);
         assert!(here(&app, account, "Quarterly").is_some());
+        // No request without a credential carried a body, the message's included.
+        assert!(!server.schemes.lock().unwrap().iter().any(|s| s == "anonymous-with-body"));
     }
 }
 

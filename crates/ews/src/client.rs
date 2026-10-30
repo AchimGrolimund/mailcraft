@@ -58,6 +58,12 @@ impl Client {
 
     async fn send<E: HttpExchange>(&self, exchange: &E, request: HttpRequest) -> Result<Reply, Error> {
         let response = exchange.exchange(&request).await?;
+        // A bare 429 or 503 to a request that is never sent twice is no word of the service: it
+        // may have been done. Only a SOAP `ErrorServerBusy`, which comes before anything is done,
+        // is waited out and asked again.
+        if !request.is_repeatable() && matches!(response.status(), 429 | 503) && !matches!(Reply::parse(response.body()), Err(Error::Busy { .. })) {
+            return Err(Error::Status(response.status()));
+        }
         let reply = Reply::judge(&response, request.max_response_bytes())?;
         match reply.busy() {
             Some(busy) => Err(busy),

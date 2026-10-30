@@ -456,15 +456,12 @@ fn channel_bindings(end_point_hash: Option<&[u8]>) -> [u8; 16] {
     let mut structure = vec![0u8; 16];
     structure.extend_from_slice(&u32::try_from(data.len()).unwrap_or(u32::MAX).to_le_bytes());
     structure.extend_from_slice(&data);
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&Md5::digest(&structure));
-    out
+    Md5::digest(&structure).into()
 }
 
 /// `NTOWFv2(password, user, domain)` (3.3.2): `HMAC_MD5(MD4(UNICODE(password)), UNICODE(UPPER(user) + domain))`.
 pub(crate) fn ntowf_v2(password: &str, user: &str, domain: &str) -> Result<[u8; 16], NtlmError> {
-    let mut hash = [0u8; 16];
-    hash.copy_from_slice(&Md4::digest(utf16(password)));
+    let hash: [u8; 16] = Md4::digest(utf16(password)).into();
     // Windows upper-cases one character to one character: a character whose full Unicode
     // upper case is several (the German sharp s becomes "SS" in Rust) is kept as it is.
     let upper: String = user
@@ -508,9 +505,7 @@ pub(crate) fn hmac_md5(key: &[u8], parts: &[&[u8]]) -> Result<[u8; 16], NtlmErro
     for part in parts {
         mac.update(part);
     }
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&mac.finalize().into_bytes());
-    Ok(out)
+    Ok(mac.finalize().into_bytes().into())
 }
 
 /// A FILETIME (100-nanosecond ticks since 1601) from seconds since 1970, little-endian.

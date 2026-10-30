@@ -241,3 +241,56 @@ fn a_blocked_sender_on_new_mail_goes_to_junk_and_that_move_goes_up() {
     assert_eq!(s.mailbox.message(id).unwrap().folder, junk, "sorted by the Blocked Senders list as it arrives");
     assert!(changes(&s, account).iter().any(|c| matches!(c, MessageChange::Move { id, to, .. } if id == "A9" && to == "F6")));
 }
+
+#[test]
+fn delete_for_good_goes_up_and_is_not_undone_there() {
+    let (mut s, account, a, b) = setup();
+    // Delete: into Deleted Items, a move.
+    s.run("mail.delete", &json!({"ids": [a]})).unwrap();
+    assert!(changes(&s, account).iter().any(|c| matches!(c, MessageChange::Move { id, to, .. } if id == "A1" && to == "F4")));
+    // Delete for good (also what Delete in Deleted Items is): the server deletes it.
+    s.run("mail.deletePermanently", &json!({"ids": [b]})).unwrap();
+    assert!(s.mailbox.message(b).is_none());
+    let all = changes(&s, account);
+    let delete = all.iter().find(|c| matches!(c, MessageChange::Delete { id } if id == "A2")).unwrap_or_else(|| panic!("{all:?}")).clone();
+    assert_eq!(crate::cmd::account::unpushed(&s, account), 2);
+    let outcome = MessageOutcome::Done { categories: None, flag: None, folder: String::new(), id: String::new() };
+    let done = MessageChangeDone { change: delete, outcome, there: None };
+    took(&mut s, account, mailcraft_model::sync::EwsMailResult { messages: vec![done], partial: true, ..piece(account) });
+    assert!(!changes(&s, account).iter().any(|c| matches!(c, MessageChange::Delete { .. })));
+    // As for a Microsoft account, undo doesn't make it again on the server (it is said, and stays gone).
+    s.run("edit.undo", &json!({})).unwrap();
+    assert!(s.mailbox.messages.values().all(|m| m.server.as_ref().is_none_or(|x| x.id != "A2")));
+}
+
+#[test]
+fn a_copy_goes_up_and_takes_the_new_id() {
+    let (mut s, account, a, _) = setup();
+    let projects = s.mailbox.folder_by_server(account, "F5").unwrap();
+    let copy = s.run("mail.copy", &json!({"ids": [a], "folder": projects})).unwrap()["copies"][0].as_u64().unwrap();
+    let all = changes(&s, account);
+    let change =
+        all.iter().find(|c| matches!(c, MessageChange::Copy { id, to, .. } if id == "A1" && to == "F5")).unwrap_or_else(|| panic!("{all:?}")).clone();
+    let done = MessageChangeDone {
+        change,
+        outcome: MessageOutcome::Done { categories: None, flag: None, folder: "F5".into(), id: "A1-copy".into() },
+        there: None,
+    };
+    took(&mut s, account, mailcraft_model::sync::EwsMailResult { messages: vec![done], partial: true, ..piece(account) });
+    let server = s.mailbox.message(copy).unwrap().server.as_ref().unwrap();
+    assert_eq!((server.id.as_str(), server.folder.as_str()), ("A1-copy", "F5"));
+    assert!(changes(&s, account).is_empty());
+}
+
+#[test]
+fn a_folder_deleted_for_good_goes_up() {
+    let (mut s, account, ..) = setup();
+    let projects = s.mailbox.folder_by_server(account, "F5").unwrap();
+    // The first delete moves it into Deleted Items; the second removes it for good.
+    s.run("folder.delete", &json!({"id": projects})).unwrap();
+    assert!(matches!(ews_mail_request(&s, account, false).unwrap().changes.as_slice(), [FolderChange::Move { id, .. }] if id == "F5"));
+    s.run("folder.delete", &json!({"id": projects})).unwrap();
+    assert!(s.mailbox.folder(projects).is_none());
+    let request = ews_mail_request(&s, account, false).unwrap();
+    assert!(request.changes.iter().any(|c| matches!(c, FolderChange::Delete { id } if id == "F5")), "{:?}", request.changes);
+}

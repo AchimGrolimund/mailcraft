@@ -66,12 +66,20 @@ pub(crate) fn id_element(name: &str, id: &str, change_key: Option<&str>) -> Elem
     }
 }
 
+/// `text` for a value that is one line (a subject, a display name, a category, a folder's name, a
+/// file's name): CR, LF and NUL taken out, as the MIME writer does for a header value, so that a
+/// value never carries a line break into the server's headers or its folder names.
+pub(crate) fn line(text: &str) -> String {
+    text.chars().filter(|c| !matches!(c, '\r' | '\n' | '\0')).collect()
+}
+
 fn mailbox(address: &Address) -> Element {
     let mut element = Element::new("t:Mailbox");
-    if !address.name.trim().is_empty() {
-        element = element.child(Element::new("t:Name").text(address.name.trim()));
+    let name = line(address.name.trim());
+    if !name.trim().is_empty() {
+        element = element.child(Element::new("t:Name").text(name.trim()));
     }
-    element.child(Element::new("t:EmailAddress").text(address.email.trim()))
+    element.child(Element::new("t:EmailAddress").text(line(address.email.trim()).trim()))
 }
 
 /// A recipient list element (`t:ToRecipients`) of `people`.
@@ -164,7 +172,7 @@ impl ItemUpdate {
             any = true;
         };
         if let Some(subject) = &self.subject {
-            put(Self::set("item:Subject", "t:Message", Element::new("t:Subject").text(subject)));
+            put(Self::set("item:Subject", "t:Message", Element::new("t:Subject").text(&line(subject))));
         }
         if let Some((html, content)) = &self.body {
             let body = Element::new("t:Body").attr("BodyType", if *html { "HTML" } else { "Text" }).text(content);
@@ -196,7 +204,7 @@ impl ItemUpdate {
             if categories.is_empty() {
                 put(Self::clear("item:Categories"));
             } else {
-                let list = categories.iter().fold(Element::new("t:Categories"), |list, c| list.child(Element::new("t:String").text(c)));
+                let list = categories.iter().fold(Element::new("t:Categories"), |list, c| list.child(Element::new("t:String").text(&line(c))));
                 put(Self::set("item:Categories", "t:Message", list));
             }
         }
@@ -375,8 +383,9 @@ impl CreateFolder {
 
     /// The operation: `ParentFolderId` and `Folders`.
     pub fn element(&self) -> Element {
-        let folder =
-            Element::new("t:Folder").child(Element::new("t:FolderClass").text("IPF.Note")).child(Element::new("t:DisplayName").text(&self.name));
+        let folder = Element::new("t:Folder")
+            .child(Element::new("t:FolderClass").text("IPF.Note"))
+            .child(Element::new("t:DisplayName").text(&line(&self.name)));
         Element::new("m:CreateFolder").child(folder_target("m:ParentFolderId", &self.parent)).child(Element::new("m:Folders").child(folder))
     }
 
@@ -411,7 +420,7 @@ impl RenameFolder {
     pub fn element(&self) -> Element {
         let set = Element::new("t:SetFolderField")
             .child(Element::new("t:FieldURI").attr("FieldURI", "folder:DisplayName"))
-            .child(Element::new("t:Folder").child(Element::new("t:DisplayName").text(&self.name)));
+            .child(Element::new("t:Folder").child(Element::new("t:DisplayName").text(&line(&self.name))));
         let change = Element::new("t:FolderChange").child(id_element("t:FolderId", &self.id, None)).child(Element::new("t:Updates").child(set));
         Element::new("m:UpdateFolder").child(Element::new("m:FolderChanges").child(change))
     }
@@ -504,8 +513,21 @@ pub struct ItemNow {
     pub change_key: String,
     /// The categories now.
     pub categories: Vec<String>,
-    /// The attachments: id and name.
-    pub attachments: Vec<(String, String)>,
+    /// The attachments the item holds.
+    pub attachments: Vec<NowFile>,
+}
+
+/// A file attached to an item, as the server says it is.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NowFile {
+    /// The server's id of it.
+    pub id: String,
+    /// Its file name.
+    pub name: String,
+    /// Its size in bytes; 0 when the server said none.
+    pub size: u64,
+    /// Its content id, for an inline one.
+    pub content_id: String,
 }
 
 impl std::fmt::Debug for ItemNow {
@@ -564,7 +586,12 @@ impl GetItemNow {
                     .take(MAX_NOW_ATTACHMENTS)
                     .filter_map(|a| {
                         let id = a.child_in(TYPES, "AttachmentId")?.attribute("Id").filter(|id| valid_id(id))?.to_owned();
-                        Some((id, a.child_in(TYPES, "Name").map(|n| n.text.trim().to_owned()).unwrap_or_default()))
+                        Some(NowFile {
+                            id,
+                            name: a.child_in(TYPES, "Name").map(|n| n.text.trim().to_owned()).unwrap_or_default(),
+                            size: a.child_in(TYPES, "Size").and_then(|n| n.text.trim().parse().ok()).unwrap_or(0),
+                            content_id: a.child_in(TYPES, "ContentId").map(|n| n.text.trim().to_owned()).unwrap_or_default(),
+                        })
                     })
                     .collect()
             })
