@@ -178,7 +178,10 @@ fn mail_moved_into_the_archive_makes_it_on_the_server_once_and_the_move_follows(
     assert_eq!((*folder, name.as_str(), parent.as_str(), *parent_folder), (archive, "Archive", "", None));
     // The move waits on the folder made in the same run.
     assert!(
-        request.messages.iter().any(|c| matches!(c, MessageChange::Move { id, to, to_folder, .. } if id == "A1" && to.is_empty() && *to_folder == Some(archive))),
+        request
+            .messages
+            .iter()
+            .any(|c| matches!(c, MessageChange::Move { id, to, to_folder, .. } if id == "A1" && to.is_empty() && *to_folder == Some(archive))),
         "{:?}",
         request.messages
     );
@@ -275,7 +278,15 @@ fn a_saved_draft_goes_as_its_mime_and_a_draft_left_after_the_send_is_deleted_by_
     s.run("mail.new", &json!({"account": account, "to": "kit@example.org", "subject": "Hello"})).unwrap();
     s.run("compose.saveDraft", &json!({})).unwrap()["draft"].as_u64().unwrap();
     let up = ews_mail_request(&s, account, false).unwrap().drafts[0].clone();
-    let done = DraftDone { change: up, id: "D1".into(), folder: "F3".into(), change_key: "CK2".into(), fields: true, attachments: Some(vec![]), ..Default::default() };
+    let done = DraftDone {
+        change: up,
+        id: "D1".into(),
+        folder: "F3".into(),
+        change_key: "CK2".into(),
+        fields: true,
+        attachments: Some(vec![]),
+        ..Default::default()
+    };
     took(&mut s, account, mailcraft_model::sync::EwsMailResult { drafts: vec![done], partial: true, ..piece(account) });
     s.run("compose.send", &json!({})).unwrap();
     let request = ews_mail_request(&s, account, false).unwrap();

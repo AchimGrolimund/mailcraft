@@ -96,10 +96,16 @@ fn a_server_that_gives_no_class_unless_asked_still_has_its_other_folders_left_ou
         let mut s = standin.state();
         s.class_only_when_asked = true;
         let top = s.folders.iter().find(|f| f.distinguished == "msgfolderroot").unwrap().id.clone();
-        for (n, (name, class)) in
-            [("Journal", "IPF.Journal"), ("Notes", "IPF.StickyNote"), ("Tasks", "IPF.Task"), ("Contacts", "IPF.Contact"), ("Settings", "IPF.Configuration"), ("Projects", "IPF.Note")]
-                .into_iter()
-                .enumerate()
+        for (n, (name, class)) in [
+            ("Journal", "IPF.Journal"),
+            ("Notes", "IPF.StickyNote"),
+            ("Tasks", "IPF.Task"),
+            ("Contacts", "IPF.Contact"),
+            ("Settings", "IPF.Configuration"),
+            ("Projects", "IPF.Note"),
+        ]
+        .into_iter()
+        .enumerate()
         {
             let folder = crate::standin::Folder {
                 distinguished: String::new(),

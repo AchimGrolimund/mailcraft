@@ -598,9 +598,7 @@ fn fault_answer(operation: &str, code: &str) -> HttpResponse {
 
 #[test]
 fn a_word_that_may_follow_the_send_holds_it_as_maybe_sent_and_only_a_refusal_before_it_does_not() {
-    let sends = || {
-        [("CreateItem", SendUp { message: 3, draft: None, mime: Some(message("zoe@example.org", "")) })]
-    };
+    let sends = || [("CreateItem", SendUp { message: 3, draft: None, mime: Some(message("zoe@example.org", "")) })];
     let may_have_gone = |answer: HttpResponse| {
         for (operation, send) in sends() {
             let standin = StandIn::new();
@@ -620,11 +618,7 @@ fn a_word_that_may_follow_the_send_holds_it_as_maybe_sent_and_only_a_refusal_bef
     for code in ["ErrorInternalServerError", "ErrorTimeoutExpired", "ErrorMailboxStoreUnavailable", "ErrorSomethingNobodyKnows"] {
         for (operation, send) in sends() {
             let standin = StandIn::new();
-            let replacing = Replacing {
-                inner: &standin,
-                operation,
-                answer: fault_answer("CreateItem", code),
-            };
+            let replacing = Replacing { inner: &standin, operation, answer: fault_answer("CreateItem", code) };
             let (pieces, _) = run_with(&replacing, &EwsMailRequest { sends: vec![send], ..base() });
             let held: Vec<_> = pieces.iter().flat_map(|p| &p.sent).collect();
             assert_eq!(held[0].outcome, SendOutcome::Held { lost: true, why: String::new() }, "{operation} {code}");

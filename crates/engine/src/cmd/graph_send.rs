@@ -161,7 +161,8 @@ fn hold_sends(s: &mut Session, v: &Value) -> CmdResult {
     let waiting: Vec<Id> = s.mailbox.messages_in(outbox).filter(|m| m.held.is_empty()).map(|m| m.id).take(MAX_SENDS).collect();
     let mut said = Vec::new();
     for id in &waiting {
-        let done = SendDone { message: *id, outcome: SendOutcome::Held { lost: false, why: why.to_string() }, draft: None, draft_left: String::new() };
+        let done =
+            SendDone { message: *id, outcome: SendOutcome::Held { lost: false, why: why.to_string() }, draft: None, draft_left: String::new() };
         send_done(&mut s.mailbox, account, &done, s.interface_language, &mut said);
     }
     if let Some(first) = said.first() {
