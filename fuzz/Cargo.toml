@@ -132,3 +132,10 @@ path = "fuzz_targets/link.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ews_autodiscover"
+path = "fuzz_targets/ews_autodiscover.rs"
+test = false
+doc = false
+bench = false

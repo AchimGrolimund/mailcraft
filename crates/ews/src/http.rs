@@ -75,7 +75,7 @@ impl std::error::Error for EndpointError {}
 /// Checks the transport rule on `url`: `https`, or plain `http` to `localhost`, `127.0.0.0/8` or
 /// `[::1]` only (for the tests). Nothing is fetched from it.
 pub fn check_endpoint(url: &str) -> Result<(), EndpointError> {
-    if url.len() > MAX_ADDRESS || url.chars().any(|c| c.is_control() || c.is_whitespace() || !c.is_ascii()) {
+    if url.len() > MAX_ADDRESS || url.chars().any(|c| c.is_control() || c.is_whitespace() || !c.is_ascii() || c == '\\') {
         return Err(EndpointError::Malformed);
     }
     let (secure, rest) = match url.split_once("://") {
