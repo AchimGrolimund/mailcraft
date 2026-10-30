@@ -1954,10 +1954,11 @@ impl Mailbox {
         self.is_send_queue(folder) && !self.is_imap_outbox(folder)
     }
 
-    /// `id`, come back to the folder it lies in without a move: an IMAP account's Outbox holds
-    /// it as it does what is moved there, whatever it was when it left (#607).
+    /// `id`, come back to the folder it lies in without a move (#451): in an Outbox of any kind it
+    /// is held, whatever it was when it left, for it left unsent and only Send sends; anywhere
+    /// else it is no longer held for having been put in one (#607).
     pub fn hold_if_in_outbox(&mut self, id: Id) {
-        let in_outbox = self.message(id).is_some_and(|m| self.is_imap_outbox(m.folder));
+        let in_outbox = self.message(id).is_some_and(|m| self.is_send_queue(m.folder));
         if let Ok(m) = self.message_mut(id) {
             hold_if_put_in_outbox(m, in_outbox);
         }
@@ -2081,12 +2082,12 @@ impl Mailbox {
 
     /// Put `id` on its account's server again, from the whole message here: the server's copy
     /// was deleted while the message was moved back there (#451). Nothing for one that isn't
-    /// whole here, a draft, or one that waits to go there already.
+    /// whole here, a draft, one held in an Outbox, or one that waits to go there already.
     pub fn place_again(&mut self, id: Id) {
         let Some(m) = self.message(id) else { return };
         let account = m.account;
         let waits = self.queued.iter().any(|q| matches!(q, Queued::PlaceMessage { message, .. } if *message == id));
-        if waits || !self.puts_on_server(account) || Mailbox::not_whole(m, "moved", false).is_some() {
+        if waits || !m.held.is_empty() || !self.puts_on_server(account) || Mailbox::not_whole(m, "moved", false).is_some() {
             return;
         }
         let marker = self.place_marker(id, "");
@@ -2150,7 +2151,8 @@ impl Mailbox {
     ///   owner's (a shared mailbox and its owner's, or two of his shared mailboxes, #70): there at
     ///   once, being moved, and waiting to be made on the destination's server
     ///   ([`Queued::PlaceMessage`]); the original is removed from its own server once that copy
-    ///   is there. Refused for a message that isn't whole here, and for a draft.
+    ///   is there. Refused for a message that isn't whole here, a draft, and mail a Microsoft
+    ///   account's server wouldn't send ([`Mailbox::not_whole`]).
     /// - Back into the account it is being moved out of: it is that server message again.
     /// - Between a shared mailbox and a mailbox of another sign-in's: refused, with the reason.
     fn move_between_accounts(&mut self, id: Id, folder: Id, to_account: Id, remote: &str, fresh: bool) -> Result<bool, ModelError> {

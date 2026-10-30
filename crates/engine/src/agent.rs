@@ -1047,7 +1047,7 @@ fn what_it_does(s: &Session, id: &str, params: &Value) -> String {
             }
         }
         // (Never into the Outbox itself: `import` puts mail elsewhere, or refuses it.)
-        "file.import" => "import messages with an Outbox chosen: none goes in it, and none is sent".to_string(),
+        "file.import" => "import a file with an Outbox chosen: no mail goes in it, and none is sent".to_string(),
         "mail.delete" | "mail.deletePermanently" => {
             let ids = taken(params);
             format!("delete {} for good", messages_text(s, &ids))

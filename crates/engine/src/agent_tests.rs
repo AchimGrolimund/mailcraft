@@ -127,7 +127,7 @@ fn the_question_about_an_outbox_says_what_that_outbox_does() {
     // Imported mail never lies in an Outbox, of whichever kind.
     for folder in [sends, holds] {
         let d = describe(&s, "file.import", &json!({"folder": folder}));
-        assert_eq!(d, "import messages with an Outbox chosen: none goes in it, and none is sent");
+        assert_eq!(d, "import a file with an Outbox chosen: no mail goes in it, and none is sent");
     }
 }
 

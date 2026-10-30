@@ -255,8 +255,14 @@ pub(crate) fn settle_moves_into(s: &mut Session, going: &HashSet<Id>) {
 
 /// A message the destination wouldn't take: a move back to where its original still is, as that
 /// server message, or to the folder on this computer it came from (`from`); a copy taken away;
-/// a move whose original is gone kept on this computer.
+/// a move whose original is gone kept on this computer. In an Outbox again it is held, and
+/// anywhere else it no longer is.
 pub(crate) fn put_back(mb: &mut Mailbox, id: Id, copy: bool, from: Option<Id>) {
+    goes_back(mb, id, copy, from);
+    mb.hold_if_in_outbox(id);
+}
+
+fn goes_back(mb: &mut Mailbox, id: Id, copy: bool, from: Option<Id>) {
     let Some(m) = mb.message(id) else { return };
     let out = m.moving_out.clone().filter(|out| mb.is_graph(out.account) && !out.id.is_empty() && !out.left);
     match out {
@@ -293,8 +299,6 @@ pub(crate) fn put_back(mb: &mut Mailbox, id: Id, copy: bool, from: Option<Id>) {
                 && let Ok(m) = mb.message_mut(id)
             {
                 m.lies_in(folder, account, 0, None);
-                // Back in an IMAP account's Outbox it is held again: it left unsent (#607).
-                mb.hold_if_in_outbox(id);
             }
         }
     }
