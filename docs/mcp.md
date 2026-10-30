@@ -1,6 +1,6 @@
 # MCP server
 
-> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-30 · **Change:** patch · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-30 · **Change:** minor · **Target:** Microsoft Outlook (Microsoft 365)
 
 MailCraft speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio, so
 agents can read, file and write mail and keep a calendar.
@@ -95,6 +95,12 @@ to Unsaved Message) is not asked about. A message only the agent wrote in is the
 it saves it to Drafts without a question, and discarding it is `delete`. Headless, nothing is the
 owner's.
 
+**Naming what a command acts on.** An `id`, `ids` or `message` that names nothing (`null`, an id
+as text, zero, a fraction) is refused, never taken for what the owner selected, by Reply, Reply
+All, Open Draft, Send Again, Forward, Delete, Move and the appointment commands (#553; the list is
+in the [control protocol](control-protocol.md)). Reply, Reply All, Open Draft and Send Again take
+one message: `id`, or `ids` naming one.
+
 **The question in the window.** Bridged (`--connect`), the bridge marks every request it sends as
 an agent's ([control protocol](control-protocol.md#agents)), and the app asks the owner about what
 needs them, over the window: "An agent wants to send "Re: Invoice" to someone@example.org with 1
@@ -179,6 +185,7 @@ parameters.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-30 | minor | #553: Reply, Reply All, Open Draft, Send Again, the answers to meeting requests and the appointment commands refuse an `id`, `ids` or `message` that names nothing, rather than take the selection; the four one-message commands take `ids` naming one |
 | 2026-10-29 | minor | #599: `read_message` and `mail.get` answer `hiddenText` (what the sender hid), framed as untrusted message content |
 | 2026-10-28 | minor | #620: an agent names the messages (`ids` or `id`) for delete, delete for good, move, copy, archive, junk, not junk, reply, reply all, forward, forward as attachment, open draft, remove attachment and send again; the window's selection is the owner's. `list_messages` reads a folder and search without moving the window to them |
 | 2026-10-27 | minor | #508: `mail.dismissWarnings` (hiding a message's sender-warning banner) needs the owner (class settings) |

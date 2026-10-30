@@ -2491,8 +2491,9 @@ impl Session {
         let reg = self.registry.clone();
         let Some(spec) = reg.get(id) else { return Err(CmdError::Unknown(id.to_string())) };
         if let Some(reason) = (spec.enabled)(self) {
-            // A command that only lacks a selection still runs on what the caller names.
-            let named = spec.selection && ["id", "ids", "message"].iter().any(|k| params.get(*k).is_some_and(|v| !v.is_null()));
+            // A command that only lacks a selection still runs on what the caller names, and on
+            // what it names wrongly, which the command refuses for what it is (#553).
+            let named = spec.selection && ["id", "ids", "message"].iter().any(|k| params.get(*k).is_some());
             if !named {
                 return Err(CmdError::Disabled(reason.to_string()));
             }
