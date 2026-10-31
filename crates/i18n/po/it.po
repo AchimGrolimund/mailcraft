@@ -234,6 +234,11 @@ msgid "A change to a shared mailbox's calendar was refused: this account may not
 msgstr ""
 
 #. interface
+#: crates/ui-egui/src/symbol.rs
+msgid "A code point written U+2192 or 2192, or a decimal number after #."
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/backstage.rs
 msgid "A colleague's calendar, by their address, with your work or school account. Kept on this computer only"
 msgstr ""
@@ -1719,6 +1724,11 @@ msgid "Changing the calendar needs your permission: File › Info › Connect ca
 msgstr "La modifica del calendario richiede l'autorizzazione: File › Informazioni › Collega calendario e contatti"
 
 #. interface
+#: crates/ui-egui/src/symbol.rs
+msgid "Character code"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/dialogs.rs
 msgid "Characters (no spaces)"
 msgstr ""
@@ -1960,14 +1970,14 @@ msgstr "Cancella ricerca"
 msgid "Clear search (Esc)"
 msgstr "Cancella ricerca (Esc)"
 
-#. ribbon location
-#: crates/engine/src/cmd/format.rs
+#. ribbon, ribbon location
+#: crates/engine/src/cmd/edit.rs crates/engine/src/cmd/format.rs crates/ui-egui/src/ribbon.rs
 #, fuzzy
 msgid "Clipboard"
 msgstr "Appunti"
 
 #. interface, ribbon
-#: crates/ui-egui/src/account_setup.rs crates/ui-egui/src/account_setup/exchange.rs crates/ui-egui/src/compose.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/find_replace.rs crates/ui-egui/src/folder_properties.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/meeting_dialogs.rs crates/ui-egui/src/merge_contacts.rs crates/ui-egui/src/reminders.rs crates/ui-egui/src/ribbon.rs crates/ui-egui/src/sync_panel.rs crates/ui-egui/src/tasks_view.rs
+#: crates/ui-egui/src/account_setup.rs crates/ui-egui/src/account_setup/exchange.rs crates/ui-egui/src/compose.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/find_replace.rs crates/ui-egui/src/folder_properties.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/meeting_dialogs.rs crates/ui-egui/src/merge_contacts.rs crates/ui-egui/src/reminders.rs crates/ui-egui/src/ribbon.rs crates/ui-egui/src/symbol.rs crates/ui-egui/src/sync_panel.rs crates/ui-egui/src/tasks_view.rs
 #, fuzzy
 msgid "Close"
 msgstr "Chiudi"
@@ -3658,6 +3668,11 @@ msgstr "Dimentica le immagini conservate; vengono scaricate di nuovo quando le s
 msgid "Format"
 msgstr "Formato"
 
+#. command label, ribbon
+#: crates/engine/src/cmd/edit.rs crates/ui-egui/src/ribbon.rs
+msgid "Format Painter"
+msgstr ""
+
 #. ribbon location
 #: crates/engine/src/cmd/edit.rs crates/engine/src/cmd/format.rs
 #, fuzzy
@@ -4355,8 +4370,8 @@ msgstr "Informazioni"
 msgid "Info and File"
 msgstr ""
 
-#. ribbon location
-#: crates/engine/src/cmd/picture.rs crates/engine/src/cmd/writing_tools.rs
+#. interface, ribbon location
+#: crates/engine/src/cmd/format.rs crates/engine/src/cmd/picture.rs crates/engine/src/cmd/writing_tools.rs crates/ui-egui/src/symbol.rs
 msgid "Insert"
 msgstr ""
 
@@ -5372,7 +5387,7 @@ msgstr[0] ""
 msgstr[1] ""
 
 #. interface, name, ribbon location
-#: crates/engine/src/cmd/compose.rs crates/engine/src/cmd/format.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/menubar.rs crates/ui-egui/src/tasks_view.rs
+#: crates/engine/src/cmd/compose.rs crates/engine/src/cmd/edit.rs crates/engine/src/cmd/format.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/menubar.rs crates/ui-egui/src/tasks_view.rs
 #, fuzzy
 msgid "Message"
 msgstr "Messaggio"
@@ -6045,6 +6060,11 @@ msgstr ""
 #, fuzzy
 msgid "No"
 msgstr "No"
+
+#. interface
+#: crates/ui-egui/src/ribbon.rs
+msgid "No Color"
+msgstr ""
 
 #. interface, name, ribbon
 #: crates/ui-egui/src/ribbon.rs crates/ui-egui/src/tasks_view.rs
@@ -9538,13 +9558,13 @@ msgstr "Passa a Microsoft Graph"
 msgid "Switch without Them"
 msgstr "Passa senza di essi"
 
-#. ribbon
-#: crates/ui-egui/src/ribbon.rs
+#. command label, interface, ribbon
+#: crates/engine/src/cmd/format.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/ribbon.rs
 msgid "Symbol"
 msgstr ""
 
-#. ribbon
-#: crates/ui-egui/src/ribbon.rs
+#. ribbon, ribbon location
+#: crates/engine/src/cmd/format.rs crates/ui-egui/src/ribbon.rs
 msgid "Symbols"
 msgstr ""
 
@@ -9716,6 +9736,11 @@ msgstr ""
 #. ribbon
 #: crates/ui-egui/src/ribbon.rs
 msgid "Text Effects"
+msgstr ""
+
+#. command label, ribbon
+#: crates/engine/src/cmd/format.rs crates/ui-egui/src/ribbon.rs
+msgid "Text Highlight Color"
 msgstr ""
 
 #. interface
@@ -13022,6 +13047,11 @@ msgstr "nessuna cartella con id {id}"
 #, fuzzy
 msgid "no incoming server"
 msgstr "nessun server in arrivo"
+
+#. what a command says
+#: crates/engine/src/cmd/edit.rs
+msgid "no look was copied: press Format Painter on the text to copy it from first"
+msgstr ""
 
 #. what a command says, why a command can't run
 #: crates/engine/src/cmd/compose.rs crates/engine/src/cmd/edit.rs crates/engine/src/cmd/format.rs crates/engine/src/cmd/mod.rs crates/engine/src/cmd/picture.rs crates/engine/src/cmd/writing_tools.rs
