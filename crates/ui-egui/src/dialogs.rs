@@ -137,6 +137,8 @@ pub enum Dialog {
     MergeContacts(Box<crate::merge_contacts::MergeContacts>),
     /// View Source: a message's source as plain text ([`crate::view_source`]).
     ViewSource(Box<crate::view_source::Source>),
+    /// Find and Replace in the message being written ([`crate::find_replace`]).
+    FindReplace(crate::find_replace::FindReplace),
 }
 
 /// The tabs of About: the program, the people who made it, and the people who test it
@@ -231,6 +233,13 @@ impl Dialog {
             Dialog::ImportTree(_) => "importTree",
             Dialog::MergeContacts(_) => "mergeContacts",
             Dialog::ViewSource(_) => "viewSource",
+            Dialog::FindReplace(d) => {
+                if d.replace {
+                    "replace"
+                } else {
+                    "find"
+                }
+            }
         }
     }
 
@@ -339,6 +348,9 @@ pub(crate) fn open_dialog(app: &mut MailApp, name: &str, params: &Value) -> Opti
         let named = params.get("id").map_or_else(|| json!({}), |id| json!({"id": id}));
         let answer = app.session.run("mail.viewSource", &named).ok()?;
         return crate::view_source::Source::from_answer(&answer).map(|s| Dialog::ViewSource(Box::new(s)));
+    }
+    if matches!(name, "find" | "replace") {
+        return crate::find_replace::FindReplace::open(app, name == "replace").map(Dialog::FindReplace);
     }
     if name == "mergeContacts" {
         return crate::merge_contacts::MergeContacts::open(app, params).map(|d| Dialog::MergeContacts(Box::new(d)));
@@ -1097,6 +1109,8 @@ pub fn input_dialog(id: &str, params: &Value) -> Option<&'static str> {
         // (Without an address, a script's `compose.link` removes the link; a person is asked.)
         "compose.link" if !has("url") => Some("link"),
         "insert.dateTime" if !has("format") => Some("dateTime"),
+        "edit.find" if !has("text") => Some("find"),
+        "edit.replace" if !has("text") => Some("replace"),
         // (What it answers is counts to look at.)
         "review.wordCount" => Some("wordCount"),
         "account.add" if !has("email") => Some("account"),
@@ -1862,6 +1876,14 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
             let mut done = false;
             let open = window(ctx, tl!("Merge Duplicate Contacts"), crate::merge_contacts::WIDTH, |ui| done = dialog.show(app, ui, enter));
             close |= !open || done;
+        }
+        Dialog::FindReplace(dialog) => {
+            let mut done = false;
+            let title = if dialog.replace { tl!("Replace") } else { tl!("Find") };
+            let open = window(ctx, title, crate::find_replace::WIDTH, |ui| done = dialog.show(app, ui, enter));
+            close |= !open || done;
+            // The keyboard goes back to the text.
+            app.body_focus_wanted |= close;
         }
         Dialog::ImportTree(dialog) => {
             let mut done = false;
