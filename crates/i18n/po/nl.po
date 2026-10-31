@@ -238,6 +238,11 @@ msgid "A change to a shared mailbox's calendar was refused: this account may not
 msgstr "Een wijziging van de agenda van een gedeeld postvak is geweigerd: dit account mag die niet bewerken. Er wordt nog één keer geprobeerd, en daarna wordt die teruggezet."
 
 #. interface
+#: crates/ui-egui/src/symbol.rs
+msgid "A code point written U+2192 or 2192, or a decimal number after #."
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/backstage.rs
 #, fuzzy
 msgid "A colleague's calendar, by their address, with your work or school account. Kept on this computer only"
@@ -1768,6 +1773,11 @@ msgid "Changing the calendar needs your permission: File › Info › Connect ca
 msgstr "Het wijzigen van de agenda vereist uw toestemming: Bestand › Info › Agenda en contactpersonen verbinden"
 
 #. interface
+#: crates/ui-egui/src/symbol.rs
+msgid "Character code"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/dialogs.rs
 #, fuzzy
 msgid "Characters (no spaces)"
@@ -2017,14 +2027,14 @@ msgstr "Zoekopdracht wissen"
 msgid "Clear search (Esc)"
 msgstr "Zoekopdracht wissen (Esc)"
 
-#. ribbon location
-#: crates/engine/src/cmd/format.rs
+#. ribbon, ribbon location
+#: crates/engine/src/cmd/edit.rs crates/engine/src/cmd/format.rs crates/ui-egui/src/ribbon.rs
 #, fuzzy
 msgid "Clipboard"
 msgstr "Klembord"
 
 #. interface, ribbon
-#: crates/ui-egui/src/account_setup.rs crates/ui-egui/src/account_setup/exchange.rs crates/ui-egui/src/compose.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/find_replace.rs crates/ui-egui/src/folder_properties.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/meeting_dialogs.rs crates/ui-egui/src/merge_contacts.rs crates/ui-egui/src/reminders.rs crates/ui-egui/src/ribbon.rs crates/ui-egui/src/sync_panel.rs crates/ui-egui/src/tasks_view.rs
+#: crates/ui-egui/src/account_setup.rs crates/ui-egui/src/account_setup/exchange.rs crates/ui-egui/src/compose.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/find_replace.rs crates/ui-egui/src/folder_properties.rs crates/ui-egui/src/forms.rs crates/ui-egui/src/meeting_dialogs.rs crates/ui-egui/src/merge_contacts.rs crates/ui-egui/src/reminders.rs crates/ui-egui/src/ribbon.rs crates/ui-egui/src/symbol.rs crates/ui-egui/src/sync_panel.rs crates/ui-egui/src/tasks_view.rs
 #, fuzzy
 msgid "Close"
 msgstr "Sluiten"
@@ -3744,6 +3754,11 @@ msgstr "De bewaarde afbeeldingen vergeten; ze worden opnieuw gedownload wanneer 
 msgid "Format"
 msgstr "Opmaak"
 
+#. command label, ribbon
+#: crates/engine/src/cmd/edit.rs crates/ui-egui/src/ribbon.rs
+msgid "Format Painter"
+msgstr ""
+
 #. ribbon location
 #: crates/engine/src/cmd/edit.rs crates/engine/src/cmd/format.rs
 #, fuzzy
@@ -4466,8 +4481,8 @@ msgstr "Info"
 msgid "Info and File"
 msgstr "Info en bestand"
 
-#. ribbon location
-#: crates/engine/src/cmd/picture.rs crates/engine/src/cmd/writing_tools.rs
+#. interface, ribbon location
+#: crates/engine/src/cmd/format.rs crates/engine/src/cmd/picture.rs crates/engine/src/cmd/writing_tools.rs crates/ui-egui/src/symbol.rs
 #, fuzzy
 msgid "Insert"
 msgstr "Invoegen"
@@ -5519,7 +5534,7 @@ msgstr[0] "{n} contactpersoon samenvoegen…"
 msgstr[1] "{n} contactpersonen samenvoegen…"
 
 #. interface, name, ribbon location
-#: crates/engine/src/cmd/compose.rs crates/engine/src/cmd/format.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/menubar.rs crates/ui-egui/src/tasks_view.rs
+#: crates/engine/src/cmd/compose.rs crates/engine/src/cmd/edit.rs crates/engine/src/cmd/format.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/menubar.rs crates/ui-egui/src/tasks_view.rs
 #, fuzzy
 msgid "Message"
 msgstr "Bericht"
@@ -6198,6 +6213,11 @@ msgstr "Bijnaam"
 #, fuzzy
 msgid "No"
 msgstr "Nee"
+
+#. interface
+#: crates/ui-egui/src/ribbon.rs
+msgid "No Color"
+msgstr ""
 
 #. interface, name, ribbon
 #: crates/ui-egui/src/ribbon.rs crates/ui-egui/src/tasks_view.rs
@@ -9778,14 +9798,14 @@ msgstr "Overschakelen naar Microsoft Graph"
 msgid "Switch without Them"
 msgstr "Overschakelen zonder deze"
 
-#. ribbon
-#: crates/ui-egui/src/ribbon.rs
+#. command label, interface, ribbon
+#: crates/engine/src/cmd/format.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/ribbon.rs
 #, fuzzy
 msgid "Symbol"
 msgstr "Symbool"
 
-#. ribbon
-#: crates/ui-egui/src/ribbon.rs
+#. ribbon, ribbon location
+#: crates/engine/src/cmd/format.rs crates/ui-egui/src/ribbon.rs
 #, fuzzy
 msgid "Symbols"
 msgstr "Symbolen"
@@ -9975,6 +9995,11 @@ msgstr "Tekstvak"
 #, fuzzy
 msgid "Text Effects"
 msgstr "Teksteffecten"
+
+#. command label, ribbon
+#: crates/engine/src/cmd/format.rs crates/ui-egui/src/ribbon.rs
+msgid "Text Highlight Color"
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/forms.rs
@@ -13425,6 +13450,11 @@ msgstr "geen map met id {id}"
 #, fuzzy
 msgid "no incoming server"
 msgstr "geen inkomende server"
+
+#. what a command says
+#: crates/engine/src/cmd/edit.rs
+msgid "no look was copied: press Format Painter on the text to copy it from first"
+msgstr ""
 
 #. what a command says, why a command can't run
 #: crates/engine/src/cmd/compose.rs crates/engine/src/cmd/edit.rs crates/engine/src/cmd/format.rs crates/engine/src/cmd/mod.rs crates/engine/src/cmd/picture.rs crates/engine/src/cmd/writing_tools.rs
