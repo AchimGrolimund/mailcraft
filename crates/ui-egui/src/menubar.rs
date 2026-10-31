@@ -228,6 +228,8 @@ const MESSAGE: &[Row] = &[
     Cmd("compose.send"),
     Cmd("compose.saveDraft"),
     Cmd("compose.attach"),
+    Cmd("compose.attachItem"),
+    Cmd("insert.businessCard"),
     Cmd("compose.checkNames"),
 ];
 

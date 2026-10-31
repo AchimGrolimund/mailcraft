@@ -163,6 +163,8 @@ const SAFE: &[&str] = &[
     // Writing (sending is not).
     "compose.set",
     "compose.attach",
+    "compose.attachItem",
+    "insert.businessCard",
     "insert.picture",
     "compose.removeAttachment",
     "compose.signature",

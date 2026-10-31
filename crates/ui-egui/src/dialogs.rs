@@ -135,6 +135,9 @@ pub enum Dialog {
     /// People › Merge Duplicates (#506, [`crate::merge_contacts`]): it only collects what to
     /// merge, then runs `people.merge`.
     MergeContacts(Box<crate::merge_contacts::MergeContacts>),
+    /// Insert › Item and Insert › Contact Card ([`crate::pick_item`]): it only chooses, then
+    /// runs `compose.attachItem` or `insert.businessCard`.
+    Pick(Box<crate::pick_item::Pick>),
     /// Find and Replace in the message being written ([`crate::find_replace`]).
     FindReplace(crate::find_replace::FindReplace),
 }
@@ -230,6 +233,10 @@ impl Dialog {
             Dialog::FolderProperties(_) => "folderProperties",
             Dialog::ImportTree(_) => "importTree",
             Dialog::MergeContacts(_) => "mergeContacts",
+            Dialog::Pick(p) => match p.kind {
+                crate::pick_item::PickKind::Message => "attachItem",
+                crate::pick_item::PickKind::Contact => "businessCard",
+            },
             Dialog::FindReplace(d) => {
                 if d.replace {
                     "replace"
@@ -342,6 +349,11 @@ pub(crate) fn open_dialog(app: &mut MailApp, name: &str, params: &Value) -> Opti
     }
     if matches!(name, "find" | "replace") {
         return crate::find_replace::FindReplace::open(app, name == "replace").map(Dialog::FindReplace);
+    }
+    if matches!(name, "attachItem" | "businessCard") {
+        app.session.compose.as_ref()?;
+        let kind = if name == "attachItem" { crate::pick_item::PickKind::Message } else { crate::pick_item::PickKind::Contact };
+        return Some(Dialog::Pick(Box::new(crate::pick_item::Pick::new(kind))));
     }
     if name == "mergeContacts" {
         return crate::merge_contacts::MergeContacts::open(app, params).map(|d| Dialog::MergeContacts(Box::new(d)));
@@ -1097,6 +1109,8 @@ pub fn input_dialog(id: &str, params: &Value) -> Option<&'static str> {
         "tasks.new" if !has("title") => Some("task"),
         "tasks.edit" if empty => Some("editTask"),
         "view.goToDate" if !has("date") => Some("goToDate"),
+        "compose.attachItem" if !has("id") => Some("attachItem"),
+        "insert.businessCard" if !has("id") => Some("businessCard"),
         // (Without an address, a script's `compose.link` removes the link; a person is asked.)
         "compose.link" if !has("url") => Some("link"),
         "insert.dateTime" if !has("format") => Some("dateTime"),
@@ -1858,6 +1872,11 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
         }
         // Folder Size, open over the tabs, takes Escape and Enter; Enter on a button that has the
         // keyboard is that button's.
+        Dialog::Pick(dialog) => {
+            let mut done = false;
+            let open = window(ctx, dialog.title(), crate::pick_item::WIDTH, |ui| done = dialog.show(app, ui, enter));
+            close |= !open || done;
+        }
         Dialog::MergeContacts(dialog) => {
             let mut done = false;
             let open = window(ctx, tl!("Merge Duplicate Contacts"), crate::merge_contacts::WIDTH, |ui| done = dialog.show(app, ui, enter));

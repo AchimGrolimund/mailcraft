@@ -116,7 +116,16 @@ impl Fetching {
 
 /// The commands other than a forward that need a message whole, and the message they are about.
 fn needs_whole(app: &MailApp, id: &str, params: &Value) -> Option<Id> {
-    if !matches!(id, "mail.reply" | "mail.replyAll" | "mail.editDraft" | "file.exportMessage" | "mail.saveAttachment" | "mail.openAttachment") {
+    if !matches!(
+        id,
+        "mail.reply"
+            | "mail.replyAll"
+            | "mail.editDraft"
+            | "file.exportMessage"
+            | "mail.saveAttachment"
+            | "mail.openAttachment"
+            | "compose.attachItem"
+    ) {
         return None;
     }
     let selected = match app.session.sel.messages.as_slice() {
