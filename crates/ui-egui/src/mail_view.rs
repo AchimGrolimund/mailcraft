@@ -1179,6 +1179,7 @@ fn clicks(app: &mut MailApp, ui: &Ui, resp: &egui::Response, row: &Row, m: &Mess
         }
         mi(ui, app, "Reply", "mail.reply", json!({}));
         mi(ui, app, "Reply All", "mail.replyAll", json!({}));
+        mi(ui, app, "Reply and Delete", "mail.replyAndDelete", json!({}));
         mi(ui, app, "Forward", "mail.forward", json!({}));
         mi(ui, app, "Forward as Attachment", "mail.forwardAsAttachment", json!({}));
         ui.separator();
@@ -1214,6 +1215,7 @@ fn clicks(app: &mut MailApp, ui: &Ui, resp: &egui::Response, row: &Row, m: &Mess
         mi(ui, app, "Find Related Messages", "mail.findRelated", json!({}));
         mi(ui, app, "Messages from Sender", "mail.findFromSender", json!({"id": id}));
         mi(ui, app, "Save Message As…", "file.exportMessage", json!({}));
+        mi(ui, app, "View Source", "mail.viewSource", json!({}));
     });
 }
 

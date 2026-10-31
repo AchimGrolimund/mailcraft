@@ -143,6 +143,8 @@ pub enum Dialog {
     /// Insert › Item and Insert › Contact Card ([`crate::pick_item`]): it only chooses, then
     /// runs `compose.attachItem` or `insert.businessCard`.
     Pick(Box<crate::pick_item::Pick>),
+    /// View Source: a message's source as plain text ([`crate::view_source`]).
+    ViewSource(Box<crate::view_source::Source>),
     /// Find and Replace in the message being written ([`crate::find_replace`]).
     FindReplace(crate::find_replace::FindReplace),
     /// Insert › Symbol ([`crate::symbol`]).
@@ -245,6 +247,7 @@ impl Dialog {
                 crate::pick_item::PickKind::Message => "attachItem",
                 crate::pick_item::PickKind::Contact => "businessCard",
             },
+            Dialog::ViewSource(_) => "viewSource",
             Dialog::Symbol(_) => "symbol",
             Dialog::FindReplace(d) => {
                 if d.replace {
@@ -356,6 +359,12 @@ pub(crate) fn open_dialog(app: &mut MailApp, name: &str, params: &Value) -> Opti
         let n = |k: &str| answer.get(k).and_then(Value::as_u64).unwrap_or(0);
         let counts = [n("words"), n("characters"), n("charactersWithSpaces"), n("paragraphs")];
         return Some(Dialog::WordCount { counts, selection: answer.get("selection").and_then(Value::as_bool) == Some(true) });
+    }
+    if name == "viewSource" {
+        // (The engine reads the source; when it refuses, there is no dialog.)
+        let named = params.get("id").map_or_else(|| json!({}), |id| json!({"id": id}));
+        let answer = app.session.run("mail.viewSource", &named).ok()?;
+        return crate::view_source::Source::from_answer(&answer).map(|s| Dialog::ViewSource(Box::new(s)));
     }
     if name == "symbol" {
         app.session.doc()?;
@@ -1723,6 +1732,11 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
                     }
                 });
             });
+            close |= !open;
+        }
+        Dialog::ViewSource(source) => {
+            let title = crate::i18n::fmt(tl!("Source of {subject}"), &[("subject", &source.subject)]);
+            let open = window(ctx, &title, 720.0, |ui| close |= crate::view_source::show(ui, source, &t));
             close |= !open;
         }
         Dialog::Refused { text } => {

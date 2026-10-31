@@ -351,6 +351,8 @@ fn home_mail(app: &MailApp) -> Tab {
                 Item::big("replyAll", "Reply\nAll", "mail.replyAll", no()).at(2, 2).plain(),
                 Item::big("forward", "Forward", "mail.forward", no()).at(2, 2).plain(),
                 Item::small("forwardAsAttachment", "Forward as Attachment", "", "mail.forwardAsAttachment", no()).under("mail.forward"),
+                Item::small("delete", "Reply and Delete", "", "mail.replyAndDelete", no()).under("mail.reply"),
+                Item::small("open", "View Source", "", "mail.viewSource", no()).under("mail.forward"),
                 Item::small("meeting", "Meeting", "Reply with Meeting", "calendar.fromMessage", no()).at(5, 6),
                 Item::small("newContact", "Add Sender", "Add to Contacts", "people.fromMessage", no()).at(5, 7),
             ],
@@ -2555,7 +2557,10 @@ mod tests {
             [
                 ("New", vec!["New\nEmail", "New\nItems"]),
                 ("Delete", vec!["Delete", "Archive", "Junk", "Delete for Good"]),
-                ("Respond", vec!["Reply", "Reply\nAll", "Forward", "Forward as Attachment", "Meeting", "Add Sender"]),
+                (
+                    "Respond",
+                    vec!["Reply", "Reply\nAll", "Forward", "Forward as Attachment", "Reply and Delete", "View Source", "Meeting", "Add Sender"]
+                ),
                 ("Move", vec!["Move", "Rules", "Resend Message"]),
                 ("Tags", vec!["Unread/\nRead", "Categorize", "Follow\nUp", "Pin"]),
                 ("Find", vec!["Filter\nEmail", "Related", "From Sender"]),
