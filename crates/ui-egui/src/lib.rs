@@ -149,6 +149,7 @@ mod shared_calendars;
 mod shared_calendars_tests;
 mod shared_mailboxes;
 mod signatures;
+mod symbol;
 mod sync_panel;
 pub mod task_sync;
 #[cfg(test)]
