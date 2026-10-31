@@ -121,6 +121,7 @@ fn needs_whole(app: &MailApp, id: &str, params: &Value) -> Option<Id> {
         "mail.reply"
             | "mail.replyAll"
             | "mail.editDraft"
+            | "mail.resend"
             | "file.exportMessage"
             | "mail.saveAttachment"
             | "mail.openAttachment"
@@ -136,7 +137,7 @@ fn needs_whole(app: &MailApp, id: &str, params: &Value) -> Option<Id> {
     // refused by the command, so nothing is fetched for it.
     use mailcraft_engine::p;
     let named = match id {
-        "mail.reply" | "mail.replyAll" | "mail.editDraft" => p::message_strict(params).ok()?,
+        "mail.reply" | "mail.replyAll" | "mail.editDraft" | "mail.resend" => p::message_strict(params).ok()?,
         _ => p::id(params, "id"),
     };
     to_fetch(app, id, named.or(selected)?)
