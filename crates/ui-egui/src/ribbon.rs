@@ -362,6 +362,7 @@ fn home_mail(app: &MailApp) -> Tab {
             vec![
                 Item::big_menu("moveMessages", "move", "Move", "Move to Folder", Menu::MoveMessages).at(1, 2).plain(),
                 Item::big_menu("rules", "rules", "Rules", "Rules", Menu::Rules).at(4, 4),
+                Item::small("send", "Resend Message", "Open a message you sent as a new one", "mail.resend", no()).at(5, 7),
             ],
         ),
         g(
@@ -663,6 +664,7 @@ fn message(app: &MailApp) -> Tab {
                 Item::small("lowImportance", "Low Importance", "Low Importance", "compose.lowImportance", no())
                     .checked(importance == Some(Importance::Low))
                     .at(4, 4),
+                Item::small("reply", "Direct Replies To", "Have replies sent to other addresses", "compose.replyTo", no()).at(4, 6),
             ],
         ),
         g(
@@ -2559,7 +2561,7 @@ mod tests {
                     "Respond",
                     vec!["Reply", "Reply\nAll", "Forward", "Forward as Attachment", "Reply and Delete", "View Source", "Meeting", "Add Sender"]
                 ),
-                ("Move", vec!["Move", "Rules"]),
+                ("Move", vec!["Move", "Rules", "Resend Message"]),
                 ("Tags", vec!["Unread/\nRead", "Categorize", "Follow\nUp", "Pin"]),
                 ("Find", vec!["Filter\nEmail", "Related", "From Sender"]),
                 ("Send/Receive", vec!["Send/Receive\nAll Folders"]),

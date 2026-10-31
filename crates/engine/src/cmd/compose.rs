@@ -39,6 +39,10 @@ pub fn specs() -> Vec<CommandSpec> {
             .params(FORWARD)
             .selection(needs_forwardable),
         CommandSpec::new("mail.editDraft", "Open Draft", "Mail", edit_draft).pure().params(SOURCE).selection(needs_message),
+        CommandSpec::new("mail.resend", "Resend Message", "Home › Actions", resend)
+            .pure()
+            .params(r#"{"id"?: number} (default: the selected message) — a message the owner sent, opened again as a new message to send: its recipients, subject, text and files, nothing sent until Send. A message being written with changes that aren't saved is saved to Drafts first. An `id` that is null or isn't an id, or `ids` naming other than one message, is refused"#)
+            .selection(needs_message),
         CommandSpec::new("compose.set", "Edit Message", "Message", set)
             .pure()
             .params(r#"{"to"?: string, "cc"?: string, "bcc"?: string, "subject"?: string, "body"?: string, "importance"?: "low"|"normal"|"high", "account"?: number}"#)
@@ -53,6 +57,10 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("compose.suggest", "Suggest Recipients", "Message › Names", suggest_command)
             .pure()
             .params(r#"{"query": string, "limit"?: 1-20} — answers who the start of a name or address could be: contacts first, then people mail was exchanged with, the latest first"#),
+        CommandSpec::new("compose.replyTo", "Direct Replies To", "Options › More Options", reply_to)
+            .pure()
+            .params(r#"{"value": string} — the addresses replies to the message being written go to (its `Reply-To` line), separated by `;` or `,`, at most 20; "" sends replies to the sender again. Each must be an e-mail address"#)
+            .when(needs_compose),
         CommandSpec::new("compose.highImportance", "High Importance", "Message › Tags", high_importance).pure().when(needs_compose),
         CommandSpec::new("compose.lowImportance", "Low Importance", "Message › Tags", low_importance).pure().when(needs_compose),
         CommandSpec::new("compose.send", "Send", "Message", send).key("Mod+Enter / Alt+S").when(needs_compose),
@@ -72,7 +80,7 @@ const FORWARD: &str = r#"{"id"?: number, "discard"?: bool} | {"ids"?: [number], 
 
 /// The commands that close the message being written or put another in its place (#442), People's
 /// Email too, which starts a new one (#494).
-pub const LEAVING: [&str; 9] = [
+pub const LEAVING: [&str; 10] = [
     "compose.close",
     "mail.new",
     "mail.reply",
@@ -81,6 +89,7 @@ pub const LEAVING: [&str; 9] = [
     "mail.forward",
     "mail.forwardAsAttachment",
     "mail.editDraft",
+    "mail.resend",
     "people.email",
 ];
 
@@ -688,6 +697,57 @@ fn edit_draft(s: &mut Session, v: &Value) -> CmdResult {
     if m.unfetched {
         return Err(fail("this draft isn't downloaded yet: open it once you're online, then edit it"));
     }
+    s.compose = Some(Compose { mode: ComposeMode::Draft, draft: Some(m.id), ..reopened(s, &m) });
+    Ok(json!({"composing": true, "draft": m.id}))
+}
+
+/// Resend Message: a message the owner sent, as a new message with what it had (recipients,
+/// subject, text, files, where replies go), sent only when the owner presses Send. The original
+/// stays as it is.
+fn resend(s: &mut Session, v: &Value) -> CmdResult {
+    let m = source_message(s, v)?;
+    if m.draft {
+        return Err(fail("that message is a draft: open it to send it"));
+    }
+    let mine = s.mailbox.accounts.iter().any(|a| !a.email.is_empty() && a.email.eq_ignore_ascii_case(m.from.email.trim()));
+    if !mine {
+        return Err(fail("only a message you sent can be sent again"));
+    }
+    if m.unfetched || m.incomplete || not_downloaded(&m) {
+        return Err(fail("this message isn't downloaded: open it once you're online, then send it again"));
+    }
+    let c = reopened(s, &m);
+    s.compose = Some(Compose { mode: ComposeMode::New, dirty: true, ..c });
+    s.view.module = crate::Module::Mail;
+    Ok(json!({"composing": true, "from": m.id}))
+}
+
+/// Most addresses on a `Reply-To` line.
+const MAX_REPLY_TO: usize = 20;
+
+/// Direct Replies To: the `Reply-To` line of the message being written, each address checked.
+fn reply_to(s: &mut Session, v: &Value) -> CmdResult {
+    p::only(v, &["value"])?;
+    let typed = p::req_str(v, "value")?;
+    let list = Address::parse_list(&typed.replace(['\r', '\n', '\0'], " "));
+    if let Some(wrong) = list.iter().find(|a| !a.is_valid()) {
+        return Err(failed!("\"{address}\" isn't an e-mail address", address = wrong.email));
+    }
+    if list.len() > MAX_REPLY_TO {
+        return Err(failed!("replies can go to at most {n} addresses", n = MAX_REPLY_TO));
+    }
+    let line = format_list(&list);
+    let c = compose_mut(s)?;
+    if c.reply_to != line {
+        c.reply_to = line.clone();
+        c.dirty = true;
+    }
+    Ok(json!({"replyTo": line}))
+}
+
+/// The message being written made again from `m` (a draft opened, a sent message to send again):
+/// its recipients, subject, text, files and the original quoted under it as they were.
+fn reopened(s: &Session, m: &Message) -> Compose {
     // A draft written here with an original quoted below opens as it was: the owner's text in
     // rich text, the original as it was carried. A draft is a file anybody could have written (or
     // an older MailCraft, which carried the original as it came), so what is below the mark is
@@ -704,7 +764,7 @@ fn edit_draft(s: &mut Session, v: &Value) -> CmdResult {
                 .find(|marker| m.body.text.contains(&format!("\n\n{marker}")))
                 .unwrap_or_else(|| s.interface_language.t(ORIGINAL));
             let text = quote_text(marker, &quoted);
-            let pictures = shown_pictures(&m, &quoted);
+            let pictures = shown_pictures(m, &quoted);
             (Some(html.get(..at).unwrap_or("").to_string()), Some(Quote { text, html: quoted, pictures }))
         }
         None => (m.body.html.clone(), None),
@@ -735,13 +795,12 @@ fn edit_draft(s: &mut Session, v: &Value) -> CmdResult {
         None => m.attachments.clone(),
     };
     let attachments: Vec<Attachment> = attachments.into_iter().filter(|a| !taken.contains(&a.content_id)).collect();
-    s.compose = Some(Compose {
-        mode: ComposeMode::Draft,
-        draft: Some(m.id),
+    Compose {
         account: m.account,
         to: format_list(&m.to),
         cc: format_list(&m.cc),
         bcc: format_list(&m.bcc),
+        reply_to: format_list(&m.reply_to),
         subject: m.subject.clone(),
         // A draft written in HTML opens in rich text, reduced to what can be written here.
         body: match rich {
@@ -757,8 +816,7 @@ fn edit_draft(s: &mut Session, v: &Value) -> CmdResult {
         in_reply_to: m.in_reply_to.clone(),
         references: m.references.clone(),
         ..Default::default()
-    });
-    Ok(json!({"composing": true, "draft": m.id}))
+    }
 }
 
 fn set(s: &mut Session, v: &Value) -> CmdResult {
@@ -784,7 +842,7 @@ fn set(s: &mut Session, v: &Value) -> CmdResult {
     if let Some(sig) = swap {
         put_signature(c, sig.as_ref(), 0)?;
     }
-    for (key, field) in [("to", &mut c.to), ("cc", &mut c.cc), ("bcc", &mut c.bcc), ("subject", &mut c.subject)] {
+    for (key, field) in [("to", &mut c.to), ("cc", &mut c.cc), ("bcc", &mut c.bcc), ("replyTo", &mut c.reply_to), ("subject", &mut c.subject)] {
         if let Some(text) = p::str(v, key) {
             *field = text.replace(['\r', '\n'], " ");
         }
@@ -924,6 +982,8 @@ fn build_as(s: &Session, c: &Compose, strict: bool, message_id: Option<&str>) ->
         Ok(list)
     };
     let (to, cc, bcc) = (parse(&c.to, "To")?, parse(&c.cc, "Cc")?, parse(&c.bcc, "Bcc")?);
+    // Where replies go: an address that isn't one never goes, a draft's included.
+    let reply_to: Vec<Address> = parse(&c.reply_to, "Reply-To")?.into_iter().filter(Address::is_valid).take(MAX_REPLY_TO).collect();
     if strict && to.is_empty() && cc.is_empty() && bcc.is_empty() {
         return Err(fail("add at least one recipient"));
     }
@@ -945,6 +1005,7 @@ fn build_as(s: &Session, c: &Compose, strict: bool, message_id: Option<&str>) ->
         to,
         cc,
         bcc,
+        reply_to,
         subject: c.subject.trim().to_string(),
         date: now,
         received: now,

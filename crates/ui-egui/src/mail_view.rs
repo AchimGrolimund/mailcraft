@@ -1163,6 +1163,7 @@ fn clicks(app: &mut MailApp, ui: &Ui, resp: &egui::Response, row: &Row, m: &Mess
         let _ = app.execute("mail.select", json!({"id": id, "copy": copy}));
     }
     let (read, flagged, pinned) = (m.read, m.flag == FlagStatus::Flagged, m.pinned);
+    let sent = app.session.mailbox.folder(m.folder).is_some_and(|f| f.kind == mailcraft_model::FolderKind::Sent);
     resp.context_menu(|ui| {
         ui.set_min_width(200.0);
         use crate::widgets::mi;
@@ -1171,6 +1172,9 @@ fn clicks(app: &mut MailApp, ui: &Ui, resp: &egui::Response, row: &Row, m: &Mess
             ui.separator();
         } else {
             mi(ui, app, "Open in a Window", "ui.openWindow", json!({"message": id}));
+            if sent {
+                mi(ui, app, "Resend Message", "mail.resend", json!({}));
+            }
             ui.separator();
         }
         mi(ui, app, "Reply", "mail.reply", json!({}));

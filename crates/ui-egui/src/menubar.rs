@@ -211,6 +211,7 @@ const MESSAGE: &[Row] = &[
     Cmd("mail.archive"),
     Cmd("mail.move"),
     Cmd("mail.copy"),
+    Cmd("mail.resend"),
     Sep,
     Cmd("mail.markRead"),
     Cmd("mail.markUnread"),

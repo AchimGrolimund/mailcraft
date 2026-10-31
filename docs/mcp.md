@@ -63,7 +63,7 @@ changing without the owner's yes in the window, every time: no `--allow` skips t
 not (a save by the owner, by the window every few minutes or by an agent doesn't change that;
 moving the cursor in a message only the agent wrote isn't writing in it). Closing it or putting
 another in its place (`compose.close`, `mail.new`, `mail.reply`, `mail.replyAll`, `mail.replyAndDelete`, `mail.forward`,
-`mail.forwardAsAttachment`, `mail.editDraft`, `people.email`, `ui.openWindow` of a draft) asks
+`mail.forwardAsAttachment`, `mail.editDraft`, `mail.resend`, `people.email`, `ui.openWindow` of a draft) asks
 Allow, and what isn't saved goes to Drafts first (all of it when its saved draft is gone
 meanwhile); with `"discard": true` and changes that aren't saved it asks Delete, and nothing is
 saved. `compose.discard` (the message and its draft) asks Delete; `file.new` and `file.open`, which
@@ -186,6 +186,8 @@ parameters.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-31 | minor | `mail.replyAndDelete` (safe; names its message, never deletes for good), `mail.viewSource` (safe; message content, framed as untrusted) and `mail.saveAllAttachments` (safe; a folder is never taken from an agent, the files come back as `data`) |
+| 2026-10-31 | minor | `mail.resend` (safe; names its message, opens it again as a new one that is sent only by Send) and `compose.replyTo` (safe; each address checked, at most 20, line breaks dropped) |
 | 2026-10-30 | minor | #553: Reply, Reply All, Open Draft, Send Again, the answers to meeting requests and the appointment commands refuse an `id`, `ids` or `message` that names nothing, rather than take the selection; the four one-message commands take `ids` naming one |
 | 2026-10-29 | minor | #599: `read_message` and `mail.get` answer `hiddenText` (what the sender hid), framed as untrusted message content |
 | 2026-10-28 | minor | #620: an agent names the messages (`ids` or `id`) for delete, delete for good, move, copy, archive, junk, not junk, reply, reply all, forward, forward as attachment, open draft, remove attachment and send again; the window's selection is the owner's. `list_messages` reads a folder and search without moving the window to them |
@@ -208,4 +210,3 @@ parameters.
 | 2026-10-28 | minor | #451: moving or copying mail onto another account's server (from another account or from this computer) is `send`; `mail.move` and `mail.copy` refuse an `id` or `ids` named wrongly rather than take the selection |
 | 2026-10-30 | patch | #577: an agent's command that would change what is written in a message the owner has typed in (its text, recipients, subject, attachments, importance, formatting) is refused, and nothing is changed; Save Draft saves only what the owner wrote |
 | 2026-10-30 | patch | #451 follow-up: an IMAP account's Outbox holds what is put there, and the question to the owner says so |
-| 2026-10-31 | minor | `mail.replyAndDelete` (safe; names its message, never deletes for good), `mail.viewSource` (safe; message content, framed as untrusted) and `mail.saveAllAttachments` (safe; a folder is never taken from an agent, the files come back as `data`) |
