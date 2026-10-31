@@ -139,6 +139,8 @@ pub enum Dialog {
     ViewSource(Box<crate::view_source::Source>),
     /// Find and Replace in the message being written ([`crate::find_replace`]).
     FindReplace(crate::find_replace::FindReplace),
+    /// Insert › Symbol ([`crate::symbol`]).
+    Symbol(crate::symbol::Symbol),
 }
 
 /// The tabs of About: the program, the people who made it, and the people who test it
@@ -233,6 +235,7 @@ impl Dialog {
             Dialog::ImportTree(_) => "importTree",
             Dialog::MergeContacts(_) => "mergeContacts",
             Dialog::ViewSource(_) => "viewSource",
+            Dialog::Symbol(_) => "symbol",
             Dialog::FindReplace(d) => {
                 if d.replace {
                     "replace"
@@ -348,6 +351,10 @@ pub(crate) fn open_dialog(app: &mut MailApp, name: &str, params: &Value) -> Opti
         let named = params.get("id").map_or_else(|| json!({}), |id| json!({"id": id}));
         let answer = app.session.run("mail.viewSource", &named).ok()?;
         return crate::view_source::Source::from_answer(&answer).map(|s| Dialog::ViewSource(Box::new(s)));
+    }
+    if name == "symbol" {
+        app.session.doc()?;
+        return Some(Dialog::Symbol(crate::symbol::Symbol::default()));
     }
     if matches!(name, "find" | "replace") {
         return crate::find_replace::FindReplace::open(app, name == "replace").map(Dialog::FindReplace);
@@ -1109,6 +1116,7 @@ pub fn input_dialog(id: &str, params: &Value) -> Option<&'static str> {
         // (Without an address, a script's `compose.link` removes the link; a person is asked.)
         "compose.link" if !has("url") => Some("link"),
         "insert.dateTime" if !has("format") => Some("dateTime"),
+        "insert.symbol" if !has("char") && !has("code") => Some("symbol"),
         "edit.find" if !has("text") => Some("find"),
         "edit.replace" if !has("text") => Some("replace"),
         // (What it answers is counts to look at.)
@@ -1876,6 +1884,12 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
             let mut done = false;
             let open = window(ctx, tl!("Merge Duplicate Contacts"), crate::merge_contacts::WIDTH, |ui| done = dialog.show(app, ui, enter));
             close |= !open || done;
+        }
+        Dialog::Symbol(dialog) => {
+            let mut done = false;
+            let open = window(ctx, tl!("Symbol"), crate::symbol::WIDTH, |ui| done = dialog.show(app, ui, enter));
+            close |= !open || done;
+            app.body_focus_wanted |= close;
         }
         Dialog::FindReplace(dialog) => {
             let mut done = false;

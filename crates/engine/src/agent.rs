@@ -200,6 +200,9 @@ const SAFE: &[&str] = &[
     "edit.paste",
     "edit.find",
     "edit.replace",
+    "edit.formatPainter",
+    "format.highlight",
+    "insert.symbol",
     "insert.dateTime",
     "review.wordCount",
     // Folders.
