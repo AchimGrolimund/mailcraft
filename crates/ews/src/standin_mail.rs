@@ -153,6 +153,7 @@ impl State {
             from: ("Zoe Park".into(), "zoe@example.org".into()),
             to: vec![("Ada".into(), "ada@example.org".into())],
             cc: Vec::new(),
+            reply_to: Vec::new(),
             received: when.clone(),
             sent: when,
             read,

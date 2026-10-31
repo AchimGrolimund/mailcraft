@@ -366,6 +366,7 @@ impl State {
             from: ("Ada".into(), "ada@example.org".into()),
             to: Vec::new(),
             cc: Vec::new(),
+            reply_to: Vec::new(),
             received: "2026-10-14T16:00:00Z".into(),
             sent: "2026-10-14T16:00:00Z".into(),
             read: true,

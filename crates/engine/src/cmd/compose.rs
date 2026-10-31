@@ -734,7 +734,7 @@ fn reopened(s: &Session, m: &Message) -> Compose {
                 .find(|marker| m.body.text.contains(&format!("\n\n{marker}")))
                 .unwrap_or_else(|| s.interface_language.t(ORIGINAL));
             let text = quote_text(marker, &quoted);
-            let pictures = shown_pictures(&m, &quoted);
+            let pictures = shown_pictures(m, &quoted);
             (Some(html.get(..at).unwrap_or("").to_string()), Some(Quote { text, html: quoted, pictures }))
         }
         None => (m.body.html.clone(), None),

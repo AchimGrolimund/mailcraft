@@ -10,7 +10,7 @@ msgstr ""
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
 #. interface, what a command says
-#: crates/engine/src/cmd/calendar.rs crates/ui-egui/src/account_setup.rs
+#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/compose.rs crates/ui-egui/src/account_setup.rs
 #, fuzzy
 msgid "\"{address}\" isn't an e-mail address"
 msgstr "«{address}» non è un indirizzo di posta elettronica"
@@ -520,7 +520,7 @@ msgid "Accounts"
 msgstr "Account"
 
 #. ribbon, ribbon location
-#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar/meeting.rs crates/engine/src/cmd/calendar_opened.rs crates/engine/src/cmd/folder.rs crates/engine/src/cmd/mail.rs crates/engine/src/cmd/people.rs crates/engine/src/cmd/people_merge.rs crates/ui-egui/src/ribbon.rs
+#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar/meeting.rs crates/engine/src/cmd/calendar_opened.rs crates/engine/src/cmd/compose.rs crates/engine/src/cmd/folder.rs crates/engine/src/cmd/mail.rs crates/engine/src/cmd/people.rs crates/engine/src/cmd/people_merge.rs crates/ui-egui/src/ribbon.rs
 #, fuzzy
 msgid "Actions"
 msgstr "Azioni"
@@ -696,6 +696,11 @@ msgstr "Aggiunto da una versione più recente di MailCraft: inviare e ricevere c
 #, fuzzy
 msgid "Address"
 msgstr "Indirizzo"
+
+#. interface
+#: crates/ui-egui/src/dialogs.rs
+msgid "Addresses separated by ; (leave empty for replies to come to you)"
+msgstr ""
 
 #. command label, interface
 #: crates/ui-egui/src/chrome.rs crates/ui-egui/src/lib.rs
@@ -2661,6 +2666,11 @@ msgid "Diagram"
 msgstr ""
 
 #. command label, interface, ribbon
+#: crates/engine/src/cmd/compose.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/ribbon.rs
+msgid "Direct Replies To"
+msgstr ""
+
+#. command label, interface, ribbon
 #: crates/engine/src/cmd/compose.rs crates/ui-egui/src/compose.rs crates/ui-egui/src/dialogs.rs crates/ui-egui/src/ribbon.rs
 #, fuzzy
 msgid "Discard"
@@ -3946,6 +3956,16 @@ msgstr "Con allegati"
 #, fuzzy
 msgid "Has an attachment"
 msgstr "Ha un allegato"
+
+#. interface
+#: crates/ui-egui/src/dialogs.rs
+msgid "Have replies sent to"
+msgstr ""
+
+#. ribbon
+#: crates/ui-egui/src/ribbon.rs
+msgid "Have replies sent to other addresses"
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/reading.rs
@@ -5561,6 +5581,11 @@ msgstr "lunedì"
 msgid "Month"
 msgstr "Mese"
 
+#. ribbon location
+#: crates/engine/src/cmd/compose.rs
+msgid "More Options"
+msgstr ""
+
 #. command label
 #: crates/engine/src/cmd/search_server.rs crates/ui-egui/src/lib.rs
 #, fuzzy
@@ -6736,6 +6761,11 @@ msgstr ""
 msgid "Open a mailbox of your organisation that you were given Full Access to, such as a team's, under this account"
 msgstr "Apri sotto questo account una cassetta postale dell'organizzazione per cui si è ricevuto l'Accesso completo, ad esempio quella di un team"
 
+#. ribbon
+#: crates/ui-egui/src/ribbon.rs
+msgid "Open a message you sent as a new one"
+msgstr ""
+
 #. interface
 #: crates/ui-egui/src/mail_view.rs
 #, fuzzy
@@ -6859,7 +6889,7 @@ msgid "Optional"
 msgstr "Facoltativo"
 
 #. command label, interface, name, ribbon location
-#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar/invitation.rs crates/engine/src/cmd/calendar_extra.rs crates/engine/src/cmd/calendar_settings.rs crates/engine/src/cmd/file.rs crates/engine/src/cmd/folder.rs crates/engine/src/cmd/zones.rs crates/ui-egui/src/backstage.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/menubar.rs
+#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar/invitation.rs crates/engine/src/cmd/calendar_extra.rs crates/engine/src/cmd/calendar_settings.rs crates/engine/src/cmd/compose.rs crates/engine/src/cmd/file.rs crates/engine/src/cmd/folder.rs crates/engine/src/cmd/zones.rs crates/ui-egui/src/backstage.rs crates/ui-egui/src/lib.rs crates/ui-egui/src/menubar.rs
 #, fuzzy
 msgid "Options"
 msgstr "Opzioni"
@@ -7769,6 +7799,11 @@ msgstr "Rispondi a tutti"
 msgid "Reply all"
 msgstr "Rispondi a tutti"
 
+#. interface
+#: crates/ui-egui/src/compose.rs
+msgid "Reply to"
+msgstr ""
+
 #. command label, ribbon
 #: crates/engine/src/cmd/calendar.rs crates/ui-egui/src/ribbon.rs
 #, fuzzy
@@ -7798,6 +7833,11 @@ msgstr "Richiedi risposte"
 #, fuzzy
 msgid "Required"
 msgstr "Obbligatorio"
+
+#. command label, interface, ribbon
+#: crates/engine/src/cmd/compose.rs crates/ui-egui/src/mail_view.rs crates/ui-egui/src/ribbon.rs
+msgid "Resend Message"
+msgstr ""
 
 #. ribbon
 #: crates/ui-egui/src/ribbon.rs
@@ -13150,6 +13190,11 @@ msgstr "il"
 
 #. what a command says
 #: crates/engine/src/cmd/compose.rs
+msgid "only a message you sent can be sent again"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
 #, fuzzy
 msgid "only the headers of “{subject}” are here, so it can't be forwarded as an attachment"
 msgstr "di «{subject}» qui ci sono solo le intestazioni, quindi non può essere inoltrato come allegato"
@@ -13188,6 +13233,11 @@ msgstr "le immagini dal web non vengono scaricate: salvare l'immagine e aggiunge
 #, fuzzy
 msgid "readOnly"
 msgstr "readOnly"
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "replies can go to at most {n} addresses"
+msgstr ""
 
 #. name
 #: crates/engine/src/agent.rs
@@ -13281,6 +13331,11 @@ msgstr "non è un indirizzo di posta elettronica"
 #. what a command says
 #: crates/engine/src/cmd/junk.rs
 msgid "that isn't on the list"
+msgstr ""
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "that message is a draft: open it to send it"
 msgstr ""
 
 #. what a command says
@@ -13743,6 +13798,11 @@ msgstr ""
 #, fuzzy
 msgid "this message has no subject to look for"
 msgstr "questo messaggio non ha un oggetto da cercare"
+
+#. what a command says
+#: crates/engine/src/cmd/compose.rs
+msgid "this message isn't downloaded: open it once you're online, then send it again"
+msgstr ""
 
 #. what a command says
 #: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar/invitation.rs
