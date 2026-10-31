@@ -38,6 +38,11 @@ pub enum Dialog {
         text: String,
         error: String,
     },
+    /// Direct Replies To: where replies to the message being written go; runs `compose.replyTo`.
+    ReplyTo {
+        text: String,
+        error: String,
+    },
     /// The address of a shared mailbox to open under a Microsoft account (#70): it only collects
     /// the address, then runs `account.addSharedMailbox`.
     SharedMailbox {
@@ -212,6 +217,7 @@ impl Dialog {
             Dialog::Commands { .. } => "commands",
             Dialog::Folder { .. } => "folder",
             Dialog::GoToDate { .. } => "goToDate",
+            Dialog::ReplyTo { .. } => "replyTo",
             Dialog::SharedMailbox { .. } => "sharedMailbox",
             Dialog::OpenCalendar { .. } => "openCalendar",
             Dialog::Link { .. } => "link",
@@ -274,6 +280,7 @@ impl Dialog {
                 }
             }
             "goToDate" => Dialog::GoToDate { text: app.session.view.date.iso(), error: String::new() },
+            "replyTo" => Dialog::ReplyTo { text: app.session.compose.as_ref()?.reply_to.clone(), error: String::new() },
             "sharedMailbox" => {
                 // Under the account named, else the first that can open one.
                 let can = |a: &&mailcraft_model::Account| crate::shared_mailboxes::can_open_shared(a);
@@ -1104,6 +1111,7 @@ pub fn input_dialog(id: &str, params: &Value) -> Option<&'static str> {
         "tasks.new" if !has("title") => Some("task"),
         "tasks.edit" if empty => Some("editTask"),
         "view.goToDate" if !has("date") => Some("goToDate"),
+        "compose.replyTo" if !has("value") => Some("replyTo"),
         // (Without an address, a script's `compose.link` removes the link; a person is asked.)
         "compose.link" if !has("url") => Some("link"),
         "insert.dateTime" if !has("format") => Some("dateTime"),
@@ -1411,6 +1419,30 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
             close |= !open;
             if submit {
                 match app.execute("view.goToDate", json!({"date": text.trim()})) {
+                    Ok(_) => close = true,
+                    Err(e) => *error = e,
+                }
+            }
+        }
+        Dialog::ReplyTo { text, error } => {
+            let mut submit = false;
+            let open = window(ctx, tl!("Direct Replies To"), 420.0, |ui| {
+                ui.label(tl!("Have replies sent to"));
+                let resp = crate::text_menu::field(ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY)));
+                if error.is_empty() {
+                    crate::text_menu::hold(&resp);
+                }
+                ui.label(egui::RichText::new(tl!("Addresses separated by ; (leave empty for replies to come to you)")).color(t.text_dim));
+                if !error.is_empty() {
+                    ui.label(egui::RichText::new(error.as_str()).color(t.red));
+                }
+                let (ok, cancel) = buttons(ui, tl!("OK"), true);
+                submit = ok || enter;
+                close |= cancel;
+            });
+            close |= !open;
+            if submit {
+                match app.execute("compose.replyTo", json!({"value": text.trim()})) {
                     Ok(_) => close = true,
                     Err(e) => *error = e,
                 }

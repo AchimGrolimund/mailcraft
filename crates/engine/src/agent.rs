@@ -160,8 +160,11 @@ const SAFE: &[&str] = &[
     "mail.forward",
     "mail.forwardAsAttachment",
     "mail.editDraft",
+    // A sent message opened again to send (nothing goes until Send, which is asked about).
+    "mail.resend",
     // Writing (sending is not).
     "compose.set",
+    "compose.replyTo",
     "compose.attach",
     "insert.picture",
     "compose.removeAttachment",
@@ -830,12 +833,13 @@ pub const NEEDS_IDS: &[&str] = &[
     "mail.forward",
     "mail.forwardAsAttachment",
     "mail.editDraft",
+    "mail.resend",
     "mail.removeAttachment",
     "mail.sendAgain",
 ];
 
 /// The commands of [`NEEDS_IDS`] that act on one message ([`p::message_strict`]).
-const ONE_MESSAGE: &[&str] = &["mail.reply", "mail.replyAll", "mail.editDraft", "mail.sendAgain"];
+const ONE_MESSAGE: &[&str] = &["mail.reply", "mail.replyAll", "mail.editDraft", "mail.resend", "mail.sendAgain"];
 
 /// The refusal for a command in [`NEEDS_IDS`] given no messages.
 pub fn needs_ids(id: &str) -> String {
@@ -1342,6 +1346,7 @@ fn leaving_text(s: &Session, id: &str, params: &Value) -> String {
         "mail.forward" => format!("forward {}", several()),
         "mail.forwardAsAttachment" => format!("forward {} as attachments", several()),
         "mail.editDraft" => format!("open the draft {}", one()),
+        "mail.resend" => format!("open {} again as a new message to send", one()),
         "people.email" => {
             let c = p::id(params, "id").or(s.sel.contact).and_then(|c| s.mailbox.contact(c));
             format!("start a new message to the contact {}", c.map(|c| quoted(&c.name())).unwrap_or_else(|| "(none selected)".to_string()))
