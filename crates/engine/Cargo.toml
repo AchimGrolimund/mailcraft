@@ -13,6 +13,8 @@ mailcraft-time = { workspace = true }
 mailcraft-i18n = { workspace = true }
 mailcraft-model = { workspace = true }
 mailcraft-html = { workspace = true }
+# Format characters made visible in View Source (`cmd::source`).
+mailcraft-names = { workspace = true }
 mailcraft-mime = { workspace = true }
 mailcraft-ical = { workspace = true }
 mailcraft-vcard = { workspace = true }

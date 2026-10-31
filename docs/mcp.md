@@ -1,6 +1,6 @@
 # MCP server
 
-> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-30 · **Change:** minor · **Target:** Microsoft Outlook (Microsoft 365)
+> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-31 · **Change:** minor · **Target:** Microsoft Outlook (Microsoft 365)
 
 MailCraft speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio, so
 agents can read, file and write mail and keep a calendar.
@@ -39,7 +39,8 @@ good, without that being allowed, is undone and refused, whichever way it got th
 **Files.** An agent never names a file on this computer. A param that does (`path` of
 `file.open`, `file.import`, `file.save`, `file.saveAs`, the `file.export…` commands,
 `mail.saveAttachment`, `compose.attach`, `signature.picture.add`; `ui.screenshot`'s `path`) is
-refused. Content goes in as base64 `data` (with `name`), and comes out as `data` when no path is
+refused, and so is the folder `mail.saveAllAttachments` would save into, `--files` or not: without
+it, every file comes back as `data` in `files`. Content goes in as base64 `data` (with `name`), and comes out as `data` when no path is
 given. With `--files DIR`, an agent may name files inside DIR: the server reads and writes them
 itself and hands the command `data`. A path is taken relative to DIR (an absolute one must lie in
 it); `..` is refused; a link that leads out of DIR is not followed; files are written as new files
@@ -61,7 +62,7 @@ changing without the owner's yes in the window, every time: no `--allow` skips t
 (#494). A message being written that the owner has typed in is theirs until it is closed, saved or
 not (a save by the owner, by the window every few minutes or by an agent doesn't change that;
 moving the cursor in a message only the agent wrote isn't writing in it). Closing it or putting
-another in its place (`compose.close`, `mail.new`, `mail.reply`, `mail.replyAll`, `mail.forward`,
+another in its place (`compose.close`, `mail.new`, `mail.reply`, `mail.replyAll`, `mail.replyAndDelete`, `mail.forward`,
 `mail.forwardAsAttachment`, `mail.editDraft`, `people.email`, `ui.openWindow` of a draft) asks
 Allow, and what isn't saved goes to Drafts first (all of it when its saved draft is gone
 meanwhile); with `"discard": true` and changes that aren't saved it asks Delete, and nothing is
@@ -207,3 +208,4 @@ parameters.
 | 2026-10-28 | minor | #451: moving or copying mail onto another account's server (from another account or from this computer) is `send`; `mail.move` and `mail.copy` refuse an `id` or `ids` named wrongly rather than take the selection |
 | 2026-10-30 | patch | #577: an agent's command that would change what is written in a message the owner has typed in (its text, recipients, subject, attachments, importance, formatting) is refused, and nothing is changed; Save Draft saves only what the owner wrote |
 | 2026-10-30 | patch | #451 follow-up: an IMAP account's Outbox holds what is put there, and the question to the owner says so |
+| 2026-10-31 | minor | `mail.replyAndDelete` (safe; names its message, never deletes for good), `mail.viewSource` (safe; message content, framed as untrusted) and `mail.saveAllAttachments` (safe; a folder is never taken from an agent, the files come back as `data`) |

@@ -135,6 +135,8 @@ pub enum Dialog {
     /// People › Merge Duplicates (#506, [`crate::merge_contacts`]): it only collects what to
     /// merge, then runs `people.merge`.
     MergeContacts(Box<crate::merge_contacts::MergeContacts>),
+    /// View Source: a message's source as plain text ([`crate::view_source`]).
+    ViewSource(Box<crate::view_source::Source>),
 }
 
 /// The tabs of About: the program, the people who made it, and the people who test it
@@ -228,6 +230,7 @@ impl Dialog {
             Dialog::FolderProperties(_) => "folderProperties",
             Dialog::ImportTree(_) => "importTree",
             Dialog::MergeContacts(_) => "mergeContacts",
+            Dialog::ViewSource(_) => "viewSource",
         }
     }
 
@@ -330,6 +333,12 @@ pub(crate) fn open_dialog(app: &mut MailApp, name: &str, params: &Value) -> Opti
         let n = |k: &str| answer.get(k).and_then(Value::as_u64).unwrap_or(0);
         let counts = [n("words"), n("characters"), n("charactersWithSpaces"), n("paragraphs")];
         return Some(Dialog::WordCount { counts, selection: answer.get("selection").and_then(Value::as_bool) == Some(true) });
+    }
+    if name == "viewSource" {
+        // (The engine reads the source; when it refuses, there is no dialog.)
+        let named = params.get("id").map_or_else(|| json!({}), |id| json!({"id": id}));
+        let answer = app.session.run("mail.viewSource", &named).ok()?;
+        return crate::view_source::Source::from_answer(&answer).map(|s| Dialog::ViewSource(Box::new(s)));
     }
     if name == "mergeContacts" {
         return crate::merge_contacts::MergeContacts::open(app, params).map(|d| Dialog::MergeContacts(Box::new(d)));
@@ -1655,6 +1664,11 @@ pub fn show(app: &mut MailApp, ctx: &egui::Context) {
                     }
                 });
             });
+            close |= !open;
+        }
+        Dialog::ViewSource(source) => {
+            let title = crate::i18n::fmt(tl!("Source of {subject}"), &[("subject", &source.subject)]);
+            let open = window(ctx, &title, 720.0, |ui| close |= crate::view_source::show(ui, source, &t));
             close |= !open;
         }
         Dialog::Refused { text } => {

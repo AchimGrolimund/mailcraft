@@ -29,6 +29,9 @@ pub fn specs() -> Vec<CommandSpec> {
             ),
         CommandSpec::new("mail.reply", "Reply", "Home › Respond", reply).pure().key("Mod+R").params(SOURCE).selection(needs_message),
         CommandSpec::new("mail.replyAll", "Reply All", "Home › Respond", reply_all).pure().key("Mod+Shift+R").params(SOURCE).selection(needs_message),
+        CommandSpec::new("mail.replyAndDelete", "Reply and Delete", "Home › Respond", reply_and_delete)
+            .params(r#"{"id"?: number} (default: the selected message) — Reply, and the original goes to its account's Deleted Items; one there already stays (never deleted for good). A message being written with changes that aren't saved is saved to Drafts first. An `id` that is null or isn't an id, or `ids` naming other than one message, is refused"#)
+            .selection(super::needs_movable),
         CommandSpec::new("mail.forward", "Forward", "Home › Respond", forward).pure().key("Mod+F").params(FORWARD).selection(needs_forwardable),
         CommandSpec::new("mail.forwardAsAttachment", "Forward as Attachment", "Home › Respond", forward_as_attachment)
             .pure()
@@ -69,8 +72,17 @@ const FORWARD: &str = r#"{"id"?: number, "discard"?: bool} | {"ids"?: [number], 
 
 /// The commands that close the message being written or put another in its place (#442), People's
 /// Email too, which starts a new one (#494).
-pub const LEAVING: [&str; 8] =
-    ["compose.close", "mail.new", "mail.reply", "mail.replyAll", "mail.forward", "mail.forwardAsAttachment", "mail.editDraft", "people.email"];
+pub const LEAVING: [&str; 9] = [
+    "compose.close",
+    "mail.new",
+    "mail.reply",
+    "mail.replyAll",
+    "mail.replyAndDelete",
+    "mail.forward",
+    "mail.forwardAsAttachment",
+    "mail.editDraft",
+    "people.email",
+];
 
 /// The commands that put another mailbox in place of this one, and close the message being
 /// written with it (#470): it is saved to Drafts first, or the owner asked, as for [`LEAVING`].
@@ -377,6 +389,32 @@ fn respond(s: &mut Session, v: &Value, mode: ComposeMode) -> CmdResult {
 
 fn reply(s: &mut Session, v: &Value) -> CmdResult {
     respond(s, v, ComposeMode::Reply)
+}
+
+/// Reply and Delete: a reply to the message, which goes to Deleted Items meanwhile (the reply
+/// still answers it, and marks it answered once sent). One in Deleted Items already, or of an
+/// account without one, stays where it is: this never deletes for good.
+fn reply_and_delete(s: &mut Session, v: &Value) -> CmdResult {
+    let id = p::message_strict(v)?.or(s.sel.focus()).ok_or_else(|| fail("select a message first"))?;
+    if s.mailbox.has_jmap_account() && s.mailbox.stays_on_server(id) {
+        return Err(fail(mailcraft_model::NOT_MOVING_YET));
+    }
+    let before = s.rows();
+    let mut out = respond(s, &json!({"id": id}), ComposeMode::Reply)?;
+    let m = s.mailbox.message(id).ok_or_else(|| failed!("no message with id {id}", id))?;
+    let bin = s.mailbox.folder_of_kind(m.account, FolderKind::Deleted).filter(|bin| !s.mailbox.subtree(*bin).contains(&m.folder));
+    let deleted = match bin {
+        Some(bin) => {
+            s.mailbox.move_message(id, bin)?;
+            super::select_after_removal(s, &before, &[id]);
+            true
+        }
+        None => false,
+    };
+    if let Some(o) = out.as_object_mut() {
+        o.insert("deleted".into(), json!(deleted));
+    }
+    Ok(out)
 }
 
 fn reply_all(s: &mut Session, v: &Value) -> CmdResult {
