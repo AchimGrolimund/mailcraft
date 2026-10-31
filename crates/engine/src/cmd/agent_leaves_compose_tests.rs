@@ -186,10 +186,20 @@ fn discard_and_another_mailbox_ask_the_owner_whatever_is_allowed() {
     assert!(matches!(check(&s, "compose.discard", &json!({}), &everything), Verdict::Ask(Class::Delete, _)));
     assert!(describe(&s, "compose.discard", &json!({})).contains("\u{201c}Mine\u{201d} that the owner is writing"));
     assert_eq!(answered(&s, "compose.discard", &json!({}), &[], Class::Delete), Verdict::Run);
-    // Another mailbox in view closes it unsaved.
+    // Another mailbox in view closes it, what isn't saved of it saved to Drafts first (#470), or
+    // let go of when the agent says so.
     for (id, params) in [("file.new", json!({})), ("file.open", json!({"name": "other.mailcraft", "data": ""}))] {
         assert_eq!(classify(&s, id, &params), Access::Asked(Class::Mailbox), "{id}");
         match check(&s, id, &params, &everything) {
+            Verdict::Ask(Class::Mailbox, what) => assert!(
+                what.ends_with("the message \u{201c}Mine\u{201d} that the owner is writing is closed; what isn't saved of it goes to Drafts first"),
+                "{id}: {what}"
+            ),
+            other => panic!("{id}: {other:?}"),
+        }
+        let mut discard = params.clone();
+        discard["discard"] = json!(true);
+        match check(&s, id, &discard, &everything) {
             Verdict::Ask(Class::Mailbox, what) => {
                 assert!(what.ends_with("the message \u{201c}Mine\u{201d} that the owner is writing is closed without being saved"), "{id}: {what}")
             }

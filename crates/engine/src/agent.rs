@@ -1009,10 +1009,15 @@ pub fn describe(s: &Session, id: &str, params: &Value) -> String {
         fields.remove("unsaved");
     }
     let mut what = what_it_does(s, id, &bare);
-    // Another mailbox in view closes the message the owner is writing, unsaved (#494).
+    // Another mailbox in view closes the message the owner is writing (#494); what isn't saved of
+    // it goes to Drafts first, unless it is let go of (`discard`, #470).
     if matches!(id, "file.new" | "file.open") && owner_writing(s) {
         let unsaved = s.compose.as_ref().is_some_and(|c| unsaved_message(s, c));
-        let how = if unsaved { " without being saved" } else { "" };
+        let how = match (unsaved, p::bool(params, "discard") == Some(true)) {
+            (true, true) => " without being saved",
+            (true, false) => "; what isn't saved of it goes to Drafts first",
+            (false, _) => "",
+        };
         what.push_str(&format!("; the message {} that the owner is writing is closed{how}", writing(s)));
     }
     // And the windows of appointments with changes that aren't saved, as does taking the

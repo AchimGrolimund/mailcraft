@@ -72,15 +72,22 @@ const FORWARD: &str = r#"{"id"?: number, "discard"?: bool} | {"ids"?: [number], 
 pub const LEAVING: [&str; 8] =
     ["compose.close", "mail.new", "mail.reply", "mail.replyAll", "mail.forward", "mail.forwardAsAttachment", "mail.editDraft", "people.email"];
 
+/// The commands that put another mailbox in place of this one, and close the message being
+/// written with it (#470): it is saved to Drafts first, or the owner asked, as for [`LEAVING`].
+pub const REPLACING: [&str; 2] = ["file.new", "file.open"];
+
+/// Whether `id` closes the message being written: [`LEAVING`] or [`REPLACING`].
+pub fn leaves(id: &str) -> bool {
+    LEAVING.contains(&id) || REPLACING.contains(&id)
+}
+
 /// Whether running `id` saves the message being written to Drafts first (#442): it leaves the
 /// message, which has changes that aren't saved, and the caller didn't let them go (`discard`).
 /// Nobody who calls a command (an agent, a script) is asked, so [`Session::run`] runs Save Draft
 /// first, as a step of its own: undoing what the command did never takes the draft away. A save
 /// that fails fails the command, and nothing changes. (The window asks the owner first.)
 pub fn saves_first(s: &Session, id: &str, params: &Value) -> bool {
-    LEAVING.contains(&id)
-        && p::bool(params, "discard") != Some(true)
-        && s.compose.as_ref().is_some_and(|c| c.dirty || (s.agent.is_some() && draft_gone(s, c)))
+    leaves(id) && p::bool(params, "discard") != Some(true) && s.compose.as_ref().is_some_and(|c| c.dirty || (s.agent.is_some() && draft_gone(s, c)))
 }
 
 /// Whether the draft the message being written was last saved as is no longer there (#494): an
