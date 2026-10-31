@@ -185,6 +185,7 @@ follows:
 
 | Date | What landed |
 |---|---|
+| 2026-10-31 | Parity B3c: Attach Item (`compose.attachItem`: a message from the mailbox attached whole as an `.eml`, as Forward as Attachment attaches it) and Contact Card (`insert.businessCard`: a contact attached as a vCard); Insert › Item and Contact Card are no longer pending |
 | 2026-10-31 | Parity B3a: Reply and Delete (`mail.replyAndDelete`: a reply, and the original to Deleted Items; never for good), View Source (`mail.viewSource`: header lines and the body's source as plain text, at most 1 MB, controls and characters that show nothing written as their codes; nothing rendered or fetched) and Save All Attachments (`mail.saveAllAttachments`: every listed file into a folder the owner picks, names made safe, numbered rather than written over; agents get `data`) |
 | 2026-10-31 | Parity B3b: Resend Message (`mail.resend`: a message the owner sent opened again as a new one, sent only by Send) and Direct Replies To (`compose.replyTo`: the Reply-To line, each address checked; carried by IMAP, EWS and Graph drafts) |
 | 2026-10-30 | #451 follow-up, the last points of the review of #561: a message moved into an IMAP account's Outbox moves or is copied into another account as any other mail does (it was refused as a draft). Refused there, it goes back to its original, or, when no server has it, into its Outbox, of whatever kind, held, so the next Send/Receive doesn't send it. An agent's question says that such an Outbox holds what is put there, and that imported mail never goes into an Outbox. A copy's marker goes once the message moves on or a later copy gets its UID, so a stale one no longer lingers. |
@@ -396,6 +397,7 @@ follows:
 
 | Date | Change |
 |---|---|
+| 2026-10-31 | Parity B3c: Attach Item, Contact Card, in the progress log |
 | 2026-10-31 | Parity B3a: Reply and Delete, View Source, Save All Attachments, in the progress log |
 | 2026-10-31 | Parity B3b: Resend Message, Direct Replies To, in the progress log |
 | 2026-10-31 | Headline numbers and the assessment by area brought up to date (parity 205/328, 276 commands, 18 crates, 5,140 tests, 17 releases; shared calendars, Exchange servers behind a switch, Advanced Search, agents naming what they act on); two #70 progress-log rows moved out of the headline table into the log |

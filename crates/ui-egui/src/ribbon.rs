@@ -700,8 +700,8 @@ fn insert() -> Tab {
             "Include",
             vec![
                 Item::big("attach", "Attach\nFile", "ui.attach", no()).at(0, 2),
-                Item::pending("insert.outlookItem", "Item", 0),
-                Item::pending("insert.businessCard", "Business Card", 0),
+                Item::big("open", "Item", "compose.attachItem", no()).at(0, 3),
+                Item::big("people", "Contact\nCard", "insert.businessCard", no()).at(0, 4),
                 Item::pending("insert.calendar", "Calendar", 0),
                 Item::big_menu("signature", "signature", "Signature", "Signature", Menu::Signature).at(0, 3),
             ],

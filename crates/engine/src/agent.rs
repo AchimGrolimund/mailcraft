@@ -170,6 +170,8 @@ const SAFE: &[&str] = &[
     "compose.set",
     "compose.replyTo",
     "compose.attach",
+    "compose.attachItem",
+    "insert.businessCard",
     "insert.picture",
     "compose.removeAttachment",
     "compose.signature",

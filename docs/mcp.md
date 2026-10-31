@@ -186,6 +186,7 @@ parameters.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-31 | minor | `compose.attachItem` (safe; a message named by `id` attached whole as an `.eml`, no Bcc) and `insert.businessCard` (safe; a contact named by `id` attached as a `.vcf`); never the selection |
 | 2026-10-31 | minor | `mail.replyAndDelete` (safe; names its message, never deletes for good), `mail.viewSource` (safe; message content, framed as untrusted) and `mail.saveAllAttachments` (safe; a folder is never taken from an agent, the files come back as `data`) |
 | 2026-10-31 | minor | `mail.resend` (safe; names its message, opens it again as a new one that is sent only by Send) and `compose.replyTo` (safe; each address checked, at most 20, line breaks dropped) |
 | 2026-10-30 | minor | #553: Reply, Reply All, Open Draft, Send Again, the answers to meeting requests and the appointment commands refuse an `id`, `ids` or `message` that names nothing, rather than take the selection; the four one-message commands take `ids` naming one |

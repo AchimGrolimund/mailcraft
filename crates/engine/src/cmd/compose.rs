@@ -51,6 +51,14 @@ pub fn specs() -> Vec<CommandSpec> {
             .pure()
             .params(r#"{"path": string} | {"name": string, "data": base64}, "mime"?: string"#)
             .when(needs_compose),
+        CommandSpec::new("compose.attachItem", "Attach Item", "Insert › Include", attach_item::attach_item)
+            .pure()
+            .params(r#"{"id": number} — a message, attached whole as an .eml file (no Bcc, none of the owner's marks)"#)
+            .when(needs_compose),
+        CommandSpec::new("insert.businessCard", "Contact Card", "Insert › Include", attach_item::business_card)
+            .pure()
+            .params(r#"{"id": number} — a contact, attached as a vCard (.vcf) file"#)
+            .when(needs_compose),
         CommandSpec::new("compose.removeAttachment", "Remove Attachment", "Message › Include", remove_attachment).pure().params(r#"{"index": number}"#).when(needs_compose),
         CommandSpec::new("compose.signature", "Signature", "Message › Include", signature).pure().params(r#"{"name"?: string} (default: the account's signature)"#).when(needs_compose),
         CommandSpec::new("compose.checkNames", "Check Names", "Message › Names", check_names).pure().key("Mod+K").when(needs_compose),
@@ -488,36 +496,14 @@ fn forward_attached(s: &mut Session, ids: &[Id], focus: Id) -> CmdResult {
     let mut attachments: Vec<Attachment> = Vec::new();
     let mut total = 0usize;
     for id in ids {
-        let m = s.loaded_message(*id)?;
-        if m.kept.as_deref().is_some_and(|k| k.failed) {
-            return Err(failed!(
-                "the text of “{subject}” can't be read on this computer, so it can't be forwarded as an attachment",
-                subject = subject_of(&m)
-            ));
-        }
-        if not_downloaded(&m) {
-            return Err(too_large_to_download(&m));
-        }
-        // What is attached goes to other people: a draft's Bcc, the owner's own marks on the
-        // message (read, answered, flagged, categorised), and every header kept with it but those
-        // known to come from the sender or the servers on the way, stay here.
-        let opts = mailcraft_mime::WriteOptions { include_bcc: false, offset_minutes: s.offset_at(m.date) };
-        let unmarked = Message {
-            read: false,
-            answered: false,
-            flag: FlagStatus::None,
-            categories: Vec::new(),
-            headers: m.headers.iter().filter(|(name, _)| goes_along(name)).cloned().collect(),
-            ..Message::clone(&m)
-        };
-        let bytes = mailcraft_mime::write(&unmarked, &opts);
-        total = total.saturating_add(bytes.len());
+        let a = eml_attachment(s, *id)?;
+        total = total.saturating_add(a.size());
         if total > MAX_ATTACHMENT {
             return Err(too_large(s, ids));
         }
         // Two with the same subject aren't two files of one name.
-        let name = numbered(super::file::eml_name(&m), &attachments);
-        attachments.push(Attachment::new(name, "message/rfc822", bytes));
+        let name = numbered(a.name.clone(), &attachments);
+        attachments.push(Attachment { name, ..a });
     }
     let m = s.mailbox.message(focus).ok_or_else(|| failed!("no message with id {id}", id = focus))?;
     let account = m.account;
@@ -632,9 +618,44 @@ fn numbered(name: String, taken: &[Attachment]) -> String {
     if !used(&name) {
         return name;
     }
-    let stem = name.strip_suffix(".eml").unwrap_or(&name);
-    (2..).map(|k| format!("{stem} ({k}).eml")).find(|n| !used(n)).unwrap_or(name)
+    let (stem, ext) = name.rsplit_once('.').map_or((name.as_str(), String::new()), |(stem, ext)| (stem, format!(".{ext}")));
+    (2..MAX_ATTACHMENTS + 2).map(|k| format!("{stem} ({k}){ext}")).find(|n| !used(n)).unwrap_or_else(|| name.clone())
 }
+
+/// Message `id` whole as an `.eml` attachment, as Forward as Attachment and Attach Item attach
+/// it, read in first: refused when its text can't be read here or was never downloaded.
+fn eml_attachment(s: &Session, id: Id) -> Result<Attachment, CmdError> {
+    let m = s.loaded_message(id)?;
+    if m.kept.as_deref().is_some_and(|k| k.failed) {
+        return Err(failed!(
+            "the text of “{subject}” can't be read on this computer, so it can't be forwarded as an attachment",
+            subject = subject_of(&m)
+        ));
+    }
+    if not_downloaded(&m) {
+        return Err(too_large_to_download(&m));
+    }
+    // What is attached goes to other people: a draft's Bcc, the owner's own marks on the
+    // message (read, answered, flagged, categorised), and every header kept with it but those
+    // known to come from the sender or the servers on the way, stay here.
+    let opts = mailcraft_mime::WriteOptions { include_bcc: false, offset_minutes: s.offset_at(m.date) };
+    let unmarked = Message {
+        read: false,
+        answered: false,
+        flag: FlagStatus::None,
+        categories: Vec::new(),
+        headers: m.headers.iter().filter(|(name, _)| goes_along(name)).cloned().collect(),
+        ..Message::clone(&m)
+    };
+    let bytes = mailcraft_mime::write(&unmarked, &opts);
+    Ok(Attachment::new(super::file::eml_name(&m), "message/rfc822", bytes))
+}
+
+#[path = "attach_item.rs"]
+mod attach_item;
+#[cfg(test)]
+#[path = "attach_item_tests.rs"]
+mod attach_item_tests;
 
 /// Whether `m` is what is kept of an IMAP message too large to download: its header and, in
 /// place of its text, a note that says so, with the mark `mailcraft-net` gives it. A sender can

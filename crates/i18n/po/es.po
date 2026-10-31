@@ -75,7 +75,7 @@ msgid "(no recipients)"
 msgstr "(sin destinatarios)"
 
 #. interface, what a command says
-#: crates/engine/src/cmd/compose.rs crates/engine/src/cmd/graph_drafts.rs crates/engine/src/cmd/graph_send.rs crates/ui-egui/src/alerts.rs crates/ui-egui/src/mail_view.rs crates/ui-egui/src/mail_view/server_rows.rs crates/ui-egui/src/people_view.rs crates/ui-egui/src/reading.rs crates/ui-egui/src/tasks_view.rs crates/ui-egui/src/windows.rs
+#: crates/engine/src/cmd/compose.rs crates/engine/src/cmd/graph_drafts.rs crates/engine/src/cmd/graph_send.rs crates/ui-egui/src/alerts.rs crates/ui-egui/src/mail_view.rs crates/ui-egui/src/mail_view/server_rows.rs crates/ui-egui/src/people_view.rs crates/ui-egui/src/pick_item.rs crates/ui-egui/src/reading.rs crates/ui-egui/src/tasks_view.rs crates/ui-egui/src/windows.rs
 #, fuzzy
 msgid "(no subject)"
 msgstr "(sin asunto)"
@@ -1271,7 +1271,7 @@ msgid "At the same time: {items}"
 msgstr "A la misma hora: {items}"
 
 #. interface
-#: crates/ui-egui/src/compose.rs
+#: crates/ui-egui/src/compose.rs crates/ui-egui/src/pick_item.rs
 #, fuzzy
 msgid "Attach"
 msgstr "Adjuntar"
@@ -1291,6 +1291,16 @@ msgstr ""
 #, fuzzy
 msgid "Attach File"
 msgstr "Adjuntar archivo"
+
+#. command label, interface, name
+#: crates/engine/src/cmd/compose.rs crates/ui-egui/src/pick_item.rs
+msgid "Attach Item"
+msgstr ""
+
+#. interface, name
+#: crates/ui-egui/src/pick_item.rs
+msgid "Attach a Contact Card"
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/advanced_search.rs
@@ -1445,11 +1455,6 @@ msgstr "Creando el índice con el que se responden las búsquedas; hasta que ter
 #, fuzzy
 msgid "Bullets"
 msgstr "Viñetas"
-
-#. ribbon
-#: crates/ui-egui/src/ribbon.rs
-msgid "Business Card"
-msgstr ""
 
 #. name
 #: crates/model/src/calendar.rs
@@ -2141,6 +2146,18 @@ msgstr "Conectando con el servidor de correo"
 #, fuzzy
 msgid "Contact"
 msgstr "Contacto"
+
+#. ribbon
+#: crates/ui-egui/src/ribbon.rs
+msgid ""
+"Contact\n"
+"Card"
+msgstr ""
+
+#. command label
+#: crates/engine/src/cmd/compose.rs
+msgid "Contact Card"
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/dialogs.rs
@@ -4378,7 +4395,7 @@ msgid "Info and File"
 msgstr ""
 
 #. interface, ribbon location
-#: crates/engine/src/cmd/format.rs crates/engine/src/cmd/picture.rs crates/engine/src/cmd/writing_tools.rs crates/ui-egui/src/symbol.rs
+#: crates/engine/src/cmd/compose.rs crates/engine/src/cmd/format.rs crates/engine/src/cmd/picture.rs crates/engine/src/cmd/writing_tools.rs crates/ui-egui/src/symbol.rs
 msgid "Insert"
 msgstr ""
 
@@ -6485,6 +6502,11 @@ msgid "Nothing matches this filter."
 msgstr "Nada coincide con este filtro."
 
 #. interface
+#: crates/ui-egui/src/pick_item.rs
+msgid "Nothing matches."
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/mail_view/server_rows.rs
 #, fuzzy
 msgid "Nothing more was found on the server"
@@ -8339,10 +8361,20 @@ msgid "Search Suggestions"
 msgstr "Sugerencias de búsqueda"
 
 #. interface
+#: crates/ui-egui/src/pick_item.rs
+msgid "Search by subject or sender"
+msgstr ""
+
+#. interface
 #: crates/ui-egui/src/ribbon.rs
 #, fuzzy
 msgid "Search commands"
 msgstr "Buscar comandos"
+
+#. interface
+#: crates/ui-egui/src/pick_item.rs
+msgid "Search contacts"
+msgstr ""
 
 #. interface
 #: crates/ui-egui/src/ribbon.rs
@@ -13070,7 +13102,7 @@ msgid "no calendar with id {id}"
 msgstr "no hay ningún calendario con el id. {id}"
 
 #. what a command says
-#: crates/engine/src/cmd/people.rs crates/engine/src/cmd/people_merge.rs
+#: crates/engine/src/cmd/attach_item.rs crates/engine/src/cmd/people.rs crates/engine/src/cmd/people_merge.rs
 #, fuzzy
 msgid "no contact with id {id}"
 msgstr "no hay ningún contacto con el id. {id}"
@@ -13111,7 +13143,7 @@ msgid "no message is being written"
 msgstr "no se está escribiendo ningún mensaje"
 
 #. what a command says
-#: crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar/invitation.rs crates/engine/src/cmd/compose.rs crates/engine/src/cmd/file.rs crates/engine/src/cmd/graph_send.rs crates/engine/src/cmd/mail.rs crates/engine/src/cmd/mail_source.rs crates/engine/src/cmd/mod.rs crates/engine/src/cmd/people.rs crates/engine/src/cmd/rules.rs crates/engine/src/cmd/save_all.rs crates/engine/src/cmd/tasks.rs crates/engine/src/session.rs
+#: crates/engine/src/cmd/attach_item.rs crates/engine/src/cmd/calendar.rs crates/engine/src/cmd/calendar/invitation.rs crates/engine/src/cmd/compose.rs crates/engine/src/cmd/file.rs crates/engine/src/cmd/graph_send.rs crates/engine/src/cmd/mail.rs crates/engine/src/cmd/mail_source.rs crates/engine/src/cmd/mod.rs crates/engine/src/cmd/people.rs crates/engine/src/cmd/rules.rs crates/engine/src/cmd/save_all.rs crates/engine/src/cmd/tasks.rs crates/engine/src/session.rs
 #, fuzzy
 msgid "no message with id {id}"
 msgstr "no hay ningún mensaje con el id. {id}"
@@ -13869,7 +13901,7 @@ msgid "this mailbox can't be reached through Microsoft Graph (MailboxNotEnabledF
 msgstr "no se puede acceder a este buzón a través de Microsoft Graph (MailboxNotEnabledForRESTAPI)"
 
 #. what a command says
-#: crates/engine/src/cmd/compose.rs
+#: crates/engine/src/cmd/attach_item.rs crates/engine/src/cmd/compose.rs
 #, fuzzy
 msgid "this message already has as many attachments as it can carry"
 msgstr "este mensaje ya tiene todos los datos adjuntos que admite"
@@ -14362,7 +14394,7 @@ msgid "{name} is being sent and received now. Use Stop."
 msgstr "{name} se está enviando y recibiendo ahora. Use Detener."
 
 #. what a command says
-#: crates/engine/src/cmd/compose.rs
+#: crates/engine/src/cmd/attach_item.rs crates/engine/src/cmd/compose.rs
 #, fuzzy
 msgid "{name} is larger than {mb} MB"
 msgstr "{name} ocupa más de {mb} MB"

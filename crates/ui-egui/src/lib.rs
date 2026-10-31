@@ -116,6 +116,9 @@ mod opened_message;
 mod opened_message_tests;
 pub mod opening;
 pub mod people_view;
+mod pick_item;
+#[cfg(test)]
+mod pick_item_tests;
 pub mod reading;
 mod reminders;
 mod report_problem;
