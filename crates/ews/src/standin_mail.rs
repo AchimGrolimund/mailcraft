@@ -70,6 +70,8 @@ pub struct Item {
     pub preview: String,
     /// Who it is blind-copied to.
     pub bcc: Vec<(String, String)>,
+    /// Where replies go.
+    pub reply_to: Vec<(String, String)>,
     /// The body, and whether it is HTML.
     pub body: (bool, String),
     /// The flag's status as the server has it: `NotFlagged`, `Flagged` or `Complete`.
