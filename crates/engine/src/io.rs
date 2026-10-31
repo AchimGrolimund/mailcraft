@@ -13,6 +13,17 @@ use crate::{CmdError, Session};
 /// Largest file read (512 MB).
 pub const MAX_FILE: u64 = 512 << 20;
 
+/// Largest mailbox file read whole in the JSON forms (formats 1 and 2: one self-contained file, or
+/// the JSON file with a content folder beside it): 4 GiB. The bytes are read with an allocation
+/// that may fail, and a file wanting more than a third of the memory not in use is not read whole
+/// (parsing holds about twice the file); where that memory can't be measured (all but Linux) the
+/// limit is 1 GiB instead (`store::UNMEASURED_JSON_MAX`). A one-file mailbox (format 1) past
+/// either is read as a stream instead, a message at a time, with its content going to the content
+/// folder as it is read (`store::stream`, #649), so that it opens whatever its size. The next save
+/// writes the form with a log of records and a content folder (`crate::store`), which stops at
+/// `store::MAX_INDEX` instead. Small in tests.
+pub const MAX_MAILBOX_JSON: u64 = if cfg!(test) { 16 << 20 } else { 4 << 30 };
+
 /// The mailbox file's extension.
 pub const MAILBOX_EXT: &str = "mailcraft";
 
@@ -160,7 +171,7 @@ impl OpenProgress {
     }
 
     pub fn add_read(&self, n: u64) {
-        let _ = self.read.fetch_update(Self::ORDER, Self::ORDER, |r| Some(r.saturating_add(n)));
+        let _ = self.read.try_update(Self::ORDER, Self::ORDER, |r| Some(r.saturating_add(n)));
     }
 
     /// Every byte is read: what is left is making a mailbox of them.
@@ -439,8 +450,8 @@ pub fn import(s: &mut Session, name: &str, bytes: &[u8], folder: Option<Id>) -> 
             if messages.is_empty() {
                 return Err(failed!("{name} has no messages", name));
             }
-            // Graph can't put received mail into a Microsoft account's folders: a local folder
-            // has it instead, and is shown (R3 spec S30).
+            // Mail imported for a Microsoft account goes to a local folder, which is shown (R3
+            // spec S30); moved into the account from there, it is put on the server (#451).
             let microsoft = s.mailbox.folder(folder).and_then(|f| s.mailbox.account(f.account)).is_some_and(|a| a.kind == AccountKind::Microsoft);
             let folder = if microsoft {
                 let drafts = s.mailbox.folder(folder).is_some_and(|f| f.kind == FolderKind::Drafts);
@@ -475,7 +486,7 @@ pub fn import(s: &mut Session, name: &str, bytes: &[u8], folder: Option<Id>) -> 
                 s.show_selected();
             }
             Ok(
-                json!({"format": if format == Format::Eml { "eml" } else { "mbox" }, "messages": ids.len(), "ids": ids, "folder": folder, "local": microsoft, "stoppedAfter": stopped.then_some(ids.len())}),
+                json!({"format": if format == Format::Eml { "eml" } else { "mbox" }, "messages": ids.len(), "ids": ids, "folder": folder, "local": microsoft, "drafts": drafts, "stoppedAfter": stopped.then_some(ids.len())}),
             )
         }
         Format::Ics => {

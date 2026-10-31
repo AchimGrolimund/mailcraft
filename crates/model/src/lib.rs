@@ -13,6 +13,7 @@ pub mod auth_results;
 mod calendar;
 pub mod confusables;
 mod contact;
+mod ews_server;
 mod jmap_server;
 mod junk;
 mod load_limit;
@@ -43,18 +44,19 @@ pub use calendar::{
     OpenedCalendar, Proposal, Recurrence, Response, ResponseOptions, Rights, ShowAs,
 };
 pub use contact::{Contact, Labeled, PostalAddress};
+pub use ews_server::{EwsServer, is_exchange_online, is_microsoft_domain, is_within};
 pub use jmap_server::JmapServer;
 pub use junk::{Added, JunkList, JunkLists, MAX_JUNK_ENTRIES, junk_entry, junk_key};
 pub use load_limit::{MIN_ITEM_BYTES, from_json};
 pub use mailbox::{
     Account, AccountKind, AsWritten, BETWEEN_MAILBOXES, Category, Directory, DownloadInFull, FOLDERS_STAY_YET, Folder, FolderCounts, FolderKind,
-    GraphSwitch, IMPORTED, INTO_GRAPH, MAX_RULES, MAX_SHARED, MailIdentity, Mailbox, NOT_MOVING_YET, NOT_SENDING_YET, OAuth, OAuthProvider, Pending,
-    Queued, STAYS_LOCAL, Security, Server, ServerFavorites, ServerFolder,
+    GraphSwitch, IMPORTED, INTO_OUTBOX, MAX_RULES, MAX_SHARED, MOVED_INTO_OUTBOX, MailIdentity, Mailbox, NOT_MOVING_YET, NOT_SENDING_YET, OAuth,
+    OAuthProvider, Pending, Queued, Security, Server, ServerFavorites, ServerFolder,
 };
 pub use mailcraft_time as time;
 pub use message::{
-    Answers, Attachment, Body, ContentRef, FlagStatus, Importance, KeptBody, Message, NOT_DOWNLOADED, NOT_DOWNLOADED_NOTE, normalize_subject,
-    size_label, size_label_in, text_hash,
+    Answers, Attachment, Body, ContentRef, FlagStatus, Importance, KeptBody, MAX_HIDDEN_TEXT, Message, NOT_DOWNLOADED, NOT_DOWNLOADED_NOTE,
+    RETURNED_LISTINGS, normalize_subject, size_label, size_label_in, text_hash,
 };
 pub use offline::{KeepOffline, OfflineWindow};
 pub use remote::Origin;
@@ -128,6 +130,8 @@ pub(crate) mod b64 {
 
 #[cfg(test)]
 mod calendar_rights_tests;
+#[cfg(test)]
+mod hidden_text_tests;
 #[cfg(test)]
 mod junk_tests;
 #[cfg(test)]

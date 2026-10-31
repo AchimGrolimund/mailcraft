@@ -882,6 +882,7 @@ fn a_sync_result_lands_in_the_right_folders() {
             flags: vec![RemoteFlags { uid: 12, read: true, flagged: true, ..Default::default() }],
             removed: vec![11],
             complete: true,
+            ..Default::default()
         }],
         ..Default::default()
     };
@@ -1761,7 +1762,7 @@ mod two_way {
         assert_eq!((request(&s, a).ops.len(), s.mailbox.pending.len()), (0, 0));
 
         // A deletion the owner took back while it was carried out: the server no longer has the
-        // message, so the one here is the only one. It stays, off the server.
+        // message, so the one here is the only one. It stays, and goes on the server again (#451).
         let (mut s, a, inbox, _) = synced();
         let three = titled(&s, a, "Three");
         run(&mut s, "mail.deletePermanently", json!({"id": three}));
@@ -1775,7 +1776,8 @@ mod two_way {
         };
         apply(&mut s, gone);
         assert_eq!((state(&s, three).0, state(&s, three).1, s.mailbox.count(inbox)), (inbox, 0, 3));
-        assert_eq!((known(&request(&s, a), inbox), unpushed(&s, a)), (vec![1, 2], 0));
+        assert_eq!((known(&request(&s, a), inbox), unpushed(&s, a)), (vec![1, 2], 1));
+        assert_eq!(request(&s, a).places.iter().map(|p| p.message.id).collect::<Vec<_>>(), [three]);
     }
 
     #[test]
@@ -1788,10 +1790,11 @@ mod two_way {
         assert_eq!((s.mailbox.pending.len(), unpushed(&s, a), request(&s, a).ops.len()), (1, 0, 0));
         run(&mut s, "mail.move", json!({"id": one, "folder": archive}));
         assert_eq!(unpushed(&s, a), 1);
-        // To another account: its own server keeps it where it is.
+        // To a folder on this computer: its server keeps it until it is whole in the mailbox
+        // file, and this one was never saved (#451).
         let local = kind(&s, FolderKind::Inbox);
         run(&mut s, "mail.move", json!({"id": two, "folder": local}));
-        assert_eq!((s.mailbox.pending.len(), unpushed(&s, a)), (1, 1));
+        assert_eq!((s.mailbox.pending.len(), unpushed(&s, a)), (2, 1));
         // A copy is not on the server, and changing it is nobody's business.
         let copy = run(&mut s, "mail.copy", json!({"id": three, "folder": inbox}))["copies"][0].as_u64().unwrap();
         run(&mut s, "mail.markRead", json!({"id": copy}));
@@ -2392,6 +2395,22 @@ fn hostile_params_never_panic() {
     }}));
     junk.push(json!({"result": {"account": jmap, "email": "jmap@example.org", "fetched": [{"id": "E1", "mime": []}, {"id": "\u{0}", "mime": [1]}], "missing": ["E1", ""]}}));
     junk.push(json!({"account": jmap, "message": 18446744073709551615u64, "most": 1e300, "light": "yes", "jmap": {"session": 5, "bearer": "no"}, "kind": "jmap"}));
+    // And an Exchange server account (#252), with the switch on, so that its commands get past the
+    // door too: answers that name it with nothing that makes sense, and settings that are none.
+    s.ews = true;
+    let url = "https://exchange.example.org/EWS/Exchange.asmx";
+    let ews = json!({"email": "ews@example.org", "kind": "exchange", "ews": {"url": url, "username": "CORP\\ews"}});
+    let ews = s.run("account.add", &ews).unwrap()["id"].as_u64().unwrap();
+    junk.push(json!({"result": {
+        "account": ews, "email": "ews@example.org", "url": url, "whole": true, "busyFor": 4294967295u32, "hierarchy": "x".repeat(100_000),
+        "listing": {"complete": true, "folders": [{"id": "../x", "parent": "../x", "name": "\u{0}", "kind": "outbox"}]},
+        "pages": [{"folder": "\u{0}", "afresh": true, "removed": ["E1"], "messages": [{"server": {"id": ""}}, {}]}],
+        "states": [{"folder": "\u{0}", "state": "x".repeat(100_000)}, {}, null],
+        "errors": ["\u{0}", "x".repeat(100_000)], "untrusted": 5,
+    }}));
+    junk.push(json!({"result": {"account": ews, "email": "other@example.org"}}));
+    junk.push(json!({"account": ews, "message": 18446744073709551615u64, "most": 1e300, "light": "yes", "kind": "exchange", "ews": {"url": 5, "username": [], "trusted": "zz"}}));
+    junk.push(json!({"id": ews, "ews": {"url": "http://evil.example/", "trusted": "x".repeat(200)}, "email": "ews@example.org"}));
     let ids: Vec<&'static str> = s.registry.all().iter().map(|c| c.id).collect();
     for round in 0..2 {
         for id in &ids {

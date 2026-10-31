@@ -22,7 +22,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .pure()
             .params(r#"{"path": string} — everything in one self-contained file; a copy, unless the mailbox wasn't kept anywhere yet"#),
         CommandSpec::new("file.import", "Import", "File › Open & Export", import)
-            .params(r#"{"path": string} | {"name": string, "data": base64}, "folder"?: number — .eml, .mbox, .ics, .vcf; messages meant for a Microsoft account go to the local folder Imported (`local`); `"opened": true` (a message file the system asked to open) puts one .eml into the local folder Imported as a received message, or finds the one already there (`opened`, `already`), whatever `folder` says"#),
+            .params(r#"{"path": string} | {"name": string, "data": base64}, "folder"?: number — .eml, .mbox, .ics, .vcf; messages meant for a Microsoft account go to the local folder Imported (`local`), or into its Drafts to this computer's Drafts, as drafts (`drafts`); `"opened": true` (a message file the system asked to open) puts one .eml into the local folder Imported as a received message, or finds the one already there (`opened`, `already`), whatever `folder` says"#),
         CommandSpec::new("file.importFolderTree", "Import a Folder of Mailboxes", "File › Open & Export", import_tree).params(
             r#"{"path": string (a folder) | "entries": [{"path": "Mail/Inbox.sbd/Sent", "data": base64}], "name"?: string (the new top folder; default the folder's name), "dryRun"?: bool (only say what would come in)} — every mbox file under the folder, found by its first bytes, into subfolders of one folder On this computer; a second import adds nothing already there (Message-ID)"#,
         ),
@@ -149,6 +149,11 @@ fn open(s: &mut Session, v: &Value) -> CmdResult {
     if fetched_again > 0 {
         s.mailbox_changed();
     }
+    // So is that of IMAP accounts, by UID, at the next Send/Receive (#650).
+    let fetched_again = fetched_again.saturating_add(super::imap_again::mark_unreadable(&mut s.mailbox));
+    if fetched_again > 0 {
+        s.mailbox_changed();
+    }
     Ok(json!({
         "favoritesNowGraph": favorites_now_graph,
         "fetchedAgain": fetched_again,
@@ -211,6 +216,13 @@ fn save(s: &mut Session, v: &Value) -> CmdResult {
 /// as you go doesn't wander off to the copy.
 fn save_as(s: &mut Session, v: &Value) -> CmdResult {
     let path = p::req_str(v, "path")?.to_string();
+    // Saved onto the file the mailbox is kept in (the dialog suggests its very name): that is a
+    // save, never the one-file form written over it, which would leave its content folder
+    // orphaned and a large mailbox unreadable (#649).
+    #[cfg(not(target_arch = "wasm32"))]
+    if s.path.as_deref().is_some_and(|kept| same_file(kept, std::path::Path::new(&path))) {
+        return save(s, &json!({"path": s.path.as_ref().map(|p| p.to_string_lossy().to_string())})).map(|r| with(r, "copy", json!(false)));
+    }
     #[cfg(not(target_arch = "wasm32"))]
     let r = {
         let bytes = crate::store::save_single(std::path::Path::new(&path), &s.loaded_mailbox()?).map_err(fail)?;
@@ -225,6 +237,13 @@ fn save_as(s: &mut Session, v: &Value) -> CmdResult {
         s.note_saved();
     }
     Ok(with(r, "copy", json!(!home)))
+}
+
+/// Whether two paths name one file: equal, or the same on disk (another spelling, case on
+/// Windows, a link).
+#[cfg(not(target_arch = "wasm32"))]
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a == b || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
 }
 
 fn import(s: &mut Session, v: &Value) -> CmdResult {
