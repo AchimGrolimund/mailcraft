@@ -39,7 +39,7 @@ fn tighter_spacing_toggles_and_is_kept_in_the_settings() {
     assert_eq!(run(&mut s, "view.density", json!({"value": true}))["value"], true);
     let saved = serde_json::to_value(&s.prefs).unwrap();
     assert_eq!(saved["tightSpacing"], true);
-    assert_eq!(serde_json::from_value::<Prefs>(saved).unwrap().tight_spacing, true);
+    assert!(serde_json::from_value::<Prefs>(saved).unwrap().tight_spacing);
     assert_eq!(run(&mut s, "view.density", json!({}))["value"], false);
     assert!(serde_json::to_value(&s.prefs).unwrap().get("tightSpacing").is_none(), "off is not written");
 }
